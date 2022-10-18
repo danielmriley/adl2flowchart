@@ -1,0 +1,33 @@
+CC=g++
+YACC=bison
+LEX=flex
+
+LFILE=scanner.l
+YFILE=parser.y
+LCPP=Scanner.cpp
+YCPP=Parser.cpp
+YHPP=Parser.h
+MAIN=main.cpp
+DH=driver.h
+DCPP=driver.cpp
+EXTFUN=external_functions.cpp
+ASTHPP=ast.hpp
+SEMCHCPP=semantic_checks.cpp
+LOCHH=location.hh
+
+EXE=adl
+
+all: $(EXE)
+
+$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHCPP) $(DH)
+	$(CC) $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) -o $(EXE)
+
+$(YCPP): $(YFILE)
+	$(YACC) $(YFILE)
+
+$(LCPP): $(LFILE)
+	$(LEX) $(LFILE)
+
+
+clean:
+	rm $(LCPP) $(YCPP) $(YHPP) $(EXE) $(LOCHH)

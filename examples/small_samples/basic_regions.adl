@@ -1,0 +1,10 @@
+region reg
+  select a > b
+  select b == c
+
+region reg2
+  select d < e
+  select f != g
+
+region reg3
+  select 1 + 1

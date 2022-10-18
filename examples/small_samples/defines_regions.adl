@@ -1,0 +1,18 @@
+define var1 = 2
+define var2 = 4
+define simple = var1 + var2
+define s = 10 + var2
+define nums = 1 + 2
+
+region reg
+  select a > b
+  select b == c
+
+region reg2
+  select d < e
+  select f != g
+  select f * g
+  
+region reg3
+  select 1 + 1
+  select var1 > var2

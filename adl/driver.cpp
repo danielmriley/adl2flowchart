@@ -11,6 +11,27 @@ namespace adl {
     return parser.parse();
   }
 
+  int Driver::visitAST(int (*f)(ExprVector& _ast)) {
+    return f(ast);
+  }
+
+  int Driver::setTables() {
+    for(int i = 0; i < ast.size(); i++) {
+      std::string token = ast[i]->getToken();
+      if(token == "DEFINE") {
+        addDefine(ast[i]->getId());
+      }
+      else if(token == "OBJECT") {
+        addObject(ast[i]->getId());
+      }
+      else if(token == "REGION") {
+        addRegion(ast[i]->getId());
+      }
+    }
+
+    return 0;
+  }
+
   void Driver::addNode(Expr* node) {
     ast.push_back(node);
   }

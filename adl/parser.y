@@ -62,7 +62,7 @@ namespace adl {
 %token <int> INT
 %token <double> REAL
 
-%nterm <adl::Expr*> function param_list criterion definition region_block
+%nterm <adl::Expr*> function param_list criterion definition region_block object_block
 %nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op chain chained_cond
 %nterm <adl::Expr*> take_id take real int condition expr range
 %nterm <std::string> compare_op logic_op expr_op factor_op
@@ -95,15 +95,18 @@ param_list : chain COMMA param_list             {  }
            | chain                              {  }
           ;
 
-object_block : OBJECT id take                   {  }
-             | OBJECT id take criteria          {  }
+object_block : OBJECT id takes                   { $$ = new ObjectNode("OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+             | OBJECT id takes criteria          { $$ = new ObjectNode("OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
-take : TAKE take_id                             {  }
-     | take TAKE take_id                        {  }
+takes: take takes                               { lists.push_back($1); }
+     | take                                     { lists.push_back($1); }
      ;
 
-take_id : id                                    {  }
+take : TAKE take_id                             { $$ = new CommandNode($1,$2); }
+     ;
+
+take_id : id                                    { $$ = $1; }
         | id LPAR id_list RPAR                  {  }
         | id id_list                            {  }
         ;
@@ -127,8 +130,8 @@ criteria : criterion criteria               { lists.push_back($1); }
 criterion : COMMAND chained_cond            { $$ = new CommandNode($1,$2); }
           ;
 
-chained_cond : LPAR chain RPAR                              {  } // shift/reduce error caused here
-             | LPAR chain RPAR logic_op chained_cond        {  }
+chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
+             | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode("LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
              | chain QUES chain COLON chain                 {  }
              | chain QUES chain                             {  }
@@ -182,16 +185,13 @@ term : id_qualifiers              { $$ = $1; }
      | LPAR expr RPAR             {  } // shift/reduce error caused here.
      ;
 
-id : ID                           { $$ = new adl::VarNode("ID", $1); }
-   ;
-
-id_qualifiers : id_qualifier id_qualifiers    {  }
+id_qualifiers : id_qualifier id_qualifiers    { $$ = $1; }
               | id_qualifier                  { $$ = $1; }
               ;
 
 id_qualifier : INCLUSIVE range                    {  }
              | EXCLUSIVE range                    {  }
-             | LBRACKET int RBRACKET              {  }
+             | LBRACKET int RBRACKET              { $$ = $2; }
              | LBRACKET int COLON int RBRACKET    {  }
              | dot_op                             {  }
              | dot_op range                       {  }
@@ -202,10 +202,10 @@ id_qualifier : INCLUSIVE range                    {  }
 dot_op : DOT id             {  }
        ;
 
-range : range int           {  }
-      | range real          {  }
-      | int                 {  }
-      | real                {  }
+range : range int           { $$ = $1; }
+      | range real          { $$ = $1; }
+      | int                 { $$ = $1; }
+      | real                { $$ = $1; }
       ;
 
 int : INT                   { $$ = new adl::NumNode("INT", $1); }
@@ -213,6 +213,9 @@ int : INT                   { $$ = new adl::NumNode("INT", $1); }
 
 real : REAL                 { $$ = new adl::NumNode("REAL", $1); }
      ;
+
+id : ID                     { $$ = new adl::VarNode("ID", $1, driver.location()); }
+   ;
 %%
 
 void adl::Parser::error(const location_type& l, const std::string& msg) {

@@ -66,8 +66,6 @@ namespace adl {
 
     std::string getId() { return ""; }
 
-    ExprVector getStatements() { return ExprVector(); }
-
     BinNode& operator=(BinNode& be) {
       if(&be != this) {
         clear();
@@ -120,8 +118,6 @@ namespace adl {
 
     std::string getId() { return ""; }
 
-    ExprVector getStatements() { return ExprVector(); }
-
   private:
     double val;
     Token tok;
@@ -129,7 +125,7 @@ namespace adl {
 
   class VarNode : public Expr {
   public:
-    VarNode(Token t, std::string _id) : id(_id), tok(t) {}
+    VarNode(Token t, std::string _id, int i) : id(_id), tok(t), uniId(i) {}
     VarNode(const VarNode& vn) {
       val = vn.val;
       id = vn.id;
@@ -155,10 +151,9 @@ namespace adl {
 
     std::string getId() { return id; }
 
-    ExprVector getStatements() { return ExprVector(); }
-
   private:
     int val;
+    int uniId;
     std::string id;
     Token tok;
   }; // end VarNode class
@@ -205,6 +200,8 @@ namespace adl {
 
     Token getToken() { return tok; }
 
+    Expr* getBody() { return body; }
+
   private:
     Token tok;
     Expr* varDecl;
@@ -213,16 +210,14 @@ namespace adl {
 
   class ObjectNode : public Expr {
   public:
-    ObjectNode(Token t, Expr* _id, Expr* tak, ExprVector stmt) {
+    ObjectNode(Token t, Expr* _id, ExprVector stmt) {
       tok = t;
-      take = tak->clone();
       id = _id->clone();
       statements = stmt;
     }
 
     ObjectNode(ObjectNode& on) {
       tok = on.tok;
-      take = on.take->clone();
       id = on.id->clone();
       statements = on.statements;
     }
@@ -235,9 +230,10 @@ namespace adl {
 
     std::string getId() { return id->getId(); }
 
+    ExprVector getStatements() { return statements; }
+
   private:
     Expr* id;
-    Expr* take;
     Token tok;
     ExprVector statements;
   }; // end ObjectNode class

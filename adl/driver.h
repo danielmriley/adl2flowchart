@@ -4,6 +4,7 @@
 #include "Parser.h"
 #include "ast.hpp"
 #include <map>
+#include <cstdio>
 
 namespace adl {
   class Driver
@@ -16,6 +17,9 @@ namespace adl {
     Driver();
 
     int parse();
+    int visitAST(int (*f)(ExprVector& ast));
+
+    int setTables();
     void addNode(Expr*);
     void addObject(std::string id);
     void addRegion(std::string id);

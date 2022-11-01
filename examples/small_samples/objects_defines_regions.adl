@@ -1,0 +1,17 @@
+object AK4jets
+  take Jet
+  select pt > 30
+  select eta < 2.4
+
+# MET
+object met
+  take MET
+
+define METpho = met + photons
+
+region preselection
+  # weight HTMETtrig(HT, met) # way to apply event weights
+  select AK4jets >= 3
+  select AK8jets >= 1
+  select MR > 800
+  select Rsq > 0.08

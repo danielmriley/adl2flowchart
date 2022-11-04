@@ -1274,7 +1274,7 @@ namespace  adl  {
 
   case 71: // id_qualifier: LBRACKET int RBRACKET
 #line 194 "parser.y"
-                                                  {  }
+                                                  { yylhs.value.as < adl::Expr* > () = yystack_[1].value.as < adl::Expr* > (); }
 #line 1279 "Parser.cpp"
     break;
 

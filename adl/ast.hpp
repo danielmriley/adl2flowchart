@@ -1,5 +1,5 @@
 #ifndef AST_H
-#define AST_N
+#define AST_H
 
 #include <iostream>
 #include <cstdlib>
@@ -104,6 +104,7 @@ namespace adl {
 
     NumNode& operator=(NumNode& ne) {
       if(&ne != this) { val = ne.val; return *this;}
+      return *this;
     }
 
     Expr* clone() {

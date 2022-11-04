@@ -2,7 +2,7 @@
 #include "scanner.hpp"
 #include "Parser.h"
 #include "driver.h"
-#include "semantic_checks.cpp"
+#include "semantic_checks.h"
 
 int main(int argc, char **argv) {
     adl::Driver drv;

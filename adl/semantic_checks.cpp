@@ -1,16 +1,7 @@
-// Semantic passes over the ADL AST.
-
-#ifndef SEMANTIC_CHECKS_CPP
-#define SEMANTIC_CHECKS_CPP
-
-#include <iostream>
-#include <string>
-
-#include "driver.h"
+// AST semantic checks.
+#include "semantic_checks.h"
 
 namespace adl {
-
-  typedef std::vector<Expr*> ExprVector;
 
   FILE *fp;
   int print(ExprVector& _ast) {
@@ -28,8 +19,9 @@ namespace adl {
 //        }
 //      }
       if(n->getId() == "DEFINE") {
-        Expr* b = n->getBody;
-        fprintf(fp, "%d->%d\n ", b->id);
+
+        BinNode* b = static_cast<BinNode*>(static_cast<DefineNode*>(n)->getBody());
+        fprintf(fp, "%s->%s\n ", (b->getId()).c_str(), (b->getToken()).c_str());
       }
     }
     return 0;
@@ -78,4 +70,3 @@ namespace adl {
   }
 } // end namespace adl
 
-#endif

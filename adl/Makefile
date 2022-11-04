@@ -1,4 +1,4 @@
-CC=g++
+CC=clang++
 YACC=bison
 LEX=flex
 
@@ -12,6 +12,7 @@ DH=driver.h
 DCPP=driver.cpp
 EXTFUN=external_functions.cpp
 ASTHPP=ast.hpp
+SEMCHH=semantic_checks.h
 SEMCHCPP=semantic_checks.cpp
 LOCHH=location.hh
 
@@ -19,8 +20,8 @@ EXE=adl
 
 all: $(EXE)
 
-$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHCPP) $(DH)
-	$(CC) $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) -o $(EXE)
+$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(DH)
+	$(CC) $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) -o $(EXE)
 
 $(YCPP): $(YFILE)
 	$(YACC) $(YFILE)

@@ -49,7 +49,7 @@ namespace adl {
   }
 
   void Driver::incrementLocation(unsigned int l) {
-    loc++;
+    loc+=l;
   }
 
   unsigned int Driver::location() {

@@ -3,6 +3,11 @@ object AK4jets
   select pt > 30
   select eta < 2.4
 
+object DKjets
+  take Jet j 
+  select pT > 25
+  select abs(Eta) < 2.4
+
 # MET
 object met
   take MET

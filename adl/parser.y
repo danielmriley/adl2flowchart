@@ -64,7 +64,7 @@ namespace adl {
 
 %nterm <adl::Expr*> function param_list criterion definition region_block object_block
 %nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op chain chained_cond
-%nterm <adl::Expr*> take_id take real int condition expr range
+%nterm <adl::Expr*> take_id take real int condition expr range id_list id_list_params
 %nterm <std::string> compare_op logic_op expr_op factor_op
 
 %%
@@ -85,7 +85,7 @@ regions : region_block
         | region_block regions
         ;
 
-definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode("DEFINE", $2, $4); driver.ast.push_back($$); }
+definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(driver.location() - 2, "DEFINE", $2, $4); driver.ast.push_back($$); }
            ;
 
 function : id LPAR param_list RPAR              {  }
@@ -95,15 +95,15 @@ param_list : chain COMMA param_list             {  }
            | chain                              {  }
           ;
 
-object_block : OBJECT id takes                   { $$ = new ObjectNode("OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
-             | OBJECT id takes criteria          { $$ = new ObjectNode("OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+object_block : OBJECT id takes                   { $$ = new ObjectNode(driver.location()-2, "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+             | OBJECT id takes criteria          { $$ = new ObjectNode(driver.location()-2, "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
 takes: take takes                               { lists.push_back($1); }
      | take                                     { lists.push_back($1); }
      ;
 
-take : TAKE take_id                             { $$ = new CommandNode($1,$2); }
+take : TAKE take_id                             { $$ = new CommandNode(driver.location()-1, $1,$2); }
      ;
 
 take_id : id                                    { $$ = $1; }
@@ -111,27 +111,27 @@ take_id : id                                    { $$ = $1; }
         | id id_list                            {  }
         ;
 
-id_list : id_list_params                        {  }
-        | id_list_params COMMA id_list          {  }
+id_list : id_list_params                        { $$ = $1; }
+        | id_list_params COMMA id_list          { /* Take list */ }
         ;
 
-id_list_params : id                             {  }
-               | int                            {  }
-               | real                           {  }
+id_list_params : id                             { $$ = $1; }
+               | int                            { $$ = $1; }
+               | real                           { $$ = $1; }
                ;
 
-region_block : REGION id criteria           { $$ = new RegionNode("REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
+region_block : REGION id criteria           { $$ = new RegionNode(driver.location()-2, "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
 criteria : criterion criteria               { lists.push_back($1); }
         | criterion                         { lists.push_back($1); }
         ;
 
-criterion : COMMAND chained_cond            { $$ = new CommandNode($1,$2); }
+criterion : COMMAND chained_cond            { $$ = new CommandNode(driver.location()-1, $1,$2); }
           ;
 
 chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
-             | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode("LOGICOP",$2,$4,$5); }
+             | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(driver.location(), "LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
              | chain QUES chain COLON chain                 {  }
              | chain QUES chain                             {  }
@@ -139,11 +139,11 @@ chained_cond : LPAR chain RPAR                              { $$ = $2; } // shif
              ;
 
 chain : condition                       { $$ = $1; }
-      | condition logic_op chain        { $$ = new adl::BinNode("LOGICOP",$1,$2,$3); }
+      | condition logic_op chain        { $$ = new adl::BinNode(driver.location(), "LOGICOP",$1,$2,$3); }
       ;
 
 condition : expr                        { $$ = $1; }
-          | expr compare_op condition   { $$ = new adl::BinNode("COMPAREOP",$1,$2,$3); }
+          | expr compare_op condition   { $$ = new adl::BinNode(driver.location(), "COMPAREOP",$1,$2,$3); }
           ;
 
 compare_op : GT                   { $$ = $1; }
@@ -159,7 +159,7 @@ logic_op : AND                    { $$ = $1; }
          ;
 
 expr : factor                     { $$ = $1; }
-     | factor expr_op expr        { $$ = new adl::BinNode("EXPROP",$1,$2,$3); }
+     | factor expr_op expr        { $$ = new adl::BinNode(driver.location(), "EXPROP",$1,$2,$3); }
      ;
 
 expr_op : PLUS                    { $$ = $1; }
@@ -167,7 +167,7 @@ expr_op : PLUS                    { $$ = $1; }
         ;
 
 factor : term                     { $$ = $1; }
-       | term factor_op factor    { $$ = new adl::BinNode("FACTOROP",$1,$2,$3); }
+       | term factor_op factor    { $$ = new adl::BinNode(driver.location(), "FACTOROP",$1,$2,$3); }
        ;
 
 factor_op : MULTIPLY              { $$ = $1; }
@@ -177,9 +177,9 @@ factor_op : MULTIPLY              { $$ = $1; }
 term : id_qualifiers              { $$ = $1; }
      | function                   {  }
      | function id_qualifiers     {  }
-     | PIPE int PIPE              {  }
-     | PIPE real PIPE             {  }
-     | PIPE id PIPE               {  }
+     | PIPE int PIPE              { $$ = $2; }
+     | PIPE real PIPE             { $$ = $2; }
+     | PIPE id PIPE               { $$ = $2; }
      | int                        { $$ = $1; }
      | real                       { $$ = $1; }
      | LPAR expr RPAR             {  } // shift/reduce error caused here.
@@ -208,13 +208,13 @@ range : range int           { $$ = $1; }
       | real                { $$ = $1; }
       ;
 
-int : INT                   { $$ = new adl::NumNode("INT", $1); }
+int : INT                   { $$ = new adl::NumNode(driver.location(), "INT", $1); }
     ;
 
-real : REAL                 { $$ = new adl::NumNode("REAL", $1); }
+real : REAL                 { $$ = new adl::NumNode(driver.location(), "REAL", $1); }
      ;
 
-id : ID                     { $$ = new adl::VarNode("ID", $1, driver.location()); }
+id : ID                     { $$ = new adl::VarNode(driver.location(), "ID", $1); }
    ;
 %%
 

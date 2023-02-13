@@ -28,6 +28,7 @@ namespace adl {
     std::vector<Expr*> ast;
     std::vector<std::string> objectTable;
     std::vector<std::string> regionTable;
+    std::vector<std::string> regionVarsTable;
     std::vector<std::string> definitionTable;
 
   private:

@@ -26,6 +26,7 @@ namespace adl {
       }
       else if(token == "REGION") {
         addRegion(ast[i]->getId());
+        // add region's vars to "region vars" table.
       }
     }
 

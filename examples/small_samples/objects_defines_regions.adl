@@ -3,8 +3,13 @@ object AK4jets
   select pt > 30
   select eta < 2.4
 
+object AK8jets
+  take Jet # Need to check here for DBU, with the key words Jet, Electron, ...
+  select pt > 30
+  select eta < 2.4
+
 object DKjets
-  take Jet j 
+  take Jet 
   select pT > 25
   select abs(Eta) < 2.4
 
@@ -13,10 +18,13 @@ object met
   take MET
 
 define METpho = met + photons
+define MR = met + photons
+define Rsq = met + photons
+
 
 region preselection
   # weight HTMETtrig(HT, met) # way to apply event weights
   select AK4jets >= 3
   select AK8jets >= 1
   select MR > 800
-  select Rsq > 0.08
+  select Rsq > 0.08 * MR + 3

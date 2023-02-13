@@ -35,6 +35,10 @@ namespace adl {
 
   typedef std::vector<Expr*> ExprVector;
   ExprVector lists;
+  ExprVector paramlist;
+
+  int counter = 0;
+  int incrementCounter() { counter += 2; return counter; }
 }
 
   static adl::Parser::symbol_type yylex(adl::Scanner &scanner, adl::Driver &driver) {
@@ -85,25 +89,25 @@ regions : region_block
         | region_block regions
         ;
 
-definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(driver.location() - 2, "DEFINE", $2, $4); driver.ast.push_back($$); }
+definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
            ;
 
-function : id LPAR param_list RPAR              {  }
+function : id LPAR param_list RPAR              { $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
          ;
 
-param_list : chain COMMA param_list             {  }
-           | chain                              {  }
+param_list : chain COMMA param_list             { paramlist.push_back($1); }
+           | chain                              { paramlist.push_back($1); }
           ;
 
-object_block : OBJECT id takes                   { $$ = new ObjectNode(driver.location()-2, "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
-             | OBJECT id takes criteria          { $$ = new ObjectNode(driver.location()-2, "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+object_block : OBJECT id takes                   { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+             | OBJECT id takes criteria          { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
 takes: take takes                               { lists.push_back($1); }
      | take                                     { lists.push_back($1); }
      ;
 
-take : TAKE take_id                             { $$ = new CommandNode(driver.location()-1, $1,$2); }
+take : TAKE take_id                             { $$ = new CommandNode(incrementCounter(), $1,$2); }
      ;
 
 take_id : id                                    { $$ = $1; }
@@ -120,18 +124,18 @@ id_list_params : id                             { $$ = $1; }
                | real                           { $$ = $1; }
                ;
 
-region_block : REGION id criteria           { $$ = new RegionNode(driver.location()-2, "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
+region_block : REGION id criteria           { $$ = new RegionNode(incrementCounter(), "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
 criteria : criterion criteria               { lists.push_back($1); }
         | criterion                         { lists.push_back($1); }
         ;
 
-criterion : COMMAND chained_cond            { $$ = new CommandNode(driver.location()-1, $1,$2); }
+criterion : COMMAND chained_cond            { $$ = new CommandNode(incrementCounter(), $1,$2); }
           ;
 
 chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
-             | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(driver.location(), "LOGICOP",$2,$4,$5); }
+             | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(incrementCounter(), "LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
              | chain QUES chain COLON chain                 {  }
              | chain QUES chain                             {  }
@@ -139,11 +143,11 @@ chained_cond : LPAR chain RPAR                              { $$ = $2; } // shif
              ;
 
 chain : condition                       { $$ = $1; }
-      | condition logic_op chain        { $$ = new adl::BinNode(driver.location(), "LOGICOP",$1,$2,$3); }
+      | condition logic_op chain        { $$ = new adl::BinNode(incrementCounter(), "LOGICOP",$1,$2,$3); }
       ;
 
 condition : expr                        { $$ = $1; }
-          | expr compare_op condition   { $$ = new adl::BinNode(driver.location(), "COMPAREOP",$1,$2,$3); }
+          | expr compare_op condition   { $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,$2,$3); }
           ;
 
 compare_op : GT                   { $$ = $1; }
@@ -159,7 +163,7 @@ logic_op : AND                    { $$ = $1; }
          ;
 
 expr : factor                     { $$ = $1; }
-     | factor expr_op expr        { $$ = new adl::BinNode(driver.location(), "EXPROP",$1,$2,$3); }
+     | factor expr_op expr        { $$ = new adl::BinNode(incrementCounter(), "EXPROP",$1,$2,$3); }
      ;
 
 expr_op : PLUS                    { $$ = $1; }
@@ -167,7 +171,7 @@ expr_op : PLUS                    { $$ = $1; }
         ;
 
 factor : term                     { $$ = $1; }
-       | term factor_op factor    { $$ = new adl::BinNode(driver.location(), "FACTOROP",$1,$2,$3); }
+       | term factor_op factor    { $$ = new adl::BinNode(incrementCounter(), "FACTOROP",$1,$2,$3); }
        ;
 
 factor_op : MULTIPLY              { $$ = $1; }
@@ -175,7 +179,7 @@ factor_op : MULTIPLY              { $$ = $1; }
           ;
 
 term : id_qualifiers              { $$ = $1; }
-     | function                   {  }
+     | function                   { $$ = $1; }
      | function id_qualifiers     {  }
      | PIPE int PIPE              { $$ = $2; }
      | PIPE real PIPE             { $$ = $2; }
@@ -208,16 +212,16 @@ range : range int           { $$ = $1; }
       | real                { $$ = $1; }
       ;
 
-int : INT                   { $$ = new adl::NumNode(driver.location(), "INT", $1); }
+int : INT                   { $$ = new adl::NumNode(incrementCounter(), "INT", $1); }
     ;
 
-real : REAL                 { $$ = new adl::NumNode(driver.location(), "REAL", $1); }
+real : REAL                 { $$ = new adl::NumNode(incrementCounter(), "REAL", $1); }
      ;
 
-id : ID                     { $$ = new adl::VarNode(driver.location(), "ID", $1); }
+id : ID                     { $$ = new adl::VarNode(incrementCounter(), "ID", $1); }
    ;
 %%
 
 void adl::Parser::error(const location_type& l, const std::string& msg) {
-    std::cerr << "ERROR: line " << driver.location() << " : " << msg << "\n";
+    std::cerr << "ERROR: line " << incrementCounter() << " : " << msg << "\n";
 }

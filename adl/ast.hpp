@@ -175,14 +175,34 @@ namespace adl {
 
   class FunctionNode : public Expr {
   public:
-    FunctionNode(int _uid, Token t, std::string id, std::string params) {}
+    FunctionNode(int _uid, Token t, Expr* _id, ExprVector _params)
+                  : tok(t), id(_id), params(_params) { uid = _uid; }
+    
+    FunctionNode(const FunctionNode& fn) {
+      tok = fn.tok;
+      id = fn.id;
+      params = fn.params;
+      uid = fn.uid;
+    }
 
     Token getToken() { return tok; }
+    
+    Expr* clone() {
+      return new FunctionNode(*this);
+    }
 
-    std::string getId() { return ""; }
+    double value() {
+      return std::nan("");
+    }
+
+    Expr* getVar() { return id; }
+    std::string getId() { return id->getId(); }
+    int getUId() { return uid; }
 
   private:
     Token tok;
+    Expr* id;
+    ExprVector params;
   }; // end class FunctionNode
 
   class DefineNode : public Expr {

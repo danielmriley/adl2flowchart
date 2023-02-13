@@ -42,8 +42,6 @@ namespace adl {
     std::ifstream fin("property_vars.txt");
     std::string input;
 
-    tolower(id);
-
     while(fin >> input) {
       if(id == input) {
         std::cerr << id << " is a PROPERTY\n";
@@ -55,23 +53,21 @@ namespace adl {
     fin.close();
   }
 
-  void check_object_table(std::string id) {
-    std::ifstream fin("ext_objs.txt");
+  int check_object_table(std::string id) {
+//    std::string path = ""  // Need to find the dir that the libraries are in.
+    std::ifstream fin("./adl/ext_objs.txt");
     std::string input;
-
-    for(int i = 0; i < id.size(); i++) {
-      id[i] = std::tolower(id[i]);
-    }
 
     while(fin >> input) {
       if(id == input) {
         std::cerr << id << " is a predefined OBJECT\n";
         fin.close();
-        return;
+        return 0;
       }
     }
     std::cerr << id << " is not a predefined OBJECT\n";
     fin.close();
+    return 1;
   }
 } // end namespace adl
 #endif

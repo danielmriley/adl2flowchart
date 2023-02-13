@@ -12,9 +12,16 @@ namespace adl {
 
   typedef std::vector<Expr*> ExprVector;
 
+  int biOpCheck(Expr* b);
+  int printBinNode(Expr*, BinNode* b);
+  int printDefines(Expr* n);
+  int printRegions(Expr* n);
+  int printObjects(Expr* n);
+
   int print(ExprVector& _ast);
   int printAST(ExprVector& _ast);
   int testAST(ExprVector& ast);
+  int checkDecl(Driver& drv);
 } // end namespace adl
 
 #endif

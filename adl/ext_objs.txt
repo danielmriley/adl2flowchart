@@ -3,3 +3,6 @@ Muon
 Tau
 Photon
 Lepton
+MET
+Jet
+FatJet 

@@ -16,7 +16,7 @@ SEMCHH=semantic_checks.h
 SEMCHCPP=semantic_checks.cpp
 LOCHH=location.hh
 
-EXE=adl
+EXE=smash
 
 all: $(EXE)
 

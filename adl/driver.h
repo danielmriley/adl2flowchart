@@ -25,6 +25,8 @@ namespace adl {
     void addRegion(std::string id);
     void addDefine(std::string id);
 
+    int checkObjectTable(std::string id);
+
     std::vector<Expr*> ast;
     std::vector<std::string> objectTable;
     std::vector<std::string> regionTable;

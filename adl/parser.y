@@ -68,7 +68,7 @@ namespace adl {
 
 %nterm <adl::Expr*> function param_list criterion definition region_block object_block
 %nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op chain chained_cond
-%nterm <adl::Expr*> take_id take real int condition expr range id_list id_list_params
+%nterm <adl::Expr*> take_id take real int condition expr range id_list id_list_params num
 %nterm <std::string> compare_op logic_op expr_op factor_op
 
 %%
@@ -89,18 +89,21 @@ regions : region_block
         | region_block regions
         ;
 
-definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
+definition : DEFINE id ASSIGN condition        { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
            ;
 
-function : id LPAR param_list RPAR              { $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
+function : id LPAR param_list RPAR             { $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
+         | PIPE int PIPE                       { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+         | PIPE real PIPE                      { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+         | PIPE id PIPE                        { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          ;
 
 param_list : chain COMMA param_list             { paramlist.push_back($1); }
            | chain                              { paramlist.push_back($1); }
           ;
 
-object_block : OBJECT id takes                   { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
-             | OBJECT id takes criteria          { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+object_block : OBJECT id takes                  { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+             | OBJECT id takes criteria         { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
              ;
 
 takes: take takes                               { lists.push_back($1); }
@@ -111,8 +114,8 @@ take : TAKE take_id                             { $$ = new CommandNode(increment
      ;
 
 take_id : id                                    { $$ = $1; }
-        | id LPAR id_list RPAR                  {  }
-        | id id_list                            {  }
+        | id LPAR id_list RPAR                  { $$ = $1; Expr* cn = new CommandNode(incrementCounter(),"TAKE",$3); lists.push_back(cn); }
+        | id id_list                            { $$= new VarNode(incrementCounter(),"ID",$1->getId(),$2->getId()); }
         ;
 
 id_list : id_list_params                        { $$ = $1; }
@@ -120,8 +123,7 @@ id_list : id_list_params                        { $$ = $1; }
         ;
 
 id_list_params : id                             { $$ = $1; }
-               | int                            { $$ = $1; }
-               | real                           { $$ = $1; }
+               | num                            { $$ = $1; }
                ;
 
 region_block : REGION id criteria           { $$ = new RegionNode(incrementCounter(), "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
@@ -148,6 +150,21 @@ chain : condition                       { $$ = $1; }
 
 condition : expr                        { $$ = $1; }
           | expr compare_op condition   { $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,$2,$3); }
+          | expr INCLUSIVE num num      {
+                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
+                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$4);
+                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"AND",comp2);
+                                        }
+          | expr EXCLUSIVE num num      {
+                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$3);
+                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$4);
+                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"OR",comp2);
+                                        }
+          | expr LBRACKET int COLON int RBRACKET {
+                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
+                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$5);
+                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"AND",comp2);
+                                        }
           ;
 
 compare_op : GT                   { $$ = $1; }
@@ -180,37 +197,32 @@ factor_op : MULTIPLY              { $$ = $1; }
 
 term : id_qualifiers              { $$ = $1; }
      | function                   { $$ = $1; }
-     | function id_qualifiers     {  }
-     | PIPE int PIPE              { $$ = $2; }
-     | PIPE real PIPE             { $$ = $2; }
-     | PIPE id PIPE               { $$ = $2; }
+     | function id_qualifiers     { $$ = $1; }
      | int                        { $$ = $1; }
      | real                       { $$ = $1; }
      | LPAR expr RPAR             {  } // shift/reduce error caused here.
      ;
 
-id_qualifiers : id_qualifier id_qualifiers    { $$ = $1; }
+id_qualifiers : id_qualifier id_qualifiers    { $$= new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId()); }
               | id_qualifier                  { $$ = $1; }
               ;
 
-id_qualifier : INCLUSIVE range                    {  }
-             | EXCLUSIVE range                    {  }
-             | LBRACKET int RBRACKET              { $$ = $2; }
-             | LBRACKET int COLON int RBRACKET    {  }
-             | dot_op                             {  }
+id_qualifier : dot_op                             { $$ = $1; }
              | dot_op range                       {  }
+             | id LBRACKET int RBRACKET           { $$= new VarNode(incrementCounter(),"ID",$1->getId(),"","",$3->value()); }
              | id                                 { $$ = $1; }
-             | SUBTRACT id                        {  } // 5 S/R warnings but they aren't deriving for the same situations.
+             | SUBTRACT id                        {  } // 3 S/R warnings but they aren't deriving for the same situations.
              ;
 
-dot_op : DOT id             {  }
+dot_op : DOT id             { $$ = $2; }
        ;
 
-range : range int           { $$ = $1; }
-      | range real          { $$ = $1; }
-      | int                 { $$ = $1; }
-      | real                { $$ = $1; }
+range : range num           { $$ = $1; }
+      | num                 { $$ = $1; }
       ;
+
+num : int                   { $$ = $1; }
+    | real                  { $$ = $1; }
 
 int : INT                   { $$ = new adl::NumNode(incrementCounter(), "INT", $1); }
     ;

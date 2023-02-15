@@ -29,8 +29,18 @@ namespace adl {
         // add region's vars to "region vars" table.
       }
     }
-
     return 0;
+  }
+
+  int Driver::checkObjectTable(std::string id) {
+    for(auto e: objectTable) {
+      if(e == id) {
+        std::cout << "Object declared\n";
+        return 0;
+      }
+    }
+    std::cout << "ERROR: Object NOT declared\n";
+    return 1;
   }
 
   void Driver::addNode(Expr* node) {

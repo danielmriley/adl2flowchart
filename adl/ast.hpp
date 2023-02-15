@@ -138,10 +138,13 @@ namespace adl {
 
   class VarNode : public Expr {
   public:
-    VarNode(int _uid, Token t, std::string _id) : id(_id), tok(t) { uid = _uid;}
+    VarNode(int _uid, Token t, std::string _id, std::string al="", std::string dp="", int acc = -1)
+            : id(_id), tok(t), alias(al), dotop(dp), accessor(acc) { uid = _uid;}
     VarNode(const VarNode& vn) {
       val = vn.val;
       id = vn.id;
+      alias = vn.alias;
+      dotop = vn.dotop;
       tok = vn.tok;
       uid = vn.uid;
     }
@@ -149,6 +152,8 @@ namespace adl {
     VarNode& operator=(VarNode& vn) {
       val = vn.val;
       id = vn.id;
+      alias = vn.alias;
+      dotop = vn.dotop;
       tok = vn.tok;
       uid = vn.uid;
       return *this;
@@ -165,11 +170,18 @@ namespace adl {
     Token getToken() { return tok; }
 
     std::string getId() { return id; }
+    std::string getDotOp() { return dotop; }
+    std::string getAlias() { return alias; }
     int getUId() { return uid; }
+
+    void setAlias(std::string al) { alias = al; }
 
   private:
     int val;
     std::string id;
+    std::string alias;
+    std::string dotop;
+    int accessor;
     Token tok;
   }; // end VarNode class
 
@@ -177,7 +189,7 @@ namespace adl {
   public:
     FunctionNode(int _uid, Token t, Expr* _id, ExprVector _params)
                   : tok(t), id(_id), params(_params) { uid = _uid; }
-    
+
     FunctionNode(const FunctionNode& fn) {
       tok = fn.tok;
       id = fn.id;
@@ -186,7 +198,7 @@ namespace adl {
     }
 
     Token getToken() { return tok; }
-    
+
     Expr* clone() {
       return new FunctionNode(*this);
     }
@@ -198,6 +210,7 @@ namespace adl {
     Expr* getVar() { return id; }
     std::string getId() { return id->getId(); }
     int getUId() { return uid; }
+    ExprVector getParams() { return params; }
 
   private:
     Token tok;

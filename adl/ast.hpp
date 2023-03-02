@@ -25,6 +25,7 @@ namespace adl {
     virtual Token getToken() = 0;
     virtual std::string getId() = 0;
     virtual int getUId() = 0;
+    void incrementUId() { uid++; }
 
     int uid;
   }; // end Expr class
@@ -172,6 +173,7 @@ namespace adl {
     std::string getId() { return id; }
     std::string getDotOp() { return dotop; }
     std::string getAlias() { return alias; }
+    int getAccessor() { return accessor; }
     int getUId() { return uid; }
 
     void setAlias(std::string al) { alias = al; }

@@ -22,6 +22,9 @@ namespace adl {
   int printAST(ExprVector& _ast);
   int testAST(ExprVector& ast);
   int checkDecl(Driver& drv);
+
+  std::string typeCheck(Expr* node);
+  int typeCheck(ExprVector& ast);
 } // end namespace adl
 
 #endif

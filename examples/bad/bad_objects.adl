@@ -1,0 +1,4 @@
+object AK4Jets
+  take Jet
+  select pt + 1
+  select eta < 2.4

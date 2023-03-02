@@ -181,7 +181,7 @@ define Mll = fMll(leptonsSel[0], leptonsSel[1])
 
 # Boost pre-selection cuts
 region preselection
-  # weight HTMETtrig(HT, met) # way to apply event weights
+  weight HTMETtrig(HT, met) # way to apply event weights
   select AK4jets.size >= 3
   select AK8jets.size >= 1
   select MR > 800

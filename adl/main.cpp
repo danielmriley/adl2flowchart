@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     if(res == 0) std::cout << "ast.size(): " << drv.ast.size() << "\n";
     if(res == 0) { drv.setTables(); }
     if(res == 0) { adl::checkDecl(drv); }
-//    if(res == 0) { drv.visitAST(adl::testAST); }
+    if(res == 0) { drv.visitAST(adl::typeCheck); }
     if(res == 0) { drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
 
     if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
@@ -23,3 +23,12 @@ int main(int argc, char **argv) {
 
     return res;
 }
+
+
+// What can we do model checking on?
+// Type checking, type inference.
+// Dig down into the system more to find where loops are made. There is ONE main loop through all of the events they want.
+// Where is the c++ file written? A histogram or a Root file is produced.
+// Where do they compile the c++? Not compiled
+//
+// Look at dependencies of source file and the data and catch ASAP in execution.

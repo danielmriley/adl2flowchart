@@ -179,6 +179,33 @@ namespace adl {
         BinNode* bin = static_cast<BinNode*>(cond);
         printBinNode(stmnt, bin);
       }
+      else if(cond->getToken() == "FUNCTION") {
+        FunctionNode* fn = static_cast<FunctionNode*>(cond);
+        VarNode *vr = static_cast<VarNode*>(fn->getVar());
+        int idr = vr->getUId();
+        std::cout << "DEF FUNC: " << vr->getId() << "\n";
+        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
+        fprintf(fp, "%d->%d\n", stmnt->getUId(), idr);
+        // loop through the function's params.
+        ExprVector prms = fn->getParams();
+        for(auto e: prms) {
+          std::cout << "PRMS: " << e->getToken() << ", ";
+          if(binOpCheck(e) == 0) {
+            std::cout << "BINOP for FUNCTION\n";
+            BinNode *bin = static_cast<BinNode*>(e);
+            printBinNode(vr, bin);
+          }
+          else {
+            fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
+            fprintf(fp, "%d->%d\n", idr, e->getUId());
+          }
+        }
+        std::cout << std::endl;
+      }
+      else if(cond->getToken() == "ID") {
+        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", cond->getUId(), (cond->getId()).c_str());
+        fprintf(fp, "%d->%d\n", stmnt->getUId(), cond->getUId());
+      }
     }
 
     return 0;
@@ -238,6 +265,7 @@ namespace adl {
     for(auto& n: _ast) {
       i++;
 
+      fprintf(fp, "ordering = \"out\"");
       fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", n->getUId(), (n->getToken()).c_str());
 
       if(n->getToken() == "DEFINE") {
@@ -262,35 +290,40 @@ namespace adl {
       return 0;
   }
 
-  int testAST(ExprVector& ast) {
+  std::string typeCheck(Expr* node) {
+    if(node->getToken() == "INT") { std::cout << " : INTEGER\n"; return node->getToken(); }
+    if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; }
+    if(node->getToken() == "ID") { std::cout << " : VAR\n"; }
+    return "UNKNOWN\n";
+  }
+
+  int typeCheck(ExprVector& ast) {
     for(auto& v: ast) {
       std::string token = v->getToken();
       if(token == "REGION") {
         std::cout << "\n====region====\n";
         RegionNode* region = static_cast<RegionNode*>(v);
-        std::cout  << " uid: " << region->getUId() << "\n";
         std::vector<Expr*> vv = region->getStatements();
         for(auto& s: vv) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
-          BinNode* bin = static_cast<BinNode*>(cond);
-          std::cout << "cond: " << bin->getToken() << " uid: " << bin->getUId() << "\n";
-          std::cout << "op: " << bin->getOp() << "\n";
-          std::cout << "value: " << bin->value() << "\n";
+          if(binOpCheck(cond) == 0) {
+            BinNode* bin = static_cast<BinNode*>(cond);
+            typeCheck(bin->getLHS());
+            typeCheck(bin->getRHS());
+          }
         }
       }
       if(token == "OBJECT") {
         std::cout << "\n====object====\n";
         ObjectNode* object = static_cast<ObjectNode*>(v);
-        std::cout  << " uid: " << object->getUId() << "\n";
         std::vector<Expr*> vv = object->getStatements();
         for(auto& s: vv) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
-          BinNode* bin = static_cast<BinNode*>(cond);
-
-          std::cout << "s: " << s->getToken() << " uid: " << s->getUId() << "\n";
-          std::cout << "bin: " << bin->getToken() << " uid: " << bin->getUId() << "\n";
-          if(s->getToken() == "SELECT") std::cout << "op: " << bin->getOp() << "\n";
-          std::cout << "value: " << bin->value() << "\n";
+          if(binOpCheck(cond) == 0) {
+            BinNode* bin = static_cast<BinNode*>(cond);
+            typeCheck(bin->getRHS());
+            typeCheck(bin->getRHS());
+          }
         }
       }
     }

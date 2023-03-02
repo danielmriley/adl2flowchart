@@ -178,7 +178,7 @@ compare_op : GT                   { $$ = $1; }
 logic_op : AND                    { $$ = $1; }
          | OR                     { $$ = $1; }
          ;
-
+// rewrite so that the grammar catches bad statements.
 expr : factor                     { $$ = $1; }
      | factor expr_op expr        { $$ = new adl::BinNode(incrementCounter(), "EXPROP",$1,$2,$3); }
      ;
@@ -198,8 +198,7 @@ factor_op : MULTIPLY              { $$ = $1; }
 term : id_qualifiers              { $$ = $1; }
      | function                   { $$ = $1; }
      | function id_qualifiers     { $$ = $1; }
-     | int                        { $$ = $1; }
-     | real                       { $$ = $1; }
+     | num                        { $$ = $1; }
      | LPAR expr RPAR             {  } // shift/reduce error caused here.
      ;
 

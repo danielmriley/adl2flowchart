@@ -1,3 +1,5 @@
 define simple = var1 + var2
 define s = 10 + var2
 define nums = 1 + 2
+define c = x(y(nums.phi + s[0].eta))
+define MTj1 = sqrt( 2*jets[0].pT * MET*(1-cos(MET.phi - jets[0].phi)))

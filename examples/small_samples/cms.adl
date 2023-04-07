@@ -1,326 +1,97 @@
-# arxiv:1710.11188, CMS SUSY stop (resolved and boosted)
-
 #info analysis
-# Details about experiment
+#  title "Search for the pair production of third-generation squarks with two-body decays to
+#  a bottom or charm quark and a neutralino in proton-proton collisions at sqrts = 13 TeV"
 #  experiment CMS
-#  id SUS-16-050
-#  publication Phys.Rev. D97 (2018) no.1, 012007
+#  id SUS-16-032
+#  publication Phys. Lett. B 778 (2018) 263
 #  sqrtS 13.0
 #  lumi 35.9
-#  arXiv 1710.11188
-#  hepdata https://www.hepdata.net/record/ins1633588
-#  doi 10.1103/PhysRevD.97.012007
+#  arXiv 1707.07274
+#  hepdata
+#  doi 10.1016/j.physletb.2018.01.012
 
-
-### OBJECT SELECTIONS
-
-# AK4 jets
-object AK4jets
+# OBJECTS
+object jets
   take Jet
-  select pt > 30
-  select |eta| < 2.4
+  select pT > 25
+  select abs(Eta) < 2.4
 
-# AK8 jets
-object AK8jets
-  take FatJet
-  select pt > 200
-  select |eta| < 2.4
+object bjets
+  take jets
+  select BTag == 1
 
-# b-tagged jets - loose
-object bjetsLoose
-  take AK4jets
-  select btagDeepB > 0.152
+object cjets
+  take jets
+  # They have a 2D tagging algorithm (vs light and b jets)
+  # c tagging doesn't exist in Delphes, but written here just as an ad hoc property
+  # Can match with genparticles, or try to make JetFlavor work in Delphes
+  select cTag == 1
 
-# b-tagged jets - medium
-object bjetsMedium
-  take AK4jets
-  select btagDeepB > 0.4941
-
-# b-tagged jets - tight
-object bjetsTight
-  take AK4jets
-  select btagDeepB > 0.8001
-
-# W jets - mass-tagged
-object WjetsMasstag
-  take AK8jets
-  select msoftdrop [] 65 105
-
-# W jets - W-tagged
-object Wjets
-  take WjetsMasstag
-  select tau2 / tau1 <= 0.4
-
-# W jets - anti-tagged
-object WjetsAntitag
-  take WjetsMasstag
-  select tau2 / tau1 > 0.4
-
-# top jets - mass-tagged
-object topjetsMasstag
-  take AK8jets
-  select pt > 400
-  select msoftdrop [] 105 210
-
-# top jets - mass-tagged, subjet b-antitagged
-object topjetsMasstag0b
-  take topjetsMasstag
-  select btagDeepB < 0.1522
-
-# top jets - top-tagged, subjet b-tagged
-object topjets
-  take topjetsMasstag
-  select btagDeepB >= 0.1522
-  select tau3 / tau2 < 0.46
-
-# top jets - anti-tagged
-object topjetsAntitag
-  take topjetsMasstag
-  select btagDeepB < 0.1522
-  select tau3 / tau2 >= 0.46
-
-# muons - veto
-object muonsVeto
+object muons
   take Muon
-  select pt > 5
-  select |eta| < 2.4
-  select softId == 1
-  select miniPFRelIso_all < 0.2
-  select |dxy| < 0.2
-  select |dz| < 0.5
+  select pT > 10
+  select abs(eta) < 2.4
+  select D0 < 2
+  # relative isolation Irel < 0.10
 
-# muons - select
-object muonsSel
-  take Muon
-  select pt > 10
-  select |eta| < 2.4
-  select miniPFRelIso_all < 0.15
-  select |dxy| < 0.05
-  select |dz| < 0.1
-
-# electrons - veto
-object electronsVeto
+object electrons
   take Electron
-  select pt > 5
-  select |eta| < 2.5
-  select miniPFRelIso_all < 0.1
-  select |dxy| < 0.05
-  select |dz| < 0.1
+  select pT > 10
+  select abs(eta) < 2.4
+  select D0 < 2
+  # relative isolation Irel < 0.21
 
-# electrons - select
-object electronsSel
-  take Electron
-  select pt > 10
-  select |eta| < 2.5
-#  select |eta| ][ 1.442 1.556
-  select miniPFRelIso_all < 0.1
-  select |dxy| < 0.05
-  select |dz| < 0.1
+object leptons
+  take electrons
+  take muons
 
-# leptons - veto
-object leptonsVeto
-  take electronsVeto
-  take muonsVeto
+#object vetotracks
+# no isolation in Delphes, therefore cannot readily do it in Delphes
+#  take Track
+#  select pT > 10
+#  select abs(eta) < 2.5
+#  select sumPt / pT < 0.1 # R = 0.3
 
-# leptons - select
-object leptonsSel
-  take electronsSel
-  take muonsSel
+object MET
+  take MissingET
 
-# taus - veto
-object tausVeto
-  take Tau
-  select pt > 18
-  select |eta| < 2.5
-  select idMVAnewDM2017v2 >= 4
-
-# photons - select
-object photons
-  take Photon
-  select pt > 80
-  select |eta| < 2.5
-
-# jets - no photon
-object AK4jetsNopho
-  take AK4jets j
-  reject dR(j, photons) < 0.4 and photons.pt/j.pt [] 0.5 2.0
-
-# MET
-object met
-  take MET
-
-# Megajets are 4-vectors, each consisting of multiple jet.
-# Each event with njets > 0 is partitioned into 2 megajets.
-object megajets
-  take fmegajets(AK4jets)
-
-object megajetsNopho
-  take fmegajets(AK4jetsNopho)
-
-### EVENT VARIABLES
-# All functions used here are taken from Razorfunc.h
-
-define MR = fMR(megajets)
-define Rsq = sqrt(fMTR(megajets, met) / MR)
-define dphimegajets = dPhi(megajets[0], megajets[1])
-define dphimegajetsNopho = dPhi(megajetsNopho[0], megajetsNopho[1])
-
-define METl = met + leptonsVeto[0]
-define METll = met + leptonsVeto[0] + leptonsVeto[1]
-define METpho = met + photons[0]
-
-define Rsql = sqrt(fMTR(megajets, METl) / MR)
-define Rsqll = sqrt(fMTR(megajets, METll) / MR)
-define MRNopho = fMR(megajetsNopho)
-define Rsqpho = sqrt(fMTR(megajetsNopho, METpho) / MRNopho)
-define MT = fMT(leptonsVeto[0], met)
-define Mll = fMll(leptonsSel[0], leptonsSel[1])
+# VARIABLES
+define MTj1 = sqrt( 2*jets[0].pT * MET*(1-cos(MET.phi + jets[0].phi )))
+define MTj2 = sqrt( 2*jets[1].pT * MET*(1-cos(MET.phi + jets[1].phi )))
+define MCT = 2 * jets[0].pT * jets[1] * (1 + cos( dphi( jets[0], jets[1] )))
+define dphimin2j = min(dphi(jets[0:1], MET))
+define dphimin = min(dphi(jets[0:2], MET))
+define HT01 = jets[0] + jets[1]
+define HTbc = sum(bjets.pT) + sum(cjets.pT)
 
 # EVENT SELECTION
-# Boosted categories
+# The noncompressed search regions
+region noncompressed
+  select size(jets) [] 2 4
+  #reject size(jets) > 4 ? jets[4].pT > 75
+  select size(electrons) + size(muons) == 0
+  select jets[0].pT > 100
+  select jets[0].BTag == 1
+  select jets[1].pT > 75
+  select jets[1].BTag == 1
+  select jets[2].pT > 30
+  select jets[3].pT > 30
+  select MET.pT > 250
+  #select size(jets) == 2 ? dphimin2 > 0.4 : dphimin > 0.4
+  #select min(MTj1, MTj2) > 250
+  select MCT > 150
 
-# Boost pre-selection cuts
-region preselection
-  weight HTMETtrig(HT, met) # way to apply event weights
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select Rsq > 0.08
+  region noncompressedHT1
+    select noncompressed
+    select HT01 [] 200 500
+    bin MCT 150 250 350 450
 
-# W category signal and control regions
-region WcategorySR
-  select preselection
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select bjetsMedium.size >= 1
-  select Wjets.size >= 1
-  select dphimegajets < 2.8
+  region noncompressedHT2
+    select noncompressed
+    select HT01 [] 500 1000
+    bin MCT 150 250 350 450 600
 
-region WcategoryCRQ
-  select preselection
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select WjetsAntitag.size >= 1
-  select bjetsLoose.size == 0
-  select dphimegajets >= 2.8
-
-region WcategoryCRT
-  select preselection
-  select leptonsVeto.size == 1
-  select Wjets.size >= 1
-  select dphimegajets < 2.8
-  select MT < 100
-  # or select fMT(leptonsVeto[0], met) < 100
-  select bjetsMedium.size >= 1
-
-region WcategoryCRW
-  select preselection
-  select leptonsVeto.size == 1
-  select WjetsMasstag.size >= 1
-  select dphimegajets < 2.8
-  select MT [] 30 100
-  #or select fMT(leptonsVeto[0], met) [] 30 100
-  select bjetsLoose.size == 0
-
-region WcategoryCRL
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select leptonsVeto.size == 1
-  select Rsql > 0.08
-  # or select sqrt(fMTR(megajets, METl) / MR) > 0.08
-  select WjetsMasstag.size >= 1
-  select dphimegajets < 2.8
-  select MT [] 30 100
-  # or 30 < MT < 100
-  # or select fMT(leptonsVeto[0], MET) [] 30 100
-  # or select 30 < fMT(leptonsVeto[0], MET) < 100
-  select bjetsLoose.size == 0
-
-region WcategoryCRZ
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select (muonsSel.size == 2 and electronsVeto.size == 0) or
-         (electronsSel.size == 2 and muonsVeto.size == 0)
-  select leptonsSel[0].charge + leptonsSel[1].charge == 0
-  select fMll(leptonsSel[0], leptonsSel[1]) < 10
-  select Rsqll > 0.08
-  select WjetsMasstag.size >= 1
-  select dphimegajets < 2.8
-
-region WcategoryCRG
-  select photons.size == 1
-  select AK4jetsNopho.size >= 3
-  select AK8jets.size >= 1
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select MRNopho > 800
-  select Rsqpho > 0.08
-  select WjetsMasstag.size >= 1
-  select dphimegajetsNopho < 2.8
-
-# Top category signal and control regions
-region TopcategorySR
-  select preselection
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select topjets.size >= 1
-  select dphimegajets < 2.8
-
-region TopcategoryCRQ
-  select preselection
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select topjetsAntitag.size >= 1
-  select dphimegajets >= 2.8
-  select bjetsLoose.size == 0
-
-region TopcategoryCRT
-  select preselection
-  select leptonsVeto.size == 1
-  select topjets.size >= 1
-  select dphimegajets < 2.8
-  select MT < 100
-
-region TopcategoryCRW
-  select preselection
-  select leptonsVeto.size == 1
-  select topjetsMasstag0b.size >= 1
-  select dphimegajets < 2.8
-  select MT [] 30 100
-  select bjetsLoose.size == 0
-
-region TopcategoryCRL
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select leptonsVeto.size == 1
-  select Rsql > 0.08
-  select topjetsMasstag0b.size >= 1
-  select dphimegajets < 2.8
-  select MT [] 30 100
-  select bjetsLoose.size == 0
-
-region TopcategoryCRZ
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select (muonsSel.size == 2 and electronsVeto.size == 0) or
-         (electronsSel.size == 2 and muonsVeto.size == 0)
-  select leptonsSel[0].charge + leptonsSel[1].charge == 0
-  select fMll(leptonsSel[0], leptonsSel[1]) < 10
-  select Rsqll > 0.08
-  select topjetsMasstag.size >= 1
-  select dphimegajets < 2.8
-
-region TopcategoryCRG
-  select photons.size == 1
-  select AK4jetsNopho.size >= 3
-  select AK8jets.size >= 1
-  select leptonsVeto.size == 0
-  select tausVeto.size == 0
-  select MRNopho > 800
-  select Rsqpho > 0.08
-  select topjetsMasstag.size >= 1
-  select dphimegajetsNopho < 2.8
+  region noncompressedHT3
+    select noncompressed
+    select HT01 > 1000
+    bin MCT 150 250 350 450 600 800

@@ -69,5 +69,19 @@ namespace adl {
     fin.close();
     return 1;
   }
+
+  int getParticleType(std::string particle) {
+    if(particle == "Electron") return 1;
+    if(particle == "Jet") return 2;
+    if(particle == "BJET") return 3;
+    if(particle == "LJET") return 4;
+    if(particle == "Photon") return 8;
+    if(particle == "FatJet") return 9;
+    if(particle == "Truth") return 10;
+    if(particle == "Tau") return 11;
+    if(particle == "Muon") return 12;
+    if(particle == "Trk") return 19;
+    else return 0;
+  }
 } // end namespace adl
 #endif

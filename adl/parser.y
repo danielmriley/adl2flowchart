@@ -36,7 +36,9 @@ namespace adl {
   typedef std::vector<Expr*> ExprVector;
   ExprVector lists;
   ExprVector paramlist;
+  std::vector<int> intLists;
 
+  int cutcount;
   int counter = 0;
   int incrementCounter() { counter += 2; return counter; }
 }
@@ -59,10 +61,10 @@ namespace adl {
 
 %token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR
-%token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  ASSIGN
+%token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN
 %token <std::string> GT  LT  GE  LE  EQ NE
 %token <std::string> AND  OR  NOT  PIPE  LBRACKET  RBRACKET  COLON
-%token <std::string> QUES  COMMA  DOT  INCLUSIVE EXCLUSIVE
+%token <std::string> QUES  COMMA  DOT  INCLUSIVE  EXCLUSIVE  UNDERSCORE
 %token <int> INT
 %token <double> REAL
 
@@ -90,9 +92,11 @@ regions : region_block
         ;
 
 definition : DEFINE id ASSIGN condition        { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
+           | DEFINE id COLON condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
+           | DEFINE id COLON id id             { Expr* binop = new adl::BinNode(incrementCounter(),"EXPROP",$4,"+",$5); $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, binop); driver.ast.push_back($$); }
            ;
 
-function : id LPAR param_list RPAR             { $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
+function : id LPAR param_list RPAR             { std::cout << $1->getId() << "\n"; $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
          | PIPE int PIPE                       { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          | PIPE real PIPE                      { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          | PIPE id PIPE                        { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
@@ -111,6 +115,7 @@ takes: take takes                               { lists.push_back($1); }
      ;
 
 take : TAKE take_id                             { $$ = new CommandNode(incrementCounter(), $1,$2); }
+     | COLON take_id                            { $$ = new CommandNode(incrementCounter(), $1,$2); }
      ;
 
 take_id : id                                    { $$ = $1; }
@@ -141,7 +146,7 @@ chained_cond : LPAR chain RPAR                              { $$ = $2; } // shif
              | chain                                        { $$ = $1; }
              | chain QUES chain COLON chain                 {  }
              | chain QUES chain                             {  }
-             | id range                                     {  }
+             | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
              ;
 
 chain : condition                       { $$ = $1; }
@@ -160,11 +165,6 @@ condition : expr                        { $$ = $1; }
                                           Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$4);
                                           $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"OR",comp2);
                                         }
-          | expr LBRACKET int COLON int RBRACKET {
-                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
-                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$5);
-                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"AND",comp2);
-                                        }
           ;
 
 compare_op : GT                   { $$ = $1; }
@@ -178,7 +178,7 @@ compare_op : GT                   { $$ = $1; }
 logic_op : AND                    { $$ = $1; }
          | OR                     { $$ = $1; }
          ;
-// rewrite so that the grammar catches bad statements.
+// rewrite so that the grammar catches bad statements, instead of checking in AST.
 expr : factor                     { $$ = $1; }
      | factor expr_op expr        { $$ = new adl::BinNode(incrementCounter(), "EXPROP",$1,$2,$3); }
      ;
@@ -193,31 +193,35 @@ factor : term                     { $$ = $1; }
 
 factor_op : MULTIPLY              { $$ = $1; }
           | DIVIDE                { $$ = $1; }
+          | POW                   { $$ = $1; }
           ;
 
 term : id_qualifiers              { $$ = $1; }
      | function                   { $$ = $1; }
      | function id_qualifiers     { $$ = $1; }
      | num                        { $$ = $1; }
-     | LPAR expr RPAR             {  } // shift/reduce error caused here.
+     | LPAR expr RPAR             { $$ = $2; } // shift/reduce error caused here.
      ;
 
-id_qualifiers : id_qualifier id_qualifiers    { $$= new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId()); }
+id_qualifiers : id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId()); }
               | id_qualifier                  { $$ = $1; }
               ;
 
 id_qualifier : dot_op                             { $$ = $1; }
-             | dot_op range                       {  }
-             | id LBRACKET int RBRACKET           { $$= new VarNode(incrementCounter(),"ID",$1->getId(),"","",$3->value()); }
+            // | dot_op range                       { $$ = $1; }
+             | id LBRACKET int RBRACKET           { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id UNDERSCORE int COLON int        { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id UNDERSCORE int                  { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id LBRACKET int COLON int RBRACKET { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
              | id                                 { $$ = $1; }
-             | SUBTRACT id                        {  } // 3 S/R warnings but they aren't deriving for the same situations.
+            // | SUBTRACT id                        { $$ = $2; } // 3 S/R warnings. This production is incorrectly being called in a BinOp with SUBTRACT operator.
              ;
 
 dot_op : DOT id             { $$ = $2; }
        ;
 
-range : range num           { $$ = $1; }
-      | num                 { $$ = $1; }
+range : range num           { $$ = $2; intLists.push_back(static_cast<int>($2->value())); }
+      | num                 { $$ = $1; intLists.push_back(static_cast<int>($1->value())); }
       ;
 
 num : int                   { $$ = $1; }
@@ -229,7 +233,7 @@ int : INT                   { $$ = new adl::NumNode(incrementCounter(), "INT", $
 real : REAL                 { $$ = new adl::NumNode(incrementCounter(), "REAL", $1); }
      ;
 
-id : ID                     { $$ = new adl::VarNode(incrementCounter(), "ID", $1); }
+id : ID                     { $$ = new adl::VarNode(incrementCounter(), "ID", $1); std::cout << "ID: " << $1 << "\n"; }
    ;
 %%
 

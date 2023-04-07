@@ -34,6 +34,7 @@
 "-"                      { return adl::Parser::make_SUBTRACT(YYText(), adl::location()); }
 "*"                      { return adl::Parser::make_MULTIPLY(YYText(), adl::location()); }
 "div"|"/"                { return adl::Parser::make_DIVIDE(YYText(), adl::location()); }
+"^"                      { return adl::Parser::make_POW(YYText(), adl::location()); }
 "="                      { return adl::Parser::make_ASSIGN(YYText(), adl::location()); }
 
 "?"                      { return adl::Parser::make_QUES(YYText(), adl::location()); }
@@ -50,6 +51,8 @@
 "|"                      { return adl::Parser::make_PIPE(YYText(), adl::location()); }
 
 ":"                      { return adl::Parser::make_COLON(YYText(), adl::location()); }
+
+"_"                      { return adl::Parser::make_UNDERSCORE(YYText(), adl::location()); }
 
 "AND"|"and"|"&&"         { return adl::Parser::make_AND(YYText(), adl::location()); }
 "OR"|"or"|"||"           { return adl::Parser::make_OR(YYText(), adl::location()); }

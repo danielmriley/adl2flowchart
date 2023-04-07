@@ -1,4 +1,5 @@
 #include <iostream>
+#include "cutlang_declares.h"
 #include "scanner.hpp"
 #include "Parser.h"
 #include "driver.h"
@@ -16,13 +17,40 @@ int main(int argc, char **argv) {
     if(res == 0) { adl::checkDecl(drv); }
     if(res == 0) { drv.visitAST(adl::typeCheck); }
     if(res == 0) { drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
-
-    if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
-    if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";
-    if(res == 0) for(auto d: drv.regionTable) std::cout << "r: " << d << "\n";
+    if(res == 0) {
+      drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,
+                   &adl::BinCuts, &adl::ObjectCuts,
+                   &adl::NameInitializations, &adl::TRGValues,
+                   &adl::ListTables, &adl::cntHistos, &adl::systmap);
+    }
+    // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
+    // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";
+    // if(res == 0) for(auto d: drv.regionTable) std::cout << "r: " << d << "\n";
 
     return res;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 // What can we do model checking on?

@@ -15,20 +15,21 @@ ASTHPP=ast.hpp
 SEMCHH=semantic_checks.h
 SEMCHCPP=semantic_checks.cpp
 LOCHH=location.hh
+CLDEFS=cutlang_declares.h
 
 EXE=smash
 
 all: $(EXE)
 
-$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(DH)
-	$(CC) $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) -o $(EXE)
+$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(DH) $(CLDEFS)
+	@$(CC) -g $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) -o $(EXE)
 
 $(YCPP): $(YFILE)
-	$(YACC) $(YFILE)
+	@$(YACC) $(YFILE)
 
 $(LCPP): $(LFILE)
-	$(LEX) $(LFILE)
+	@$(LEX) $(LFILE)
 
 
 clean:
-	rm $(LCPP) $(YCPP) $(YHPP) $(EXE) $(LOCHH)
+	@rm $(LCPP) $(YCPP) $(YHPP) ../$(EXE) $(LOCHH)

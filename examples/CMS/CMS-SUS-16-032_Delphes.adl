@@ -56,8 +56,8 @@ object MET
   take MissingET
 
 # VARIABLES
-define MTj1 = sqrt( 2*jets[0].pT * MET*(1-cos(MET.phi - jets[0].phi )))
-define MTj2 = sqrt( 2*jets[1].pT * MET*(1-cos(MET.phi - jets[1].phi )))
+define MTj1 = sqrt( 2*jets[0].pT * MET*(1-cos(MET.phi + jets[0].phi )))
+define MTj2 = sqrt( 2*jets[1].pT * MET*(1-cos(MET.phi + jets[1].phi )))
 define MCT = 2 * jets[0].pT * jets[1] * (1 + cos( dphi( jets[0], jets[1] )))
 define dphimin2j = min(dphi(jets[0:1], MET))
 define dphimin = min(dphi(jets[0:2], MET))
@@ -77,8 +77,8 @@ region noncompressed
   select jets[2].pT > 30
   select jets[3].pT > 30
   select MET.pT > 250
-  select size(jets) == 2 ? dphimin2 > 0.4 : dphimin > 0.4
-  select min(MTj1, MTj2) > 250
+  #select size(jets) == 2 ? dphimin2 > 0.4 : dphimin > 0.4
+  #select min(MTj1, MTj2) > 250
   select MCT > 150
 
 region noncompressedHT1
@@ -105,9 +105,9 @@ region compressed
   select jets[0].BTag == 0 and jets[0].cTag == 0
   select jets[1].BTag == 0 and jets[1].cTag == 1
   select MET.pT > 250
-  select size(jets) == 2 ? dphimin2 > 0.4 : dphimin > 0.4
+  #select size(jets) == 2 ? dphimin2 > 0.4 : dphimin > 0.4
   select dphimin > 0.4
-  select jets[1].pT > 50 ? (pT(jets[0] + jets[1]) + MET.pT) / MET.pT < 0.5 : (jets[0].pT + MET.pT) / MET.pT < 0.5
+  #select jets[1].pT > 50 ? (pT(jets[0] + jets[1]) + MET.pT) / MET.pT < 0.5 : (jets[0].pT + MET.pT) / MET.pT < 0.5
 
 region compressednb1
   select compressed

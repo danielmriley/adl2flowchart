@@ -139,7 +139,7 @@ namespace adl {
 
   class VarNode : public Expr {
   public:
-    VarNode(int _uid, Token t, std::string _id, std::string al="", std::string dp="", int acc = -1)
+    VarNode(int _uid, Token t, std::string _id, std::string al="", std::string dp="", std::vector<int> acc = {})
             : id(_id), tok(t), alias(al), dotop(dp), accessor(acc) { uid = _uid;}
     VarNode(const VarNode& vn) {
       val = vn.val;
@@ -173,7 +173,7 @@ namespace adl {
     std::string getId() { return id; }
     std::string getDotOp() { return dotop; }
     std::string getAlias() { return alias; }
-    int getAccessor() { return accessor; }
+    std::vector<int> getAccessor() { return accessor; }
     int getUId() { return uid; }
 
     void setAlias(std::string al) { alias = al; }
@@ -183,7 +183,7 @@ namespace adl {
     std::string id;
     std::string alias;
     std::string dotop;
-    int accessor;
+    std::vector<int> accessor;  // a vector to capture ranges.
     Token tok;
   }; // end VarNode class
 

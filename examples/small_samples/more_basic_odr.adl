@@ -6,6 +6,6 @@ define dphimegajetsNopho : dPhi(megajetsNopho[0], megajetsNopho[1])
 
 define METLVe   : METLV_0 electronsVeto_0
 define METLVm   : METLV_0 muonsVeto_0
-define METLVee  : METLV_0 electronsVeto_0  electronsVeto_1
-define METLVmm  : METLV_0 muonsVeto_0  muonsVeto_1
+#define METLVee  : METLV_0 electronsVeto_0  electronsVeto_1
+#define METLVmm  : METLV_0 muonsVeto_0  muonsVeto_1
 define METLVpho : METLV_0 photons[0]

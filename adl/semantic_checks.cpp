@@ -1,11 +1,16 @@
 // AST semantic checks.
 #include "semantic_checks.h"
+#include <cassert>
 
 namespace adl {
 
   int check_object_table(std::string id);
+  int check_property_table(std::string id);
+  int check_function_table(std::string id);
+  std::string tolower(std::string s);
 
   int binOpCheck(Expr* b) {
+    assert(b != nullptr && "NULL pointer.");
     if(b->getToken() == "EXPROP" || b->getToken() == "LOGICOP"
         || b->getToken() == "COMPAREOP" || b->getToken() == "FACTOROP") {
       return 0;
@@ -126,6 +131,11 @@ namespace adl {
     fprintf(fp, "%d->%d\n", n->getUId(), var->getUId());
 
     Expr* b = static_cast<DefineNode*>(n)->getBody();
+
+    if(b->getUId() == 1160) {
+      std::cout << "1160 TOKEN: " << b->getToken() << "\n";
+      exit(0);
+    }
 
     if(binOpCheck(b) == 0) {
       BinNode* b = static_cast<BinNode*>(static_cast<DefineNode*>(n)->getBody());
@@ -342,6 +352,9 @@ namespace adl {
     for(auto e: drv.definitionTable) {
       if(var == e) return 0;
     }
+    for(auto e: drv.regionTable) {
+      if(var == e) return 0;
+    }
     printError(var);
     return 1;
   }
@@ -352,6 +365,9 @@ namespace adl {
     std::cout << "binOp: " << b->getOp() << "\n";
     int res;
     int fres = 0;
+
+    std::cout << "LHS TOKEN: " << lhs->getToken() << "\n";
+    std::cout << "RHS TOKEN: " << rhs->getToken() << "\n";
 
     if(binOpCheck(lhs) == 0) {
       res = parseBinNode(drv, static_cast<BinNode*>(lhs));
@@ -391,7 +407,10 @@ namespace adl {
             // Check the takes for DBU.
             std::string var = cond->getId();
             std::cout << "var: " << var << "\n";
-            if(check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
+            if(tolower(var) == "union") {
+              std::cout << "UNION function\n";
+            }
+            else if(check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
               printError(var);
             }
           }
@@ -401,9 +420,16 @@ namespace adl {
         std::cout << "\n====region sem checks====\n";
         RegionNode* region = static_cast<RegionNode*>(v);
         std::cout  << " uid: " << region->getUId() << "\n";
+        std::cout << "region->getToken(): " << region->getToken() << "\n";
+        std::cout << "region->getId(): " << region->getId() << "\n";
         std::vector<Expr*> stmnts = region->getStatements();
         for(auto& s: stmnts) {
+          std::cout << "s->getId(): " << s->getId() << "\n";
+          std::cout << "s->getToken(): " << s->getToken() << "\n";
+//          if(s->getToken() == "histo") continue;
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
+          std::cout << "cond->getId(): " << cond->getId() << "\n";
+          if(checkTables(drv,cond) == 0) { std::cout << "continuing\n"; continue; }
           if(binOpCheck(cond) == 0) {
             BinNode* bin = static_cast<BinNode*>(cond);
             parseBinNode(drv, bin);

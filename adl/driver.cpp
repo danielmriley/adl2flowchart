@@ -28,6 +28,10 @@ namespace adl {
         addRegion(ast[i]->getId());
         // add region's vars to "region vars" table.
       }
+      else if(token == "HISTOLIST") {
+        addRegion(ast[i]->getId());
+        // add region's vars to "region vars" table.
+      }
     }
     return 0;
   }
@@ -35,11 +39,11 @@ namespace adl {
   int Driver::checkObjectTable(std::string id) {
     for(auto e: objectTable) {
       if(e == id) {
-        std::cout << "Object declared\n";
+        std::cout << "Object " << id << " has been declared\n";
         return 0;
       }
     }
-    std::cout << "ERROR: Object NOT declared\n";
+    std::cout << "ERROR: Object " << id << " NOT declared\n";
     return 1;
   }
 

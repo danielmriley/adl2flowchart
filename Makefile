@@ -2,7 +2,7 @@
 
 all:
 	@make -s -C ./adl/
-	@mv ./adl/smash ./
+	@cp ./adl/smash ./
 
 clean:
 	@make -C ./adl/ -f Makefile clean

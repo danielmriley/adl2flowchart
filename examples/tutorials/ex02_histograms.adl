@@ -2,12 +2,12 @@
 #
 # "histo" keyword allows to define histograms.
 #   - 1D and 2D histograms can be defined.
-#   - Variable bin histograms can be defined.  
+#   - Variable bin histograms can be defined.
 # Histograms can be defined directly or via histogram lists.
 # They automatically appear in the output ROOT file under the relevant region directory.
 #
-# "histoList" blocks can be used to define a set of histograms that will be 
-# filled multiple times in a single region or in multiple regions 
+# "histoList" blocks can be used to define a set of histograms that will be
+# filled multiple times in a single region or in multiple regions
 # (in order to avoid repetition of long lines).
 #
 # IMPORTANT: Note that histograms are not a part of fundamental analysis algorithm description.
@@ -58,7 +58,7 @@ region baseline
   select ALL
   select size(goodJets) >= 3
   select size(goodbJets) >= 1
-  select pT(goodJets[0]) > 200 
+  select pT(goodJets[0]) > 200
   # Fixed bin 1D:
   histo hmet, "MET (GeV)", 40, 0, 1000, MET
   # Fixed bin 2D:

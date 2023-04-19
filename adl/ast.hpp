@@ -28,6 +28,7 @@ namespace adl {
     void incrementUId() { uid++; }
 
     int uid;
+    Token tok;
   }; // end Expr class
 
   class BinNode : public Expr {
@@ -102,12 +103,11 @@ namespace adl {
     Expr* lhs;
     Expr* rhs;
     Op op;
-    Token tok;
   }; // end BinNode class
 
   class NumNode : public Expr {
   public:
-    NumNode(int _id, Token t, double v) : tok(t), val(v) { uid = _id; }
+    NumNode(int _id, Token t, double v) : val(v) { uid = _id; tok = t; }
     NumNode(const NumNode& ne) {
       val = ne.val;
       tok = ne.tok;
@@ -134,13 +134,14 @@ namespace adl {
 
   private:
     double val;
-    Token tok;
   }; // end NumNode class
 
   class VarNode : public Expr {
   public:
-    VarNode(int _uid, Token t, std::string _id, std::string al="", std::string dp="", std::vector<int> acc = {})
-            : id(_id), tok(t), alias(al), dotop(dp), accessor(acc) { uid = _uid;}
+    VarNode(int _uid, Token t, std::string _id, std::string al="",
+            std::string dp="", std::vector<int> acc = {}, std::string _type = "")
+            : id(_id), alias(al), dotop(dp), accessor(acc), type(_type)
+    { uid = _uid; tok = t; }
     VarNode(const VarNode& vn) {
       val = vn.val;
       id = vn.id;
@@ -148,6 +149,7 @@ namespace adl {
       dotop = vn.dotop;
       tok = vn.tok;
       uid = vn.uid;
+      type = vn.type;
     }
 
     VarNode& operator=(VarNode& vn) {
@@ -157,6 +159,7 @@ namespace adl {
       dotop = vn.dotop;
       tok = vn.tok;
       uid = vn.uid;
+      type = vn.type;
       return *this;
     }
 
@@ -183,14 +186,14 @@ namespace adl {
     std::string id;
     std::string alias;
     std::string dotop;
+    std::string type;
     std::vector<int> accessor;  // a vector to capture ranges.
-    Token tok;
   }; // end VarNode class
 
   class FunctionNode : public Expr {
   public:
     FunctionNode(int _uid, Token t, Expr* _id, ExprVector _params)
-                  : tok(t), id(_id), params(_params) { uid = _uid; }
+                  : id(_id), params(_params) { uid = _uid; tok = t; }
 
     FunctionNode(const FunctionNode& fn) {
       tok = fn.tok;
@@ -215,15 +218,18 @@ namespace adl {
     ExprVector getParams() { return params; }
 
   private:
-    Token tok;
     Expr* id;
     ExprVector params;
   }; // end class FunctionNode
 
   class DefineNode : public Expr {
   public:
-    DefineNode(int _uid, Token t, Expr* vd, Expr* bdy)
-                : tok(t), varDecl(vd), body(bdy) { uid = _uid; }
+    DefineNode(int _uid, Token t, Expr* vd, Expr* bdy) {
+      uid = _uid;
+      tok = t;
+      varDecl = vd;
+      body = bdy;
+    }
 
     DefineNode(DefineNode& dn) {
       tok = dn.tok;
@@ -257,7 +263,6 @@ namespace adl {
     Expr* getBody() { return body; }
 
   private:
-    Token tok;
     Expr* varDecl;
     Expr* body;
   }; // end class DefineNode
@@ -293,7 +298,6 @@ namespace adl {
 
   private:
     Expr* id;
-    Token tok;
     ExprVector statements;
   }; // end ObjectNode class
 
@@ -328,7 +332,6 @@ namespace adl {
 
   private:
     Expr* id;
-    Token tok;
     ExprVector statements;
   }; // end RegionNode class
 
@@ -359,8 +362,89 @@ namespace adl {
     Expr* getCondition() { return condition; }
 
   private:
-    Token tok;
     Expr* condition;
+  };
+
+  class HistoNode : public Expr {
+  public:
+    HistoNode(int _uid, Token t, Expr* _id, std::string _desc,
+                  ExprVector _ints, ExprVector _nums, ExprVector _bins, ExprVector _funcs) {
+      uid = _uid;
+      tok = t;
+      id = _id;
+      desc = _desc;
+      ints = _ints;
+      nums = _nums;
+      bins = _bins;
+      funcs = _funcs;
+    }
+
+    HistoNode(HistoNode& hn) {
+      uid = hn.uid;
+      tok = hn.tok;
+      id = hn.id;
+      desc = hn.desc;
+      ints = hn.ints;
+      nums = hn.nums;
+      bins = hn.bins;
+      funcs = hn.funcs;
+    }
+
+    Expr* clone() { return new HistoNode(*this); }
+
+    double value() { return std::nan(""); }
+
+    Token getToken() { return tok; }
+
+    std::string getId() { return id->getId(); }
+    int getUId() { return uid; }
+    std::string getDescription() { return desc; }
+    ExprVector getInts() { return ints; }
+    ExprVector getNums() { return nums; }
+    ExprVector getBins() { return bins; }
+    ExprVector getFuncs() { return funcs; }
+
+  private:
+    Expr* id;
+    std::string desc;
+    ExprVector ints;
+    ExprVector nums;
+    ExprVector bins;
+    ExprVector funcs;
+  };
+
+  class ITENode : public Expr {
+  public:
+    ITENode(int _uid, Token t, Expr* cond, Expr* then, Expr* _else) {
+      uid = _uid;
+      condition = cond;
+      thenBranch = then;
+      elseBranch = _else;
+    }
+
+    ITENode(ITENode& iten) {
+      uid = iten.uid;
+      condition = iten.condition;
+      thenBranch = iten.thenBranch;
+      elseBranch = iten.elseBranch;
+    }
+
+    Expr* clone() { return new ITENode(*this); }
+
+    double value() { return std::nan(""); }
+    Token getToken() { return tok; }
+    std::string getId() { return "ITE"; }
+    int getUId() { return uid; }
+
+
+    Expr* getCondtion() { return condition; }
+    Expr* getThenBranch() { return thenBranch; }
+    Expr* getElseBranch() { return elseBranch; }
+
+  private:
+    Expr* condition;
+    Expr* thenBranch;
+    Expr* elseBranch;
   };
 } // end namespace adl.
 

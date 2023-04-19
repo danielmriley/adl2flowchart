@@ -1,5 +1,7 @@
 Electron
+Ele
 Muon
+Muo
 Tau
 Photon
 Lepton

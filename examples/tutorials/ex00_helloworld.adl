@@ -1,6 +1,6 @@
 # ADL/CL ex0 hello world: Basic features example with high pT jets
-info analysis
-  title "hello world: Basic features example with high pT jets"
+#info analysis
+#  title "hello world: Basic features example with high pT jets"
 
 # OBJECT SELECTION
 # Define a new "goodjets" object collection from the jet collection in the event.

@@ -23,7 +23,7 @@ namespace adl {
     return s;
   }
 
-  void check_function_table(std::string id) {
+  int check_function_table(std::string id) {
     std::ifstream fin("ext_lib.txt");
     std::string input;
 
@@ -31,14 +31,15 @@ namespace adl {
       if(id == input) {
         std::cerr << "function " << id << " is REGISTERED\n";
         fin.close();
-        return;
+        return 0;
       }
     }
     std::cerr << "ERROR: external function " << id << " is not found\n";
     fin.close();
+    return 1;
   }
 
-  void check_property_table(std::string id) {
+  int check_property_table(std::string id) {
     std::ifstream fin("property_vars.txt");
     std::string input;
 
@@ -46,11 +47,12 @@ namespace adl {
       if(id == input) {
         std::cerr << id << " is a PROPERTY\n";
         fin.close();
-        return;
+        return 0;
       }
     }
     std::cerr << id << " is not a property\n";
     fin.close();
+    return 1;
   }
 
   int check_object_table(std::string id) {

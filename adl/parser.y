@@ -36,7 +36,13 @@ namespace adl {
   typedef std::vector<Expr*> ExprVector;
   ExprVector lists;
   ExprVector paramlist;
+  ExprVector histoIntsLists;
+  ExprVector histoNumsLists;
+  ExprVector histoBinsLists;
+  ExprVector histoFuncsLists;
+
   std::vector<int> intLists;
+  std::vector<double> doubleLists;
 
   int cutcount;
   int counter = 0;
@@ -59,55 +65,80 @@ namespace adl {
 
 %start start
 
-%token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND
-%token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR
-%token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN
-%token <std::string> GT  LT  GE  LE  EQ NE
-%token <std::string> AND  OR  NOT  PIPE  LBRACKET  RBRACKET  COLON
+%token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST
+%token <std::string> TABLE TABLETYPE  NVARS  ERRORS
+%token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
+%token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
+%token <std::string> GT  LT  GE  LE  EQ NE  TRUE  FALSE
+%token <std::string> AND  OR  NOT  PIPE  LBRACKET  RBRACKET  LCBRACKET  RCBRACKET  COLON
 %token <std::string> QUES  COMMA  DOT  INCLUSIVE  EXCLUSIVE  UNDERSCORE
 %token <int> INT
 %token <double> REAL
 
 %nterm <adl::Expr*> function param_list criterion definition region_block object_block
-%nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op chain chained_cond
-%nterm <adl::Expr*> take_id take real int condition expr range id_list id_list_params num
-%nterm <std::string> compare_op logic_op expr_op factor_op
+%nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op
+%nterm <adl::Expr*> take_id take real int condition expr range chain chained_cond
+%nterm <adl::Expr*> table num id_list id_list_params
+%nterm <std::string> compare_op logic_op expr_op factor_op info
+%nterm <std::vector<double>> bins
+%nterm <double> tablelist value
+%nterm <bool> boolean
 
 %%
-start : objects
+start : info objects                            {}
+      | info table objects                      {}
+      | table objects                           {}
+      | objects                                 {}
+      | info                                    {}
       ;
 
-objects : object_block
-        | object_block objects
-        | definitions
+info : INFO info_list                           {}
+     ;
+
+info_list : ID info_list | DESC info_list | REAL info_list | ID | DESC | REAL
+          ;
+
+objects : object_block                          {}
+        | object_block objects                  {}
+        | definitions                           {}
         ;
 
-definitions : definition
-            | definition definitions
-            | regions
+definitions : definition                        {}
+            | definition definitions            {}
+            | regions                           {}
             ;
 
-regions : region_block
-        | region_block regions
+regions : region_block                          {}
+        | region_block regions                  {}
         ;
 
-definition : DEFINE id ASSIGN condition        { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
-           | DEFINE id COLON condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); }
-           | DEFINE id COLON id id             { Expr* binop = new adl::BinNode(incrementCounter(),"EXPROP",$4,"+",$5); $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, binop); driver.ast.push_back($$); }
+definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); std::cout << "define: " << $2->getId() << "\n"; }
+           | DEFINE id COLON condition          { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); std::cout << "define: " << $2->getId() << "\n"; }
+           | table                              { /* make tableNode here. */ }
            ;
 
-function : id LPAR param_list RPAR             { std::cout << $1->getId() << "\n"; $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
-         | PIPE int PIPE                       { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
-         | PIPE real PIPE                      { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
-         | PIPE id PIPE                        { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+table : TABLE ID TABLETYPE ID NVARS
+        INT ERRORS boolean tablelist            { /* Put this info into a tableNode. */ }
+
+tablelist : value tablelist                     { doubleLists.push_back($1); }
+          | value                               { doubleLists.push_back($1); }
+          ;
+
+value : REAL                                    { $$ = $1; }
+      ;
+
+function : id LPAR param_list RPAR              { std::cout << $1->getId() << "\n"; $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist); paramlist.clear(); }
+         | PIPE int PIPE                        { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+         | PIPE real PIPE                       { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+         | PIPE id PIPE                         { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          ;
 
 param_list : chain COMMA param_list             { paramlist.push_back($1); }
            | chain                              { paramlist.push_back($1); }
-          ;
+           ;
 
-object_block : OBJECT id takes                  { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
-             | OBJECT id takes criteria         { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); }
+object_block : OBJECT id takes                  { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
+             | OBJECT id takes criteria         { $$ = new ObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
              ;
 
 takes: take takes                               { lists.push_back($1); }
@@ -115,7 +146,7 @@ takes: take takes                               { lists.push_back($1); }
      ;
 
 take : TAKE take_id                             { $$ = new CommandNode(incrementCounter(), $1,$2); }
-     | COLON take_id                            { $$ = new CommandNode(incrementCounter(), $1,$2); }
+     | COLON take_id                            { $$ = new CommandNode(incrementCounter(), "take",$2); }
      ;
 
 take_id : id                                    { $$ = $1; }
@@ -124,28 +155,46 @@ take_id : id                                    { $$ = $1; }
         ;
 
 id_list : id_list_params                        { $$ = $1; }
-        | id_list_params COMMA id_list          { /* Take list */ }
+        | id_list_params COMMA id_list          { $$ = $1; }
         ;
 
 id_list_params : id                             { $$ = $1; }
                | num                            { $$ = $1; }
                ;
 
-region_block : REGION id criteria           { $$ = new RegionNode(incrementCounter(), "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); }
+region_block : REGION id criteria               { $$ = new RegionNode(incrementCounter(), "REGION", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "region: " << $2->getId() << "\n"; }
+             | HISTOLIST id criteria            { $$ = new RegionNode(incrementCounter(), "HISTOLIST", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "histo: " << $2->getId() << "\n"; }
              ;
 
-criteria : criterion criteria               { lists.push_back($1); }
-        | criterion                         { lists.push_back($1); }
-        ;
+criteria : criterion criteria                   { lists.push_back($1); }
+         | criterion                            { lists.push_back($1); }
+         ;
 
-criterion : COMMAND chained_cond            { $$ = new CommandNode(incrementCounter(), $1,$2); }
+criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
+          | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoIntsLists,histoNumsLists,histoBinsLists,histoFuncsLists); }
+          | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
+
+comma_sep : COMMA comma_sep                     {  }
+          | num comma_sep                       { histoNumsLists.push_back($1); }
+          | id comma_sep                        { histoFuncsLists.push_back($1); }
+          | function comma_sep                  { histoFuncsLists.push_back($1); }
+          | LBRACKET bins RBRACKET comma_sep    { /*histoBinsLists.push_back($1);*/ }
+          | num                                 { histoNumsLists.push_back($1); }
+          | id                                  { histoFuncsLists.push_back($1); }
+          | LBRACKET bins RBRACKET              { /*histoBinsLists.push_back($1);*/ }
+          | function                            { histoFuncsLists.push_back($1); }
+          ;
+
+bins : bins num                                 { histoBinsLists.push_back($2); }
+     | num                                      { histoBinsLists.push_back($1); }
+     ;
 
 chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
              | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(incrementCounter(), "LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
-             | chain QUES chain COLON chain                 {  }
-             | chain QUES chain                             {  }
+             | chain QUES chain COLON chain                 { $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
+             | chain QUES chain                             { $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
              ;
 
@@ -154,6 +203,7 @@ chain : condition                       { $$ = $1; }
       ;
 
 condition : expr                        { $$ = $1; }
+//          | LPAR expr RPAR              { $$ = $2; }
           | expr compare_op condition   { $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,$2,$3); }
           | expr INCLUSIVE num num      {
                                           Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
@@ -197,8 +247,8 @@ factor_op : MULTIPLY              { $$ = $1; }
           ;
 
 term : id_qualifiers              { $$ = $1; }
-     | function                   { $$ = $1; }
-     | function id_qualifiers     { $$ = $1; }
+     | function                   { $$ = $1; std::cout << "FUCNTION CALL\n"; }
+     | function dot_op            { $$ = $1; }
      | num                        { $$ = $1; }
      | LPAR expr RPAR             { $$ = $2; } // shift/reduce error caused here.
      ;
@@ -207,13 +257,21 @@ id_qualifiers : id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounte
               | id_qualifier                  { $$ = $1; }
               ;
 
-id_qualifier : dot_op                             { $$ = $1; }
-            // | dot_op range                       { $$ = $1; }
-             | id LBRACKET int RBRACKET           { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id UNDERSCORE int COLON int        { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id UNDERSCORE int                  { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id LBRACKET int COLON int RBRACKET { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id                                 { $$ = $1; }
+id_qualifier : dot_op                                     { $$ = $1; }
+            // | dot_op range                               { $$ = $1; }
+             | id LBRACKET int RBRACKET                   { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id LBRACKET int COLON RBRACKET             { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id LBRACKET COLON int RBRACKET             { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($4->value())}); }
+             | id UNDERSCORE int COLON int                { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value()),static_cast<int>($5->value())}); }
+             | id UNDERSCORE int                          { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id LBRACKET int COLON int RBRACKET         { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value()),static_cast<int>($5->value())}); }
+             | LCBRACKET id UNDERSCORE INT RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $6->getId(), "", "", {$4}, $2->getId()); }
+             | LCBRACKET id UNDERSCORE RCBRACKET id       { $$ = new adl::VarNode(incrementCounter(), "ID", $5->getId(), "", "", {}, $2->getId()); }
+             | LCBRACKET id RCBRACKET id                  { $$ = new adl::VarNode(incrementCounter(), "ID", $4->getId(), "", "", {}, $2->getId()); }
+             | LCBRACKET id LBRACKET INT RBRACKET RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $7->getId(), "", "", {$4}, $2->getId()); std::cout << "ID: " << $2->getId() << " INT: " << $4 << "\n"; }
+             | id UNDERSCORE                              { $$ = $1; }
+             | id                                         { $$ = $1; }
+            // | LCBRACKET id LBRACKET INT RBRACKET id_qualifier RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $8->getId(), "", "", {$4}, $2->getId()); }
             // | SUBTRACT id                        { $$ = $2; } // 3 S/R warnings. This production is incorrectly being called in a BinOp with SUBTRACT operator.
              ;
 
@@ -223,6 +281,10 @@ dot_op : DOT id             { $$ = $2; }
 range : range num           { $$ = $2; intLists.push_back(static_cast<int>($2->value())); }
       | num                 { $$ = $1; intLists.push_back(static_cast<int>($1->value())); }
       ;
+
+boolean : TRUE              {$$ = 1;}
+        | FALSE             {$$ = 0;}
+        ;
 
 num : int                   { $$ = $1; }
     | real                  { $$ = $1; }

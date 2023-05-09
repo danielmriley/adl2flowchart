@@ -23,8 +23,10 @@ namespace adl {
   int testAST(ExprVector& ast);
   int checkDecl(Driver& drv);
 
-  std::string typeCheck(Expr* node);
-  int typeCheck(ExprVector& ast);
+  void collectBinOpers(Expr* body, ExprVector& operands);
+
+  std::string typeCheck(Expr* node, Driver& drv);
+  int typeCheck(Driver& drv);
 } // end namespace adl
 
 #endif

@@ -32,4 +32,4 @@ $(LCPP): $(LFILE)
 
 
 clean:
-	@rm $(LCPP) $(YCPP) $(YHPP) ../$(EXE) $(LOCHH)
+	@rm $(LCPP) $(YCPP) $(YHPP) ../$(EXE) $(LOCHH) $(EXE)

@@ -13,6 +13,7 @@ namespace adl {
   typedef std::string Op;
   typedef std::string Token;
   typedef std::vector<Expr*> ExprVector;
+  int incrementCounter();
 
   std::string toupper(std::string s);
   std::string tolower(std::string s);
@@ -21,6 +22,7 @@ namespace adl {
   public:
     virtual ~Expr() {}
     virtual Expr* clone() = 0;
+    virtual Expr* clone(int c) = 0;
     virtual double value() = 0;
     virtual Token getToken() = 0;
     virtual std::string getId() = 0;
@@ -46,6 +48,14 @@ namespace adl {
       uid = be.getUId();
     }
 
+    BinNode(BinNode &be, int _uid) {
+      lhs = be.lhs->clone();
+      rhs = be.rhs->clone();
+      op = be.getOp();
+      tok = be.getToken();
+      uid = _uid;
+    }
+
     BinNode(int _uid, Token t, Expr* _lhs, Op o, Expr* _rhs) {
       lhs = _lhs->clone();
       rhs = _rhs->clone();
@@ -65,6 +75,14 @@ namespace adl {
 
     Expr* clone() {
       return new BinNode(*this);
+    }
+
+    Expr* clone(int c) {
+      Expr* on = new BinNode(*this);
+      on->uid = c;
+      lhs = lhs->clone(incrementCounter());
+      rhs = rhs->clone(incrementCounter());
+      return on;
     }
 
     Op getOp() { return op; }
@@ -113,6 +131,11 @@ namespace adl {
       tok = ne.tok;
       uid = ne.uid;
     }
+    NumNode(const NumNode& ne, int _uid) {
+      val = ne.val;
+      tok = ne.tok;
+      uid = _uid;
+    }
 
     NumNode& operator=(NumNode& ne) {
       if(&ne != this) { val = ne.val; return *this;}
@@ -121,6 +144,12 @@ namespace adl {
 
     Expr* clone() {
       return new NumNode(*this);
+    }
+
+    Expr* clone(int c) {
+      Expr* on = new NumNode(*this);
+      on->uid = c;
+      return on;
     }
 
     double value() {
@@ -152,6 +181,16 @@ namespace adl {
       type = vn.type;
     }
 
+    VarNode(const VarNode& vn, int _uid) {
+      val = vn.val;
+      id = vn.id;
+      alias = vn.alias;
+      dotop = vn.dotop;
+      tok = vn.tok;
+      uid = _uid;
+      type = vn.type;
+    }
+
     VarNode& operator=(VarNode& vn) {
       val = vn.val;
       id = vn.id;
@@ -167,6 +206,12 @@ namespace adl {
       return new VarNode(*this);
     }
 
+    Expr* clone(int c) {
+      Expr* on = new VarNode(*this);
+      on->uid = c;
+      return on;
+    }
+
     double value() {
       return std::nan("");
     }
@@ -176,10 +221,12 @@ namespace adl {
     std::string getId() { return id; }
     std::string getDotOp() { return dotop; }
     std::string getAlias() { return alias; }
+    std::string getType() { return type; }
     std::vector<int> getAccessor() { return accessor; }
     int getUId() { return uid; }
 
     void setAlias(std::string al) { alias = al; }
+    void setType(std::string typ) { type = typ; }
 
   private:
     int val;
@@ -192,20 +239,35 @@ namespace adl {
 
   class FunctionNode : public Expr {
   public:
-    FunctionNode(int _uid, Token t, Expr* _id, ExprVector _params)
-                  : id(_id), params(_params) { uid = _uid; tok = t; }
+    FunctionNode(int _uid, Token t, Expr* _id, ExprVector _params, std::string ft = "")
+                  : id(_id), params(_params) { uid = _uid; tok = t; funcType = ft; }
 
     FunctionNode(const FunctionNode& fn) {
       tok = fn.tok;
       id = fn.id;
       params = fn.params;
+      funcType = fn.funcType;
       uid = fn.uid;
+    }
+
+    FunctionNode(const FunctionNode& fn, int _uid) {
+      tok = fn.tok;
+      id = fn.id;
+      params = fn.params;
+      funcType = fn.funcType;
+      uid = _uid;
     }
 
     Token getToken() { return tok; }
 
     Expr* clone() {
       return new FunctionNode(*this);
+    }
+
+    Expr* clone(int c) {
+      Expr* on = new FunctionNode(*this);
+      on->uid = c;
+      return on;
     }
 
     double value() {
@@ -220,6 +282,7 @@ namespace adl {
   private:
     Expr* id;
     ExprVector params;
+    std::string funcType;
   }; // end class FunctionNode
 
   class DefineNode : public Expr {
@@ -238,6 +301,13 @@ namespace adl {
       uid = dn.uid;
     }
 
+    DefineNode(DefineNode& dn, int _uid) {
+      tok = dn.tok;
+      varDecl = dn.varDecl;
+      body = dn.body;
+      uid = _uid;
+    }
+
     DefineNode& operator=(DefineNode& vn) {
       varDecl = vn.varDecl->clone();
       body = vn.body->clone();
@@ -248,6 +318,12 @@ namespace adl {
 
     Expr* clone() {
       return new DefineNode(*this);
+    }
+
+    Expr* clone(int c) {
+      Expr* on = new DefineNode(*this);
+      on->uid = c;
+      return on;
     }
 
     double value() {
@@ -283,7 +359,20 @@ namespace adl {
       uid = on.uid;
     }
 
+    ObjectNode(ObjectNode& on, int _uid) {
+      tok = on.tok;
+      id = on.id->clone();
+      statements = on.statements;
+      uid = _uid;
+    }
+
     Expr* clone() { return new ObjectNode(*this); }
+
+    Expr* clone(int c) {
+      Expr* on = new ObjectNode(*this);
+      on->uid = c;
+      return on;
+    }
 
     double value() { return std::nan(""); }
 
@@ -317,7 +406,20 @@ namespace adl {
       uid = rn.uid;
     }
 
+    RegionNode(RegionNode& rn, int _uid) {
+      tok = rn.tok;
+      id = rn.id->clone();
+      statements = rn.statements;
+      uid = _uid;
+    }
+
     Expr* clone() { return new RegionNode(*this); }
+
+    Expr* clone(int c) {
+      Expr* rn = new RegionNode(*this);
+      rn->uid = c;
+      return rn;
+    }
 
     double value() { return std::nan(""); }
 
@@ -350,7 +452,19 @@ namespace adl {
       condition = cn.condition->clone();
     }
 
+    CommandNode(CommandNode& cn, int _uid) {
+      tok = cn.tok;
+      uid = _uid;
+      condition = cn.condition->clone();
+    }
+
     Expr* clone() { return new CommandNode(*this); }
+
+    Expr* clone(int c) {
+      Expr* cn = new CommandNode(*this);
+      cn->uid = c;
+      return cn;
+    }
 
     double value() { return std::nan(""); }
 
@@ -390,7 +504,24 @@ namespace adl {
       funcs = hn.funcs;
     }
 
+    HistoNode(HistoNode& hn, int _uid) {
+      uid = _uid;
+      tok = hn.tok;
+      id = hn.id;
+      desc = hn.desc;
+      ints = hn.ints;
+      nums = hn.nums;
+      bins = hn.bins;
+      funcs = hn.funcs;
+    }
+
     Expr* clone() { return new HistoNode(*this); }
+
+    Expr* clone(int c) {
+      Expr* hn = new HistoNode(*this);
+      hn->uid = c;
+      return hn;
+    }
 
     double value() { return std::nan(""); }
 
@@ -430,6 +561,12 @@ namespace adl {
     }
 
     Expr* clone() { return new ITENode(*this); }
+
+    Expr* clone(int c) {
+      Expr* rn = new ITENode(*this);
+      rn->uid = c;
+      return rn;
+    }
 
     double value() { return std::nan(""); }
     Token getToken() { return tok; }

@@ -27,11 +27,64 @@ namespace adl {
   // if(r) is a binop - do call to binopfunction
   // then parse remaining binop pieces.
 
+  int printNode(const int uid1, const char* str, const int uid2, const int uid3) {
+    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", uid1, str);
+    fprintf(fp, "%d->%d\n", uid2, uid3);
+
+    return 0;
+  }
+
   int printDotOp(Expr* e) {
     VarNode *c = static_cast<VarNode*>(e);
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", c->getUId()+1, (c->getDotOp()).c_str());
-    fprintf(fp, "%d->%d\n", c->getUId(), c->getUId()+1);
+    printNode(c->getUId()+1, (c->getDotOp()).c_str(), c->getUId(), c->getUId()+1);
 
+    return 0;
+  }
+
+  int printVar(Expr* n, Expr* b) {
+    VarNode *e = static_cast<VarNode*>(b);
+    std::cout << "VarNode: " << e->getId() << " ";
+    printNode(e->getUId(), (e->getId()).c_str(), n->getUId(), e->getUId());
+
+    std::vector<int> acc = e->getAccessor();
+    std::string range = "";
+    if(acc.size() > 0) {
+      for(int i = 0; i < acc.size(); i++) {
+        if(i > 0) range += " : ";
+        range += std::to_string(acc[i]);
+        std::cout << "ACCESSOR LOOP\n";
+      }
+      if(e->getDotOp() != "") {
+        printDotOp(e);
+      }
+      printNode(e->getUId()+1, (range).c_str(), e->getUId(), e->getUId()+1);
+
+      std::cout << "RANGE: " << range << "\n";
+    }
+    std::cout << "fin\n";
+    return 0;
+  }
+
+  int printFunction(Expr* n, Expr* b) {
+    FunctionNode* fn = static_cast<FunctionNode*>(b);
+    VarNode *vr = static_cast<VarNode*>(fn->getVar());
+    int idr = vr->getUId();
+    std::cout << "DEF FUNC: " << vr->getId() << "\n";
+    printVar(n,vr);
+    // loop through the function's params.
+    ExprVector prms = fn->getParams();
+    for(auto e: prms) {
+      std::cout << "PRMS: " << e->getToken() << ", ";
+      if(binOpCheck(e) == 0) {
+        std::cout << "BINOP for FUNCTION\n";
+        BinNode *bin = static_cast<BinNode*>(e);
+        printBinNode(vr, bin);
+      }
+      else if(e->getToken() == "ID") {
+        printVar(vr,e);
+      }
+    }
+    std::cout << std::endl;
     return 0;
   }
 
@@ -45,35 +98,24 @@ namespace adl {
     if(l->getToken() == "ID") { // function needs to have leaves of params
       vl = static_cast<VarNode*>(l);
       idl = vl->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idl, (vl->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idl);
-      if(vl->getDotOp() != "") {
-        printDotOp(vl);
-      }
+      printVar(b,l);
     }
     if(l->getToken() == "FUNCTION") {
       FunctionNode* fn = static_cast<FunctionNode*>(l);
       vl = static_cast<VarNode*>(fn->getVar());
       idl = vl->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idl, (vl->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idl);
-      if(vl->getDotOp() != "") {
-        printDotOp(vl);
-      }
+      printVar(b,vl);
       // loop through the function's params.
       ExprVector prms = fn->getParams();
       for(auto e: prms) {
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
-        fprintf(fp, "%d->%d\n", idl, e->getUId());
-
+        printNode(e->getUId(), (e->getId()).c_str(), idl, e->getUId());
       }
 
     }
     if(l->getToken() == "INT" || l->getToken() == "REAL") {
       nl = static_cast<NumNode*>(l);
       idl = nl->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idl, (nl->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idl);
+      printNode(idl, (nl->getId()).c_str(), b->getUId(), idl);
     }
     if(binOpCheck(l) == 0) {
       printBinNode(static_cast<Expr*>(b),static_cast<BinNode*>(l));
@@ -84,35 +126,15 @@ namespace adl {
     if(r->getToken() == "ID") {
       vr = static_cast<VarNode*>(r);
       idr = vr->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idr);
-      if(vr->getDotOp() != "") {
-        printDotOp(vr);
-      }
+      printVar(b,r);
     }
     if(r->getToken() == "FUNCTION") {
-      FunctionNode* fn = static_cast<FunctionNode*>(r);
-      vr = static_cast<VarNode*>(fn->getVar());
-      idr = vr->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idr);
-      if(vr->getDotOp() != "") {
-        printDotOp(vr);
-      }
-      // loop through the function's params.
-      ExprVector prms = fn->getParams();
-      for(auto e: prms) {
-        std::cout << e->getId() << ", ";
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
-        fprintf(fp, "%d->%d\n", idr, e->getUId());
-
-      }
+      printFunction(b,r);
     }
     if(r->getToken() == "INT" || r->getToken() == "REAL") {
       nr = static_cast<NumNode*>(r);
       idr = nr->getUId();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (nr->getId()).c_str());
-      fprintf(fp, "%d->%d\n", b->getUId(), idr);
+      printNode(idr, (nr->getId()).c_str(), b->getUId(), idr);
     }
     if(binOpCheck(r) == 0) {
       printBinNode(static_cast<Expr*>(b),static_cast<BinNode*>(r));
@@ -127,94 +149,46 @@ namespace adl {
 
   int printDefines(Expr* n) {
     VarNode* var = static_cast<VarNode*>(static_cast<DefineNode*>(n)->getVar());
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", var->getUId(), (var->getId()).c_str());
-    fprintf(fp, "%d->%d\n", n->getUId(), var->getUId());
+    printVar(n,var);
 
     Expr* b = static_cast<DefineNode*>(n)->getBody();
 
-    if(b->getUId() == 1160) {
-      std::cout << "1160 TOKEN: " << b->getToken() << "\n";
-      exit(0);
+    if(binOpCheck(b) == 0) {
+      BinNode* bin = static_cast<BinNode*>(static_cast<DefineNode*>(n)->getBody());
+      printBinNode(n, bin);
+    }
+    else if(b->getToken() == "FUNCTION") {
+      printFunction(n,b);
+    }
+    else if(b->getToken() == "ID") {
+      printVar(n,b);
     }
 
-    if(binOpCheck(b) == 0) {
-      BinNode* b = static_cast<BinNode*>(static_cast<DefineNode*>(n)->getBody());
-      printBinNode(n, b);
-    }
-    else {
-      if(b->getToken() == "FUNCTION") {
-        FunctionNode* fn = static_cast<FunctionNode*>(b);
-        VarNode *vr = static_cast<VarNode*>(fn->getVar());
-        int idr = vr->getUId();
-        std::cout << "DEF FUNC: " << vr->getId() << "\n";
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
-        fprintf(fp, "%d->%d\n", n->getUId(), idr);
-        // loop through the function's params.
-        ExprVector prms = fn->getParams();
-        for(auto e: prms) {
-          std::cout << "PRMS: " << e->getToken() << ", ";
-          if(binOpCheck(e) == 0) {
-            std::cout << "BINOP for FUNCTION\n";
-            BinNode *bin = static_cast<BinNode*>(e);
-            printBinNode(vr, bin);
-          }
-          else {
-            fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
-            fprintf(fp, "%d->%d\n", idr, e->getUId());
-          }
-        }
-        std::cout << std::endl;
-      }
-    }
     return 0;
   }
 
   int printRegions(Expr* n) {
     RegionNode *rn = static_cast<RegionNode*>(n);
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", rn->getVarUId(), (rn->getId()).c_str());
-    fprintf(fp, "%d->%d\n", rn->getUId(), rn->getVarUId());
+    printNode(rn->getVarUId(), (rn->getId()).c_str(), rn->getUId(), rn->getVarUId());
 
     ExprVector ev = rn->getStatements();
     int stid = rn->getUId()+1; // For STATEMENTS node.
     Expr* stnode = new RegionNode(stid, "STATEMENTS", rn->getVar(), ExprVector());
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", stid, (stnode->getToken()).c_str());
-    fprintf(fp, "%d->%d\n", rn->getUId(), stnode->getUId());
+    printNode(stid, (stnode->getToken()).c_str(), rn->getUId(), stnode->getUId());
 
     for(auto& stmnt: ev) {
       Expr* cond = static_cast<CommandNode*>(stmnt)->getCondition();
-      fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", stmnt->getUId(), (stmnt->getToken()).c_str());
-      fprintf(fp, "%d->%d\n", stnode->getUId(), stmnt->getUId());
+      printNode(stmnt->getUId(), (stmnt->getToken()).c_str(), stnode->getUId(), stmnt->getUId());
 
       if(binOpCheck(cond) == 0) {
         BinNode* bin = static_cast<BinNode*>(cond);
         printBinNode(stmnt, bin);
       }
       else if(cond->getToken() == "FUNCTION") {
-        FunctionNode* fn = static_cast<FunctionNode*>(cond);
-        VarNode *vr = static_cast<VarNode*>(fn->getVar());
-        int idr = vr->getUId();
-        std::cout << "DEF FUNC: " << vr->getId() << "\n";
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
-        fprintf(fp, "%d->%d\n", stmnt->getUId(), idr);
-        // loop through the function's params.
-        ExprVector prms = fn->getParams();
-        for(auto e: prms) {
-          std::cout << "PRMS: " << e->getToken() << ", ";
-          if(binOpCheck(e) == 0) {
-            std::cout << "BINOP for FUNCTION\n";
-            BinNode *bin = static_cast<BinNode*>(e);
-            printBinNode(vr, bin);
-          }
-          else {
-            fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
-            fprintf(fp, "%d->%d\n", idr, e->getUId());
-          }
-        }
-        std::cout << std::endl;
+        printFunction(stmnt, cond);
       }
       else if(cond->getToken() == "ID") {
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", cond->getUId(), (cond->getId()).c_str());
-        fprintf(fp, "%d->%d\n", stmnt->getUId(), cond->getUId());
+        printVar(stmnt,cond);
       }
     }
 
@@ -223,47 +197,25 @@ namespace adl {
 
   int printObjects(Expr* n) {
     ObjectNode *on = static_cast<ObjectNode*>(n);
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", on->getVarUId(), (on->getId()).c_str());
-    fprintf(fp, "%d->%d\n", on->getUId(), on->getVarUId());
+    printNode(on->getVarUId(), (on->getId()).c_str(), on->getUId(), on->getVarUId());
 
     ExprVector ev = on->getStatements();
     int stid = on->getUId()+1; // For STATEMENTS node.
     Expr* stnode = new ObjectNode(stid, "STATEMENTS", on->getVar(), ExprVector());
-    fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", stid, (stnode->getToken()).c_str());
-    fprintf(fp, "%d->%d\n", on->getUId(), stnode->getUId());
+    printNode(stid, (stnode->getToken()).c_str(), on->getUId(), stnode->getUId());
 
     for(auto& stmnt: ev) {
       Expr* cond = static_cast<CommandNode*>(stmnt)->getCondition();
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", stmnt->getUId(), (stmnt->getToken()).c_str());
-        fprintf(fp, "%d->%d\n", stnode->getUId(), stmnt->getUId());
+      printNode(stmnt->getUId(), (stmnt->getToken()).c_str(), stnode->getUId(), stmnt->getUId());
       if(binOpCheck(cond) == 0) {
         BinNode* bin = static_cast<BinNode*>(cond);
         printBinNode(stmnt, bin);
       }
       else if(cond->getToken() == "FUNCTION") {
-        FunctionNode* fn = static_cast<FunctionNode*>(cond);
-        VarNode *vr = static_cast<VarNode*>(fn->getVar());
-        int idr = vr->getUId();
-        std::cout << "DEF FUNC: " << vr->getId() << "\n";
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", idr, (vr->getId()).c_str());
-        fprintf(fp, "%d->%d\n", n->getUId(), idr);
-        // loop through the function's params.
-        ExprVector prms = fn->getParams();
-        for(auto e: prms) {
-          std::cout << "PRMS: " << e->getId() << ", ";
-          fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", e->getUId(), (e->getId()).c_str());
-          fprintf(fp, "%d->%d\n", idr, e->getUId());
-        }
+        printFunction(stmnt, cond);
       }
-      else {
-        fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", cond->getUId(), (cond->getId()).c_str());
-        fprintf(fp, "%d->%d\n", stmnt->getUId(), cond->getUId());
-        VarNode *vn = static_cast<VarNode*>(cond);
-        if(vn->getAlias() != "") {
-          fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", vn->getUId()+1, (vn->getAlias()).c_str());
-          fprintf(fp, "%d->%d\n", cond->getUId(), vn->getUId()+1);
-        }
-       // printIdNode(cond);
+      else if(cond->getToken() == "ID") {
+        printVar(stmnt,cond);
       }
     }
 
@@ -292,24 +244,67 @@ namespace adl {
   }
 
   int printAST(ExprVector& _ast) {
-      fp = fopen("ast.dot", "w");
-      fprintf(fp, "digraph print {\n ");
-      print(_ast);
-      fprintf(fp, "}\n ");
-      fclose(fp);
-      return 0;
+    std::cout << "\n==== PRINT AST ====\n";
+    fp = fopen("ast.dot", "w");
+    fprintf(fp, "digraph print {\n ");
+    print(_ast);
+    fprintf(fp, "}\n ");
+    fclose(fp);
+    std::cout << "\n====           ====\n";
+
+    return 0;
   }
 
-  std::string typeCheck(Expr* node) {
+  std::string typeCheck(Expr* node, Driver& drv) {
+    if(binOpCheck(node) == 0) {
+      typeCheck(static_cast<BinNode*>(node)->getLHS(),drv);
+      typeCheck(static_cast<BinNode*>(node)->getRHS(),drv);
+    }
+    std::cout << "typecheck token: " << node->getToken() << "\n";
     if(node->getToken() == "INT") { std::cout << " : INTEGER\n"; return node->getToken(); }
     if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; }
-    if(node->getToken() == "ID") { std::cout << " : VAR\n"; }
+    if(node->getToken() == "ID") {
+      std::cout << "VAR := " << node->getId() << " \n";
+      VarNode* vn = static_cast<VarNode*>(node);
+      if(vn->getType() == "") {
+        // Need to reconcile the type with the objects already declared.
+        // The idea here is that objects have already been processed.
+        std::cout << "vn type empty\n";
+        for(auto& obj: drv.objectTable) {
+          if(obj.first == vn->getId()) {
+            vn->setType(obj.second);
+          }
+        }
+        std::cout << "Type set: " << vn->getType() << "\n";
+      }
+      else {
+        std::cout << "Type Found: " << vn->getType() << "\n";
+      }
+    }
+    if(node->getToken() == "FUNCTION") {
+      std::cout << "FUNCTION NODE\n";
+    }
     return "UNKNOWN\n";
   }
 
-  int typeCheck(ExprVector& ast) {
-    for(auto& v: ast) {
+  int typeCheck(Driver& drv) {
+    for(auto& v: drv.ast) {
       std::string token = v->getToken();
+      std::cout << "TypeCheck token: " << token << "\n";
+      if(token == "DEFINE") {
+        std::cout << "\n====define====\n";
+        DefineNode* define = static_cast<DefineNode*>(v);
+        Expr* body = define->getBody();
+        if(binOpCheck(body) == 0) {
+          BinNode* bin = static_cast<BinNode*>(body);
+          typeCheck(bin->getLHS(),drv);
+          typeCheck(bin->getRHS(),drv);
+        }
+        if(body->getToken() == "FUNCTION") {
+          typeCheck(body,drv);
+
+        }
+      }
       if(token == "REGION") {
         std::cout << "\n====region====\n";
         RegionNode* region = static_cast<RegionNode*>(v);
@@ -318,8 +313,12 @@ namespace adl {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
           if(binOpCheck(cond) == 0) {
             BinNode* bin = static_cast<BinNode*>(cond);
-            typeCheck(bin->getLHS());
-            typeCheck(bin->getRHS());
+            typeCheck(bin->getLHS(),drv);
+            typeCheck(bin->getRHS(),drv);
+          }
+          if(cond->getToken() == "FUNCTION") {
+            typeCheck(cond,drv);
+
           }
         }
       }
@@ -331,8 +330,12 @@ namespace adl {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
           if(binOpCheck(cond) == 0) {
             BinNode* bin = static_cast<BinNode*>(cond);
-            typeCheck(bin->getRHS());
-            typeCheck(bin->getRHS());
+            typeCheck(bin->getRHS(),drv);
+            typeCheck(bin->getRHS(),drv);
+          }
+          if(cond->getToken() == "FUNCTION") {
+            typeCheck(cond,drv);
+
           }
         }
       }
@@ -341,20 +344,23 @@ namespace adl {
   }
 
   void printError(std::string var) {
-    std::cerr << "VAR " << var << " IS NOT DECLARED\n";
+    std::cout << "ERROR: VAR " << var << " IS NOT DECLARED\n";
   }
 
   int checkTables(Driver& drv, Expr* v) {
     std::string var = v->getId();
-    for(auto e: drv.objectTable) {
-      if(var == e) return 0;
-    }
-    for(auto e: drv.definitionTable) {
-      if(var == e) return 0;
-    }
-    for(auto e: drv.regionTable) {
-      if(var == e) return 0;
-    }
+    if(drv.checkObjectTable(var) == 0) return 0;
+    // for(auto e: drv.objectTable) {
+    //   if(var == e) return 0;
+    // }
+    if(drv.checkDefinitionTable(var) == 0) return 0;
+    // for(auto e: drv.definitionTable) {
+    //   if(var == e) return 0;
+    // }
+    if(drv.checkRegionTable(var) == 0) return 0;
+    // for(auto e: drv.regionTable) {
+    //   if(var == e) return 0;
+    // }
     printError(var);
     return 1;
   }
@@ -394,6 +400,7 @@ namespace adl {
   // "Declare before use check"
   int checkDecl(Driver& drv) {
     // Check that the objects and defines in regions have been declared first.
+    int res = 0;
     for(auto v: drv.ast) {
       std::string token = v->getToken();
       if(token == "OBJECT") {
@@ -412,6 +419,7 @@ namespace adl {
             }
             else if(check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
               printError(var);
+              res = 1;
             }
           }
         }
@@ -429,21 +437,46 @@ namespace adl {
 //          if(s->getToken() == "histo") continue;
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
           std::cout << "cond->getId(): " << cond->getId() << "\n";
-          if(checkTables(drv,cond) == 0) { std::cout << "continuing\n"; continue; }
+          if(s->getId() == "" || checkTables(drv,cond) == 0) { std::cout << "continuing\n"; continue; }
           if(binOpCheck(cond) == 0) {
             BinNode* bin = static_cast<BinNode*>(cond);
-            parseBinNode(drv, bin);
+            res = parseBinNode(drv, bin);
           }
           if(cond->getToken() == "ID") {
-            checkTables(drv, cond);
+            res = checkTables(drv, cond);
           }
         }
       }
       if(token == "DEFINE") {
-        std::cout << "In DEFINE node\n";
+        std::cout << "\n====define sem checks====\n";
+        DefineNode* dn = static_cast<DefineNode*>(v);
+        std::cout  << " uid: " << dn->getUId() << "\n";
+        std::cout << "region->getToken(): " << dn->getToken() << "\n";
+        std::cout << "region->getId(): " << dn->getId() << "\n";
+        Expr* bdy = dn->getBody();
+
+        if(binOpCheck(bdy) == 0) {
+          BinNode* bin = static_cast<BinNode*>(bdy);
+          res = parseBinNode(drv, bin);
+        }
+        if(bdy->getToken() == "ID") {
+          res = checkTables(drv,bdy);
+        }
       }
     }
     std::cout << "\n";
-    return 0;
+    return res;
+  }
+
+  void collectBinOpers(Expr* body, ExprVector& operands) {
+    BinNode* bin = static_cast<BinNode*>(body);
+    Expr* rhs = bin->getRHS();
+    Expr* lhs = bin->getLHS();
+
+    if(binOpCheck(rhs) == 0) collectBinOpers(rhs, operands);
+    if(binOpCheck(lhs) == 0) collectBinOpers(lhs, operands);
+
+    if(rhs->getToken() == "ID") operands.push_back(rhs);
+    if(lhs->getToken() == "ID") operands.push_back(lhs);
   }
 } // end namespace adl

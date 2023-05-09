@@ -5,6 +5,7 @@
 #include "Parser.h"
 #include "ast.hpp"
 #include "cutlang_declares.h"
+#include "semantic_checks.h"
 
 #include <map>
 #include <list>
@@ -12,6 +13,8 @@
 #include <cstdio>
 
 namespace adl {
+  int binOpCheck(Expr* b);
+
   class Driver
   {
   public:
@@ -26,11 +29,13 @@ namespace adl {
 
     int setTables();
     void addNode(Expr*);
-    void addObject(std::string id);
-    void addRegion(std::string id);
-    void addDefine(std::string id);
+    int addObject(std::string id,std::string takeType);
+    int addRegion(std::string id);
+    int addDefine(std::string id);
 
     int checkObjectTable(std::string id);
+    int checkDefinitionTable(std::string id);
+    int checkRegionTable(std::string id);
     int ast2cuts(std::list<std::string> *parts,std::map<std::string,Node*>* NodeVars,
                  std::map<std::string, std::vector<myParticle*> >* ListParts,
                  std::map<int,Node*>* NodeCuts,
@@ -42,7 +47,7 @@ namespace adl {
                  std::map<int, std::vector<std::string> > *systmap);
 
     std::vector<Expr*> ast;
-    std::vector<std::string> objectTable;
+    std::map<std::string,std::string> objectTable;
     std::vector<std::string> regionTable;
 //    std::vector<std::string> regionVarsTable;
     std::vector<std::string> definitionTable;

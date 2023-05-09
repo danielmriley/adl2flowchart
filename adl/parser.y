@@ -78,7 +78,7 @@ namespace adl {
 %nterm <adl::Expr*> function param_list criterion definition region_block object_block
 %nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op
 %nterm <adl::Expr*> take_id take real int condition expr range chain chained_cond
-%nterm <adl::Expr*> table num id_list id_list_params
+%nterm <adl::Expr*> table num id_list id_list_params index
 %nterm <std::string> compare_op logic_op expr_op factor_op info
 %nterm <std::vector<double>> bins
 %nterm <double> tablelist value
@@ -131,6 +131,9 @@ function : id LPAR param_list RPAR              { std::cout << $1->getId() << "\
          | PIPE int PIPE                        { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          | PIPE real PIPE                       { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
          | PIPE id PIPE                         { Expr* e = new adl::VarNode(incrementCounter(),"ID","abs"); $$ = new adl::FunctionNode(incrementCounter(), "FUNCTION", e, ExprVector(1,$2)); }
+         | LCBRACKET id UNDERSCORE index RCBRACKET id        { $$ = new adl::VarNode(incrementCounter(), "ID", $6->getId(), "", "", {static_cast<int>($4->value())}, $2->getId()); } //These are function calls and should go into a function node.
+         | LCBRACKET id RCBRACKET id                         { $$ = new adl::VarNode(incrementCounter(), "ID", $4->getId(), "", "", {}, $2->getId()); }
+         | LCBRACKET id LBRACKET index RBRACKET RCBRACKET id { $$ = new adl::VarNode(incrementCounter(), "ID", $7->getId(), "", "", {static_cast<int>($4->value())}, $2->getId()); std::cout << "ID: " << $2->getId() << " INT: " << $4->value() << "\n"; }
          ;
 
 param_list : chain COMMA param_list             { paramlist.push_back($1); }
@@ -206,12 +209,14 @@ condition : expr                        { $$ = $1; }
 //          | LPAR expr RPAR              { $$ = $2; }
           | expr compare_op condition   { $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,$2,$3); }
           | expr INCLUSIVE num num      {
+                                          Expr* en = $1->clone(incrementCounter());
                                           Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
-                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$4);
+                                          Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",en,"<=",$4);
                                           $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"AND",comp2);
                                         }
           | expr EXCLUSIVE num num      {
-                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,"<=",$3);
+                                          Expr* en = $1->clone(incrementCounter());
+                                          Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",en,"<=",$3);
                                           Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$4);
                                           $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"OR",comp2);
                                         }
@@ -247,32 +252,31 @@ factor_op : MULTIPLY              { $$ = $1; }
           ;
 
 term : id_qualifiers              { $$ = $1; }
-     | function                   { $$ = $1; std::cout << "FUCNTION CALL\n"; }
+     | function                   { $$ = $1; std::cout << "FUNCTION CALL\n"; }
      | function dot_op            { $$ = $1; }
      | num                        { $$ = $1; }
      | LPAR expr RPAR             { $$ = $2; } // shift/reduce error caused here.
      ;
 
-id_qualifiers : id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId()); }
+id_qualifiers : id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId()); std::cout << "ID list\n"; }
               | id_qualifier                  { $$ = $1; }
               ;
 
-id_qualifier : dot_op                                     { $$ = $1; }
-            // | dot_op range                               { $$ = $1; }
-             | id LBRACKET int RBRACKET                   { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id LBRACKET int COLON RBRACKET             { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id LBRACKET COLON int RBRACKET             { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($4->value())}); }
-             | id UNDERSCORE int COLON int                { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value()),static_cast<int>($5->value())}); }
-             | id UNDERSCORE int                          { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
-             | id LBRACKET int COLON int RBRACKET         { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value()),static_cast<int>($5->value())}); }
-             | LCBRACKET id UNDERSCORE INT RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $6->getId(), "", "", {$4}, $2->getId()); }
-             | LCBRACKET id UNDERSCORE RCBRACKET id       { $$ = new adl::VarNode(incrementCounter(), "ID", $5->getId(), "", "", {}, $2->getId()); }
-             | LCBRACKET id RCBRACKET id                  { $$ = new adl::VarNode(incrementCounter(), "ID", $4->getId(), "", "", {}, $2->getId()); }
-             | LCBRACKET id LBRACKET INT RBRACKET RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $7->getId(), "", "", {$4}, $2->getId()); std::cout << "ID: " << $2->getId() << " INT: " << $4 << "\n"; }
-             | id UNDERSCORE                              { $$ = $1; }
-             | id                                         { $$ = $1; }
+id_qualifier : dot_op                                            { $$ = $1; }
+            // | dot_op range                                     { $$ = $1; }
+             | id LBRACKET index RBRACKET                        { VarNode* vn = static_cast<VarNode*>($1); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp(),{static_cast<int>($3->value())},vn->getType()); }
+             /* | id LBRACKET int COLON RBRACKET                   { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($3->value())}); }
+             | id LBRACKET COLON int RBRACKET                   { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",{static_cast<int>($4->value())}); } */
+             | id UNDERSCORE index COLON index                   { VarNode* vn = static_cast<VarNode*>($1); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp(),{static_cast<int>($3->value()),static_cast<int>($5->value())},vn->getType()); }
+             | id UNDERSCORE index                               { VarNode* vn = static_cast<VarNode*>($1); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp(),{static_cast<int>($3->value())},vn->getType()); }
+             | id LBRACKET index COLON index RBRACKET            { VarNode* vn = static_cast<VarNode*>($1); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp(),{static_cast<int>($3->value()),static_cast<int>($5->value())},vn->getType()); }
+             | SUBTRACT id UNDERSCORE index COLON index          { VarNode* vn = static_cast<VarNode*>($2); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp()+"-",{static_cast<int>($4->value()),static_cast<int>($6->value())},vn->getType()); }
+             | SUBTRACT id UNDERSCORE index                      { VarNode* vn = static_cast<VarNode*>($2); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp()+"-",{static_cast<int>($4->value())},vn->getType()); }
+             | SUBTRACT id LBRACKET index COLON index RBRACKET   { VarNode* vn = static_cast<VarNode*>($2); $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp()+"-",{static_cast<int>($4->value()),static_cast<int>($6->value())},vn->getType()); }
+             //| id UNDERSCORE                                    { $$ = $1; }
+             | id                                                { $$ = $1; }
             // | LCBRACKET id LBRACKET INT RBRACKET id_qualifier RCBRACKET id   { $$ = new adl::VarNode(incrementCounter(), "ID", $8->getId(), "", "", {$4}, $2->getId()); }
-            // | SUBTRACT id                        { $$ = $2; } // 3 S/R warnings. This production is incorrectly being called in a BinOp with SUBTRACT operator.
+             /* | SUBTRACT id                        { $$ = new VarNode(incrementCounter(),"ID",$2->getId(),"","-"); } // 3 S/R warnings. This production is incorrectly being called in a BinOp with SUBTRACT operator. */
              ;
 
 dot_op : DOT id             { $$ = $2; }
@@ -282,12 +286,17 @@ range : range num           { $$ = $2; intLists.push_back(static_cast<int>($2->v
       | num                 { $$ = $1; intLists.push_back(static_cast<int>($1->value())); }
       ;
 
-boolean : TRUE              {$$ = 1;}
-        | FALSE             {$$ = 0;}
+boolean : TRUE              { $$ = 1; }
+        | FALSE             { $$ = 0; }
         ;
 
 num : int                   { $$ = $1; }
     | real                  { $$ = $1; }
+
+index : SUBTRACT INT        { $$ = new adl::NumNode(incrementCounter(), "INT", -$2); }
+      | INT                 { $$ = new adl::NumNode(incrementCounter(), "INT",  $1); }
+      |                     { $$ = new adl::NumNode(incrementCounter(), "INT", 6213);}
+      ;
 
 int : INT                   { $$ = new adl::NumNode(incrementCounter(), "INT", $1); }
     ;

@@ -1,10 +1,12 @@
-size
-mass
-charge
-eta
-pt
-btag
-ctag
-phi
-theta
-psi
+size ->
+mass -> Mof
+m -> Mof
+charge -> Qof
+q -> Qof
+eta -> Etaof
+pt -> Ptof
+btag ->
+ctag ->
+phi ->
+theta ->
+psi ->

@@ -1,45 +1,22 @@
-object AK4jets
-  take Jet
-  select pt > 30
-  select eta < 2.4
+# AK4 jets
+object AK4jets : JET
+  select {JET_}Pt > 30
+  select {JET_}AbsEta < 2.4
 
-object AK8jets
-  take Jet # Need to check here for DBU, with the key words Jet, Electron, ...
-  select pt > 30
-  select eta < 2.4
+### EVENT VARIABLES
+define MR : fMR(megajets)
+define Rsq : (fMTR(megajets, MET) / MR )^0.5
+define dphimegajets : dPhi(megajets[0], megajets[1])
+define dphimegajetsNopho : dPhi(megajetsNopho[0], megajetsNopho[1])
 
-# photons - select
-object photons
-  take Photon
-  select pt > 80
-  select |eta| < 2.5
+define METLVe   : METLV_0 electronsVeto_0
+define METLVm   : METLV_0 muonsVeto_0
 
-# jets - no photon
-object AK4jetsNopho
-  take AK4jets j
-  reject dR(j, photons) < 0.4 and photons.pt/j.pt [] 0.5 2.0
-
-
-define MR = fMR(megajets + 2)
-define Rsq = sqrt(fMTR(megajets, met) / MR) # The problem seems to be because of the vector in yacc file.
-define dphimegajets = dPhi(megajets[0], megajets[1])
-define dphimegajetsNopho = dPhi(megajetsNopho[0], megajetsNopho[1])
-
-
+# Boost pre-selection cuts
 region preselection
-  select AK4jets >= 3
-  select AK8jets >= 1
+  select ALL   # This is only to see the initial event count
+  select Size(AK4jets) >= 3
+  select Size(AK8jets) >= 1
+  select Size(megajets) == 2
   select MR > 800
-  select Rsq > 0.08 * MR + 3
-
-region TopcategoryCRZ
-  select AK4jets.size >= 3
-  select AK8jets.size >= 1
-  select MR > 800
-  select (muonsSel.size == 2 and electronsVeto.size == 0) or
-         (electronsSel.size == 2 and muonsVeto.size == 0)
-  select leptonsSel[0].charge + leptonsSel[1].charge == 0
-  select fMll(leptonsSel[0], leptonsSel[1]) < 10
-  select Rsqll > 0.08
-  select topjetsMasstag.size >= 1
-  select dphimegajets < 2.8
+  select Rsq > 0.08

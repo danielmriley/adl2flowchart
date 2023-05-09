@@ -13,10 +13,10 @@ int main(int argc, char **argv) {
     else std::cout << "Parsing failed.\n";
 
     if(res == 0) std::cout << "ast.size(): " << drv.ast.size() << "\n";
-    if(res == 0) { drv.setTables(); }
-    if(res == 0) { adl::checkDecl(drv); }
-    if(res == 0) { drv.visitAST(adl::typeCheck); }
-    if(res == 0) { drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
+    if(res == 0) { res = drv.setTables(); }
+    if(res == 0) { res = adl::checkDecl(drv); }
+    if(res == 0) { res = adl::typeCheck(drv); }
+    if(res == 0) { res = drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
     if(res == 0) {
       drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,
                    &adl::BinCuts, &adl::ObjectCuts,
@@ -26,17 +26,14 @@ int main(int argc, char **argv) {
     // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
     // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";
     // if(res == 0) for(auto d: drv.regionTable) std::cout << "r: " << d << "\n";
-
+    if(res == 0) std::cout << "finished\n";
+    else std::cout << "ERROR\n";
     return res;
 }
 
-
-
-
-
-
-
-
+// Make sure the selection of muonsVeto has at least one element. line 148.
+// Check for cyclic dependencies
+//
 
 
 

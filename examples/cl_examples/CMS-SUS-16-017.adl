@@ -132,11 +132,11 @@ define Rsq : (fMTR(megajets, MET) / MR )^0.5
 define dphimegajets : dPhi(megajets[0], megajets[1])
 define dphimegajetsNopho : dPhi(megajetsNopho[0], megajetsNopho[1])
 
-define METLVe   : METLV_0 electronsVeto_0
-define METLVm   : METLV_0 muonsVeto_0
-define METLVee  : METLV_0 electronsVeto_0  electronsVeto_1
-define METLVmm  : METLV_0 muonsVeto_0  muonsVeto_1
-define METLVpho : METLV_0 photons[0]
+define METLVe   : METLV_0 + electronsVeto_0
+define METLVm   : METLV_0 + muonsVeto_0
+define METLVee  : METLV_0 + electronsVeto_0 + electronsVeto_1
+define METLVmm  : METLV_0 + muonsVeto_0 + muonsVeto_1
+define METLVpho : METLV_0 + photons[0]
 
 define Rsqe : (fMTR(megajets, METLVe) / MR)^0.5
 define Rsqm : (fMTR(megajets, METLVm) / MR)^0.5

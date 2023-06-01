@@ -1,6 +1,8 @@
 #include "driver.h"
 
 namespace adl {
+  std::string toupper(std::string s);
+
   Driver::Driver () :
     scanner(*this),
     parser(scanner, *this),
@@ -15,13 +17,40 @@ namespace adl {
     return f(ast);
   }
 
+  void Driver::loadFromLibraries() {
+    std::ifstream fin("./adl/ext_objs.txt");
+    std::string input;
+
+    while(fin >> input) {
+      input = toupper(input);
+      addObject(input,std::string("PARENT"));
+    }
+    fin.close();
+  }
+
+  std::string Driver::getBinType(Expr* expr) {
+    std::string lhsType, rhsType;
+    if(binOpCheck(expr) == 0) {
+      BinNode* binExpr = static_cast<BinNode*>(expr);
+      lhsType = getBinType(binExpr->getLHS());
+      rhsType = getBinType(binExpr->getRHS());
+      if(lhsType == rhsType) return lhsType;
+      else {
+        std::cout << "ERROR: There is a type mismatch\n";
+        return "";
+      }
+    }
+    else return static_cast<VarNode*>(expr)->getType();
+  }
+
   int Driver::setTables() {
+    loadFromLibraries();
     for(int i = 0; i < ast.size(); i++) {
       std::string token = ast[i]->getToken();
       if(token == "DEFINE") {
         std::string defType;
         if(binOpCheck(ast[i]) == 0) {
-
+          defType = getBinType(ast[i]);
         }
         else if(ast[i]->getToken() == "ID") {
           defType = static_cast<VarNode*>(ast[i])->getType();
@@ -53,8 +82,10 @@ namespace adl {
   }
 
   int Driver::checkObjectTable(std::string id) {
-    for(auto e: objectTable) {
-      if(e.first == id) {
+    for(auto& e: objectTable) {
+      std::string eUpper = adl::toupper(e.first);
+      std::string idUpper = adl::toupper(id);
+      if(eUpper == idUpper) {
         std::cout << "Object " << id << " has been declared\n";
         return 0;
       }
@@ -65,7 +96,9 @@ namespace adl {
 
   int Driver::checkDefinitionTable(std::string id) {
     for(auto e: definitionTable) {
-      if(e == id) {
+      std::string eUpper = adl::toupper(e);
+      std::string idUpper = adl::toupper(id);
+      if(eUpper == idUpper) {
         std::cout << "Variable " << id << " has been declared\n";
         return 0;
       }
@@ -76,7 +109,9 @@ namespace adl {
 
   int Driver::checkRegionTable(std::string id) {
     for(auto e: regionTable) {
-      if(e == id) {
+      std::string eUpper = adl::toupper(e);
+      std::string idUpper = adl::toupper(id);
+      if(eUpper == idUpper) {
         std::cout << "Region " << id << " has been declared\n";
         return 0;
       }
@@ -143,6 +178,7 @@ namespace adl {
                std::map<std::string, std::vector<cntHisto> >*cntHistos,
                std::map<int, std::vector<std::string> > *systmap)
   {
+    std::cout << "\n==== ast2cuts ====\n\n";
     for(auto& a: ast) { // Loop through the AST and fill in data structures.
       if(a->getToken() == "DEFINE") {
         VarNode* varnode = static_cast<VarNode*>(static_cast<DefineNode*>(a)->getVar());
@@ -164,16 +200,18 @@ namespace adl {
           parts->push_back(name + " : " + "");
         }
         if(binOpCheck(body) == 0) {
-          //ListParts->push_back();
           ExprVector operands;
+          std::vector<myParticle*> opersList;
           collectBinOpers(body, operands);
-          // myParticle* a = new myParticle;
-          // a->type =10; a->index = 0; a->collection = "Truth";
           for(auto& o: operands) {
-            std::cout << "op: " << o->getId() << "\n";
+            std::cout << "operand: " << o->getId() << "\n";
             VarNode* vn = static_cast<VarNode*>(o);
             std::cout << "type: " << vn->getType() << "\n";
+            myParticle* a = new myParticle;
+            a->type = 10; a->index = 0; a->collection = "TYPE";
+            opersList.push_back(a);
           }
+          ListParts->insert(std::make_pair(name,opersList));
         }
 
       }

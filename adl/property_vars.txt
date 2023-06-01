@@ -1,12 +1,38 @@
-size ->
-mass -> Mof
 m -> Mof
-charge -> Qof
+mass -> Mof
 q -> Qof
+charge -> Qof
+flavor -> blank
+constituents -> CCountof
+daughters -> CCountof
+pdgif -> pdgIDof
+idx -> IDXof
+p -> Pof
+e -> Eof
+tautag -> isTauTag
+btag -> isBTag
+ctag -> isBTag
+btagDeepB -> DeepBof
+msoftdrop -> MsoftDof
+tau1 -> tau1of
+tau2 -> tau2of
+tau3 -> tau3of
+dxy -> dxyof
+edxy -> edxyof
+edz -> edzof
+dz -> dzof
+vertr -> vtrof
+verz -> verzof
+very -> veryof
+verx -> verxof
+vert -> vertof
+
+size -> blank
 eta -> Etaof
 pt -> Ptof
-btag ->
-ctag ->
-phi ->
-theta ->
-psi ->
+btag -> blank
+ctag -> blank
+phi -> phiOf
+theta -> thetaOf
+psi -> psiOf
+abseta -> AbsEtaof

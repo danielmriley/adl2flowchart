@@ -149,7 +149,7 @@ takes: take takes                               { lists.push_back($1); }
      ;
 
 take : TAKE take_id                             { $$ = new CommandNode(incrementCounter(), $1,$2); }
-     | COLON take_id                            { $$ = new CommandNode(incrementCounter(), "take",$2); }
+     | COLON take_id                            { $$ = new CommandNode(incrementCounter(), "TAKE",$2); }
      ;
 
 take_id : id                                    { $$ = $1; }

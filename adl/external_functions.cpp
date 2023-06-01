@@ -29,12 +29,12 @@ namespace adl {
 
     while(fin >> input) {
       if(id == input) {
-        std::cerr << "function " << id << " is REGISTERED\n";
+        std::cout << "function " << id << " is REGISTERED\n";
         fin.close();
         return 0;
       }
     }
-    std::cerr << "ERROR: external function " << id << " is not found\n";
+    std::cout << "ERROR: external function " << id << " is not found\n";
     fin.close();
     return 1;
   }
@@ -47,12 +47,12 @@ namespace adl {
     while(fin >> input) {
       input = toupper(input);
       if(id == input) {
-        std::cerr << id << " is a PROPERTY\n";
+        std::cout << id << " is a PROPERTY\n";
         fin.close();
         return 0;
       }
     }
-    std::cerr << id << " is not a property\n";
+    std::cout << id << " is not a property\n";
     fin.close();
     return 1;
   }
@@ -66,12 +66,12 @@ namespace adl {
     while(fin >> input) {
       input = toupper(input);
       if(id == input) {
-        std::cerr << id << " is a predefined OBJECT\n";
+        std::cout << id << " is a predefined OBJECT\n";
         fin.close();
         return 0;
       }
     }
-    std::cerr << id << " is not a predefined OBJECT\n";
+    std::cout << id << " is not a predefined OBJECT\n";
     fin.close();
     return 1;
   }

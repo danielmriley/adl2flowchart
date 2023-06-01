@@ -12,7 +12,7 @@ namespace adl {
 
   typedef std::vector<Expr*> ExprVector;
 
-  int biOpCheck(Expr* b);
+  int binOpCheck(Expr* b);
   int printBinNode(Expr*, BinNode* b);
   int printDefines(Expr* n);
   int printRegions(Expr* n);

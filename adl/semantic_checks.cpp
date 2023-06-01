@@ -9,6 +9,18 @@ namespace adl {
   int check_function_table(std::string id);
   std::string tolower(std::string s);
 
+  FunctionNode* getFunctionNode(Expr* expr) {
+    return static_cast<FunctionNode*>(expr);
+  }
+
+  VarNode* getVarNode(Expr* expr) {
+    return static_cast<VarNode*>(expr);
+  }
+
+  NumNode* getNumNode(Expr* expr) {
+    return static_cast<NumNode*>(expr);
+  }
+
   int binOpCheck(Expr* b) {
     assert(b != nullptr && "NULL pointer.");
     if(b->getToken() == "EXPROP" || b->getToken() == "LOGICOP"
@@ -260,6 +272,7 @@ namespace adl {
       typeCheck(static_cast<BinNode*>(node)->getLHS(),drv);
       typeCheck(static_cast<BinNode*>(node)->getRHS(),drv);
     }
+
     std::cout << "typecheck token: " << node->getToken() << "\n";
     if(node->getToken() == "INT") { std::cout << " : INTEGER\n"; return node->getToken(); }
     if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; }
@@ -267,8 +280,6 @@ namespace adl {
       std::cout << "VAR := " << node->getId() << " \n";
       VarNode* vn = static_cast<VarNode*>(node);
       if(vn->getType() == "") {
-        // Need to reconcile the type with the objects already declared.
-        // The idea here is that objects have already been processed.
         std::cout << "vn type empty\n";
         for(auto& obj: drv.objectTable) {
           if(obj.first == vn->getId()) {
@@ -282,6 +293,7 @@ namespace adl {
       }
     }
     if(node->getToken() == "FUNCTION") {
+      // Here the function input and output should be checked.
       std::cout << "FUNCTION NODE\n";
     }
     return "UNKNOWN\n";
@@ -400,6 +412,7 @@ namespace adl {
   // "Declare before use check"
   int checkDecl(Driver& drv) {
     // Check that the objects and defines in regions have been declared first.
+    // Doesn't check function parameters yet...
     int res = 0;
     for(auto v: drv.ast) {
       std::string token = v->getToken();
@@ -451,8 +464,8 @@ namespace adl {
         std::cout << "\n====define sem checks====\n";
         DefineNode* dn = static_cast<DefineNode*>(v);
         std::cout  << " uid: " << dn->getUId() << "\n";
-        std::cout << "region->getToken(): " << dn->getToken() << "\n";
-        std::cout << "region->getId(): " << dn->getId() << "\n";
+        std::cout << "define->getToken(): " << dn->getToken() << "\n";
+        std::cout << "define->getId(): " << dn->getId() << "\n";
         Expr* bdy = dn->getBody();
 
         if(binOpCheck(bdy) == 0) {
@@ -461,6 +474,9 @@ namespace adl {
         }
         if(bdy->getToken() == "ID") {
           res = checkTables(drv,bdy);
+        }
+        if(bdy->getToken() == "FUNCTION") {
+          std::cout << "Function def\n";
         }
       }
     }
@@ -478,5 +494,15 @@ namespace adl {
 
     if(rhs->getToken() == "ID") operands.push_back(rhs);
     if(lhs->getToken() == "ID") operands.push_back(lhs);
+
+    if(rhs->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(rhs);
+      operands.push_back(fn->getVar());
+    }
+    if(lhs->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(lhs);
+      operands.push_back(fn->getVar());
+    }
+
   }
 } // end namespace adl

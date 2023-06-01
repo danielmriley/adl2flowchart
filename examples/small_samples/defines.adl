@@ -1,18 +1,4 @@
-object electrons
-  take Electron
+object photons : Photon
 
-object muons
-  take Muon
-
-object leptons
-  take electrons
-  take muons
-
-object megajets : AK4jets
-  select fmegajets(AK4jets) == 2
-
-define dilepton = leptons[0] + leptons[1]
-define dielectron = electrons[0] + electrons[1]
-define dimuon = muons[0] + muons[1]
-#define dilepton = leptons[0] + leptons[1]
-define MR : fMR(megajets)
+object photons
+  take Photon

@@ -11,9 +11,9 @@
 #include <list>
 #include <utility>
 #include <cstdio>
+#include <fstream>
 
 namespace adl {
-  int binOpCheck(Expr* b);
 
   class Driver
   {
@@ -27,6 +27,8 @@ namespace adl {
     int parse();
     int visitAST(int (*f)(ExprVector& ast));
 
+    void loadFromLibraries();
+    std::string getBinType(Expr* expr);
     int setTables();
     void addNode(Expr*);
     int addObject(std::string id,std::string takeType);
@@ -51,6 +53,11 @@ namespace adl {
     std::vector<std::string> regionTable;
 //    std::vector<std::string> regionVarsTable;
     std::vector<std::string> definitionTable;
+
+    // std::map<std::string,PropFunction> function_map;
+    // std::map<std::string,LFunction> lfunction_map;
+    // std::map<std::string,UnFunction> unfunction_map;
+    // std::map<std::string,pair<particleType,std::string>> particle_map;
 
   private:
     Scanner scanner;

@@ -3,14 +3,30 @@ object AK4jets : JET
   select {JET_}Pt > 30
   select {JET_}AbsEta < 2.4
 
+# photons - select
+object photons : PHO
+  select {PHO_}Pt > 80
+  select {PHO_}AbsEta < 2.5
+
+# jets - no photon
+object AK4jetsNopho : AK4jets
+  select dR(AK4jets_, photons_ ) >= 0.4 OR {photons_}Pt/{AK4jets_}Pt ][ 0.5 2.0
+#  reject dR(AK4jets_, photons) < 0.4 AND photons.pt/j.pt [] 0.5 2.0
+
+#object megajets : AK4jets
+#  select fmegajets(AK4jets) == 2
+
+object megajetsNopho : AK4jetsNopho
+  select fmegajets(AK4jetsNopho) == 2
+
+
 ### EVENT VARIABLES
+define MR2 = 1 + 2
 define MR : fMR(megajets)
 define Rsq : (fMTR(megajets, MET) / MR )^0.5
 define dphimegajets : dPhi(megajets[0], megajets[1])
 define dphimegajetsNopho : dPhi(megajetsNopho[0], megajetsNopho[1])
 
-define METLVe   : METLV_0 electronsVeto_0
-define METLVm   : METLV_0 muonsVeto_0
 
 # Boost pre-selection cuts
 region preselection

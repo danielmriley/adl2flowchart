@@ -3,13 +3,25 @@
 namespace adl {
   std::string toupper(std::string s);
 
-  Driver::Driver () :
+  Driver::Driver() :
     scanner(*this),
     parser(scanner, *this),
     loc(0) {}
 
-  int Driver::parse () {
+  int Driver::parse() {
     loc = 0;
+    return parser.parse();
+  }
+
+  int Driver::parse(std::string fileName) {
+    loc = 0;
+    // if(fileName == "") {
+    //   scanner.yyin = stdin;
+    // }
+    // else {
+    //   scanner.yyin = fopen(fileName.c_str(), "r");
+    // }
+
     return parser.parse();
   }
 
@@ -36,11 +48,20 @@ namespace adl {
       rhsType = getBinType(binExpr->getRHS());
       if(lhsType == rhsType) return lhsType;
       else {
-        std::cout << "ERROR: There is a type mismatch\n";
+        // std::cout << "ERROR: There is a type mismatch\n";
         return "";
       }
     }
     else return static_cast<VarNode*>(expr)->getType();
+  }
+
+  std::string Driver::getObjectDeclType(std::string s) {
+    for(auto &o: objectTable) {
+      if(o.first == toupper(s)) {
+        return o.second;
+      }
+    }
+    return "NOT FOUND";
   }
 
   int Driver::setTables() {
@@ -86,11 +107,11 @@ namespace adl {
       std::string eUpper = adl::toupper(e.first);
       std::string idUpper = adl::toupper(id);
       if(eUpper == idUpper) {
-        std::cout << "Object " << id << " has been declared\n";
+        // std::cout << "Object " << id << " has been declared\n";
         return 0;
       }
     }
-    std::cout << "ERROR: Object " << id << " NOT declared\n";
+    // std::cout << "ERROR: Object " << id << " NOT declared\n";
     return 1;
   }
 
@@ -99,11 +120,11 @@ namespace adl {
       std::string eUpper = adl::toupper(e);
       std::string idUpper = adl::toupper(id);
       if(eUpper == idUpper) {
-        std::cout << "Variable " << id << " has been declared\n";
+        // std::cout << "Variable " << id << " has been declared\n";
         return 0;
       }
     }
-    std::cout << "ERROR: Variable " << id << " NOT declared\n";
+    // std::cout << "ERROR: Variable " << id << " NOT declared\n";
     return 1;
   }
 
@@ -112,11 +133,11 @@ namespace adl {
       std::string eUpper = adl::toupper(e);
       std::string idUpper = adl::toupper(id);
       if(eUpper == idUpper) {
-        std::cout << "Region " << id << " has been declared\n";
+        // std::cout << "Region " << id << " has been declared\n";
         return 0;
       }
     }
-    std::cout << "ERROR: Region " << id << " NOT declared\n";
+    // std::cout << "ERROR: Region " << id << " NOT declared\n";
     return 1;
   }
 
@@ -128,7 +149,7 @@ namespace adl {
     // Check that the definition isn't already in the table.
     for(auto e: definitionTable){
       if(e == id) {
-        std::cout << "ERROR: Variable has been previously defined\n";
+        // std::cout << "ERROR: Variable " << id << "  has been previously defined\n";
         return 1;
       }
     }
@@ -140,7 +161,7 @@ namespace adl {
     // Check that the definition isn't already in the table.
     for(auto e: objectTable){
       if(e.first == id) {
-        std::cout << "ERROR: Object has been previously defined\n";
+        // std::cout << "ERROR: Object " << id << " has been previously defined\n";
         return 1;
       }
     }
@@ -152,7 +173,7 @@ namespace adl {
     // Check that the definition isn't already in the table.
     for(auto e: regionTable){
       if(e == id) {
-        std::cout << "ERROR: Region has been previously defined\n";
+        // std::cout << "ERROR: Region " << id << "  has been previously defined\n";
         return 1;
       }
     }
@@ -225,38 +246,38 @@ namespace adl {
         ObjectNode *objectnode = static_cast<ObjectNode*>(a);
         std::string name = objectnode->getId();
         std::cout << "OBJ NAME: " << name << "\n";
-        std::map<std::string,Node*>::iterator ito;
-        ito = ObjectCuts->find(name);
-
-        if(ito != ObjectCuts->end()) { // Object found
-          int otype = ito->second->type;
-          myParticle* mp = new myParticle;
-
-          if(otype == electron_t) {
-            std::cout << "Electron type\n";
-            mp->type = electron_t;
-            mp->index = objIndex;
-            mp->collection = name;
-          }
-          if(otype == muon_t) {
-            std::cout << "Muon type\n";
-            mp->type = electron_t;
-            mp->index = objIndex;
-            mp->collection = name;
-          }
-          if(otype == tau_t) {
-            std::cout << "Tau type\n";
-            mp->type = electron_t;
-            mp->index = objIndex;
-            mp->collection = name;
-          }
-          if(otype == jet_t) {
-            std::cout << "Jet type\n";
-            mp->type = electron_t;
-            mp->index = objIndex;
-            mp->collection = name;
-          }
-        }
+        // std::map<std::string,Node*>::iterator ito;
+        // ito = ObjectCuts->find(name);
+        //
+        // if(ito != ObjectCuts->end()) { // Object found
+        //   int otype = ito->second->type;
+        //   myParticle* mp = new myParticle;
+        //
+        //   if(otype == electron_t) {
+        //     std::cout << "Electron type\n";
+        //     mp->type = electron_t;
+        //     mp->index = objIndex;
+        //     mp->collection = name;
+        //   }
+        //   if(otype == muon_t) {
+        //     std::cout << "Muon type\n";
+        //     mp->type = electron_t;
+        //     mp->index = objIndex;
+        //     mp->collection = name;
+        //   }
+        //   if(otype == tau_t) {
+        //     std::cout << "Tau type\n";
+        //     mp->type = electron_t;
+        //     mp->index = objIndex;
+        //     mp->collection = name;
+        //   }
+        //   if(otype == jet_t) {
+        //     std::cout << "Jet type\n";
+        //     mp->type = electron_t;
+        //     mp->index = objIndex;
+        //     mp->collection = name;
+        //   }
+        // }
       }
     }
 

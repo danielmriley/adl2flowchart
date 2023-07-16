@@ -22,6 +22,7 @@ namespace adl {
   int printAST(ExprVector& _ast);
   int testAST(ExprVector& ast);
   int checkDecl(Driver& drv);
+  int printFlowChart(Driver& drv);
 
   void collectBinOpers(Expr* body, ExprVector& operands);
 

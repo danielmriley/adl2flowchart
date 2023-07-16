@@ -29,7 +29,7 @@
 "table"                         { return adl::Parser::make_TABLE(YYText(), adl::location()); }
 "nvars"                         { return adl::Parser::make_NVARS(YYText(), adl::location()); }
 "errors"                        { return adl::Parser::make_ERRORS(YYText(), adl::location()); }
-
+"Union"|"union"                 { return adl::Parser::make_UNION(YYText(), adl::location()); }
 
 ">"                      { return adl::Parser::make_GT(YYText(), adl::location()); }
 "<"                      { return adl::Parser::make_LT(YYText(), adl::location()); }

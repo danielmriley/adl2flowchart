@@ -13,8 +13,8 @@ object AK4jetsNopho : AK4jets
   select dR(AK4jets_, photons_ ) >= 0.4 OR {photons_}Pt/{AK4jets_}Pt ][ 0.5 2.0
 #  reject dR(AK4jets_, photons) < 0.4 AND photons.pt/j.pt [] 0.5 2.0
 
-#object megajets : AK4jets
-#  select fmegajets(AK4jets) == 2
+object megajets : AK4jets
+  select fmegajets(AK4jets) == 2
 
 object megajetsNopho : AK4jetsNopho
   select fmegajets(AK4jetsNopho) == 2

@@ -32,26 +32,30 @@ int set_function_map() {
 
 int main(int argc, char **argv) {
   set_function_map();
-  for(auto& m: function_map) std::cout << m.first << " -> " << m.second << "\n";
-  exit(0);
+  // for(auto& m: function_map) std::cout << m.first << " -> " << m.second << "\n";
+  //exit(0);
   adl::Driver drv;
-  int res = drv.parse();
+  std::string fileName = argv[argc - 1];
+  int res = drv.parse(fileName);
 
 
   if(res == 0) std::cout << "Parsing successful!\n";
 
   if(res == 0) std::cout << "ast.size(): " << drv.ast.size() << "\n";
-  if(res == 0) { res = drv.setTables(); }
+  if(res == 0) { drv.setTables(); }
   else std::cerr << "Failed Parsing()\n";
 
-  if(res == 0) { res = adl::checkDecl(drv); }
+  if(res == 0) { adl::checkDecl(drv); }
   else std::cerr << "Failed setTables()\n";
 
-  if(res == 0) { res = adl::typeCheck(drv); }
+  if(res == 0) { adl::typeCheck(drv); }
   else std::cerr << "Failed checkDecl()\n";
 
-  if(res == 0) { res = drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
+  if(res == 0) { drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
   else std::cerr << "Failed typeCheck()\n";
+
+  if(res == 0) { adl::printFlowChart(drv); } // run "dot -Tpdf fc.dot -o fc.pdf" to create a PDF
+  else std::cerr << "Failed printAST()\n";
 
   if(res == 0) {
     drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,

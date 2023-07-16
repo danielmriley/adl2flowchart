@@ -52,6 +52,7 @@ namespace adl {
   static adl::Parser::symbol_type yylex(adl::Scanner &scanner, adl::Driver &driver) {
          return scanner.adl_yylex();
   }
+  // extern FILE* adl::Scanner::yyin;
 }
 
 %lex-param { adl::Scanner &scanner }
@@ -66,7 +67,7 @@ namespace adl {
 %start start
 
 %token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST
-%token <std::string> TABLE TABLETYPE  NVARS  ERRORS
+%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
 %token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
 %token <std::string> GT  LT  GE  LE  EQ NE  TRUE  FALSE
@@ -150,6 +151,8 @@ takes: take takes                               { lists.push_back($1); }
 
 take : TAKE take_id                             { $$ = new CommandNode(incrementCounter(), $1,$2); }
      | COLON take_id                            { $$ = new CommandNode(incrementCounter(), "TAKE",$2); }
+     | TAKE UNION LPAR id COMMA id RPAR        { $$ = new CommandNode(incrementCounter(), "TAKE",$4); lists.push_back(new CommandNode(incrementCounter(), "TAKE",$6)); }
+     | COLON UNION LPAR id COMMA id RPAR        { $$ = new CommandNode(incrementCounter(), "TAKE",$4); lists.push_back(new CommandNode(incrementCounter(), "TAKE",$6)); }
      ;
 
 take_id : id                                    { $$ = $1; }

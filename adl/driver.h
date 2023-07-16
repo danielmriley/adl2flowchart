@@ -8,6 +8,7 @@
 #include "semantic_checks.h"
 
 #include <map>
+#include <set>
 #include <list>
 #include <utility>
 #include <cstdio>
@@ -25,6 +26,7 @@ namespace adl {
     Driver();
 
     int parse();
+    int parse(std::string);
     int visitAST(int (*f)(ExprVector& ast));
 
     void loadFromLibraries();
@@ -34,6 +36,7 @@ namespace adl {
     int addObject(std::string id,std::string takeType);
     int addRegion(std::string id);
     int addDefine(std::string id);
+    std::string getObjectDeclType(std::string s);
 
     int checkObjectTable(std::string id);
     int checkDefinitionTable(std::string id);
@@ -49,6 +52,7 @@ namespace adl {
                  std::map<int, std::vector<std::string> > *systmap);
 
     std::vector<Expr*> ast;
+    // map of object name to either PARENT (predefined) or TAKE type (declared)
     std::map<std::string,std::string> objectTable;
     std::vector<std::string> regionTable;
 //    std::vector<std::string> regionVarsTable;

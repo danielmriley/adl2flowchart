@@ -13,6 +13,7 @@
 #include <utility>
 #include <cstdio>
 #include <fstream>
+#include <algorithm>
 
 namespace adl {
 
@@ -28,6 +29,9 @@ namespace adl {
     int parse();
     int parse(std::string);
     int visitAST(int (*f)(ExprVector& ast));
+    void fillTypeTable();
+    void setDependencyChart();
+    void fillParentObjectsMap();
 
     void loadFromLibraries();
     std::string getBinType(Expr* expr);
@@ -41,15 +45,16 @@ namespace adl {
     int checkObjectTable(std::string id);
     int checkDefinitionTable(std::string id);
     int checkRegionTable(std::string id);
-    int ast2cuts(std::list<std::string> *parts,std::map<std::string,Node*>* NodeVars,
-                 std::map<std::string, std::vector<myParticle*> >* ListParts,
-                 std::map<int,Node*>* NodeCuts,
-                 std::map<int,Node*>* BinCuts, std::map<std::string,Node*>* ObjectCuts,
-                 std::vector<std::string>* Initializations,
-                 std::vector<int>* TRGValues, std::map<std::string,
-                 std::pair<std::vector<float>, bool> >* ListTables,
-                 std::map<std::string, std::vector<cntHisto> >*cntHistos,
-                 std::map<int, std::vector<std::string> > *systmap);
+    int ast2cuts(std::list<std::string> *_parts,std::map<std::string,Node*>* _NodeVars,
+                 std::map<std::string, std::vector<myParticle*> >* _ListParts,
+                 std::map<int,Node*>* _NodeCuts,
+                 std::map<int,Node*>* _BinCuts,
+                 std::map<std::string,Node*>* _ObjectCuts,
+                 std::vector<std::string>* _Initializations,
+                 std::vector<int>* _TRGValues,
+                 std::map<std::string, std::pair<std::vector<float>, bool> >* _ListTables,
+                 std::map<std::string, std::vector<cntHisto> >* _cntHistos,
+                 std::map<int, std::vector<std::string> > *_systmap);
 
     std::vector<Expr*> ast;
     // map of object name to either PARENT (predefined) or TAKE type (declared)
@@ -57,10 +62,19 @@ namespace adl {
     std::vector<std::string> regionTable;
 //    std::vector<std::string> regionVarsTable;
     std::vector<std::string> definitionTable;
+    std::map<std::string, int> typeTable;
+    std::map<std::string, std::vector<std::string>> dependencyChart;
+    std::map<std::string, Node*> parentParticleObjects;
 
-    // std::map<std::string,PropFunction> function_map;
-    // std::map<std::string,LFunction> lfunction_map;
-    // std::map<std::string,UnFunction> unfunction_map;
+    Node* makeNode(Expr* expr);
+    Node* getFuncNode(Expr* fn);
+    std::string findDep(std::string var);
+    void processDefBinNode(DefineNode* dn, Expr* body);
+    void processObject(astObjectNode* on);
+    void processRegion(RegionNode* rn);
+    Node* createParentObject(std::string id);
+    myParticle* createParticle(VarNode* vn);
+    void gatherParticles(Expr* body, std::vector<myParticle*> &particles);
     // std::map<std::string,pair<particleType,std::string>> particle_map;
 
   private:
@@ -68,6 +82,24 @@ namespace adl {
     Parser parser;
     unsigned int loc;
     unsigned int location();
+
+    std::map<std::string, PropFunction> function_map;
+    std::map<std::string, LFunction> lfunction_map;
+    std::map<std::string, UnFunction> unfunction_map;
+    std::map<std::string, SFunction> sfunction_map;
+
+    // CutLang data structures.
+    std::list<std::string> *parts;
+    std::map<std::string,Node*> *NodeVars;
+    std::map<std::string, std::vector<myParticle*> >* ListParts;
+    std::map<int,Node*>* NodeCuts;
+    std::map<int,Node*>* BinCuts;
+    std::map<std::string,Node*>* ObjectCuts;
+    std::vector<std::string>* Initializations;
+    std::vector<int>* TRGValues;
+    std::map<std::string, std::pair<std::vector<float>, bool> >* ListTables;
+    std::map<std::string, std::vector<cntHisto> >*cntHistos;
+    std::map<int, std::vector<std::string> > *systmap;
 
     void incrementLocation(unsigned int loc);
   }; // end driver class

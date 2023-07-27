@@ -169,8 +169,13 @@ namespace adl {
   public:
     VarNode(int _uid, Token t, std::string _id, std::string al="",
             std::string dp="", std::vector<int> acc = {}, std::string _type = "")
-            : id(_id), alias(al), dotop(dp), accessor(acc), type(_type)
-    { uid = _uid; tok = t; }
+            : id(_id), alias(al), dotop(dp), type(_type)
+    {
+      uid = _uid;
+      tok = t;
+      accessor = acc;
+      // if(acc.size() == 0) accessor.push_back(6213);
+    }
     VarNode(const VarNode& vn) {
       val = vn.val;
       id = vn.id;
@@ -179,6 +184,7 @@ namespace adl {
       tok = vn.tok;
       uid = vn.uid;
       type = vn.type;
+      accessor = vn.accessor;
     }
 
     VarNode(const VarNode& vn, int _uid) {
@@ -189,6 +195,7 @@ namespace adl {
       tok = vn.tok;
       uid = _uid;
       type = vn.type;
+      accessor = vn.accessor;
     }
 
     VarNode& operator=(VarNode& vn) {
@@ -199,6 +206,7 @@ namespace adl {
       tok = vn.tok;
       uid = vn.uid;
       type = vn.type;
+      accessor = vn.accessor;
       return *this;
     }
 
@@ -222,11 +230,16 @@ namespace adl {
     std::string getDotOp() { return dotop; }
     std::string getAlias() { return alias; }
     std::string getType() { return type; }
+    int getAccSize() { return accessor.size(); }
     std::vector<int> getAccessor() { return accessor; }
     int getUId() { return uid; }
 
     void setAlias(std::string al) { alias = al; }
-    void setType(std::string typ) { type = typ; }
+    void setType(std::string typ) {
+      if(type == "OBJECT" || type == "") {
+        type = typ;
+      }
+    }
 
   private:
     int val;
@@ -338,38 +351,44 @@ namespace adl {
     Expr* getVar() { return varDecl; }
     Expr* getBody() { return body; }
 
+    void setType(std::string t) {
+      VarNode* vn = static_cast<VarNode*>(varDecl);
+      vn->setType(t);
+      varDecl = vn->clone();
+    }
+
   private:
     Expr* varDecl;
     Expr* body;
   }; // end class DefineNode
 
-  class ObjectNode : public Expr {
+  class astObjectNode : public Expr {
   public:
-    ObjectNode(int _uid, Token t, Expr* _id, ExprVector stmt) {
+    astObjectNode(int _uid, Token t, Expr* _id, ExprVector stmt) {
       tok = t;
       id = _id->clone();
       statements = stmt;
       uid = _uid;
     }
 
-    ObjectNode(ObjectNode& on) {
+    astObjectNode(astObjectNode& on) {
       tok = on.tok;
       id = on.id->clone();
       statements = on.statements;
       uid = on.uid;
     }
 
-    ObjectNode(ObjectNode& on, int _uid) {
+    astObjectNode(astObjectNode& on, int _uid) {
       tok = on.tok;
       id = on.id->clone();
       statements = on.statements;
       uid = _uid;
     }
 
-    Expr* clone() { return new ObjectNode(*this); }
+    Expr* clone() { return new astObjectNode(*this); }
 
     Expr* clone(int c) {
-      Expr* on = new ObjectNode(*this);
+      Expr* on = new astObjectNode(*this);
       on->uid = c;
       return on;
     }
@@ -381,14 +400,25 @@ namespace adl {
     std::string getId() { return id->getId(); }
     int getUId() { return uid; }
     int getVarUId() { return id->getUId(); }
-
     ExprVector getStatements() { return statements; }
     Expr* getVar() { return id; }
+    std::string getType() {
+      VarNode* vn = static_cast<VarNode*>(id);
+      return vn->getType();
+    }
+
+    void setObjectType(std::string t) {
+//      VarNode* vn = new VarNode(id->getUId(), id->getToken(), id->getAlias(), id->getDotOp(), id->getAccessor(), id->getType());
+      VarNode* vn = static_cast<VarNode*>(id);
+      vn->setType(t);
+//      delete id;
+      id = vn->clone();
+    }
 
   private:
     Expr* id;
     ExprVector statements;
-  }; // end ObjectNode class
+  }; // end astObjectNode class
 
   class RegionNode : public Expr {
   public:
@@ -428,7 +458,6 @@ namespace adl {
     std::string getId() { return id->getId(); }
     int getUId() { return uid; }
     int getVarUId() { return id->getUId(); }
-
     ExprVector getStatements() { return statements; }
     Expr* getVar() { return id; }
 

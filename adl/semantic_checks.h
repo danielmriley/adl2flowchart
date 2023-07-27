@@ -12,6 +12,17 @@ namespace adl {
 
   typedef std::vector<Expr*> ExprVector;
 
+  FunctionNode* getFunctionNode(Expr* expr);
+  VarNode* getVarNode(Expr* expr);
+  NumNode* getNumNode(Expr* expr);
+  DefineNode* getDefineNode(Expr* expr);
+  BinNode* getBinNode(Expr* expr);
+  astObjectNode* getObjectNode(Expr* expr);
+  RegionNode* getRegionNode(Expr* expr);
+  CommandNode* getCommandNode(Expr* expr);
+  ITENode* getITENode(Expr* expr);
+
+
   int binOpCheck(Expr* b);
   int printBinNode(Expr*, BinNode* b);
   int printDefines(Expr* n);

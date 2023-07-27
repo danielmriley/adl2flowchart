@@ -29,12 +29,20 @@ namespace adl {
     return static_cast<BinNode*>(expr);
   }
 
-  ObjectNode* getObjectNode(Expr* expr) {
-    return static_cast<ObjectNode*>(expr);
+  astObjectNode* getObjectNode(Expr* expr) {
+    return static_cast<astObjectNode*>(expr);
   }
 
   RegionNode* getRegionNode(Expr* expr) {
     return static_cast<RegionNode*>(expr);
+  }
+
+  CommandNode* getCommandNode(Expr* expr) {
+    return static_cast<CommandNode*>(expr);
+  }
+
+  ITENode* getITENode(Expr* expr) {
+    return static_cast<ITENode*>(expr);
   }
 
   int binOpCheck(Expr* b) {
@@ -224,12 +232,12 @@ namespace adl {
   }
 
   int printObjects(Expr* n) {
-    ObjectNode *on = static_cast<ObjectNode*>(n);
+    astObjectNode *on = static_cast<astObjectNode*>(n);
     printNode(on->getVarUId(), (on->getId()).c_str(), on->getUId(), on->getVarUId());
 
     ExprVector ev = on->getStatements();
     int stid = on->getUId()+1; // For STATEMENTS node.
-    Expr* stnode = new ObjectNode(stid, "STATEMENTS", on->getVar(), ExprVector());
+    Expr* stnode = new astObjectNode(stid, "STATEMENTS", on->getVar(), ExprVector());
     printNode(stid, (stnode->getToken()).c_str(), on->getUId(), stnode->getUId());
 
     for(auto& stmnt: ev) {
@@ -352,7 +360,7 @@ namespace adl {
       }
       if(token == "OBJECT") {
         std::cout << "\n====object====\n";
-        ObjectNode* object = static_cast<ObjectNode*>(v);
+        astObjectNode* object = static_cast<astObjectNode*>(v);
         std::vector<Expr*> vv = object->getStatements();
         for(auto& s: vv) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
@@ -433,8 +441,8 @@ namespace adl {
     for(auto v: drv.ast) {
       std::string token = v->getToken();
       if(token == "OBJECT") {
-        std::cout << "\n====object sem checks====\n";
-        ObjectNode* object = static_cast<ObjectNode*>(v);
+        std::cout << "\n==== object sem checks ====\n";
+        astObjectNode* object = static_cast<astObjectNode*>(v);
         std::vector<Expr*> stmnts = object->getStatements();
         for(auto s: stmnts) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
@@ -454,7 +462,7 @@ namespace adl {
         }
       }
       if(token == "REGION") {
-        std::cout << "\n====region sem checks====\n";
+        std::cout << "\n==== region sem checks ====\n";
         RegionNode* region = static_cast<RegionNode*>(v);
         std::cout  << " uid: " << region->getUId() << "\n";
         std::cout << "region->getToken(): " << region->getToken() << "\n";
@@ -477,7 +485,7 @@ namespace adl {
         }
       }
       if(token == "DEFINE") {
-        std::cout << "\n====define sem checks====\n";
+        std::cout << "\n==== define sem checks ====\n";
         DefineNode* dn = getDefineNode(v);
         std::cout  << " uid: " << dn->getUId() << "\n";
         std::cout << "define->getToken(): " << dn->getToken() << "\n";
@@ -497,6 +505,8 @@ namespace adl {
       }
     }
     std::cout << "\n";
+
+    drv.setDependencyChart();
     return res;
   }
 
@@ -571,9 +581,6 @@ namespace adl {
     std::set<std::string> prints;
     for(auto& n: _ast) {
 
-      // fprintf(fp, "ordering = \"out\"");
-      // fprintf(fp, "%d [label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", n->getUId(), (n->getToken()).c_str());
-
       if(n->getToken() == "DEFINE") {
         DefineNode* dn = getDefineNode(n);
 
@@ -584,7 +591,6 @@ namespace adl {
 
         std::string regName = rn->getId();
         prints.insert(regName + "[shape= box, color=green]\n");
-        // fprintf(fp, "%s [shape= box, color=green]\n", regName.c_str());
 
         for(auto&s: stmnts) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
@@ -596,7 +602,6 @@ namespace adl {
             for(auto& o: objs) {
               if(drv.checkDefinitionTable(o) != 0 && drv.checkObjectTable(o) == 0) {
                 prints.insert("  " + o + " -> " + rn->getId() + " [color=\"grey\"]\n");
-                // fprintf(fp, "  %s -> %s [color=\"grey\"]\n", o.c_str() ,(rn->getId()).c_str());
               }
             }
           }
@@ -607,7 +612,6 @@ namespace adl {
               if(p->getToken() == "ID") {
                 if(drv.checkObjectTable(cond->getId()) == 0 || drv.checkRegionTable(cond->getId()) == 0)
                   prints.insert("  " + p->getId() + " -> " + regName + " [color=\"grey\"]\n");
-                // fprintf(fp, "  %s -> %s [color=\"grey\"]\n", (p->getId()).c_str() ,regName.c_str());
               }
             }
           }
@@ -618,7 +622,7 @@ namespace adl {
         }
       }
       if(n->getToken() == "OBJECT") {
-        ObjectNode* on = getObjectNode(n);
+        astObjectNode* on = getObjectNode(n);
         auto stmnts = on->getStatements();
 
         for(auto &s: stmnts) {

@@ -1,11 +1,12 @@
 #include <iostream>
-#include "cutlang_declares.h"
-#include "scanner.hpp"
-#include "Parser.h"
-#include "driver.h"
 #include <sstream>
 #include <string>
 #include <map>
+
+// #include "cutlang_declares.h"
+#include "scanner.hpp"
+#include "Parser.h"
+#include "driver.h"
 
 std::map<std::string,std::string> function_map;
 
@@ -70,30 +71,3 @@ int main(int argc, char **argv) {
   else std::cout << "ERROR\n";
   return res;
 }
-
-// Make sure the selection of muonsVeto has at least one element. line 148.
-// Check for cyclic dependencies
-//
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// What can we do model checking on?
-// Type checking, type inference.
-// Dig down into the system more to find where loops are made. There is ONE main loop through all of the events they want.
-// Where is the c++ file written? A histogram or a Root file is produced.
-// Where do they compile the c++? Not compiled
-//
-// Look at dependencies of source file and the data and catch ASAP in execution.

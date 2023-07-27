@@ -1,0 +1,360 @@
+#info analysis
+#  experiment CMS
+#  id B2G-16-024
+#  title Search for pair production of vector-like T and B quarks in single-lepton final states using boosted jet substructure in proton-proton collisions at sqrts = 13 TeV
+#  publication JHEP 11 (2017) 085
+#  sqrtS 13.0
+#  lumi 2.6 fb
+#  arXiv 1706.03408
+#  hepdata -
+#  doi 10.1007/JHEP11(2017)085
+#  energyunit GeV
+
+# ========================================
+### OBJECT SELECTIONS
+
+# ----------------------------------------
+# Leptons
+
+# Electrons
+# electronsH - for boosted H regions
+object electronsH
+  take Electron
+  select Medium(Electron) == 1 # medium cut based ID
+  select isolationVar(Electron) < 0.2
+  select pT(Electron) > 50
+  select abs(eta(Electron)) < 2.4
+
+# electronsWtight - for boosted W regions
+object electronsWtight
+  take Electron
+  select mvaTight(Electron) == 1 # MVA tight ID
+  select isolationVar(Electron) < 0.2
+  select pT(Electron) > 40
+  select Abs(Eta(Electron)) < 2.1
+
+# electronsWloose - for boosted W regions
+object electronsWloose
+  take Electron
+  select mvaLoose(Electron) == 1 # MVA loose ID
+  select isolationVar(Electron) < 0.4
+  select pT(Electron) > 10
+  select Abs(Eta(Electron)) < 2.1
+  # reject electrons if agreeing with electronsWtight
+  reject mvaTight(Electron) == 1 and isolationVar(Electron) < 0.2
+
+# Muons
+# muonsH - for boosted H regions
+object muonsH
+  take Muon
+  select Medium(Muon) == 1 # cut based medium ID
+  select isolationVar(Muon) < 0.2
+  select pT(Muon) > 47
+  select abs(eta(Muon)) < 2.1
+
+# muonsWtight - for boosted W regions
+object muonsWtight
+  take Muon
+  select Tight(Muon) == 1 # cut based tight ID
+  select isolationVar(Muon) < 0.2
+  select pT(Muon) > 40
+  select Abs(Eta(Muon)) < 2.4
+
+# muonsWloose - for boosted W regions
+object muonsWloose
+  take Muon
+  select Loose(Muon) == 1 # cut based loose ID
+  select isolationVar(Muon) < 0.4
+  select pT(Muon) > 10
+  select Abs(Eta(Muon)) < 2.4
+  # reject muons if agreeing with muonsWtight
+  reject Tight(Muon) == 1 and isolationVar(Muon) < 0.2
+
+# leptons
+object leptonsWloose : Union(electronsWloose, muonsWloose)
+object leptonsWtight : Union(electronsWtight, muonsWtight)
+object leptonsH : Union(electronsH, muonsH)
+
+# ----------------------------------------
+# AK4 related jets and derived objects
+# AK4 jets - for boosted H regions
+object AK4jetsH
+  take Jet
+  select pT(Jet) > 30
+  select abs(Eta(Jet)) < 2.4
+
+# AK4 jets - for boosted W regions
+object AK4jetsW
+  take Jet
+  select pT(Jet) > 30
+  select abs(Eta(Jet)) < 2.4
+  select dR(Jet, leptonsWtight) > 0.4
+
+# b-tagged jets - for boosted W regions
+object bjetsW
+  take AK4jetsW
+  select flavor(AK4jetsW) > 0.8
+
+# ----------------------------------------
+# AK8 related jets and derived objects
+
+# AK8 jets
+object AK8jets
+  take FJet
+  select pT(FJet) > 200
+  select abs(Eta(FJet)) < 2.4
+
+# Boosted Ws
+object Wjets
+  take AK8jets
+  select msoftdrop(AK8jets) [] 65 105
+  select tau2(AK8jets) / tau1(AK8jets) <= 0.6 # n-subjettiness tagging, eq 2
+
+# Boosted Ws without tau21 cut
+object Wjetsm
+  take AK8jets
+  select msoftdrop(AK8jets) [] 65 105
+
+# Boosted Ws without mass cut
+object Wjetstau
+  take AK8jets
+  select tau2(AK8jets) / tau1(AK8jets) <= 0.6 # n-subjettiness tagging, eq. 2
+
+# Boosted Higgses
+object Hcands
+  take AK8jets
+  select msoftdrop(AK8jets) [] 60 160
+  select pT(AK8jets) > 300
+
+# Boosted Higgses - H-tag Type-I
+object HtagsType1
+  take Hcands
+  # require 1 subjet passing b-tagging criteria
+  select (subjet1btag(Hcands) >= 0.8 and subjet2btag(Hcands) < 0.8) or (subjet1btag(Hcands) < 0.8 and subjet2btag(Hcands) >= 0.8)
+
+# Boosted Higgses - H-tag Type-II
+object HtagsType2
+  take Hcands
+  # require 2 subjets passing b-tagging criteria
+  select subjet1btag(Hcands) >= 0.8 and subjet2btag(Hcands) >= 0.8
+
+# Boosted Higgses - H-tag Type-II without mass cut
+object AK8jets2b
+  take AK8jets
+  # require 2 subjets passing b-tagging criteria
+  select subjet1btag(AK8jets) >= 0.8 and subjet2btag(AK8jets) >= 0.8
+
+# b-tagged jets - for boosted H regions
+object bjetsH
+  take AK4jetsH
+  select flavor(AK4jetsH) > 0.8
+  select dR(AK4jetsH, HtagsType1) > 0.8
+  select dR(AK4jetsH, HtagsType2) > 0.8
+
+# ========================================
+### EVENT VARIABLES
+
+define ST = MET + pT(leptonsH[0]) + fHT(AK4jetsH)
+
+# The minimum mass construted from the lepton (l) and a b-tagged AK4 jet
+define minmlb = m(leptonsWtight[0] + bjetsW[-1])
+
+# The minimum mass of the lepton and any AK4 jet
+define minmlj = m(leptonsWtight[0] + AK4jetsW[-1])
+
+# Alias for nsubjettiness variable tau21
+define tau21Wjetsm = tau2(Wjetsm) / tau1(Wjetsm)
+
+# ========================================
+### EVENT SELECTION
+
+# ----------------------------------------
+# Boosted Higgs regions
+# Signal regions
+region boostedH
+  select ALL
+  select size(leptonsH) == 1
+  select size(AK4jetsH) >= 3
+  select size(AK8jets) >= 2
+  select size(electronsH) == 1 ? pT(AK8jets[0]) >= 250 : ALL
+  select size(electronsH) == 1 ? pT(AK4jetsH[1]) >= 70 : ALL
+  select ST > 800
+  select size(HtagsType1) >= 0
+  select size(HtagsType2) >= 0
+  select size(bjetsH) >= 1
+
+region boostedH2b
+  boostedH
+  select size(HtagsType2) >= 1
+  histo hST, "ST (GeV)", 750 875 1000 1125 1500 2000 2500 3000 4500 6500, ST
+
+region boostedH1b
+  boostedH
+  select size(HtagsType1) >= 1
+  select size(HtagsType2) == 0
+  histo hST, "ST (GeV)", 750 875 1000 1125 1500 2000 2500 3000 4500 6500, ST
+
+region boostedHAK82b # not a search region, only for histogramming
+  boostedH
+  select size(AK8jets2b) >= 1
+  histo hmAK8jet2b , "mass of 1st AK8 jet with 2bs", 15, 0, 300,  msoftdrop(AK8jets2b[0])
+
+# Control regions
+region boostedHCRttjets
+  select size(electronsH) == 1 or size(muonsH) == 1
+  select size(AK4jetsH) >= 3
+  select size(AK8jets) >= 2
+  select size(electronsH) == 1 ? pT(AK8jets[0]) >= 250 : ALL
+  select size(electronsH) == 1 ? pT(AK4jetsH[1]) >= 70 : ALL
+  select ST > 800
+  select size(HtagsType1) >= 0
+  select size(HtagsType2) >= 0
+  select size(bjetsH) >= 2
+  select MET > 100
+  select size(HtagsType1) == 1
+  select size(HtagsType2) == 0
+  histo hST, "ST (GeV)", 750 875 1000 1125 1500 2000 2500 3000 4500 6500, ST
+
+region boostedHCRWjets
+  select size(electronsH) == 1 or size(muonsH) == 1
+  select size(AK4jetsH) >= 3
+  select size(AK8jets) >= 2
+  select size(electronsH) == 1 ? pT(AK8jets[0]) >= 250 : ALL
+  select size(electronsH) == 1 ? pT(AK4jetsH[1]) >= 70 : ALL
+  select ST > 800
+  select size(HtagsType1) >= 0
+  select size(HtagsType2) >= 0
+  select size(bjetsH) == 0
+  select MET > 100
+  select size(HtagsType1) == 1
+  select size(HtagsType2) == 0
+  histo hST, "ST (GeV)", 750 875 1000 1125 1500 2000 2500 3000 4500 6500, ST
+
+# ----------------------------------------
+# Boosted W regions
+# Signal regions
+region boostedW
+  select size(leptonsWtight) == 1
+  select size(leptonsWloose) == 0
+  select size(HtagsType1) + size(HtagsType2) == 0
+  select size(AK4jetsW) >= 3
+  select pT(AK4jetsW[0]) > 300
+  select pT(AK4jetsW[1]) > 150
+  select pT(AK4jetsW[2]) > 100
+  select MET > 75
+  histo hdRlepWjet2 , "dR(l,j1)" , 50, 0, 5, dR(leptonsWtight[0], AK4jetsW[1])
+  select dR(leptonsWtight[0], AK4jetsW[1]) > 1
+  select size(bjetsW) > 0 ? minmlb ~= 0 : ALL
+  select minmlj ~= 0
+  histo hnbjets , "number of b jets" , 6, 0, 6, size(bjetsW)
+  histo hnWjets , "number of W jets" , 4, 0, 4, size(Wjets)
+
+region boostedWtau # not a search region, only for histogramming
+  boostedW
+  select size(Wjetstau) > 0
+  histo hWjetsm , "m of W jets" , 50, 0, 500, m(Wjetstau)
+
+region boostedWm # not a search region, only for histogramming
+  boostedW
+  select size(Wjetsm) > 0
+  histo hWjetstau21 , "tau21 of W jets" , 50, 0, 1, tau21Wjetsm
+
+region boostedW1
+  boostedW
+  select size(Wjets) == 0
+  select size(bjetsW) == 0
+  select size(AK4jetsW) >= 4
+  histo hminmlj, "min(m(l,j))", 50, 0, 1000, minmlj
+
+region boostedW2
+  boostedW
+  select size(Wjets) == 0
+  select size(bjetsW) == 1
+  select size(AK4jetsW) >= 4
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedW3
+  boostedW
+  select size(Wjets) == 0
+  select size(bjetsW) == 2
+  select size(AK4jetsW) >= 4
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedW4
+  boostedW
+  select size(Wjets) == 0
+  select size(bjetsW) >= 3
+  select size(AK4jetsW) >= 4
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedW5
+  boostedW
+  select size(Wjets) >= 1
+  select size(bjetsW) == 0
+  histo hminmlj, "min(m(l,j))", 50, 0, 1000, minmlj
+
+region boostedW6
+  boostedW
+  select size(Wjets) >= 1
+  select size(bjetsW) == 1
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedW7
+  boostedW
+  select size(Wjets) >= 1
+  select size(bjetsW) == 2
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedW8
+  boostedW
+  select size(Wjets) >= 1
+  select size(bjetsW) >= 3
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+# Control regions: W+jets
+region boostedWCRWjets
+  select size(leptonsWtight) == 1
+  select size(leptonsWloose) == 0
+  select size(HtagsType1) + size(HtagsType2) == 0
+  select size(AK4jetsW) >= 3
+  select pT(AK4jetsW[0]) > 300
+  select pT(AK4jetsW[1]) > 150
+  select pT(AK4jetsW[2]) > 100
+  select MET > 75
+  select dR(leptonsWtight[0], AK4jetsW[1]) <= 1
+  select size(bjetsW) == 0
+  select minmlj ~= 0
+
+region boostedWCRWjets0W
+  boostedWCRWjets
+  select size(Wjets) == 0
+  histo hminmlj, "min(m(l,j))", 50, 0, 1000, minmlj
+
+region boostedWCRWjetsW
+  boostedWCRWjets
+  select size(Wjets) >= 1
+  histo hminmlj, "min(m(l,j))", 50, 0, 1000, minmlj
+
+# Control regions: tt+jets
+region boostedWCRttjets
+  select size(leptonsWtight) == 1
+  select size(leptonsWloose) == 0
+  select size(HtagsType1) + size(HtagsType2) == 0
+  select size(AK4jetsW) >= 3
+  select pT(AK4jetsW[0]) > 300
+  select pT(AK4jetsW[1]) > 150
+  select pT(AK4jetsW[2]) > 100
+  select MET > 75
+  select dR(leptonsWtight[0], AK4jetsW[1]) <= 1
+  select size(bjetsW) >= 1
+  select minmlb ~= 0
+
+region boostedWCRttjets1W
+  boostedWCRttjets
+  select size(Wjets) == 1
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb
+
+region boostedWCRttjets2W
+  boostedWCRttjets
+  select size(Wjets) >= 2
+  histo hminmlb, "min(m(l,b))", 50, 0, 1000, minmlb

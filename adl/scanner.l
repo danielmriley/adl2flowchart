@@ -22,7 +22,7 @@
 "take"|"using"                  { return adl::Parser::make_TAKE(YYText(), adl::location()); }
 "select"|"command"|"cut"        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
 "cmd"|"reject"|"bin"            { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
-"weight"                        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"weight"|"trigger"              { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
 "histo"                         { return adl::Parser::make_HISTO(YYText(), adl::location()); }
 "info"                          { return adl::Parser::make_INFO(YYText(), adl::location()); }
 "tabletype"                     { return adl::Parser::make_TABLETYPE(YYText(), adl::location()); }
@@ -51,8 +51,8 @@
 "("                      { return adl::Parser::make_LPAR(YYText(), adl::location()); }
 ")"                      { return adl::Parser::make_RPAR(YYText(), adl::location()); }
 
-"{"                      { return adl::Parser::make_LCBRACKET(YYText(), adl::location()); }
-"}"                      { return adl::Parser::make_RCBRACKET(YYText(), adl::location()); }
+"{"                      { return adl::Parser::make_LCBRACE(YYText(), adl::location()); }
+"}"                      { return adl::Parser::make_RCBRACE(YYText(), adl::location()); }
 
 "["                      { return adl::Parser::make_LBRACKET(YYText(), adl::location()); }
 "]"                      { return adl::Parser::make_RBRACKET(YYText(), adl::location()); }

@@ -576,6 +576,10 @@ namespace adl {
     std::cout << "\n==== PRINT FLOW CHART ====\n";
     fp = fopen("fc.dot", "w");
     fprintf(fp, "digraph print {\n");
+    fprintf(fp, "ordering = \"out\"");
+    // fprintf(fp, "overlap = prism");
+    // fprintf(fp, "overlap_scaling = 0.01");
+    fprintf(fp, "ratio = 1.618");
 
     ExprVector _ast = drv.ast;
     std::set<std::string> prints;

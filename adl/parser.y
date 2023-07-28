@@ -312,4 +312,5 @@ id : ID                     { $$ = new adl::VarNode(incrementCounter(), "ID", $1
 
 void adl::Parser::error(const location_type& l, const std::string& msg) {
     std::cerr << "ERROR: line " << incrementCounter() << " : " << msg << "\n";
+    std::cerr << " : Last token was " << scanner.YYText() << "\n";
 }

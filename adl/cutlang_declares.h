@@ -160,7 +160,7 @@ namespace adl {
       Node * condition;
   public:
       IfNode(Node* c,Node* l, Node* r,  std::string s ){
-        
+
       }
   };
 
@@ -363,10 +363,7 @@ namespace adl {
 
 
 
-  void fillFuncMaps(std::map<std::string, PropFunction> &function_map,
-                    std::map<std::string, LFunction> &lfunction_map,
-                    std::map<std::string, UnFunction> &unfunction_map,
-                    std::map<std::string, SFunction> &sfunction_map) ;
+
 }
 
 #endif

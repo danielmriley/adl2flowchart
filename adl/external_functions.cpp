@@ -7,8 +7,6 @@
 #include <fstream>
 #include <cctype>
 
-#include "cutlang_declares.h"
-
 namespace adl {
 
   std::string toupper(std::string s) {

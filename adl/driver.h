@@ -5,7 +5,7 @@
 #include "Parser.h"
 #include "ast.hpp"
 #include "cutlang_declares.h"
-#include "semantic_checks.h"
+// #include "NodeTree.h"
 
 #include <map>
 #include <set>
@@ -15,7 +15,18 @@
 #include <fstream>
 #include <algorithm>
 
+class Node;
+class myParticle;
+struct cntHisto;
+class dbxParticle;
+class AnalysisObjects;
+
 namespace adl {
+
+  typedef double (*UnFunction)(double);
+  typedef double (*LFunction)(dbxParticle*,dbxParticle*);
+  typedef double (*PropFunction)(dbxParticle*);
+  typedef double (*SFunction)(AnalysisObjects*, std::string, float);
 
   class Driver
   {
@@ -24,7 +35,7 @@ namespace adl {
     friend class Parser;
     friend class Scanner;
 
-    Driver();
+    Driver(std::istream *in);
 
     int parse();
     int parse(std::string);
@@ -75,6 +86,10 @@ namespace adl {
     Node* createParentObject(std::string id);
     myParticle* createParticle(VarNode* vn);
     void gatherParticles(Expr* body, std::vector<myParticle*> &particles);
+    void fillFuncMaps(std::map<std::string, PropFunction> &function_map,
+                      std::map<std::string, LFunction> &lfunction_map,
+                      std::map<std::string, UnFunction> &unfunction_map,
+                      std::map<std::string, SFunction> &sfunction_map) ;
     // std::map<std::string,pair<particleType,std::string>> particle_map;
 
   private:
@@ -104,5 +119,7 @@ namespace adl {
     void incrementLocation(unsigned int loc);
   }; // end driver class
 } // end adl namespace
+
+#include "semantic_checks.h"
 
 #endif

@@ -35,9 +35,10 @@ int main(int argc, char **argv) {
   set_function_map();
   // for(auto& m: function_map) std::cout << m.first << " -> " << m.second << "\n";
   //exit(0);
-  adl::Driver drv;
   std::string fileName = argv[argc - 1];
-  int res = drv.parse(fileName);
+  std::ifstream fin(fileName);
+  adl::Driver drv(&fin);
+  int res = drv.parse();
 
 
   if(res == 0) std::cout << "Parsing successful!\n";
@@ -64,6 +65,13 @@ int main(int argc, char **argv) {
                  &adl::NameInitializations, &adl::TRGValues,
                  &adl::ListTables, &adl::cntHistos, &adl::systmap);
   }
+  std::cout << "\n\nPART: ";
+  for(auto& l: adl::ListParts) std::cout << l.first << ", ";
+  std::cout << "\n\nOBJ: ";
+  for(auto& l: adl::ObjectCuts) std::cout << l.first << ", ";
+  std::cout << "\n\nNODE: ";
+  for(auto& l: adl::NodeVars) std::cout << l.first << ", ";
+  std::cout << "\n";
   // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
   // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";
   // if(res == 0) for(auto d: drv.regionTable) std::cout << "r: " << d << "\n";

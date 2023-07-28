@@ -17,9 +17,9 @@ class Driver;
 
 class Scanner : public yyFlexLexer {
 public:
-  Scanner(Driver& d) : driver(d) {}
-	virtual ~Scanner() {}
-	virtual adl::Parser::symbol_type adl_yylex();
+  Scanner(Driver& d, std::istream *in) : yyFlexLexer(in), driver(d) {}
+	~Scanner() {}
+	adl::Parser::symbol_type adl_yylex();
 
 private:
     Driver& driver;

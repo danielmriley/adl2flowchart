@@ -1,7 +1,7 @@
 // Semantic passes over the ADL AST.
 
-#ifndef SEMANTIC_CHECKS_CPP
-#define SEMANTIC_CHECKS_CPP
+#ifndef SEMANTIC_CHECKS_H
+#define SEMANTIC_CHECKS_H
 
 #include <iostream>
 #include <string>
@@ -22,12 +22,12 @@ namespace adl {
   CommandNode* getCommandNode(Expr* expr);
   ITENode* getITENode(Expr* expr);
 
-
   int binOpCheck(Expr* b);
   int printBinNode(Expr*, BinNode* b);
   int printDefines(Expr* n);
   int printRegions(Expr* n);
   int printObjects(Expr* n);
+  int printITE(Expr* n, Expr* b);
 
   int print(ExprVector& _ast);
   int printAST(ExprVector& _ast);

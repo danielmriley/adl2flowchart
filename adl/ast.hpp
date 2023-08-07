@@ -580,6 +580,7 @@ namespace adl {
       condition = cond;
       thenBranch = then;
       elseBranch = _else;
+      tok = t;
     }
 
     ITENode(ITENode& iten) {
@@ -587,6 +588,7 @@ namespace adl {
       condition = iten.condition;
       thenBranch = iten.thenBranch;
       elseBranch = iten.elseBranch;
+      tok = iten.tok;
     }
 
     Expr* clone() { return new ITENode(*this); }
@@ -603,7 +605,7 @@ namespace adl {
     int getUId() { return uid; }
 
 
-    Expr* getCondtion() { return condition; }
+    Expr* getCondition() { return condition; }
     Expr* getThenBranch() { return thenBranch; }
     Expr* getElseBranch() { return elseBranch; }
 

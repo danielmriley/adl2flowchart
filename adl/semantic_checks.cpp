@@ -77,6 +77,12 @@ namespace adl {
     return 0;
   }
 
+  int printNum(Expr* n, Expr* b) {
+    NumNode* e = getNumNode(b);
+    printNode(e->getUId(), (e->getId()).c_str(), n->getUId(), e->getUId());
+    return 0;
+  }
+
   int printVar(Expr* n, Expr* b) {
     VarNode *e = getVarNode(b);
     std::cout << "VarNode: " << e->getId() << " ";
@@ -183,6 +189,27 @@ namespace adl {
     return 0;
   }
 
+  int printITE(Expr* n, Expr* b) {
+    if(b->getToken() == "ITE") {
+      ITENode* ite = getITENode(b);
+      Expr* i = ite->getCondition();
+      Expr* t = ite->getThenBranch();
+      Expr* e = ite->getElseBranch();
+
+      if(binOpCheck(i) == 0) {
+        printBinNode(n, getBinNode(i));
+      }
+      if(binOpCheck(t) == 0) {
+        printBinNode(n, getBinNode(t));
+      }
+      if(binOpCheck(e) == 0) {
+        printBinNode(n, getBinNode(e));
+      }
+    }
+
+    return 0;
+  }
+
   int printDefines(Expr* n) {
     VarNode* var = getVarNode(getDefineNode(n)->getVar());
     printVar(n,var);
@@ -198,6 +225,9 @@ namespace adl {
     }
     else if(b->getToken() == "ID") {
       printVar(n,b);
+    }
+    else if(b->getToken() == "INT" || b->getToken() == "REAL") {
+      printNum(n,b);
     }
 
     return 0;
@@ -215,7 +245,6 @@ namespace adl {
     for(auto& stmnt: ev) {
       Expr* cond = static_cast<CommandNode*>(stmnt)->getCondition();
       printNode(stmnt->getUId(), (stmnt->getToken()).c_str(), stnode->getUId(), stmnt->getUId());
-
       if(binOpCheck(cond) == 0) {
         BinNode* bin = getBinNode(cond);
         printBinNode(stmnt, bin);
@@ -225,6 +254,10 @@ namespace adl {
       }
       else if(cond->getToken() == "ID") {
         printVar(stmnt,cond);
+      }
+      else if(cond->getToken() == "ITE") {
+        std::cout << "NEED TO PRINT ITE NODE\n";
+        printITE(stmnt, cond);
       }
     }
 

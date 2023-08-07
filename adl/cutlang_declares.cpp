@@ -141,6 +141,42 @@ namespace adl {
   void createNewTruth (AnalysisObjects* ao,std::vector<Node*> *criteria,std::vector<myParticle *>* particles, std::string name, std::string basename) {}
   void createNewTrack (AnalysisObjects* ao,std::vector<Node*> *criteria,std::vector<myParticle *>* particles, std::string name, std::string basename) {}
 
+  std::vector<TLorentzVector> fmegajets(std::vector<TLorentzVector> myjets, int p1) {
+  // p1 is unused, not to be deleted for compatibility reasons.
+      std::vector<TLorentzVector> mynewjets;
+      return mynewjets;
+
+  }
+
+    // MR
+  double fMR(std::vector<TLorentzVector> j){
+      double temp;
+      return temp;
+  }
+
+    // MTR
+  double fMTR(std::vector<TLorentzVector> j, TVector2 amet){
+      double temp;
+      return temp;
+  }
+  double fMTR2(std::vector<TLorentzVector> j, TLorentzVector amet){
+    double temp;
+    return temp;
+  }
+
+    // MT
+  double fMT(std::vector<TLorentzVector> v){
+    return 0.0;
+  }
+
+  double userfuncA(AnalysisObjects* ao, std::string s, int id, std::vector<TLorentzVector> (*func)(std::vector<TLorentzVector> jets, int p1) ) { return 0.0; }
+  double userfuncB(AnalysisObjects* ao, std::string s, int id, double (*func)(std::vector<TLorentzVector> jets ) ) { return 0.0; }
+  double userfuncC(AnalysisObjects* ao, std::string s, int id, double (*func)(std::vector<TLorentzVector> jets, TVector2 amet ) ) { return 0.0; }
+  double userfuncD(AnalysisObjects* ao, std::string s, int id, TLorentzVector alv, double (*func)(std::vector<TLorentzVector> jets, TLorentzVector amet )) { return 0.0; }
+  double userfuncE(AnalysisObjects* ao, std::string s, int id, TLorentzVector l1, TLorentzVector l2,  TLorentzVector m1,
+                                                              double (*func)(TLorentzVector la, TLorentzVector lb, TLorentzVector amet ) ) { return 0.0; }
+  double userfuncF(AnalysisObjects* ao, std::string s, int id, double l1, double l2,  double m1, double l3,
+                                                              double (*func)(double la, double lb, double amet, double lab ) ) { return 0.0; }
 
 
 }

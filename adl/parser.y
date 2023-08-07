@@ -199,8 +199,8 @@ bins : bins num                                 { histoBinsLists.push_back($2); 
 chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
              | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(incrementCounter(), "LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
-             | chain QUES chain COLON chain                 { $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
-             | chain QUES chain                             { $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
+             | chain QUES chain COLON chain                 { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
+             | chain QUES chain                             { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
              ;
 
@@ -219,13 +219,13 @@ condition : expr                        { $$ = $1; }
                                           Expr* en = $1->clone(incrementCounter());
                                           Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$3);
                                           Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",en,"<=",$4);
-                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"AND",comp2);
+                                          $$ = new adl::BinNode(incrementCounter(), "LOGICOP",comp1,"AND",comp2);
                                         }
           | expr EXCLUSIVE num num      {
                                           Expr* en = $1->clone(incrementCounter());
                                           Expr* comp1 = new adl::BinNode(incrementCounter(), "COMPAREOP",en,"<=",$3);
                                           Expr* comp2 = new adl::BinNode(incrementCounter(), "COMPAREOP",$1,">=",$4);
-                                          $$ = new adl::BinNode(incrementCounter(), "COMPAREOP",comp1,"OR",comp2);
+                                          $$ = new adl::BinNode(incrementCounter(), "LOGICOP",comp1,"OR",comp2);
                                         }
           ;
 

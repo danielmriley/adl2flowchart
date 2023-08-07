@@ -44,33 +44,42 @@ int main(int argc, char **argv) {
   if(res == 0) std::cout << "Parsing successful!\n";
 
   if(res == 0) std::cout << "ast.size(): " << drv.ast.size() << "\n";
-  if(res == 0) { drv.setTables(); }
+  if(res == 0) { res = drv.setTables(); }
   else std::cerr << "Failed Parsing()\n";
 
-  if(res == 0) { adl::checkDecl(drv); }
+  if(res == 0) { res = adl::checkDecl(drv); }
   else std::cerr << "Failed setTables()\n";
 
-  if(res == 0) { adl::typeCheck(drv); }
+  if(res == 0) { res = adl::typeCheck(drv); }
   else std::cerr << "Failed checkDecl()\n";
 
-  if(res == 0) { drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
+  if(res == 0) { res = drv.visitAST(adl::printAST); } // run "dot -Tpdf ast.dot -o ast.pdf" to create a PDF
   else std::cerr << "Failed typeCheck()\n";
 
-  if(res == 0) { adl::printFlowChart(drv); } // run "dot -Tpdf fc.dot -o fc.pdf" to create a PDF
+  if(res == 0) { res = adl::printFlowChart(drv); } // run "dot -Tpdf fc.dot -o fc.pdf" to create a PDF
   else std::cerr << "Failed printAST()\n";
 
   if(res == 0) {
-    drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,
+    res = drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,
                  &adl::BinCuts, &adl::ObjectCuts,
                  &adl::NameInitializations, &adl::TRGValues,
                  &adl::ListTables, &adl::cntHistos, &adl::systmap);
   }
   std::cout << "\n\nPART: ";
-  for(auto& l: adl::ListParts) std::cout << l.first << ", ";
+  for(auto& l: adl::ListParts) {
+    std::cout << l.first << ", ";
+    if(l.second[0] == nullptr) std::cout << "NULLPTR";
+  }
   std::cout << "\n\nOBJ: ";
-  for(auto& l: adl::ObjectCuts) std::cout << l.first << ", ";
+  for(auto& l: adl::ObjectCuts) {
+    std::cout << l.first << ", ";
+    if(l.second == nullptr) std::cout << "NULLPTR";
+  }
   std::cout << "\n\nNODE: ";
-  for(auto& l: adl::NodeVars) std::cout << l.first << ", ";
+  for(auto& l: adl::NodeVars) {
+    std::cout << l.first << ", ";
+    if(l.second == nullptr) std::cout << "NULLPTR";
+  }
   std::cout << "\n";
   // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
   // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";

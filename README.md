@@ -1,9 +1,21 @@
-# atom_smasher
-A compiler/interpreter for the Analysis Description Language
+##ADL Flowchart Generation
 
-## To build and run
-In `adl/` run the `make` command to build.
+Run `make` and the executeable `smash` will be generated.
 
-To run a small example: `./adl < ../examples/small_samples/defines_regions.adl`
+To run:
 
-Current work is to flesh out the AST.
+```
+./smash <FILE>
+```
+
+Two files will be made.
+`ast.dot` and `fc.dot`
+
+Run:
+
+```
+dot -Tpdf ast.dot -o ast.pdf
+dot -Tpdf fc.dot -o fc.pdf
+```
+
+to create the appropriate PDF.

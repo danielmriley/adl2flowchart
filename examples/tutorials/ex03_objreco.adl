@@ -8,7 +8,7 @@ info analysis
 # OBJECT RECONSTRUCTION
 
 # The "define" keyword is used for assigning aliases, i.e. shorthand names to quantities.
-define Zeecand = Ele[0] Ele[1]
+define Zeecand = Ele[0] + Ele[1]
 # Equivalent ways to write the above expression are
 # define Zeecand : Ele[0] Ele[1]
 # define Zeecand : Ele[0] + Ele[1]

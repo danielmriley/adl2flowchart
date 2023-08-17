@@ -4,10 +4,8 @@
 
 namespace adl {
 
-  int check_object_table(std::string id);
-  int check_property_table(std::string id);
-  int check_function_table(std::string id);
   std::string tolower(std::string s);
+  std::string toupper(std::string s);
 
   FunctionNode* getFunctionNode(Expr* expr) {
     return static_cast<FunctionNode*>(expr);
@@ -39,6 +37,10 @@ namespace adl {
 
   CommandNode* getCommandNode(Expr* expr) {
     return static_cast<CommandNode*>(expr);
+  }
+
+  HistoNode* getHistoNode(Expr* expr) {
+    return static_cast<HistoNode*>(expr);
   }
 
   ITENode* getITENode(Expr* expr) {
@@ -325,6 +327,7 @@ namespace adl {
   }
 
   std::string typeCheck(Expr* node, Driver& drv) {
+    std::string type = "UNKNOWN";
     if(binOpCheck(node) == 0) {
       typeCheck(getBinNode(node)->getLHS(),drv);
       typeCheck(getBinNode(node)->getRHS(),drv);
@@ -332,31 +335,30 @@ namespace adl {
 
     std::cout << "typecheck token: " << node->getToken() << "\n";
     if(node->getToken() == "INT") { std::cout << " : INTEGER\n"; return node->getToken(); }
-    if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; }
+    if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; return node->getToken(); }
     if(node->getToken() == "ID") {
       std::cout << "VAR := " << node->getId() << " \n";
       VarNode* vn = getVarNode(node);
       if(vn->getType() == "") {
         std::cout << "vn type empty\n";
-        for(auto& obj: drv.objectTable) {
-          if(obj.first == vn->getId()) {
-            vn->setType(obj.second);
-          }
-        }
+        vn->setType(drv.findDep(vn->getId()));
         std::cout << "Type set: " << vn->getType() << "\n";
+        type = vn->getType();
       }
       else {
         std::cout << "Type Found: " << vn->getType() << "\n";
+        type = vn->getType();
       }
     }
     if(node->getToken() == "FUNCTION") {
       // Here the function input and output should be checked.
       std::cout << "FUNCTION NODE\n";
     }
-    return "UNKNOWN\n";
+    return type;
   }
 
   int typeCheck(Driver& drv) {
+    std::string type;
     for(auto& v: drv.ast) {
       std::string token = v->getToken();
       std::cout << "TypeCheck token: " << token << "\n";
@@ -366,13 +368,14 @@ namespace adl {
         Expr* body = define->getBody();
         if(binOpCheck(body) == 0) {
           BinNode* bin = getBinNode(body);
-          typeCheck(bin->getLHS(),drv);
-          typeCheck(bin->getRHS(),drv);
+          type = typeCheck(bin->getLHS(),drv);
+          type = typeCheck(bin->getRHS(),drv);
+          drv.dependencyChart[type].push_back(define->getId());
         }
         if(body->getToken() == "FUNCTION") {
-          typeCheck(body,drv);
-
+          type = typeCheck(body,drv);
         }
+
       }
       if(token == "REGION") {
         std::cout << "\n====region====\n";
@@ -409,6 +412,16 @@ namespace adl {
         }
       }
     }
+    std::cout << "\n==== dependency chart ====\n\n";
+    for(auto &d : drv.dependencyChart) {
+      std::cout << d.first << "\n  ";
+
+      for(auto &v : d.second) {
+        std::cout << v << ", ";
+      }
+      std::cout << "\n";
+    }
+    std::cout << "\n";
     return 0;
   }
 
@@ -472,6 +485,8 @@ namespace adl {
     // Doesn't check function parameters yet...
     int res = 0;
     for(auto v: drv.ast) {
+      std::cout << "RES: " << res << "\n";
+      if(res == 1) { return res; }
       std::string token = v->getToken();
       if(token == "OBJECT") {
         std::cout << "\n==== object sem checks ====\n";
@@ -487,7 +502,7 @@ namespace adl {
             if(tolower(var) == "union") {
               std::cout << "UNION function\n";
             }
-            else if(check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
+            else if(drv.check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
               printError(var);
               res = 1;
             }
@@ -507,7 +522,7 @@ namespace adl {
 //          if(s->getToken() == "histo") continue;
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
           std::cout << "cond->getId(): " << cond->getId() << "\n";
-          if(s->getId() == "" || checkTables(drv,cond) == 0) { std::cout << "continuing\n"; continue; }
+          if(s->getId() == "" || toupper(s->getToken()) == "HISTO" || checkTables(drv,cond) == 0) { std::cout << "continuing\n"; continue; }
           if(binOpCheck(cond) == 0) {
             BinNode* bin = getBinNode(cond);
             res = parseBinNode(drv, bin);

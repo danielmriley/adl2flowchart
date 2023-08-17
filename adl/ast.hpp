@@ -511,15 +511,12 @@ namespace adl {
   class HistoNode : public Expr {
   public:
     HistoNode(int _uid, Token t, Expr* _id, std::string _desc,
-                  ExprVector _ints, ExprVector _nums, ExprVector _bins, ExprVector _funcs) {
+                  ExprVector _params) {
       uid = _uid;
-      tok = t;
+      tok = toupper(t);
       id = _id;
       desc = _desc;
-      ints = _ints;
-      nums = _nums;
-      bins = _bins;
-      funcs = _funcs;
+      params = _params;
     }
 
     HistoNode(HistoNode& hn) {
@@ -527,10 +524,7 @@ namespace adl {
       tok = hn.tok;
       id = hn.id;
       desc = hn.desc;
-      ints = hn.ints;
-      nums = hn.nums;
-      bins = hn.bins;
-      funcs = hn.funcs;
+      params = hn.params;
     }
 
     HistoNode(HistoNode& hn, int _uid) {
@@ -538,10 +532,7 @@ namespace adl {
       tok = hn.tok;
       id = hn.id;
       desc = hn.desc;
-      ints = hn.ints;
-      nums = hn.nums;
-      bins = hn.bins;
-      funcs = hn.funcs;
+      params = hn.params;
     }
 
     Expr* clone() { return new HistoNode(*this); }
@@ -559,18 +550,12 @@ namespace adl {
     std::string getId() { return id->getId(); }
     int getUId() { return uid; }
     std::string getDescription() { return desc; }
-    ExprVector getInts() { return ints; }
-    ExprVector getNums() { return nums; }
-    ExprVector getBins() { return bins; }
-    ExprVector getFuncs() { return funcs; }
+    ExprVector getParams() { return params; }
 
   private:
     Expr* id;
     std::string desc;
-    ExprVector ints;
-    ExprVector nums;
-    ExprVector bins;
-    ExprVector funcs;
+    ExprVector params;
   };
 
   class ITENode : public Expr {

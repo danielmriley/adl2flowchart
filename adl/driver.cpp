@@ -4,7 +4,20 @@ int cutcount;
 int bincount;
 
 namespace adl {
-  std::string toupper(std::string s);
+
+  std::string toupper(std::string s) {
+    for(int i = 0; i < s.size(); i++) {
+      s[i] = std::toupper(s[i]);
+    }
+    return s;
+  }
+
+  std::string tolower(std::string s) {
+    for(int i = 0; i < s.size(); i++) {
+      s[i] = std::tolower(s[i]);
+    }
+    return s;
+  }
 
   Driver::Driver(std::istream *in) : scanner(*this, in), parser(scanner, *this), loc(0) {
     fillTypeTable();
@@ -21,6 +34,22 @@ namespace adl {
     ListTables = new std::map<std::string, std::pair<std::vector<float>, bool> >;
     cntHistos = new std::map<std::string, std::vector<cntHisto> >;
     systmap = new std::map<int, std::vector<std::string> >;
+
+    // Set file path.
+    std::filesystem::path p = std::filesystem::current_path();
+    while(true) {
+      std::cout << "PATH: " << p << "\n";
+      auto pitr = p.end();
+      pitr--;
+      if(pitr->string() == "atom_smasher") {
+        break;
+      }
+      p = p.parent_path();
+    }
+    std::filesystem::path lib_path(p.string() + "/adl");
+    std::cout << "LIBPATH: " << lib_path << "\n";
+    libPath = lib_path;
+
   }
 
   int Driver::parse() {
@@ -38,6 +67,49 @@ namespace adl {
     // }
 
     return parser.parse();
+  }
+
+  int Driver::check_function_table(std::string id) {
+    std::ifstream fin(libPath.string() + "/" + functionsLib);
+    std::string input;
+
+    while(fin >> input) {
+      if(id == input) {
+        std::cout << "function " << id << " is REGISTERED\n";
+        fin.close();
+        return 0;
+      }
+    }
+    std::cout << "ERROR: external function " << id << " is not found\n";
+    fin.close();
+    return 1;
+  }
+
+  int Driver::check_property_table(std::string id) {
+    std::ifstream fin(libPath.string() + "/" + propertiesLib);
+    std::string input;
+    id = toupper(id);
+
+    while(fin >> input) {
+      input = toupper(input);
+      if(id == input) {
+        std::cout << id << " is a PROPERTY\n";
+        fin.close();
+        return 0;
+      }
+    }
+    std::cout << id << " is not a property\n";
+    fin.close();
+    return 1;
+  }
+
+  int Driver::check_object_table(std::string id) {
+    id = toupper(id);
+    auto itr = objectTable.find(id);
+    if(itr == objectTable.end()) {
+      return 1;
+    }
+    return 0;
   }
 
   void Driver::fillParentObjectsMap() {
@@ -84,12 +156,18 @@ namespace adl {
   }
 
   void Driver::loadFromLibraries() {
-    std::ifstream fin("./adl/ext_objs.txt");
+    std::string path = libPath.string() + "/" + objsLib;
+    std::cout << "PATH: " << path << "\n";
+    std::ifstream fin(path);
+    if(!fin.good()) {
+      std::cerr << "ERROR: Cannot load library\n";
+    }
     std::string input;
 
     while(fin >> input) {
       input = toupper(input);
       addObject(input,std::string("PARENT"));
+      dependencyChart[input].push_back(input);
     }
     fin.close();
   }
@@ -102,11 +180,11 @@ namespace adl {
       rhsType = getBinType(binExpr->getRHS());
       if(lhsType == rhsType) return lhsType;
       else {
-        // std::cout << "ERROR: There is a type mismatch\n";
+        std::cout << "ERROR: There is a type mismatch\n";
         return "";
       }
     }
-    else return static_cast<VarNode*>(expr)->getType();
+    else { return static_cast<VarNode*>(expr)->getType(); }
   }
 
   std::string Driver::getObjectDeclType(std::string s) {
@@ -130,6 +208,7 @@ namespace adl {
         else if(ast[i]->getToken() == "ID") {
           defType = static_cast<VarNode*>(ast[i])->getType();
         }
+        std::cout << "ADDING DEFINE: " << ast[i]->getId() << "\n";
         addDefine(ast[i]->getId());
       }
       else if(token == "OBJECT") {
@@ -328,6 +407,7 @@ namespace adl {
             Expr* cond = static_cast<CommandNode*>(s)->getCondition();
             std::string var = cond->getId();
             std::string varDeclType = getObjectDeclType(var);
+            std::cout << "VARDECL TYPE: " << varDeclType << "\n";
             if(varDeclType != "NOT FOUND" && varDeclType == "PARENT") {
               on->setObjectType(var);
               dependencyChart[var].push_back(on->getId());
@@ -361,10 +441,23 @@ namespace adl {
     std::cout << "\n";
   }
 
+  std::string Driver::getVarNodeType(std::string vn) {
+    for(auto& chart: dependencyChart) {
+      for(auto& v: chart.second) {
+        if(toupper(v) == toupper(vn)) {
+          return chart.first;
+        }
+      }
+    }
+    return "";
+  }
+
   myParticle* Driver::createParticle(VarNode* vn) {
     myParticle* part = new myParticle;
-    part->type = typeTable[toupper(vn->getType())];
-    std::cout << "SIZE: " << vn->getAccSize() << std::endl;
+    std::string type = getVarNodeType(vn->getId());
+    std::cout << "VARTYPE: " << type << "\n";
+    part->type = typeTable[toupper(type)];
+    std::cout << "TYPENUM: " << part->type << std::endl;
     std::vector<int> ind = vn->getAccessor();
     std::cout << "createParticle" << std::endl;
     if(ind.size() > 0) {
@@ -374,7 +467,8 @@ namespace adl {
       part->index = 6213;
     }
     std::cout << "INDEX: " << part->index << std::endl;
-    part->collection = vn->getType();
+    part->collection = vn->getId();
+    std::cout << "COLLECTION: " << part->collection << std::endl;
 
     return part;
   }
@@ -397,10 +491,16 @@ namespace adl {
     if(funcName == "size") {
       std::cout << "IN SIZE FUNC BRANCH\n";
       VarNode* param = getVarNode(params[0]);
+      std::cout << "SIZE(PARAM): " << param->getId() << "\n";
       auto ito = ObjectCuts->find(param->getId());
       if(ito != ObjectCuts->end()) {
         int type=((ObjectNode*)ito->second)->type;
         node = new SFuncNode(count, type, ito->first, ito->second);
+      }
+      else {
+        std::vector<myParticle*> newList;
+        newList.push_back(createParticle(param));
+        node = new SFuncNode(count, newList[0]->type, newList[0]->collection);
       }
     }
     else if(funcItr != function_map.end()) { // Particle attribute
@@ -408,7 +508,7 @@ namespace adl {
         VarNode* param = getVarNode(p);
         // Fill particlesList with the particles that are params.
         std::cout << "PARAM: " << param->getId() << "\n";
-        std::cout << "TYPE: " << getObjectDeclType(param->getId()) << "\n";
+        std::cout << "TYPE: " << findDep(param->getId()) << "\n";
         myParticle* part = createParticle(param);
         particlesList.push_back(part);
       }
@@ -420,7 +520,7 @@ namespace adl {
       VarNode* param = getVarNode(params[1]);
       // Fill particlesList with the particles that are params.
       std::cout << "PARAM: " << param->getId() << std::endl;;
-      std::cout << "TYPE: " << getObjectDeclType(param->getId()) << "\n";
+      std::cout << "TYPE: " << findDep(param->getId()) << "\n";
       myParticle* part = createParticle(param);
       particlesList.push_back(part);
 
@@ -430,7 +530,7 @@ namespace adl {
       VarNode* param1 = getVarNode(params[1]);
       // Fill particlesList with the particles that are params.
       std::cout << "PARAM: " << param1->getId()  << std::endl;;
-      std::cout << "TYPE: " << getObjectDeclType(param1->getId()) << "\n";
+      std::cout << "TYPE: " << findDep(param1->getId()) << "\n";
       part = createParticle(param1);
       particlesList.push_back(part);
 
@@ -513,6 +613,7 @@ namespace adl {
 
   Node* Driver::makeNode(Expr* expr) {
     // expr should be the RHS of an equal sign.
+    std::cout << "EXPR ID: " << expr->getId() << "\n";
     Node* node = nullptr;
     if(binOpCheck(expr) == 0) {
       BinNode* bn = static_cast<BinNode*>(expr);
@@ -733,17 +834,34 @@ namespace adl {
     int cutcount = 0;
     for(auto& s: stmnts) {
       CommandNode* cn = getCommandNode(s);
-    //  if(cn->getToken() == "SELECT") {
+      std::cout << "COMMAND: " << cn->getToken() << "\n";
+      if(cn->getToken() == "HISTO") {
+        HistoNode* hn = getHistoNode(cn);
+        ExprVector params = hn->getParams();
+        std::cout << "PARAMS.SIZE(): " << params.size() << "\n";
+        if(params.size() == 4) {
+          std::cout << "MAKING HISTO1D\n";
+          Node* node = new HistoNode1D(hn->getId(), hn->getDescription(), params[3]->value(), params[2]->value(), params[1]->value(), makeNode(params[0]));
+          NodeCuts->insert(std::make_pair(++cutcount, node));
+        }
+        if(params.size() == 8) {
+          std::cout << "MAKING HISTO2D\n";
+          Node* node = new HistoNode2D(hn->getId(), hn->getDescription(), params[7]->value(), params[6]->value(), params[5]->value(), params[4]->value(), params[3]->value(), params[2]->value(), makeNode(params[1]), makeNode(params[0]));
+          NodeCuts->insert(std::make_pair(++cutcount, node));
+        }
+      }
+      if(cn->getToken() == "SELECT") {
         std::cout << "HERE" << std::endl;
         Expr* cond = cn->getCondition();
-        Node* node = nullptr;
-        if(cond->getToken() == "ID") {
+        if(checkRegionTable(cond->getId()) == 0) {
           continue;
         }
-        node = makeNode(cn->getCondition());
+
+        Node* node = nullptr;
+        node = makeNode(cond);
         if(node == nullptr) std::cout << "inserted a NULLPTR\n";
         NodeCuts->insert(std::make_pair(++cutcount, node));
-      //}
+      }
     }
   }
 

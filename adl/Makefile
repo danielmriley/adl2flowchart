@@ -23,7 +23,7 @@ EXE=smash
 all: $(EXE)
 
 $(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(DH) $(CLDEFS)
-	@$(CC) -g $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) $(CLDEFSCPP) -o $(EXE)
+	@$(CC) -g -std=c++17 $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) $(CLDEFSCPP) -o $(EXE)
 
 $(YCPP): $(YFILE)
 	@$(YACC) $(YFILE)

@@ -38,6 +38,7 @@ int main(int argc, char **argv) {
   std::string fileName = argv[argc - 1];
   std::ifstream fin(fileName);
   adl::Driver drv(&fin);
+  // exit(0);
   int res = drv.parse();
 
 
@@ -80,6 +81,23 @@ int main(int argc, char **argv) {
     std::cout << l.first << ", ";
     if(l.second == nullptr) std::cout << "NULLPTR";
   }
+  std::cout << "\n\nCUTS: ";
+  for(auto& l: adl::NodeCuts) {
+    std::cout << l.first << ", ";
+    if(l.second == nullptr) std::cout << "NULLPTR";
+  }
+  std::cout << "\nParts: " << adl::parts.size() << "\n";
+  std::cout << "NodeVars: " << adl::NodeVars.size() << "\n";
+  std::cout << "ListParts: " << adl::ListParts.size() << "\n";
+  std::cout << "NodeCuts: " << adl::NodeCuts.size() << "\n";
+  std::cout << "BinCuts: " << adl::BinCuts.size() << "\n";
+  std::cout << "ObjectCuts: " << adl::ObjectCuts.size() << "\n";
+  std::cout << "NameInitializations: " << adl::NameInitializations.size() << "\n";
+  std::cout << "TRGValues: " << adl::TRGValues.size() << "\n";
+  std::cout << "ListTables: " << adl::ListTables.size() << "\n";
+  std::cout << "cntHistos: " << adl::cntHistos.size() << "\n";
+  std::cout << "systmap: " << adl::systmap.size() << "\n";
+
   std::cout << "\n";
   // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
   // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";

@@ -188,6 +188,33 @@ namespace adl {
     bool cH_SystErr;
   };
 
+  class HistoNode1D : public Node{
+  private:
+      std::string id;
+      std::string Desciption;
+
+  public:
+      HistoNode1D( std::string id,std::string desc,int n, float l1, float l2,Node* l) {}
+      HistoNode1D( std::string id,std::string desc, std::vector<float> ls, Node* l) {}
+
+
+  };
+  //----------------------------------------------------------------
+  class HistoNode2D : public Node{
+  private:
+      std::string id;
+      std::string Desciption;
+
+  public:
+      HistoNode2D( std::string id,std::string desc,int nx, float xmin, float xmax, int ny, float ymin, float ymax, Node* l, Node* r) {}
+
+      HistoNode2D( std::string id,std::string desc, std::vector<float> vx , int ny, float ymin, float ymax, Node* l, Node* r) {}
+
+      HistoNode2D( std::string id,std::string desc, int nx, float xmin, float xmax,  std::vector<float> vy, Node* l, Node* r) {}
+
+
+  };
+
   enum particleType{
    none_t=0,
    electron_t=1,

@@ -29,17 +29,11 @@
   #include "driver.h"
 
 namespace adl {
-  void check_function_table(std::string id);
-  void check_property_table(std::string id);
-  void check_object_table(std::string id);
-
   typedef std::vector<Expr*> ExprVector;
   ExprVector lists;
   ExprVector paramlist;
-  ExprVector histoIntsLists;
-  ExprVector histoNumsLists;
+  ExprVector histoParamList;
   ExprVector histoBinsLists;
-  ExprVector histoFuncsLists;
 
   std::vector<int> intLists;
   std::vector<double> doubleLists;
@@ -118,6 +112,8 @@ regions : region_block                          {}
 definition : DEFINE id ASSIGN condition         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); std::cout << "define: " << $2->getId() << "\n"; }
            | DEFINE id COLON condition          { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, $4); driver.ast.push_back($$); std::cout << "define: " << $2->getId() << "\n"; }
            | table                              { /* make tableNode here. */ }
+           /* | DEFINE id ASSIGN id_qualifier id_qualifier         { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, new adl::BinNode(incrementCounter(), "FACTOROP",$4,"+",$5)); driver.ast.push_back($$); std::cout << "define1: " << $2->getId() << "\n"; }
+           | DEFINE id COLON id_qualifier id_qualifier          { $$ = new adl::DefineNode(incrementCounter(), "DEFINE", $2, new adl::BinNode(incrementCounter(), "FACTOROP",$4,"+",$5)); driver.ast.push_back($$); std::cout << "define1: " << $2->getId() << "\n"; } */
            ;
 
 table : TABLE ID TABLETYPE ID NVARS
@@ -177,19 +173,19 @@ criteria : criterion criteria                   { lists.push_back($1); }
          ;
 
 criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
-          | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoIntsLists,histoNumsLists,histoBinsLists,histoFuncsLists); }
+          | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoParamList); histoParamList.clear(); }
           | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
 
 comma_sep : COMMA comma_sep                     {  }
-          | num comma_sep                       { histoNumsLists.push_back($1); }
-          | id comma_sep                        { histoFuncsLists.push_back($1); }
-          | function comma_sep                  { histoFuncsLists.push_back($1); }
+          | num comma_sep                       { histoParamList.push_back($1); }
+          | id comma_sep                        { histoParamList.push_back($1); }
+          | function comma_sep                  { histoParamList.push_back($1); }
           | LBRACKET bins RBRACKET comma_sep    { /*histoBinsLists.push_back($1);*/ }
-          | num                                 { histoNumsLists.push_back($1); }
-          | id                                  { histoFuncsLists.push_back($1); }
+          | num                                 { histoParamList.push_back($1); }
+          | id                                  { histoParamList.push_back($1); }
           | LBRACKET bins RBRACKET              { /*histoBinsLists.push_back($1);*/ }
-          | function                            { histoFuncsLists.push_back($1); }
+          | function                            { histoParamList.push_back($1); }
           ;
 
 bins : bins num                                 { histoBinsLists.push_back($2); }
@@ -265,8 +261,8 @@ term : id_qualifiers              { $$ = $1; }
      | LPAR expr RPAR             { $$ = $2; } // shift/reduce error caused here.
      ;
 
-id_qualifiers : id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId(), {},""); std::cout << "ID list\n"; }
-              | id_qualifier                  { $$ = $1; }
+id_qualifiers : id_qualifier                  { $$ = $1; }
+              | id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId(), {},""); std::cout << "ID list\n"; }
               ;
 
 id_qualifier : dot_op                                            { $$ = $1; }

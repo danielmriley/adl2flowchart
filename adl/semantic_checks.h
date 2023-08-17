@@ -20,6 +20,7 @@ namespace adl {
   astObjectNode* getObjectNode(Expr* expr);
   RegionNode* getRegionNode(Expr* expr);
   CommandNode* getCommandNode(Expr* expr);
+  HistoNode* getHistoNode(Expr* expr);
   ITENode* getITENode(Expr* expr);
 
   int binOpCheck(Expr* b);

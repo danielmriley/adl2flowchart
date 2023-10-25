@@ -33,18 +33,14 @@ int set_function_map() {
 
 int main(int argc, char **argv) {
   set_function_map();
-  // for(auto& m: function_map) std::cout << m.first << " -> " << m.second << "\n";
-  //exit(0);
   std::string fileName = argv[argc - 1];
   std::ifstream fin(fileName);
   adl::Driver drv(&fin);
-  // exit(0);
   int res = drv.parse();
 
 
   if(res == 0) std::cout << "Parsing successful!\n";
 
-  if(res == 0) std::cout << "ast.size(): " << drv.ast.size() << "\n";
   if(res == 0) { res = drv.setTables(); }
   else std::cerr << "Failed Parsing()\n";
 
@@ -99,9 +95,6 @@ int main(int argc, char **argv) {
   std::cout << "systmap: " << adl::systmap.size() << "\n";
 
   std::cout << "\n";
-  // if(res == 0) for(auto d: drv.objectTable) std::cout << "o: " << d << "\n";
-  // if(res == 0) for(auto d: drv.definitionTable) std::cout << "d: " << d << "\n";
-  // if(res == 0) for(auto d: drv.regionTable) std::cout << "r: " << d << "\n";
   if(res == 0) std::cout << "finished\n";
   else std::cout << "ERROR\n";
   return res;

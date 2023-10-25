@@ -21,8 +21,9 @@
 "object"|"obj"|"composite"      { return adl::Parser::make_OBJECT(YYText(), adl::location()); }
 "take"|"using"                  { return adl::Parser::make_TAKE(YYText(), adl::location()); }
 "select"|"command"|"cut"        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
-"cmd"|"reject"|"bin"            { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"cmd"|"reject"                  { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
 "weight"|"trigger"              { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"bin"                           { return adl::Parser::make_BIN(YYText(), adl::location()); }
 "histo"                         { return adl::Parser::make_HISTO(YYText(), adl::location()); }
 "info"                          { return adl::Parser::make_INFO(YYText(), adl::location()); }
 "tabletype"                     { return adl::Parser::make_TABLETYPE(YYText(), adl::location()); }
@@ -75,12 +76,13 @@
 ","                      { return adl::Parser::make_COMMA(YYText(), adl::location()); }
 "."                      { return adl::Parser::make_DOT(YYText(), adl::location()); }
 
+"\""                      { return adl::Parser::make_QUO(YYText(), adl::location()); }
+
 
 [a-zA-Z][0-9a-zA-Z]*?+[-0-9a-zA-Z]* { return adl::Parser::make_ID(YYText(), adl::location()); }
 [-]?[0-9]+        				     		  { return adl::Parser::make_INT(std::stoi(YYText()), adl::location()); }
 [-]?[0-9]+"."[0-9]+				     		  { return adl::Parser::make_REAL(std::stod(YYText()), adl::location()); }
 #.*\n                               {}
 [ \t\r\n]                           {}
-"\""[^\"]*"\""                      { return adl::Parser::make_DESC(YYText(), adl::location()); }
 <<EOF>>                             { return Parser::make_YYEOF(adl::location()); }
 %%

@@ -625,9 +625,10 @@ namespace adl {
     fp = fopen("fc.dot", "w");
     fprintf(fp, "digraph print {\n");
     fprintf(fp, "ordering = \"out\"");
+    // fprintf(fp, "ordering = \"out\"");
     // fprintf(fp, "overlap = prism");
     // fprintf(fp, "overlap_scaling = 0.01");
-    fprintf(fp, "ratio = 1.618");
+    // fprintf(fp, "ratio = 1.618");
 
     ExprVector _ast = drv.ast;
     std::set<std::string> prints;
@@ -653,7 +654,8 @@ namespace adl {
             collectBinOpObjects(objs, static_cast<BinNode*>(cond));
             for(auto& o: objs) {
               if(drv.checkDefinitionTable(o) != 0 && drv.checkObjectTable(o) == 0) {
-                prints.insert("  " + o + " -> " + rn->getId() + " [color=\"grey\"]\n");
+                if(toupper(o) != "METLV") // This is dirty. It can't stay...
+                  prints.insert("  " + o + " -> " + rn->getId() + " [color=\"grey\"]\n");
               }
             }
           }

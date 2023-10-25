@@ -60,7 +60,7 @@ namespace adl {
 
 %start start
 
-%token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST
+%token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST BIN QUO
 %token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
 %token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
@@ -174,6 +174,7 @@ criteria : criterion criteria                   { lists.push_back($1); }
 
 criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
           | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoParamList); histoParamList.clear(); }
+          | BIN QUO int QUO chained_cond        { $$ = new CommandNode(incrementCounter(), $1, $3); }
           | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
 

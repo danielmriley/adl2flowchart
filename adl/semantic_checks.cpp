@@ -370,7 +370,7 @@ namespace adl {
           BinNode* bin = getBinNode(body);
           type = typeCheck(bin->getLHS(),drv);
           type = typeCheck(bin->getRHS(),drv);
-          drv.dependencyChart[type].push_back(define->getId());
+          drv.dependencyChart[toupper(type)].push_back(define->getId());
         }
         if(body->getToken() == "FUNCTION") {
           type = typeCheck(body,drv);

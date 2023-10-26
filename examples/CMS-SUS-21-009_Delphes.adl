@@ -163,31 +163,30 @@ region EWSRs # electroweak production -- V/H tagging via mass cuts
 region SPSRs # strong production
   baseline
   reject size(AK4jets) [] 2 6 and size(heavyAK8jets) >= 1
-  select size(bjets) == 0
-  #bin "2" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 300 370
-  #bin "3" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 370 450
-  #bin "4" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 450 600
-  #bin "5" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 600 750
-  #bin "6" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 750 900
-  #bin "7" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET > 900
-  #bin "9" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 300 370
-  #bin "10" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 370 450
-  #bin "11" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 450 600
-  #bin "12" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 600 750
-  #bin "13" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET > 750
-  #bin "15" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 300 370
-  #bin "16" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 370 450
-  #bin "17" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 450 600
-  #bin "18" size(AK4jets) >= 7 and size(bjets) == 0 and MET > 600
-  #bin "20" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 300 370
-  #bin "21" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 370 450
-  #bin "22" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 450 600
-  #bin "23" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET > 600
-  #bin "25" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 300 370
-  #bin "26" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 370 450
-  #bin "27" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 450 600
-  #bin "28" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET > 600
-  #bin "30" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 300 370
-  #bin "31" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 370 450
-  #bin "32" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 450 600
-  #bin "33" size(AK4jets) >= 7 and size(bjets) > 0 and MET > 600
+  bin "2" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 300 370
+  bin "3" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 370 450
+  bin "4" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 450 600
+  bin "5" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 600 750
+  bin "6" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET [] 750 900
+  bin "7" size(AK4jets) [] 2 4 and size(bjets) == 0 and MET > 900
+  bin "9" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 300 370
+  bin "10" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 370 450
+  bin "11" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 450 600
+  bin "12" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET [] 600 750
+  bin "13" size(AK4jets) [] 5 6 and size(bjets) == 0 and MET > 750
+  bin "15" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 300 370
+  bin "16" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 370 450
+  bin "17" size(AK4jets) >= 7 and size(bjets) == 0 and MET [] 450 600
+  bin "18" size(AK4jets) >= 7 and size(bjets) == 0 and MET > 600
+  bin "20" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 300 370
+  bin "21" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 370 450
+  bin "22" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET [] 450 600
+  bin "23" size(AK4jets) [] 2 4 and size(bjets) > 0 and MET > 600
+  bin "25" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 300 370
+  bin "26" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 370 450
+  bin "27" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET [] 450 600
+  bin "28" size(AK4jets) [] 5 6 and size(bjets) > 0 and MET > 600
+  bin "30" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 300 370
+  bin "31" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 370 450
+  bin "32" size(AK4jets) >= 7 and size(bjets) > 0 and MET [] 450 600
+  bin "33" size(AK4jets) >= 7 and size(bjets) > 0 and MET > 600

@@ -410,14 +410,14 @@ namespace adl {
             std::cout << "VARDECL TYPE: " << varDeclType << "\n";
             if(varDeclType != "NOT FOUND" && varDeclType == "PARENT") {
               on->setObjectType(var);
-              dependencyChart[var].push_back(on->getId());
+              dependencyChart[toupper(var)].push_back(on->getId());
             }
             else if(checkObjectTable(var) == 0) { // Here means its a declared type.
               for(auto &p: dependencyChart) {
                 auto itr = std::find(p.second.begin(), p.second.end(), var);
                 if(itr != p.second.end()) {
                   on->setObjectType(p.first);
-                  dependencyChart[p.first].push_back(on->getId());
+                  dependencyChart[toupper(p.first)].push_back(on->getId());
                   break;
                 }
               }

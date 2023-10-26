@@ -61,7 +61,7 @@ namespace adl {
 %start start
 
 %token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST BIN QUO
-%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION
+%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION  WEIGHT
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
 %token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
 %token <std::string> GT  LT  GE  LE  EQ NE  TRUE  FALSE
@@ -174,7 +174,11 @@ criteria : criterion criteria                   { lists.push_back($1); }
 
 criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
           | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoParamList); histoParamList.clear(); }
-          | BIN QUO int QUO chained_cond        { $$ = new CommandNode(incrementCounter(), $1, $3); }
+          | BIN DESC chained_cond               { $$ = new CommandNode(incrementCounter(), $1, $3); }
+          | BIN chained_cond                    { $$ = new CommandNode(incrementCounter(), $1, $2); }
+          | WEIGHT id id LPAR function RPAR     { $$ = new CommandNode(incrementCounter(), $1, $2);}
+          | WEIGHT id num                       { $$ = new CommandNode(incrementCounter(), $1, $2);}
+          | WEIGHT id id                        { $$ = new CommandNode(incrementCounter(), $1, $2);}
           | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
 

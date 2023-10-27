@@ -451,7 +451,7 @@ namespace adl {
     Expr* lhs = b->getLHS();
     Expr* rhs = b->getRHS();
     std::cout << "binOp: " << b->getOp() << "\n";
-    int res;
+    int res = 0;
     int fres = 0;
 
     std::cout << "LHS TOKEN: " << lhs->getToken() << "\n";

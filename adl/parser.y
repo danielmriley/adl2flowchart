@@ -61,7 +61,7 @@ namespace adl {
 %start start
 
 %token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST BIN QUO
-%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION  WEIGHT
+%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION  WEIGHT  TRIGGER
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
 %token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
 %token <std::string> GT  LT  GE  LE  EQ NE  TRUE  FALSE
@@ -139,7 +139,8 @@ param_list : chain COMMA param_list             { paramlist.push_back($1); }
 
 object_block : OBJECT id takes                  { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
              | OBJECT id takes criteria         { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
-             ;
+             | TRIGGER id criteria              { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
+                          ;
 
 takes: take takes                               { lists.push_back($1); }
      | take                                     { lists.push_back($1); }
@@ -172,7 +173,8 @@ criteria : criterion criteria                   { lists.push_back($1); }
          | criterion                            { lists.push_back($1); }
          ;
 
-criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
+criterion : COMMAND chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); std::cout << "COMMAND: " << $1 << "\n";}
+          | TRIGGER chained_cond                { $$ = new CommandNode(incrementCounter(), $1,$2); }
           | HISTO id COMMA DESC comma_sep       { $$ = new HistoNode(incrementCounter(),$1,$2,$4,histoParamList); histoParamList.clear(); }
           | BIN DESC chained_cond               { $$ = new CommandNode(incrementCounter(), $1, $3); }
           | BIN chained_cond                    { $$ = new CommandNode(incrementCounter(), $1, $2); }

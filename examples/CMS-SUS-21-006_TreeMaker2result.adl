@@ -1,0 +1,591 @@
+# Complete analysis ADL for CMS-SUS-21-006 "SUSY disappearing track"
+# Runs over DTk TreeMaker ntuples skimmed from CMS AOD.
+# DTk TreeMaker format: https://github.com/LongLivedSusy/analysis/blob/master/adl/DTkTreeMaker.h
+# Includes all analysis selections.
+
+#info analysis
+#  title "Search for long lived SUSY with disappearing tracks in inclusive final states using proton-proton collisions at sqrt(s) = 13 TeV"
+#  experiment CMS
+#  id SUS-21-006
+#  sqrtS 13.0
+#  lumi 137fb-1
+
+#info adl
+#  author Sezen Sekmen, Viktor Kutzner
+#  datatier DTkTreeMaker
+
+# OBJECTS
+
+# Leptons
+object electrons
+  take electron
+  select pt > 40
+  select abs(eta) < 2.4
+  select passIso == 1
+  select tightID == 1
+
+object muons
+  take muon
+  select pt > 40
+  select abs(eta) < 2.4
+  select passIso == 1
+  select mediumID == 1
+
+object leptons
+  take union(electrons, muons)
+
+object electronsTransferfactor
+  take electron
+  select pt > 30
+  select abs(eta) < 2.4
+  select passIso == 1
+  select tightID == 1
+
+object muonsTransferfactor
+  take muon
+  select pt > 30
+  select abs(eta) < 2.4
+  select passIso == 1
+  select mediumID == 1
+
+# Jets
+object jets
+  take ak4jet
+  select jetid == 1
+  select pt > 30
+  select abs(eta) < 2.4
+  reject deltaR(ak4jet, leptons) < 0.4
+
+object jets4DTiso
+  take ak4jet
+  select jetid == 1
+  select pt > 15
+  select abs(eta) < 2.4
+  reject deltaR(ak4jet, leptons) < 0.4 # do we use this?
+
+object bjets
+  take jets
+  select bJetTagDeepCSVBvsAll > 0.6324
+  select bJetTagDeepCSVBvsAll > 0.4941
+  select bJetTagDeepCSVBvsAll > 0.4184 # 2016, 2017, 2018
+
+object pions
+  take TAPPionTracks
+
+object HardMETLV
+  take MHT
+#  take LVEPtEtaPhi(MHT, MHT, 0, MHTPhi)
+
+# Tracks
+
+# custom track variables -- notes on edep calculation at the AOD level:
+#define matchedCaloEnergy = sum(reducedEcalRecHitsEB DeltaR(track) < 0.5) + sum(reducedEcalRecHitsEE DeltaR(track) < 0.5) + sum(reducedEcalRecHitsES DeltaR(track) < 0.5) + sum(reducedHcalRecHitsHB DeltaR(track) < 0.5) + sum(reducedHcalRecHitsHF DeltaR(track) < 0.5) + sum(reducedHcalRecHitsHO DeltaR(track) < 0.5)
+#EdepEcalEB = assoc(track, reducedEcalRecHitsEB, DeltaR(track, reducedEcalRecHitsEB) < 0.5)
+#sum(pt( assoc(track, ctack, dR(track, ctrack) < 0.3)  )) / pt < 0.1
+
+object DTpresel
+  take track
+  select abs(eta) < 2.0
+  select trkRelIso < 0.2
+  reject dR(track, electrons) < 0.01
+  reject dR(track, pions) < 0.01
+#  select highqualitytag == 1 # AOD level skimming. Doesn't exist in TreeMaker.
+  select ptErr / pt^2 < 10 # GeV^-1
+  select dxyVtx < 0.1 # cm
+  select dzVtx < 0.1 # cm
+  select nmissinginnerhits == 0
+  select trackerLayersWithMeasurement >= 2
+  select nvalidtrackerhits >= 2
+  select nvalidpixelhits >= 2
+  define BDTshPhase0 = BDT(TMVAClassification_BDT.weights-2016-short-tracks-sep21v1-baseline.xml, dxyVtx, dzVtx, trkRelIso, nValidPixelHits, ptErrOverPt2, chi2perNdof)
+  define BDTshPhase1 = BDT(TMVAClassification_BDT.weights-2017-short-tracks-sep21v1-baseline.xml, dxyVtx, dzVtx, trkRelIso, nValidPixelHits, ptErrOverPt2, chi2perNdof)
+  define BDTlgPhase0 = BDT(TMVAClassification_BDT.weights-2016-long-tracks-sep21v1-baseline.xml, dxyVtx, dzVtx, trkRelIso, nValidPixelHits, nValidTrackerHits, nMissingOuterHits, ptErrOverPt2, chi2perNdof)
+  define BDTlgPhase1 = BDT(TMVAClassification_BDT.weights-2017-long-tracks-sep21v1-baseline.xml, dxyVtx, dzVtx, trkRelIso, nValidPixelHits, nValidTrackerHits, nMissingOuterHits, ptErrOverPt2, chi2perNdof)
+
+object DTpreselsh
+  take DTpresel
+  select pt > 25
+  select trackerLayersWithMeasurement - pixelLayersWithMeasurement == 0
+
+object DTpresellg
+  take DTpresel
+  select pt > 40
+  select trackerLayersWithMeasurement - pixelLayersWithMeasurement > 0
+  select nmissingouterhits >= 2
+
+object DTpreselMuIsosh
+  take DTpreselsh
+  reject dR(DTpreselsh, PFcand) < 0.01
+
+object DTpreselMuIsolg
+  take DTpresellg
+  reject dR(DTpresellg, PFcand) < 0.01
+
+object DTproxylg
+  take DTpresellg
+  reject dR(DTpresellg, PFcand) < 0.01
+
+object DTSRsh
+  take DTpreselMuIsosh
+  reject dR(DTpreselMuIsosh, jets4DTiso) < 0.4
+  select matchedCaloEnergy < 15
+  select phase0 ? BDTshPhase0 > 0.1 : BDTshPhase1 > 0.15
+
+object DTSRlg
+  take DTpreselMuIsolg
+  reject dR(DTpreselMuIsolg, jets4DTiso) < 0.4
+  select matchedCaloEnergy / p < 0.20
+  select phase0 ? BDTlgPhase0 > 0.12 : BDTlgPhase1 > 0.08
+
+object DTSR
+  take union(DTSRsh, DTSRlg)
+
+# DTs in the real CR
+object DTCRrealsh
+  take DTpreselMuIsosh
+  reject dR(DTpreselMuIsosh, jets4DTiso) < 0.1
+  select matchedCaloEnergy [] 30 300
+  select phase0 ? BDTshPhase0 > 0.1 : BDTshPhase1 > 0.05
+  # is the following cut for all DTCRreal objects, or only for the measurement region?
+  select dphi(DTpreselMuIsosh, HardMETLV) < pi / 4
+
+object DTCRreallg
+  take DTpreselMuIsolg
+  reject dR(DTpreselMuIsolg, jets4DTiso) < 0.4
+  select matchedCaloEnergy / p [] 0.3 1.2
+  select phase0 ? BDTlgPhase0 > 0.05 : BDTlgPhase1 > 0.08
+  select dphi(DTpreselMuIsosh, HardMETLV) < pi / 2
+
+object DTCRreal
+  take union(DTCRrealsh, DTCRreallg)
+
+# DTs in fake sideband
+object DTCRfakesh
+  take DTpreselMuIsosh
+  select matchedCaloEnergy < 15
+  select phase0 ? BDTshPhase0 [] -0.1 -0.05 : BDTshPhase1 [] -0.1 0.05
+  select dphi(DTpreselMuIsosh, HardMETLV) > pi / 2
+
+object DTCRfakelg
+  take DTpreselMuIsolg
+  select matchedCaloEnergy / p < 0.2
+  select phase0 ? BDTlgPhase0 [] -0.1 0.0 : BDTlgPhase1 [] -0.1 0.0
+  select dphi(DTpreselMuIsolg, HardMETLV) > pi / 2
+
+object DTCRfake
+  take union(DTCRfakesh, DTCRfakelg)
+
+# EVENT VARIABLES
+# function fMT(arg1, arg2) = sqrt(2*pT(arg1) * pT(arg2) * (1 - cos(dphi(arg1, arg2)))
+
+define HardMET = pT(HardMET_LV[0])
+define HT = sum(pT(jets))
+define dedx = deDxHarmonic2pixel(track[0])
+
+# EVENT SELECTION
+
+# Triggers
+#trigger hltHardMET
+#  select HLT_PFMETX_PFMHTX_IDTight_v* (X=90,100,110,120,130,140)
+#  select HLT_PFMETNoMuX_PFMHTNoMuX_IDTight_v* (X=90,100,110,120,130,140)
+
+#trigger hltsingleele
+#  select HLTEle27WPTightGsfv
+#  select HLTEle27eta2p1WPLooseGsfv
+#  select HLTEle32WPTightGsfv
+#  select HLTEle35WPTightGsfv
+
+#trigger hltsinglemu
+#  select HLTIsoMu24v
+#  select HLTIsoMu27v
+#  select HLTMu50v
+
+# Baseline selections
+region baselineHad
+  trigger hltHardMET == 1
+  select HardMET > 150
+  select HT - HardMET > 0
+  select size(jets) >= 1
+  select size(electrons) == 0
+  select size(muons) == 0
+
+region baselineEle
+  trigger hltsingleele == 1
+  select HardMET > 30
+  select size(electrons) >= 1
+  select size(jets) >= 1
+  select fMT(electrons[0], HardMETLV) > 110
+
+region baselineMu
+  trigger hltsinglemu == 1
+  select HardMET > 30
+  select size(muons) >= 1
+  select size(electrons) == 0
+  select size(jets) >= 1
+  select m(DTSR[0] + muons[0]) > 120
+
+# Signal regions
+region SRsHad
+  select baselineHad
+  select size(DTSR) == 1
+  select fMT(DTSR[0], HardMETLV) > 20
+  # HardMET [] 150 300, 0 bjets
+  bin "1" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "2" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "3" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "4" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  bin "5" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "6" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "7" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "8" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET [] 150 300, >=1 bjets
+  bin "9" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "10" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "11" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "12" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  bin "13" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "14" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "15" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "16" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET > 300
+  bin "17" HardMET > 300 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "18" HardMET > 300 and size(jets) [] 1 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "19" HardMET > 300 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "20" HardMET > 300 and size(jets) [] 1 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  bin "21" HardMET > 300 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "22" HardMET > 300 and size(jets) >= 3 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "23" HardMET > 300 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "24" HardMET > 300 and size(jets) >= 3 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+
+region SRsEle
+  select baselineEle
+  select size(DTSR) == 1
+  select m(DTSR[0] + electrons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "25" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "26" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "27" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "28" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "29" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "30" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "31" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "32" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "33" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "34" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "35" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "36" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+
+region SRsMu
+  select baselineMu
+  select size(DTSR) == 1
+  select m(DTSR[0] + muons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "37" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "38" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "39" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "40" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "41" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "42" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "43" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "44" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "45" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx <= 4
+  bin "46" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 0 and size(DTSRlg) == 1 and dedx > 4
+  bin "47" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx <= 4
+  bin "48" HardMET > 150 and size(jets) >= 1 and size(DTSRsh) == 1 and size(DTSRlg) == 0 and dedx > 4
+
+region SRs2DT
+  select baselineHad or baselineEle or baselineMu
+  select size(DTSR) >= 2
+
+# Control regions to estimate DT BG from real showering particles
+region CRsRealswHad
+  select baselineHad
+  select size(DTCRreal) == 1
+  select fMT(DTCRreal[0], HardMETLV) > 20
+  # HardMET [] 150 300, 0 bjets
+  bin "1" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "2" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "3" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "4" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  bin "5" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "6" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "7" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "8" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET [] 150 300, >=1 bjets
+  bin "9" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "10" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "11" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "12" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  bin "13" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "14" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "15" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "16" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET > 300
+  bin "17" HardMET > 300 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "18" HardMET > 300 and size(jets) [] 1 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "19" HardMET > 300 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "20" HardMET > 300 and size(jets) [] 1 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  bin "21" HardMET > 300 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "22" HardMET > 300 and size(jets) >= 3 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "23" HardMET > 300 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "24" HardMET > 300 and size(jets) >= 3 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+
+region CRsRealswEle
+  select baselineEle
+  select size(DTCRreal) == 1
+  select m(DTCRreal[0] + electrons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "25" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "26" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "27" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "28" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "29" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "30" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "31" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "32" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "33" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "34" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "35" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "36" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+
+region CRsRealswMu
+  select baselineMu
+  select size(DTCRreal) == 1
+  select m(DTCRreal[0] + muons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "37" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "38" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "39" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "40" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "41" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "42" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "43" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "44" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "45" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx <= 4
+  bin "46" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 0 and size(DTCRreallg) == 1 and dedx > 4
+  bin "47" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx <= 4
+  bin "48" HardMET > 150 and size(jets) >= 1 and size(DTCRrealsh) == 1 and size(DTCRreallg) == 0 and dedx > 4
+
+region CRsRealsw2DT # Need to have 5 CRs here!
+  select baselineHad or baselineEle or baselineMu
+  select size(DTCRreal) >= 2
+
+# Transfer factor measurement regions for the real showering particle background:
+# long tracks transfer factor
+region MREleplusDTSRlg
+  trigger hltsingleele
+  select size(electronsTransferfactor) == 1
+  select size(DTSRlg) == 1
+  select m(electronsTransferfactor[0], DTSRlg[0]) [] 65 110
+  select fMT(electronsTransferfactor[0], HardMETLV) < 100
+
+region MREleplusDTCRreallg
+  trigger hltsingleele
+  select size(electronsTransferfactor) == 1
+  select size(DTCRreallg) == 1
+  select m(electronsTransferfactor[0], DTCRreallg[0]) [] 65 110
+  select fMT(electronsTransferfactor[0], HardMETLV) < 100
+
+# short tracks transfer factor
+region MREleplusDTSRlg
+  trigger hltsingleele
+  select size(electronsTransferfactor) == 1
+  select size(DTSRsh) == 1
+  select m(electronsTransferfactor[0], DTSRsh[0]) [] 65 110
+  select fMT(electronsTransferfactor[0], HardMETLV) < 100
+
+region MREleplusDTCRreallg
+  trigger hltsingleele
+  select size(electronsTransferfactor) == 1
+  select size(DTCRrealsh) == 1
+  select m(electronsTransferfactor[0], DTCRrealsh[0]) [] 65 110
+  select fMT(electronsTransferfactor[0], HardMETLV) < 100
+
+# Control regions to estimate DT BG from real muons
+region CRsRealmuHad
+  select baselineHad
+  select size(DTproxylg) == 1
+  select fMT(DTproxylg[0], HardMETLV) > 20
+  # Any cut on any type of short tracks, e.g. DRSRsh?
+  # HardMET [] 150 300, 0 bjets
+  bin "1" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "2" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx > 4
+  bin "5" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "6" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET [] 150 300, >=1 bjets
+  bin "9" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "10" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx > 4
+  bin "13" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "14" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET > 300
+  bin "17" HardMET > 300 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "18" HardMET > 300 and size(jets) [] 1 3 and size(DTproxylg) == 1 and dedx > 4
+  bin "21" HardMET > 300 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx <= 4
+  bin "22" HardMET > 300 and size(jets) >= 3 and size(DTproxylg) == 1 and dedx > 4
+
+region CRsRealmuEle
+  select baselineEle
+  select size(DTproxylg) == 1
+  select m(DTproxylg[0] + electrons[0]) > 120
+  # Any cut on any type of short tracks, e.g. DRSRsh?
+  # HardMET [] 30 150 0 b-jets
+  bin "25" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "26" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "29" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "30" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET > 150
+  bin "33" HardMET > 150 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "34" HardMET > 150 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+
+region CRsRealmuMu
+  select baselineMu
+  select size(DTproxylg) == 1
+  select m(DTproxylg[0] + muons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "37" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "38" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "41" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "42" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+  # HardMET > 150
+  bin "45" HardMET > 150 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx <= 4
+  bin "46" HardMET > 150 and size(jets) >= 1 and size(DTproxylg) == 1 and dedx > 4
+
+region CRsRealmu2DT # Need to have 5 CRs here!
+  select baselineHad or baselineEle or baselineMu
+  select size(DTproxylg) >= 2
+
+# Transfer factor measurement regions for the real, mipping particle background:
+# long tracks
+region MRMuplusDTSRlg # numerator
+  trigger hltsinglemu
+  select size(muonsTransferfactor) == 1
+  select size(DTSRlg) == 1
+  select m(muonsTransferfactor[0], DTSRlg[0]) [] 65 110
+  select fMT(muonsTransferfactor[0], DTSRlg[0]) < 100
+
+region MRMuplusDTSRlg # denominator
+  trigger hltsinglemu
+  select size(muonsTransferfactor) == 1
+  select size(DTproxylg) == 1
+  select m(muonsTransferfactor[0], DTproxylg[0]) [] 65 110
+  select fMT(muonsTransferfactor[0], DTproxylg[0]) < 100
+
+# Control regions to estimate DT BG from fake particles
+region CRsFakeHad
+  select baselineHad
+  select size(DTCRfake) == 1
+  select fMT(DTCRfake[0], HardMETLV) > 20
+  # HardMET [] 150 300, 0 bjets
+  bin "1" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "2" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "3" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "4" HardMET [] 150 300 and size(bjets) == 0 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  bin "5" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "6" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "7" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "8" HardMET [] 150 300 and size(bjets) == 0 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET [] 150 300, >=1 bjets
+  bin "9" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "10" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "11" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "12" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  bin "13" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "14" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "15" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "16" HardMET [] 150 300 and size(bjets) >= 1 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET > 300
+  bin "17" HardMET > 300 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "18" HardMET > 300 and size(jets) [] 1 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "19" HardMET > 300 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "20" HardMET > 300 and size(jets) [] 1 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  bin "21" HardMET > 300 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "22" HardMET > 300 and size(jets) >= 3 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "23" HardMET > 300 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "24" HardMET > 300 and size(jets) >= 3 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+
+region CRsFakeEle
+  select baselineEle
+  select size(DTCRfake) == 1
+  select m(DTCRfake[0] + electrons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "25" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "26" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "27" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "28" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "29" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "30" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "31" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "32" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "33" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "34" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "35" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "36" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+
+region CRsFakeMu
+  select baselineMu
+  select size(DTCRfake) == 1
+  select m(DTCRreal[0] + muons[0]) > 120
+  # HardMET [] 30 150 0 b-jets
+  bin "37" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "38" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "39" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "40" HardMET [] 30 150 and size(bjets) == 0 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET [] 30 150 >=1 b-jets
+  bin "41" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "42" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "43" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "44" HardMET [] 30 150 and size(bjets) >= 1 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+  # HardMET > 150
+  bin "45" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx <= 4
+  bin "46" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 0 and size(DTCRfakelg) == 1 and dedx > 4
+  bin "47" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx <= 4
+  bin "48" HardMET > 150 and size(jets) >= 1 and size(DTCRfakesh) == 1 and size(DTCRfakelg) == 0 and dedx > 4
+
+region CRsFake2DTk
+  select baselineHad or baselineEle or baselineMu
+  select size(DTCRfake) >= 2
+
+# Transfer factor measurement regions for the fake tracks background:
+# long tracks transfer factor
+region MRLowHardMETplusDTSRlg # numerator
+  trigger hltjetht
+  select size(leptons) == 0
+  select size(DTSRlg) == 1
+  select HardMET < 50
+
+region MRLowHardMETplusDTCRfakelg # denominator
+  trigger hltjetht
+  select size(leptons) == 0
+  select size(DTCRfakelg) == 1
+  select HardMET < 50
+
+# short tracks transfer factor
+region MRLowHardMETplusDTSRsh # numerator
+  trigger hltjetht
+  select size(leptons) == 0
+  select size(DTSRsh) == 1
+  select HardMET < 50
+
+region MRLowHardMETplusDTCRfakesh # denominator
+  trigger hltjetht
+  select size(leptons) == 0
+  select size(DTCRfakesh) == 1
+  select HardMET < 50
+
+
+#### Transfer factors are defined from the regions above as follows
+# showering_tf = eplusDTpromptsig / eplusDTpromptSB
+# mipping_tf = muplusDTpromptsig / muplusDTpromptSB
+# fake_tf = lowHardMETplusDTfakesig / lowHardMETplusDTfakeSB

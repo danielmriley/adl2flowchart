@@ -22,7 +22,7 @@
 "take"|"using"                  { return adl::Parser::make_TAKE(YYText(), adl::location()); }
 "select"|"command"|"cut"        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
 "cmd"|"reject"                  { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
-"trigger"                       { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"trigger"                       { return adl::Parser::make_TRIGGER(YYText(), adl::location()); }
 "weight"                        { return adl::Parser::make_WEIGHT(YYText(), adl::location()); }
 "bin"                           { return adl::Parser::make_BIN(YYText(), adl::location()); }
 "histo"                         { return adl::Parser::make_HISTO(YYText(), adl::location()); }

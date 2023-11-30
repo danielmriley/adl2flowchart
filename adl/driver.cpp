@@ -41,7 +41,7 @@ namespace adl {
       std::cout << "PATH: " << p << "\n";
       auto pitr = p.end();
       pitr--;
-      if(pitr->string() == "atom_smasher") {
+      if(pitr->string() == "adl2flowchart") {
         break;
       }
       p = p.parent_path();

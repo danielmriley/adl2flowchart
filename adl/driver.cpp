@@ -33,23 +33,32 @@ namespace adl {
     TRGValues = new std::vector<int>;
     ListTables = new std::map<std::string, std::pair<std::vector<float>, bool> >;
     cntHistos = new std::map<std::string, std::vector<cntHisto> >;
-    systmap = new std::map<int, std::vector<std::string> >;
-
-    // Set file path.
+    systmap = new std::map<int, std::vector<std::string>>; 
+    
+    // Set file path to the current working directory.
     std::filesystem::path p = std::filesystem::current_path();
-    while(true) {
-      std::cout << "PATH: " << p << "\n";
-      auto pitr = p.end();
-      pitr--;
-      if(pitr->string() == "adl2flowchart") {
+
+    while (true)
+    {
+      std::cout << "Checking path: " << p << "\n";
+      std::filesystem::path potential_lib_path = p / "adl";
+      // Check if "adl" exists and is a directory.
+      if (std::filesystem::exists(potential_lib_path) && std::filesystem::is_directory(potential_lib_path))
+      {
+        libPath = potential_lib_path;
         break;
       }
-      p = p.parent_path();
+      // Move to the parent directory.
+      auto parent = p.parent_path();
+      // If we've reached the filesystem root (parent is the same as current), stop.
+      if (parent == p)
+      {
+        throw std::runtime_error("adl directory not found in any ancestor directory");
+      }
+      p = parent;
     }
-    std::filesystem::path lib_path(p.string() + "/adl");
-    std::cout << "LIBPATH: " << lib_path << "\n";
-    libPath = lib_path;
 
+    std::cout << "LIBPATH: " << libPath << "\n";
   }
 
   int Driver::parse() {
@@ -59,12 +68,6 @@ namespace adl {
 
   int Driver::parse(std::string fileName) {
     loc = 0;
-    // if(fileName == "") {
-    //   scanner.yyin = stdin;
-    // }
-    // else {
-    //   scanner.yyin = fopen(fileName.c_str(), "r");
-    // }
 
     return parser.parse();
   }

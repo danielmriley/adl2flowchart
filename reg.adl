@@ -1,3 +1,0 @@
-region test1
-  select all
-  select size(JET) > 2

@@ -56,6 +56,9 @@ int main(int argc, char **argv) {
   if(res == 0) { res = adl::printFlowChart(drv); } // run "dot -Tpdf fc.dot -o fc.pdf" to create a PDF
   else std::cerr << "Failed printAST()\n";
 
+  if(res == 0) { res = adl::printObjectAttributes(drv); }
+  else std::cerr << "Failed printFlowChart()\n";
+
   // if(res == 0) {
   //   res = drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,
   //                &adl::BinCuts, &adl::ObjectCuts,

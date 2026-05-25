@@ -40,6 +40,15 @@ namespace adl {
 
   std::string typeCheck(Expr* node, Driver& drv);
   int typeCheck(Driver& drv);
+
+  // Walks the AST and returns a map of object name -> the set of attributes
+  // referenced by that object (and by any objects reached through its TAKE
+  // statements). An "attribute" is a non-object identifier or function call
+  // appearing inside a SELECT / REJECT clause, e.g. "BTag", "abs(eta)", "pT".
+  std::map<std::string, std::set<std::string>> collectObjectAttributes(Driver& drv);
+
+  // Prints the results of collectObjectAttributes to stdout.
+  int printObjectAttributes(Driver& drv);
 } // end namespace adl
 
 #endif

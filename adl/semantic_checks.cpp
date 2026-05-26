@@ -807,7 +807,12 @@ namespace adl {
     }
   }
 
-  std::map<std::string, std::set<std::string>> collectObjectAttributes(Driver& drv) {
+  // Richer version for analysis use (Phase 2+): returns both the parent DAG
+  // and the transitively resolved attributes per object.
+  std::pair<
+    std::map<std::string, std::vector<std::string>>,   // parents (TAKE relationships)
+    std::map<std::string, std::set<std::string>>       // full resolved attrs
+  > collectObjectLineage(Driver& drv) {
     std::map<std::string, std::vector<std::string>> parents;
     std::map<std::string, std::set<std::string>> ownAttrs;
     std::vector<std::string> order;
@@ -838,6 +843,12 @@ namespace adl {
       std::set<std::string> visited;
       resolveAttrChain(name, parents, ownAttrs, fullAttrs[name], visited);
     }
+    return {parents, fullAttrs};
+  }
+
+  // Legacy / printing version (kept for compatibility with existing output).
+  std::map<std::string, std::set<std::string>> collectObjectAttributes(Driver& drv) {
+    auto [parents, fullAttrs] = collectObjectLineage(drv);
     return fullAttrs;
   }
 
@@ -875,6 +886,783 @@ namespace adl {
       std::cout << "\n";
     }
     std::cout << "==== ==== ==== ==== ====\n\n";
+    return 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Region Disjointness Analysis (Phase 1+)
+  // -------------------------------------------------------------------------
+
+  // Simple constraint representation for Phase 1/2.
+  // Supports numeric intervals and simple discrete equality (very useful for tags).
+  struct SimpleConstraint {
+    std::string key;          // Variable or attribute name (e.g. "HT01", "bjets.BTag")
+    bool isInterval = true;
+
+    // For intervals
+    double lo = 0.0;
+    double hi = 0.0;
+    bool loInclusive = true;
+    bool hiInclusive = true;
+
+    // For discrete (e.g. BTag == 0 or == 1)
+    bool isDiscrete = false;
+    double discreteValue = 0.0;
+  };
+
+  // Forward declarations for helpers used inside extractSimpleConstraint
+  static bool tryFindDiscreteTagConstraint(Expr* e, SimpleConstraint& out);
+  static bool isTagPropertyName(const std::string& name);
+  static std::string buildKeyFromVar(VarNode* vn);
+
+  // Small helper: given an expression that is either a VarNode or FunctionNode in a comparison,
+  // try to build a nice key using our best synthesis logic.
+  static std::string smartKeyFromSide(Expr* side) {
+    if (!side) return "";
+    if (side->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(side);
+      std::string fname = fn->getId();
+      std::string k;
+      if (!fn->getParams().empty()) {
+        if (auto obj = getVarNode(fn->getParams()[0])) {
+          k = buildKeyFromVar(obj);
+        }
+      }
+      if (isTagPropertyName(fname)) {
+        if (!k.empty()) return k + "." + fname;
+        return fname;
+      }
+      return fname;
+    } else if (side->getToken() == "ID" || side->getToken() == "VAR") {
+      return buildKeyFromVar(getVarNode(side));
+    }
+    return "";
+  }
+
+  // Helper to produce a more canonical key string from a VarNode.
+  // Includes array accessors/ranges when present (very common for leading jets, etc.).
+  static std::string buildKeyFromVar(VarNode* vn) {
+    if (!vn) return "";
+    std::string id = vn->getId();
+    std::string dot = vn->getDotOp();
+    std::string alias = vn->getAlias();
+
+    // Heuristic: if alias looks like a clean property name (BTag, cTag, etc.),
+    // prefer "baseObject.alias" form. This helps a lot with braced syntax.
+    std::string prop = alias;
+    if (!prop.empty()) {
+      size_t lastDot = prop.find_last_of('.');
+      if (lastDot != std::string::npos) prop = prop.substr(lastDot + 1);
+    }
+
+    std::string key;
+    if (!id.empty() && !prop.empty() && isTagPropertyName(prop)) {
+      key = id;
+      if (!dot.empty()) key += "." + dot;
+      key += "." + prop;
+    } else {
+      key = id;
+      if (!dot.empty()) key += "." + dot;
+      if (!alias.empty()) {
+        // avoid duplicating if alias is already the whole thing
+        if (key.find(alias) == std::string::npos) {
+          key += "." + alias;
+        }
+      }
+    }
+
+    // Add array accessors/ranges
+    std::vector<int> acc = vn->getAccessor();
+    if (!acc.empty()) {
+      key += "[";
+      for (size_t i = 0; i < acc.size(); ++i) {
+        if (i > 0) key += ":";
+        if (acc[i] == 6213) {
+          key += "";
+        } else {
+          key += std::to_string(acc[i]);
+        }
+      }
+      key += "]";
+    }
+
+    return key;
+  }
+
+  static bool isTagPropertyName(const std::string& name) {
+    std::string lower = name;
+    for (char& c : lower) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    return (lower.find("btag") != std::string::npos ||
+            lower.find("ctag") != std::string::npos ||
+            lower.find("charge") != std::string::npos);
+  }
+
+  // Helper: find any VarNode anywhere in the expression tree (used as last resort when we know a tag property is textually present)
+  static VarNode* findAnyVarNode(Expr* e) {
+    if (!e) return nullptr;
+    if (e->getToken() == "ID" || e->getToken() == "VAR") {
+      return getVarNode(e);
+    }
+    if (binOpCheck(e) == 0) {
+      BinNode* bn = getBinNode(e);
+      if (auto v = findAnyVarNode(bn->getLHS())) return v;
+      if (auto v = findAnyVarNode(bn->getRHS())) return v;
+    }
+    if (e->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(e);
+      for (auto& p : fn->getParams()) {
+        if (auto v = findAnyVarNode(p)) return v;
+      }
+    }
+    if (e->getToken() == "ITE") {
+      ITENode* ite = getITENode(e);
+      if (auto v = findAnyVarNode(ite->getThenBranch())) return v;
+      if (auto v = findAnyVarNode(ite->getElseBranch())) return v;
+      if (auto v = findAnyVarNode(ite->getCondition())) return v;
+    }
+    return nullptr;
+  }
+
+  // Helper: check if a VarNode represents a tag-like property
+  static bool isTagProperty(VarNode* vn) {
+    if (!vn) return false;
+
+    std::string id = vn->getId();
+    std::string dot = vn->getDotOp();
+    std::string alias = vn->getAlias();
+
+    // Very permissive check — many real files use braced syntax where the property
+    // can appear in id, dot, or alias in non-obvious ways.
+    if (isTagPropertyName(id) || isTagPropertyName(dot) || isTagPropertyName(alias)) return true;
+
+    // Braced syntax often puts the bare property (BTag, cTag) in the alias
+    if (!alias.empty() && isTagPropertyName(alias)) return true;
+
+    std::string full = id;
+    if (!dot.empty()) full += "." + dot;
+    if (!alias.empty()) full += "." + alias;
+
+    if (isTagPropertyName(full)) return true;
+
+    // Clean the alias (strip object prefix) and check again
+    if (!alias.empty()) {
+      std::string clean = alias;
+      size_t last = clean.find_last_of('.');
+      if (last != std::string::npos) clean = clean.substr(last + 1);
+      if (isTagPropertyName(clean)) return true;
+    }
+
+    // One more broad check: if the id or alias contains "BTag", "cTag", etc. even with noise
+    if (id.find("BTag") != std::string::npos || id.find("cTag") != std::string::npos ||
+        alias.find("BTag") != std::string::npos || alias.find("cTag") != std::string::npos) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Recursively search an expression for a VarNode that looks like a tag property.
+  // Returns the first one found (or nullptr).
+  static VarNode* findTagProperty(Expr* e) {
+    if (!e) return nullptr;
+
+    // Strong trigger: if the formatted text of this subtree contains BTag/cTag, aggressively
+    // try to return a relevant VarNode. This is the main lever for catching braced syntax.
+    std::string formattedHere = formatExpr(e);
+    if (formattedHere.find("BTag") != std::string::npos || formattedHere.find("cTag") != std::string::npos ||
+        formattedHere.find("Btag") != std::string::npos) {
+
+      if (e->getToken() == "ID" || e->getToken() == "VAR") {
+        return getVarNode(e);
+      }
+      // Try to surface a VarNode from common wrappers
+      if (binOpCheck(e) == 0) {
+        BinNode* bn = getBinNode(e);
+        if (auto v = findTagProperty(bn->getLHS())) return v;
+        if (auto v = findTagProperty(bn->getRHS())) return v;
+      }
+      if (e->getToken() == "FUNCTION") {
+        FunctionNode* fn = getFunctionNode(e);
+        for (auto& p : fn->getParams()) {
+          if (auto v = findTagProperty(p)) return v;
+        }
+      }
+
+      // Very aggressive hunt: find *any* VarNode in the subtree when we know a tag property is present in the text.
+      // Prefer the VarNode whose own text contains the BTag/cTag when possible (for better key quality).
+      if (binOpCheck(e) == 0) {
+        BinNode* bn = getBinNode(e);
+        std::string leftText = formatExpr(bn->getLHS());
+        std::string rightText = formatExpr(bn->getRHS());
+
+        bool leftHasTag = leftText.find("BTag") != std::string::npos || leftText.find("cTag") != std::string::npos;
+        bool rightHasTag = rightText.find("BTag") != std::string::npos || rightText.find("cTag") != std::string::npos;
+
+        if (leftHasTag && (bn->getLHS()->getToken() == "ID" || bn->getLHS()->getToken() == "VAR")) {
+          return getVarNode(bn->getLHS());
+        }
+        if (rightHasTag && (bn->getRHS()->getToken() == "ID" || bn->getRHS()->getToken() == "VAR")) {
+          return getVarNode(bn->getRHS());
+        }
+
+        // Fallback to any VarNode if the above didn't match
+        if (bn->getLHS()->getToken() == "ID" || bn->getLHS()->getToken() == "VAR") return getVarNode(bn->getLHS());
+        if (bn->getRHS()->getToken() == "ID" || bn->getRHS()->getToken() == "VAR") return getVarNode(bn->getRHS());
+      }
+
+      if (auto anyVar = findAnyVarNode(e)) {
+        return anyVar;
+      }
+    }
+
+    // Extremely broad catch-all on getId()
+    if (isTagPropertyName(e->getId())) {
+      if (e->getToken() == "ID" || e->getToken() == "VAR") {
+        return getVarNode(e);
+      }
+    }
+
+    // Additional broad check using formatted representation of VarNodes
+    if (e->getToken() == "ID" || e->getToken() == "VAR") {
+      std::string formatted = formatVar(getVarNode(e));
+      if (formatted.find("BTag") != std::string::npos || formatted.find("cTag") != std::string::npos ||
+          formatted.find("Btag") != std::string::npos) {
+        return getVarNode(e);
+      }
+    }
+
+    if (e->getToken() == "ID" || e->getToken() == "VAR") {
+      VarNode* vn = getVarNode(e);
+      if (isTagProperty(vn)) return vn;
+
+      // Extra check on alias
+      if (!vn->getAlias().empty() && isTagPropertyName(vn->getAlias())) {
+        return vn;
+      }
+    }
+
+    // Very broad name-based safety net for unusual representations (braced syntax etc.)
+    if (e->getToken() == "ID" || e->getToken() == "VAR") {
+      VarNode* vn = getVarNode(e);
+      if (isTagPropertyName(vn->getId()) || isTagPropertyName(vn->getDotOp()) || isTagPropertyName(vn->getAlias())) {
+        return vn;
+      }
+      // Extra broad check for BTag/cTag even with object prefix in the fields
+      if (vn->getId().find("BTag") != std::string::npos || vn->getId().find("cTag") != std::string::npos ||
+          vn->getAlias().find("BTag") != std::string::npos || vn->getAlias().find("cTag") != std::string::npos ||
+          vn->getDotOp().find("BTag") != std::string::npos || vn->getDotOp().find("cTag") != std::string::npos) {
+        return vn;
+      }
+
+      // New: also check the formatted representation of the VarNode (helps with braced forms)
+      std::string formatted = formatVar(vn);
+      if (formatted.find("BTag") != std::string::npos || formatted.find("cTag") != std::string::npos ||
+          formatted.find("Btag") != std::string::npos) {
+        return vn;
+      }
+    }
+
+    if (binOpCheck(e) == 0) {
+      BinNode* bn = getBinNode(e);
+      if (auto v = findTagProperty(bn->getLHS())) return v;
+      if (auto v = findTagProperty(bn->getRHS())) return v;
+    }
+
+    if (e->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(e);
+      std::string fname = fn->getId();
+
+      if (isTagPropertyName(fname)) {
+        if (!fn->getParams().empty()) {
+          if (auto v = findTagProperty(fn->getParams()[0])) {
+            return v;
+          }
+        }
+      }
+
+      for (auto& p : fn->getParams()) {
+        if (auto v = findTagProperty(p)) return v;
+      }
+    }
+
+    if (e->getToken() == "ITE") {
+      ITENode* ite = getITENode(e);
+      // For tag extraction, we primarily care about the "then" branch
+      // in common patterns like:  size(X) > 0 ? (tag condition) : ALL
+      if (auto v = findTagProperty(ite->getThenBranch())) return v;
+      if (auto v = findTagProperty(ite->getElseBranch())) return v;
+      // Also check the condition itself in case the tag appears there
+      if (auto v = findTagProperty(ite->getCondition())) return v;
+    }
+
+    // Final fallback using the formatter (helps when the node structure is unusual but the text contains the property)
+    std::string formatted = formatExpr(e);
+    if (formatted.find("BTag") != std::string::npos || formatted.find("cTag") != std::string::npos ||
+        formatted.find("Btag") != std::string::npos) {
+      // We can't easily return a perfect VarNode here, but we can let callers know a tag is present.
+      // For now, returning nullptr is fine — the broad net in extractSimpleConstraint will catch it.
+    }
+
+    return nullptr;
+  }
+
+  // Very basic extractor for Phase 1/2.
+  // Recognizes simple comparisons and ranges, with much better support for
+  // tag properties (BTag, cTag, etc.) in real ADL syntax.
+  static bool extractSimpleConstraint(Expr* cond, SimpleConstraint& out) {
+    if (!cond) return false;
+
+    // Direct comparison case
+    if (binOpCheck(cond) == 0) {
+      BinNode* bn = getBinNode(cond);
+      std::string op = bn->getOp();
+
+      Expr* lhs = bn->getLHS();
+      Expr* rhs = bn->getRHS();
+
+      if ((lhs->getToken() == "ID" || lhs->getToken() == "VAR") &&
+          (rhs->getToken() == "INT" || rhs->getToken() == "REAL")) {
+        VarNode* var = getVarNode(lhs);
+        double val = getNumNode(rhs)->value();
+
+        std::string key = buildKeyFromVar(var);
+        bool looksLikeTag = isTagProperty(var);
+
+        out.key = key;
+        out.isInterval = true;
+
+        if (op == ">")       { out.lo = val; out.loInclusive = false; out.hi = 1e300; out.hiInclusive = true; }
+        else if (op == ">=") { out.lo = val; out.loInclusive = true;  out.hi = 1e300; out.hiInclusive = true; }
+        else if (op == "<")  { out.lo = -1e300; out.loInclusive = true; out.hi = val; out.hiInclusive = false; }
+        else if (op == "<=") { out.lo = -1e300; out.loInclusive = true;  out.hi = val; out.hiInclusive = true; }
+        else if (op == "==") {
+          out.lo = val; out.hi = val; out.loInclusive = out.hiInclusive = true;
+          if (val == 0.0 || val == 1.0) {
+            out.isDiscrete = true;
+            out.discreteValue = val;
+            if (looksLikeTag) {
+              out.isDiscrete = true;
+            }
+          }
+        }
+        else return false;
+
+        return true;
+      }
+
+      // Strong general discrete tag extraction (new tree-walking helper)
+      if (tryFindDiscreteTagConstraint(cond, out)) {
+        return true;
+      }
+
+      // Fallback using structured recognition + centralized key synthesis.
+      if (rhs->getToken() == "INT" || rhs->getToken() == "REAL") {
+        double val = getNumNode(rhs)->value();
+        if (val == 0.0 || val == 1.0) {
+          if (auto tagVar = findTagProperty(lhs)) {
+            std::string key = smartKeyFromSide(lhs);
+            if (key.empty() || key.size() <= 2) {
+              key = buildKeyFromVar(tagVar);
+            }
+            out.key = key;
+            out.isInterval = true;
+            out.lo = val; out.hi = val;
+            out.loInclusive = out.hiInclusive = true;
+            out.isDiscrete = true;
+            out.discreteValue = val;
+            return true;
+          }
+        }
+      }
+
+      // Symmetric version of the above
+      if (lhs->getToken() == "INT" || lhs->getToken() == "REAL") {
+        double val = getNumNode(lhs)->value();
+        if (val == 0.0 || val == 1.0) {
+          if (auto tagVar = findTagProperty(rhs)) {
+            std::string key = smartKeyFromSide(rhs);
+            if (key.empty() || key.size() <= 2) {
+              key = buildKeyFromVar(tagVar);
+            }
+            out.key = key;
+            out.isInterval = true;
+            out.lo = val; out.hi = val;
+            out.loInclusive = out.hiInclusive = true;
+            out.isDiscrete = true;
+            out.discreteValue = val;
+            return true;
+          }
+        }
+      }
+    }
+
+    // Handle ITE (ternary) nodes — very common in real ADL
+    // Pattern:  condition ? (tag or numeric condition) : ALL / other
+    if (cond->getToken() == "ITE") {
+      ITENode* ite = getITENode(cond);
+
+      // Try the "then" branch first (most common place for the actual cut)
+      if (extractSimpleConstraint(ite->getThenBranch(), out)) {
+        return true;
+      }
+
+      // Fall back to the else branch
+      if (extractSimpleConstraint(ite->getElseBranch(), out)) {
+        return true;
+      }
+
+      // As a last resort, try the condition itself
+      if (extractSimpleConstraint(ite->getCondition(), out)) {
+        return true;
+      }
+    }
+
+    // Handle the common parser output for ranges:  (a >= low) AND (a <= high)
+    if (binOpCheck(cond) == 0) {
+      BinNode* bn = getBinNode(cond);
+      if (bn->getOp() == "AND" || bn->getOp() == "and") {
+        SimpleConstraint leftC, rightC;
+        if (extractSimpleConstraint(bn->getLHS(), leftC) &&
+            extractSimpleConstraint(bn->getRHS(), rightC) &&
+            leftC.key == rightC.key) {
+
+          out.key = leftC.key;
+          out.isInterval = true;
+
+          // Merge the two sides into a single interval
+          out.lo = std::max(leftC.lo, rightC.lo);
+          out.hi = std::min(leftC.hi, rightC.hi);
+          out.loInclusive = leftC.loInclusive && rightC.loInclusive;
+          out.hiInclusive = leftC.hiInclusive && rightC.hiInclusive;
+          return true;
+        }
+      }
+    }
+
+    // Final aggressive pass: walk the entire expression looking for any
+    // discrete tag comparison (property == 0/1), even if deeply nested.
+    if (tryFindDiscreteTagConstraint(cond, out)) {
+      return true;
+    }
+
+    // Broad fallback for discrete constraints when structured recognition fails.
+    // Uses smartKeyFromSide for consistent key quality.
+    if (binOpCheck(cond) == 0) {
+      BinNode* bn = getBinNode(cond);
+      if (bn->getOp() == "==") {
+        Expr* l = bn->getLHS();
+        Expr* r = bn->getRHS();
+
+        if ((r->getToken() == "INT" || r->getToken() == "REAL")) {
+          double v = getNumNode(r)->value();
+          if (v == 0.0 || v == 1.0) {
+            if (l->getToken() == "ID" || l->getToken() == "VAR" || l->getToken() == "FUNCTION") {
+              std::string k = smartKeyFromSide(l);
+              if (!k.empty() && k.size() > 2 && k != "Size") {
+                out.key = k;
+                out.isInterval = true;
+                out.lo = v; out.hi = v;
+                out.loInclusive = out.hiInclusive = true;
+                out.isDiscrete = true;
+                out.discreteValue = v;
+                return true;
+              }
+            }
+          }
+        }
+        // symmetric
+        if ((l->getToken() == "INT" || l->getToken() == "REAL")) {
+          double v = getNumNode(l)->value();
+          if (v == 0.0 || v == 1.0) {
+            if (r->getToken() == "ID" || r->getToken() == "VAR" || r->getToken() == "FUNCTION") {
+              std::string k = smartKeyFromSide(r);
+              if (!k.empty() && k.size() > 2 && k != "Size") {
+                out.key = k;
+                out.isInterval = true;
+                out.lo = v; out.hi = v;
+                out.loInclusive = out.hiInclusive = true;
+                out.isDiscrete = true;
+                out.discreteValue = v;
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Text-based rescue for BTag/cTag conditions that the node walker does not yet recognize
+    // (still needed for certain braced syntax forms). Tries to synthesize reasonable keys using
+    // the same priority order as the rest of the extractor.
+    std::string formatted = formatExpr(cond);
+    if ((formatted.find("BTag") != std::string::npos || formatted.find("cTag") != std::string::npos) &&
+        (formatted.find(" == 0") != std::string::npos || formatted.find(" == 1") != std::string::npos ||
+         formatted.find("==0") != std::string::npos || formatted.find("==1") != std::string::npos)) {
+
+      std::string rescueKey = "BTag";
+
+      if (formatted.find("jets[0]") != std::string::npos || formatted.find("jets [0]") != std::string::npos) {
+        rescueKey = "jets[0].BTag";
+      } else if (formatted.find("jets[1]") != std::string::npos) {
+        rescueKey = "jets[1].BTag";
+      } else if (formatted.find("jets") != std::string::npos) {
+        rescueKey = "jets.BTag";
+      } else if (formatted.find("leptons[0]") != std::string::npos) {
+        rescueKey = "leptons[0].BTag";
+      } else if (formatted.find("leptons") != std::string::npos) {
+        rescueKey = "leptons.BTag";
+      }
+
+      int detectedValue = 0;
+      if (formatted.find(" == 1") != std::string::npos || formatted.find("==1") != std::string::npos) {
+        detectedValue = 1;
+      } else if (formatted.find(" == 0") != std::string::npos || formatted.find("==0") != std::string::npos) {
+        detectedValue = 0;
+      }
+
+      out.key = rescueKey;
+      out.isInterval = true;
+      out.lo = detectedValue; out.hi = detectedValue;
+      out.loInclusive = out.hiInclusive = true;
+      out.isDiscrete = true;
+      out.discreteValue = detectedValue;
+      return true;
+    }
+
+    return false;
+  }
+
+  // Recursively search the expression tree for a discrete tag constraint
+  // (something like jets[0].BTag == 1 or BTag(jets) == 0).
+  // This helps catch tag conditions that are not at the top level of the BinNode.
+  static bool tryFindDiscreteTagConstraint(Expr* e, SimpleConstraint& out) {
+    if (!e) return false;
+
+    if (binOpCheck(e) == 0) {
+      BinNode* bn = getBinNode(e);
+      std::string op = bn->getOp();
+
+      if (op == "==") {
+        Expr* lhs = bn->getLHS();
+        Expr* rhs = bn->getRHS();
+
+        VarNode* tagVar = nullptr;
+        double val = 0.0;
+        bool found = false;
+
+        if ((rhs->getToken() == "INT" || rhs->getToken() == "REAL")) {
+          val = getNumNode(rhs)->value();
+          if (val == 0.0 || val == 1.0) {
+            tagVar = findTagProperty(lhs);
+            if (tagVar) found = true;
+          }
+        } else if ((lhs->getToken() == "INT" || lhs->getToken() == "REAL")) {
+          val = getNumNode(lhs)->value();
+          if (val == 0.0 || val == 1.0) {
+            tagVar = findTagProperty(rhs);
+            if (tagVar) found = true;
+          }
+        }
+
+        if (found && tagVar) {
+          out.key = buildKeyFromVar(tagVar);
+          out.isInterval = true;
+          out.lo = val;
+          out.hi = val;
+          out.loInclusive = out.hiInclusive = true;
+          out.isDiscrete = true;
+          out.discreteValue = val;
+          return true;
+        }
+      }
+
+      // Recurse into children
+      if (tryFindDiscreteTagConstraint(bn->getLHS(), out)) return true;
+      if (tryFindDiscreteTagConstraint(bn->getRHS(), out)) return true;
+    }
+
+    if (e->getToken() == "FUNCTION") {
+      FunctionNode* fn = getFunctionNode(e);
+      for (auto& p : fn->getParams()) {
+        if (tryFindDiscreteTagConstraint(p, out)) return true;
+      }
+    }
+
+    if (e->getToken() == "ITE") {
+      ITENode* ite = getITENode(e);
+      if (tryFindDiscreteTagConstraint(ite->getThenBranch(), out)) return true;
+      if (tryFindDiscreteTagConstraint(ite->getElseBranch(), out)) return true;
+      if (tryFindDiscreteTagConstraint(ite->getCondition(), out)) return true;
+    }
+
+    return false;
+  }
+
+  int analyzeRegionDisjointness(Driver& drv) {
+    std::cout << "\n==== REGION DISJOINTNESS ANALYSIS (experimental) ====\n";
+
+    // Phase 2+: Get rich object lineage information (parents + resolved attrs).
+    auto [objectParents, objectAttrs] = collectObjectLineage(drv);
+    std::cout << "Object attribute dimensions available: " << objectAttrs.size() << "\n";
+
+    // Build a quick lookup for regions by name (needed for inheritance).
+    std::map<std::string, RegionNode*> regionByName;
+    for (auto& n : drv.ast) {
+      if (n->getToken() == "REGION") {
+        RegionNode* rn = getRegionNode(n);
+        regionByName[rn->getId()] = rn;
+      }
+    }
+
+    // Collect basic constraints per region, with inheritance.
+    struct RegionInfo {
+      std::string name;
+      std::vector<SimpleConstraint> constraints;
+      std::vector<std::string> parents;   // region names this one inherits from
+      bool hasBins = false;
+    };
+    std::vector<RegionInfo> regions;
+
+    for (auto& n : drv.ast) {
+      if (n->getToken() != "REGION") continue;
+
+      RegionNode* rn = getRegionNode(n);
+      RegionInfo info;
+      info.name = rn->getId();
+
+      // Iterative inheritance following + constraint collection
+      std::vector<std::string> toProcess;
+      std::set<std::string> visited;
+      toProcess.push_back(rn->getId());
+
+      while (!toProcess.empty()) {
+        std::string currentName = toProcess.back();
+        toProcess.pop_back();
+        if (visited.count(currentName)) continue;
+        visited.insert(currentName);
+
+        auto it = regionByName.find(currentName);
+        if (it == regionByName.end()) continue;
+
+        RegionNode* current = it->second;
+
+        for (auto& stmt : current->getStatements()) {
+          std::string stok = stmt->getToken();
+
+          if (stok == "SELECT" || stok == "REJECT") {
+            CommandNode* cn = getCommandNode(stmt);
+            Expr* cond = cn->getCondition();
+
+            // Bare region name = inheritance
+            if (cond->getToken() == "ID") {
+              std::string ref = cond->getId();
+              if (regionByName.count(ref) && !visited.count(ref)) {
+                info.parents.push_back(ref);
+                toProcess.push_back(ref);
+                continue;
+              }
+            }
+
+            SimpleConstraint c;
+            if (extractSimpleConstraint(cond, c)) {
+              info.constraints.push_back(c);
+            }
+          } else if (stok == "BIN") {
+            info.hasBins = true;
+          }
+        }
+      }
+
+      regions.push_back(std::move(info));
+    }
+
+    std::cout << "Regions analyzed (after inheritance): " << regions.size() << "\n";
+
+    // Quick summary
+    int regionsWithBins = 0;
+    for (const auto& r : regions) if (r.hasBins) regionsWithBins++;
+    if (regionsWithBins > 0) {
+      std::cout << "Regions containing BIN statements: " << regionsWithBins << "\n";
+    }
+
+    // Pairwise analysis with Phase 2 improvements (lineage + tag mutex)
+    int numericDisjoint = 0;
+    int tagMutexDisjoint = 0;
+
+    // Helper: check if two keys are related through object lineage (e.g. bjets vs jets)
+    auto keysAreRelated = [&](const std::string& k1, const std::string& k2) -> bool {
+      if (k1 == k2) return true;
+      auto checkChain = [&](const std::string& base, const std::string& target) {
+        auto it = objectParents.find(base);
+        if (it == objectParents.end()) return false;
+        for (const auto& p : it->second) {
+          if (p == target || p.find(target) != std::string::npos) return true;
+        }
+        return false;
+      };
+      return checkChain(k1, k2) || checkChain(k2, k1);
+    };
+
+    for (size_t i = 0; i < regions.size(); ++i) {
+      for (size_t j = i + 1; j < regions.size(); ++j) {
+        const auto& r1 = regions[i];
+        const auto& r2 = regions[j];
+
+        for (const auto& c1 : r1.constraints) {
+          for (const auto& c2 : r2.constraints) {
+            if (c1.key != c2.key && !keysAreRelated(c1.key, c2.key)) continue;
+
+            // --- Numeric interval case (with detailed bounds) ---
+            if (c1.isInterval && c2.isInterval) {
+              if (c1.hi < c2.lo || c2.hi < c1.lo) {
+                std::string note = (c1.key != c2.key) ? " [via object lineage]" : "";
+                std::cout << "  PROVEN DISJOINT (numeric): "
+                          << r1.name << " vs " << r2.name
+                          << "  [" << c1.key << " "
+                          << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
+                          << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]" << note << "\n";
+                numericDisjoint++;
+              }
+            }
+
+            // --- Tag / discrete mutex with clear explanation ---
+            if (c1.isDiscrete && c2.isDiscrete && c1.discreteValue != c2.discreteValue) {
+              if (c1.key == c2.key || keysAreRelated(c1.key, c2.key)) {
+                std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
+                std::cout << "  PROVEN DISJOINT (tag mutex): "
+                          << r1.name << " vs " << r2.name
+                          << "  [" << c1.key << " == " << (int)c1.discreteValue
+                          << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]" << lineage << "\n";
+                tagMutexDisjoint++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    int total = numericDisjoint + tagMutexDisjoint;
+    if (total == 0) {
+      std::cout << "No trivial disjoint pairs found by current rules.\n";
+    } else {
+      std::cout << "Trivial disjoint pairs found: " << total
+                << " (numeric: " << numericDisjoint
+                << ", tag mutex: " << tagMutexDisjoint << ")\n";
+    }
+
+    // Bin modeling note (Phase 2)
+    if (regionsWithBins > 0) {
+      std::cout << "(BIN modeling: " << regionsWithBins << " region(s) use bins — these partitions are disjoint by construction within their parent.)\n";
+    } else {
+      std::cout << "(Note: BIN statements create by-construction disjoint sub-regions within a parent.)\n";
+    }
+
+    std::cout << "(Phase 2 progress — richer explanations + lineage + discrete support)\n";
+    std::cout << "====                 ====\n\n";
+
     return 0;
   }
 

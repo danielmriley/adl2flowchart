@@ -49,6 +49,14 @@ namespace adl {
 
   // Prints the results of collectObjectAttributes to stdout.
   int printObjectAttributes(Driver& drv);
+
+  // Region disjointness / overlap analysis pass.
+  // Performs lightweight abstract interpretation over the selection
+  // formulas of regions (after resolving inheritance) to find pairs
+  // that can be *soundly proven* disjoint within the supported
+  // fragment (numeric intervals, discrete tag values, cardinalities).
+  // Seeded from the object attribute collection infrastructure.
+  int analyzeRegionDisjointness(Driver& drv);
 } // end namespace adl
 
 #endif

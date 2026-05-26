@@ -33,7 +33,25 @@ int set_function_map() {
 
 int main(int argc, char **argv) {
   set_function_map();
-  std::string fileName = argv[argc - 1];
+
+  bool doRegionAnalysis = false;
+  std::string fileName;
+
+  // Very simple flag handling for Phase 1 (will be improved later).
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--region-analysis" || arg == "-r") {
+      doRegionAnalysis = true;
+    } else {
+      fileName = arg;
+    }
+  }
+
+  if (fileName.empty()) {
+    std::cerr << "Usage: ./smash [--region-analysis | -r] <adl-file>\n";
+    return 1;
+  }
+
   std::ifstream fin(fileName);
   adl::Driver drv(&fin);
   int res = drv.parse();
@@ -58,6 +76,10 @@ int main(int argc, char **argv) {
 
   if(res == 0) { res = adl::printObjectAttributes(drv); }
   else std::cerr << "Failed printFlowChart()\n";
+
+  if (res == 0 && doRegionAnalysis) {
+    res = adl::analyzeRegionDisjointness(drv);
+  }
 
   // if(res == 0) {
   //   res = drv.ast2cuts(&adl::parts,&adl::NodeVars,&adl::ListParts,&adl::NodeCuts,

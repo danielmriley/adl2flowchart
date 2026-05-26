@@ -1577,22 +1577,30 @@ namespace adl {
       return checkChain(k1, k2) || checkChain(k2, k1);
     };
 
+    // Minimal grouping for readability (no new containers, just track current pair)
+    std::string lastPair;
+
     for (size_t i = 0; i < regions.size(); ++i) {
       for (size_t j = i + 1; j < regions.size(); ++j) {
         const auto& r1 = regions[i];
         const auto& r2 = regions[j];
+        std::string thisPair = r1.name + " vs " + r2.name;
 
         for (const auto& c1 : r1.constraints) {
           for (const auto& c2 : r2.constraints) {
             if (c1.key != c2.key && !keysAreRelated(c1.key, c2.key)) continue;
 
+            if (thisPair != lastPair) {
+              std::cout << thisPair << ":\n";
+              lastPair = thisPair;
+            }
+
             // --- Numeric interval case (with detailed bounds) ---
             if (c1.isInterval && c2.isInterval) {
               if (c1.hi < c2.lo || c2.hi < c1.lo) {
                 std::string note = (c1.key != c2.key) ? " [via object lineage]" : "";
-                std::cout << "  PROVEN DISJOINT (numeric): "
-                          << r1.name << " vs " << r2.name
-                          << "  [" << c1.key << " "
+                std::cout << "  PROVEN DISJOINT (numeric): ["
+                          << c1.key << " "
                           << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
                           << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]" << note << "\n";
                 numericDisjoint++;
@@ -1603,9 +1611,8 @@ namespace adl {
             if (c1.isDiscrete && c2.isDiscrete && c1.discreteValue != c2.discreteValue) {
               if (c1.key == c2.key || keysAreRelated(c1.key, c2.key)) {
                 std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
-                std::cout << "  PROVEN DISJOINT (tag mutex): "
-                          << r1.name << " vs " << r2.name
-                          << "  [" << c1.key << " == " << (int)c1.discreteValue
+                std::cout << "  PROVEN DISJOINT (tag mutex): ["
+                          << c1.key << " == " << (int)c1.discreteValue
                           << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]" << lineage << "\n";
                 tagMutexDisjoint++;
               }
@@ -1619,19 +1626,16 @@ namespace adl {
     if (total == 0) {
       std::cout << "No trivial disjoint pairs found by current rules.\n";
     } else {
-      std::cout << "Trivial disjoint pairs found: " << total
-                << " (numeric: " << numericDisjoint
-                << ", tag mutex: " << tagMutexDisjoint << ")\n";
+      std::cout << "Found " << total << " trivial disjoint region pairs"
+                << " (numeric intervals: " << numericDisjoint
+                << ", tag/discrete mutex: " << tagMutexDisjoint << ").\n";
     }
 
-    // Bin modeling note (Phase 2)
+    // BIN note (regions with BINs have by-construction disjoint sub-regions)
     if (regionsWithBins > 0) {
-      std::cout << "(BIN modeling: " << regionsWithBins << " region(s) use bins — these partitions are disjoint by construction within their parent.)\n";
-    } else {
-      std::cout << "(Note: BIN statements create by-construction disjoint sub-regions within a parent.)\n";
+      std::cout << regionsWithBins << " region(s) contain BIN statements — their bins are disjoint by construction within each parent.\n";
     }
 
-    std::cout << "(Phase 2 progress — richer explanations + lineage + discrete support)\n";
     std::cout << "====                 ====\n\n";
 
     return 0;

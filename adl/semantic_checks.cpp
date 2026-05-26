@@ -1394,44 +1394,6 @@ namespace adl {
       }
     }
 
-    // Text-based rescue for BTag/cTag conditions that the node walker does not yet recognize
-    // (still needed for certain braced syntax forms). Tries to synthesize reasonable keys using
-    // the same priority order as the rest of the extractor.
-    std::string formatted = formatExpr(cond);
-    if ((formatted.find("BTag") != std::string::npos || formatted.find("cTag") != std::string::npos) &&
-        (formatted.find(" == 0") != std::string::npos || formatted.find(" == 1") != std::string::npos ||
-         formatted.find("==0") != std::string::npos || formatted.find("==1") != std::string::npos)) {
-
-      std::string rescueKey = "BTag";
-
-      if (formatted.find("jets[0]") != std::string::npos || formatted.find("jets [0]") != std::string::npos) {
-        rescueKey = "jets[0].BTag";
-      } else if (formatted.find("jets[1]") != std::string::npos) {
-        rescueKey = "jets[1].BTag";
-      } else if (formatted.find("jets") != std::string::npos) {
-        rescueKey = "jets.BTag";
-      } else if (formatted.find("leptons[0]") != std::string::npos) {
-        rescueKey = "leptons[0].BTag";
-      } else if (formatted.find("leptons") != std::string::npos) {
-        rescueKey = "leptons.BTag";
-      }
-
-      int detectedValue = 0;
-      if (formatted.find(" == 1") != std::string::npos || formatted.find("==1") != std::string::npos) {
-        detectedValue = 1;
-      } else if (formatted.find(" == 0") != std::string::npos || formatted.find("==0") != std::string::npos) {
-        detectedValue = 0;
-      }
-
-      out.key = rescueKey;
-      out.isInterval = true;
-      out.lo = detectedValue; out.hi = detectedValue;
-      out.loInclusive = out.hiInclusive = true;
-      out.isDiscrete = true;
-      out.discreteValue = detectedValue;
-      return true;
-    }
-
     return false;
   }
 
@@ -1468,7 +1430,16 @@ namespace adl {
         }
 
         if (found && tagVar) {
-          out.key = buildKeyFromVar(tagVar);
+          // Prefer smartKeyFromSide on the original tag-side expression.
+          // This ensures FunctionNode tag accessors (BTag(jets[0]), the normalized
+          // form for both "BTag(jets)" and braced "{jets[0]}BTag") produce full
+          // keys like "jets[0].BTag" instead of losing the property name.
+          Expr* tagSide = ((rhs->getToken() == "INT" || rhs->getToken() == "REAL") ? lhs : rhs);
+          std::string k = smartKeyFromSide(tagSide);
+          if (k.empty() || k.size() <= 2) {
+            k = buildKeyFromVar(tagVar);
+          }
+          out.key = k;
           out.isInterval = true;
           out.lo = val;
           out.hi = val;

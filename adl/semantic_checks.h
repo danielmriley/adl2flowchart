@@ -50,6 +50,11 @@ namespace adl {
   // Prints the results of collectObjectAttributes to stdout.
   int printObjectAttributes(Driver& drv);
 
+  // Object disjointness / overlap analysis pass.
+  // Uses take-lineage and typeTable particle families to classify pairs
+  // of user-defined objects as proven disjoint, possibly overlapping, or unknown.
+  int analyzeObjectDisjointness(Driver& drv);
+
   // Region disjointness / overlap analysis pass.
   // Performs lightweight abstract interpretation over the selection
   // formulas of regions (after resolving inheritance) to find pairs

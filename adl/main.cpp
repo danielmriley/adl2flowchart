@@ -48,7 +48,8 @@ int main(int argc, char **argv) {
   }
 
   if (fileName.empty()) {
-    std::cerr << "Usage: ./smash [--region-analysis | -r] <adl-file>\n";
+    std::cerr << "Usage: ./smash [--region-analysis | -r] <adl-file>\n"
+                 "  -r runs experimental object + region disjointness analysis\n";
     return 1;
   }
 
@@ -78,7 +79,8 @@ int main(int argc, char **argv) {
   else std::cerr << "Failed printFlowChart()\n";
 
   if (res == 0 && doRegionAnalysis) {
-    res = adl::analyzeRegionDisjointness(drv);
+    res = adl::analyzeObjectDisjointness(drv);
+    if (res == 0) res = adl::analyzeRegionDisjointness(drv);
   }
 
   // if(res == 0) {

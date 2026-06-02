@@ -903,6 +903,10 @@ namespace adl {
 
   // Forward declarations for helpers used inside extractSimpleConstraint
   static bool tryFindDiscreteTagConstraint(Expr* e, SimpleConstraint& out);
+  static bool tryExtractSizeConstraint(Expr* cond, SimpleConstraint& out);
+  static bool extractSimpleConstraint(Expr* cond, SimpleConstraint& out);
+  static bool extractSizeSumZeroConstraint(Expr* cond, std::vector<SimpleConstraint>& out);
+  static void extractAllSimpleConstraints(Expr* cond, std::vector<SimpleConstraint>& out);
   static bool isTagPropertyName(const std::string& name);
   static std::string buildKeyFromVar(VarNode* vn);
 
@@ -1200,11 +1204,176 @@ namespace adl {
     return nullptr;
   }
 
+  static bool isSizeFunction(Expr* e) {
+    if (!e || e->getToken() != "FUNCTION") return false;
+    std::string name = tolower(getFunctionNode(e)->getId());
+    return name == "size";
+  }
+
+  static std::string sizeKeyFromExpr(Expr* sizeExpr) {
+    if (!isSizeFunction(sizeExpr)) return "";
+    FunctionNode* fn = getFunctionNode(sizeExpr);
+    if (fn->getParams().empty()) return "";
+    Expr* p = fn->getParams()[0];
+    if (p->getToken() == "ID" || p->getToken() == "VAR") {
+      return "size(" + getVarNode(p)->getId() + ")";
+    }
+    return "";
+  }
+
+  static void fillSizeInterval(SimpleConstraint& out, const std::string& key,
+                               double lo, double hi, bool loInc, bool hiInc,
+                               bool asDiscrete, double discreteVal) {
+    out.key = key;
+    out.isInterval = true;
+    out.lo = lo;
+    out.hi = hi;
+    out.loInclusive = loInc;
+    out.hiInclusive = hiInc;
+    out.isDiscrete = asDiscrete;
+    out.discreteValue = discreteVal;
+  }
+
+  // size(collection) </<=/>=/>/== N, including size(a)+size(b)==0.
+  static bool tryExtractSizeConstraint(Expr* cond, SimpleConstraint& out) {
+    if (!cond || binOpCheck(cond) != 0) return false;
+
+    BinNode* bn = getBinNode(cond);
+    std::string op = bn->getOp();
+    Expr* lhs = bn->getLHS();
+    Expr* rhs = bn->getRHS();
+
+    Expr* sizeExpr = nullptr;
+    Expr* numExpr = nullptr;
+    bool flipped = false;
+
+    if (isSizeFunction(lhs) &&
+        (rhs->getToken() == "INT" || rhs->getToken() == "REAL")) {
+      sizeExpr = lhs;
+      numExpr = rhs;
+    } else if (isSizeFunction(rhs) &&
+               (lhs->getToken() == "INT" || lhs->getToken() == "REAL")) {
+      sizeExpr = rhs;
+      numExpr = lhs;
+      flipped = true;
+    } else {
+      return false;
+    }
+
+    std::string key = sizeKeyFromExpr(sizeExpr);
+    if (key.empty()) return false;
+
+    double val = getNumNode(numExpr)->value();
+    if (flipped) {
+      if (op == ">") op = "<";
+      else if (op == ">=") op = "<=";
+      else if (op == "<") op = ">";
+      else if (op == "<=") op = ">=";
+    }
+
+    bool integral = (val == std::floor(val) && val >= 0.0 && val < 128.0);
+
+    if (op == "==") {
+      fillSizeInterval(out, key, val, val, true, true, integral, val);
+      return true;
+    }
+    if (op == ">") {
+      fillSizeInterval(out, key, val, 1e300, false, true, false, 0.0);
+      return true;
+    }
+    if (op == ">=") {
+      fillSizeInterval(out, key, val, 1e300, true, true, false, 0.0);
+      return true;
+    }
+    if (op == "<") {
+      fillSizeInterval(out, key, -1e300, val, true, false, false, 0.0);
+      return true;
+    }
+    if (op == "<=") {
+      fillSizeInterval(out, key, -1e300, val, true, true, false, 0.0);
+      return true;
+    }
+    return false;
+  }
+
+  static bool extractSizeSumZeroConstraint(Expr* cond, std::vector<SimpleConstraint>& out) {
+    if (!cond || binOpCheck(cond) != 0) return false;
+
+    BinNode* bn = getBinNode(cond);
+    if (bn->getOp() != "==") return false;
+
+    Expr* sumExpr = nullptr;
+    double zeroVal = -1.0;
+
+    if ((bn->getRHS()->getToken() == "INT" || bn->getRHS()->getToken() == "REAL") &&
+        getNumNode(bn->getRHS())->value() == 0.0) {
+      sumExpr = bn->getLHS();
+      zeroVal = 0.0;
+    } else if ((bn->getLHS()->getToken() == "INT" || bn->getLHS()->getToken() == "REAL") &&
+               getNumNode(bn->getLHS())->value() == 0.0) {
+      sumExpr = bn->getRHS();
+      zeroVal = 0.0;
+    } else {
+      return false;
+    }
+
+    if (zeroVal != 0.0 || binOpCheck(sumExpr) != 0) return false;
+
+    BinNode* sum = getBinNode(sumExpr);
+    if (sum->getOp() != "+" && sum->getOp() != "-") return false;
+
+    std::vector<std::string> keys;
+    auto collectSizeKeys = [&](Expr* e) {
+      std::string k = sizeKeyFromExpr(e);
+      if (!k.empty()) keys.push_back(k);
+    };
+
+    if (isSizeFunction(sum->getLHS())) collectSizeKeys(sum->getLHS());
+    if (isSizeFunction(sum->getRHS())) collectSizeKeys(sum->getRHS());
+
+    if (keys.size() < 2) return false;
+
+    for (const auto& k : keys) {
+      SimpleConstraint c;
+      fillSizeInterval(c, k, 0.0, 0.0, true, true, true, 0.0);
+      out.push_back(c);
+    }
+    return true;
+  }
+
+  static void extractAllSimpleConstraints(Expr* cond, std::vector<SimpleConstraint>& out) {
+    if (!cond) return;
+
+    std::vector<SimpleConstraint> sumZero;
+    if (extractSizeSumZeroConstraint(cond, sumZero)) {
+      out.insert(out.end(), sumZero.begin(), sumZero.end());
+      return;
+    }
+
+    SimpleConstraint single;
+    if (extractSimpleConstraint(cond, single)) {
+      out.push_back(single);
+      return;
+    }
+
+    if (binOpCheck(cond) == 0) {
+      BinNode* bn = getBinNode(cond);
+      if (bn->getOp() == "AND" || bn->getOp() == "and") {
+        extractAllSimpleConstraints(bn->getLHS(), out);
+        extractAllSimpleConstraints(bn->getRHS(), out);
+      }
+    }
+  }
+
   // Very basic extractor for Phase 1/2.
   // Recognizes simple comparisons and ranges, with much better support for
   // tag properties (BTag, cTag, etc.) in real ADL syntax.
   static bool extractSimpleConstraint(Expr* cond, SimpleConstraint& out) {
     if (!cond) return false;
+
+    if (tryExtractSizeConstraint(cond, out)) {
+      return true;
+    }
 
     // Direct comparison case
     if (binOpCheck(cond) == 0) {
@@ -1463,11 +1632,154 @@ namespace adl {
     return false;
   }
 
+  static std::set<int> resolveParticleFamilies(
+      const std::string& name,
+      const std::map<std::string, std::vector<std::string>>& parents,
+      Driver& drv,
+      std::set<std::string>& visited) {
+    std::set<int> families;
+
+    std::string parentKey = name;
+    for (const auto& kv : parents) {
+      if (toupper(kv.first) == toupper(name)) {
+        parentKey = kv.first;
+        break;
+      }
+    }
+
+    if (visited.count(parentKey)) return families;
+    visited.insert(parentKey);
+
+    std::string upper = toupper(name);
+
+    if (drv.check_object_table(name) == 0) {
+      auto it = drv.typeTable.find(upper);
+      if (it != drv.typeTable.end()) families.insert(it->second);
+      return families;
+    }
+
+    auto pit = parents.find(parentKey);
+    if (pit != parents.end()) {
+      for (const auto& p : pit->second) {
+        std::set<std::string> visChild;
+        auto sub = resolveParticleFamilies(p, parents, drv, visChild);
+        families.insert(sub.begin(), sub.end());
+      }
+    }
+
+    if (families.empty()) {
+      for (const auto& e : drv.objectTable) {
+        if (toupper(e.first) == upper && e.second != "PARENT") {
+          std::set<std::string> visTake;
+          auto sub = resolveParticleFamilies(e.second, parents, drv, visTake);
+          families.insert(sub.begin(), sub.end());
+        }
+      }
+    }
+
+    return families;
+  }
+
+  static bool isAncestorOf(const std::string& anc, const std::string& desc,
+                            const std::map<std::string, std::vector<std::string>>& parents) {
+    if (toupper(anc) == toupper(desc)) return true;
+
+    std::string descKey = desc;
+    for (const auto& kv : parents) {
+      if (toupper(kv.first) == toupper(desc)) {
+        descKey = kv.first;
+        break;
+      }
+    }
+
+    auto it = parents.find(descKey);
+    if (it == parents.end()) return false;
+
+    for (const auto& p : it->second) {
+      if (toupper(p) == toupper(anc) || isAncestorOf(anc, p, parents)) return true;
+    }
+    return false;
+  }
+
+  int analyzeObjectDisjointness(Driver& drv) {
+    std::cout << "\n==== OBJECT DISJOINTNESS ANALYSIS (experimental) ====\n";
+
+    auto [parents, objectAttrs] = collectObjectLineage(drv);
+    (void)objectAttrs;
+
+    std::vector<std::string> userObjects;
+    for (auto& n : drv.ast) {
+      if (n->getToken() == "OBJECT") {
+        userObjects.push_back(getObjectNode(n)->getId());
+      }
+    }
+
+    std::cout << "User-defined objects: " << userObjects.size() << "\n";
+
+    int provenDisjoint = 0;
+    int possiblyOverlap = 0;
+    int unknown = 0;
+
+    for (size_t i = 0; i < userObjects.size(); ++i) {
+      for (size_t j = i + 1; j < userObjects.size(); ++j) {
+        const std::string& a = userObjects[i];
+        const std::string& b = userObjects[j];
+
+        std::set<std::string> visA, visB;
+        auto famA = resolveParticleFamilies(a, parents, drv, visA);
+        auto famB = resolveParticleFamilies(b, parents, drv, visB);
+
+        if (famA.empty() || famB.empty()) {
+          std::cout << a << " vs " << b << ": UNKNOWN (could not resolve particle family)\n";
+          unknown++;
+          continue;
+        }
+
+        bool familiesDisjoint = true;
+        for (int fa : famA) {
+          for (int fb : famB) {
+            if (fa == fb) {
+              familiesDisjoint = false;
+              break;
+            }
+          }
+          if (!familiesDisjoint) break;
+        }
+
+        if (familiesDisjoint) {
+          std::cout << a << " vs " << b << ": PROVEN DISJOINT (different particle types)\n";
+          provenDisjoint++;
+          continue;
+        }
+
+        if (isAncestorOf(a, b, parents) || isAncestorOf(b, a, parents)) {
+          std::cout << a << " vs " << b << ": POSSIBLY OVERLAPPING (subset/superset via take)\n";
+          possiblyOverlap++;
+          continue;
+        }
+
+        std::cout << a << " vs " << b << ": POSSIBLY OVERLAPPING (shared particle lineage)\n";
+        possiblyOverlap++;
+      }
+    }
+
+    int pairs = 0;
+    if (userObjects.size() >= 2) {
+      pairs = static_cast<int>(userObjects.size() * (userObjects.size() - 1) / 2);
+    }
+    std::cout << pairs << " pairs checked: " << provenDisjoint << " disjoint, "
+              << possiblyOverlap << " possibly overlapping, " << unknown << " unknown.\n";
+    std::cout << "====                 ====\n\n";
+    return 0;
+  }
+
   int analyzeRegionDisjointness(Driver& drv) {
     std::cout << "\n==== REGION DISJOINTNESS ANALYSIS (experimental) ====\n";
 
     // Phase 2+: Get rich object lineage information (parents + resolved attrs).
-    auto [objectParents, objectAttrs] = collectObjectLineage(drv);
+    auto lineageInfo = collectObjectLineage(drv);
+    const auto& objectParents = lineageInfo.first;
+    const auto& objectAttrs = lineageInfo.second;
     std::cout << "Object attribute dimensions available: " << objectAttrs.size() << "\n";
 
     // Build a quick lookup for regions by name (needed for inheritance).
@@ -1528,8 +1840,9 @@ namespace adl {
               }
             }
 
-            SimpleConstraint c;
-            if (extractSimpleConstraint(cond, c)) {
+            std::vector<SimpleConstraint> extracted;
+            extractAllSimpleConstraints(cond, extracted);
+            for (const auto& c : extracted) {
               info.constraints.push_back(c);
             }
           } else if (stok == "BIN") {
@@ -1550,9 +1863,10 @@ namespace adl {
       std::cout << "Regions containing BIN statements: " << regionsWithBins << "\n";
     }
 
-    // Pairwise analysis with Phase 2 improvements (lineage + tag mutex)
+    // Pairwise analysis with Phase 2 improvements (lineage + tag mutex + cardinality)
     int numericDisjoint = 0;
     int tagMutexDisjoint = 0;
+    int cardDisjoint = 0;
 
     // Helper: check if two keys are related through object lineage (e.g. bjets vs jets)
     auto keysAreRelated = [&](const std::string& k1, const std::string& k2) -> bool {
@@ -1599,13 +1913,32 @@ namespace adl {
             }
 
             // --- Tag / discrete mutex with clear explanation ---
+            bool isSizeKey = (c1.key.rfind("size(", 0) == 0);
             if (c1.isDiscrete && c2.isDiscrete && c1.discreteValue != c2.discreteValue) {
               if (c1.key == c2.key || keysAreRelated(c1.key, c2.key)) {
-                std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
-                std::cout << "  PROVEN DISJOINT (tag mutex): ["
-                          << c1.key << " == " << (int)c1.discreteValue
-                          << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]" << lineage << "\n";
-                tagMutexDisjoint++;
+                if (isSizeKey) {
+                  std::cout << "  PROVEN DISJOINT (cardinality): ["
+                            << c1.key << " == " << (int)c1.discreteValue
+                            << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]\n";
+                  cardDisjoint++;
+                } else {
+                  std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
+                  std::cout << "  PROVEN DISJOINT (tag mutex): ["
+                            << c1.key << " == " << (int)c1.discreteValue
+                            << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]" << lineage << "\n";
+                  tagMutexDisjoint++;
+                }
+              }
+            }
+
+            // --- Non-overlapping cardinality intervals on size(...) keys ---
+            if (isSizeKey && c1.isInterval && c2.isInterval && c1.key == c2.key) {
+              if (c1.hi < c2.lo || c2.hi < c1.lo) {
+                std::cout << "  PROVEN DISJOINT (cardinality): ["
+                          << c1.key << " "
+                          << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
+                          << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]\n";
+                cardDisjoint++;
               }
             }
           }
@@ -1613,13 +1946,14 @@ namespace adl {
       }
     }
 
-    int total = numericDisjoint + tagMutexDisjoint;
+    int total = numericDisjoint + tagMutexDisjoint + cardDisjoint;
     if (total == 0) {
       std::cout << "No trivial disjoint pairs found by current rules.\n";
     } else {
-      std::cout << "Found " << total << " trivial disjoint region pairs"
+      std::cout << "Found " << total << " trivial disjoint region pair proofs"
                 << " (numeric intervals: " << numericDisjoint
-                << ", tag/discrete mutex: " << tagMutexDisjoint << ").\n";
+                << ", tag/discrete mutex: " << tagMutexDisjoint
+                << ", cardinality: " << cardDisjoint << ").\n";
     }
 
     // BIN note (regions with BINs have by-construction disjoint sub-regions)

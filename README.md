@@ -18,6 +18,7 @@ To run:
 
 ```bash
 ./smash <FILE>
+./smash -r <FILE>   # also run object/region disjointness analysis (stdout)
 ```
 
 Two files will be made.

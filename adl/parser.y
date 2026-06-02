@@ -207,6 +207,11 @@ chained_cond : LPAR chain RPAR                              { $$ = $2; } // shif
              | chain QUES chain COLON chain                 { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
              | chain QUES chain                             { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
+             | id_qualifiers range                          {
+                                                            VarNode* vn = static_cast<VarNode*>($1);
+                                                            $$ = new VarNode(incrementCounter(),"ID",vn->getId(),vn->getAlias(),vn->getDotOp(),intLists,vn->getType());
+                                                            intLists.clear();
+                                                          }
              ;
 
 chain : condition                       { $$ = $1; }

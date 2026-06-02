@@ -33,15 +33,15 @@ region hadronic
   select dphi(jets[2], METLV[0]) > 0.5
   select dR(jets[0], jets[1]) > 1.0
   select MT2j0j1 > 300 
-  print size(jets) pT(jets[0]) HT dphi(jets[0], METLV[0]) MT2j0j1 MET
-  save hadvars csv size(jets) pT(jets[0]) HT dphi(jets[0], METLV[0]) MT2j0j1 MET
+  print size(jets), pT(jets[0]), HT, dphi(jets[0], METLV[0]), MT2j0j1, MET
+  save hadvars csv size(jets), pT(jets[0]), HT, dphi(jets[0], METLV[0]), MT2j0j1, MET
 
 region leptonic
   select size(jets) >= 3  
   select size(leptons) == 1
   select HTlep > 300
   select MTl > 150
-  print pT(leptons[0]) size(jets) HTlep MTl MET
-  save lepvars csv pT(leptons[0]) size(Jet) HTlep MTl MET
+  print pT(leptons[0]), size(jets), HTlep, MTl, MET
+  save lepvars csv pT(leptons[0]), size(jets), HTlep, MTl, MET
 
 

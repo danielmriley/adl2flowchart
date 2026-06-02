@@ -16,12 +16,17 @@
 %%
 
 "define"|"def"                  { return adl::Parser::make_DEFINE(YYText(), adl::location()); }
-"region"                        { return adl::Parser::make_REGION(YYText(), adl::location()); }
+"region"|"algo"                 { return adl::Parser::make_REGION(YYText(), adl::location()); }
 "histoList"                     { return adl::Parser::make_HISTOLIST(YYText(), adl::location()); }
 "object"|"obj"|"composite"      { return adl::Parser::make_OBJECT(YYText(), adl::location()); }
 "take"|"using"                  { return adl::Parser::make_TAKE(YYText(), adl::location()); }
-"select"|"command"|"cut"        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
-"cmd"|"reject"                  { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"select"|"command"|"cut"|"cmd"  { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"reject"                        { return adl::Parser::make_COMMAND(YYText(), adl::location()); }
+"print"                         { return adl::Parser::make_PRINT(YYText(), adl::location()); }
+"save"                          { return adl::Parser::make_SAVE(YYText(), adl::location()); }
+"countsformat"                  { return adl::Parser::make_COUNTSFORMAT(YYText(), adl::location()); }
+"counts"                        { return adl::Parser::make_COUNTS(YYText(), adl::location()); }
+"process"                       { return adl::Parser::make_PROCESS(YYText(), adl::location()); }
 "trigger"                       { return adl::Parser::make_TRIGGER(YYText(), adl::location()); }
 "weight"                        { return adl::Parser::make_WEIGHT(YYText(), adl::location()); }
 "bin"                           { return adl::Parser::make_BIN(YYText(), adl::location()); }
@@ -79,7 +84,10 @@
 
 
 
-[a-zA-Z][0-9a-zA-Z]*?+[-0-9a-zA-Z]* { return adl::Parser::make_ID(YYText(), adl::location()); }
+[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z][a-zA-Z0-9_.-]* { return adl::Parser::make_ID(YYText(), adl::location()); }
+[a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9][a-zA-Z0-9._]* { return adl::Parser::make_ID(YYText(), adl::location()); }
+[a-zA-Z]                                     { return adl::Parser::make_ID(YYText(), adl::location()); }
+[a-zA-Z][0-9a-zA-Z]*?+[-0-9a-zA-Z]*          { return adl::Parser::make_ID(YYText(), adl::location()); }
 [-]?[0-9]+        				     		  { return adl::Parser::make_INT(std::stoi(YYText()), adl::location()); }
 [-]?[0-9]+"."[0-9]+				     		  { return adl::Parser::make_REAL(std::stod(YYText()), adl::location()); }
 #.*\n                               {}

@@ -1,0 +1,8 @@
+# Canonical take-root aliases for disjointness analysis (one canonical name per line, then aliases).
+JET Jet JET jets jet Jets AK4jet AK4jets AK8jet FatJet FJet BJet QCJET Delphes_Jet JETclean JETsr
+MUON Muon MUO Muo muons muon Muons MUON MUOclean Delphes_Muon
+ELECTRON Electron Ele ELE electrons electron Elec ELEclean ELEveryclean Delphes_Electron
+PHOTON Photon Pho PHO photons Delphes_Photon
+TAU Tau
+MET MissingET METLV MHT Delphes_MissingET Delphes_scalarHT scalarHT
+TRACK Track Trk

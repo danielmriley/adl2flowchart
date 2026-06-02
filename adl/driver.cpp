@@ -152,6 +152,30 @@ namespace adl {
     typeTable["COMB"] = combo_t;
     typeTable["COMBO"] = combo_t;
     typeTable["CONSTIT"] = consti_t;
+    typeTable["MISSINGET"] = pureV_t;
+    typeTable["MET"] = pureV_t;
+    typeTable["MHT"] = pureV_t;
+    typeTable["DELPHES_MISSINGET"] = pureV_t;
+    typeTable["DELPHES_SCALARHT"] = pureV_t;
+    typeTable["SCALARHT"] = pureV_t;
+    typeTable["AK4JET"] = jet_t;
+    typeTable["AK8JET"] = jet_t;
+    typeTable["FATJET"] = fjet_t;
+    typeTable["FJET"] = fjet_t;
+    typeTable["BJET"] = bjet_t;
+    typeTable["DELPHES_JET"] = jet_t;
+    typeTable["DELPHES_ELECTRON"] = electron_t;
+    typeTable["DELPHES_MUON"] = muon_t;
+    typeTable["DELPHES_PHOTON"] = photon_t;
+    typeTable["JETS"] = jet_t;
+    typeTable["MUONS"] = muon_t;
+    typeTable["ELECTRONS"] = electron_t;
+    typeTable["LEPTON"] = electron_t;
+    typeTable["LEPTONS"] = electron_t;
+    typeTable["PHOTONS"] = photon_t;
+    typeTable["HT"] = pureV_t;
+    typeTable["ST"] = pureV_t;
+    typeTable["FHT"] = pureV_t;
   }
 
   int Driver::visitAST(int (*f)(ExprVector& _ast)) {
@@ -408,7 +432,12 @@ namespace adl {
         for(auto &s: stmnts) {
           if(s->getToken() == "TAKE") {
             Expr* cond = static_cast<CommandNode*>(s)->getCondition();
-            std::string var = cond->getId();
+            std::string var;
+            if(cond && cond->getToken() == "FUNCTION") {
+              var = getFunctionNode(cond)->getId();
+            } else if(cond) {
+              var = cond->getId();
+            }
             std::string varDeclType = getObjectDeclType(var);
             std::cout << "VARDECL TYPE: " << varDeclType << "\n";
             if(varDeclType != "NOT FOUND" && varDeclType == "PARENT") {

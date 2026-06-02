@@ -99,6 +99,7 @@ namespace adl {
                       std::map<std::string, LFunction> &lfunction_map,
                       std::map<std::string, UnFunction> &unfunction_map,
                       std::map<std::string, SFunction> &sfunction_map) ;
+    fs::path getLibPath() const { return libPath; }
     // std::map<std::string,pair<particleType,std::string>> particle_map;
 
   private:

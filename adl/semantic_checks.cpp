@@ -5,7 +5,13 @@
 // #define ADL_DEBUG
 
 #include "semantic_checks.h"
+#include <algorithm>
 #include <cassert>
+#include <cctype>
+#include <fstream>
+#include <map>
+#include <set>
+#include <sstream>
 
 namespace adl {
 
@@ -53,7 +59,7 @@ namespace adl {
   }
 
   int binOpCheck(Expr* b) {
-    assert(b != nullptr && "NULL pointer.");
+    if(b == nullptr) return 1;
     if(b->getToken() == "EXPROP" || b->getToken() == "LOGICOP"
         || b->getToken() == "COMPAREOP" || b->getToken() == "FACTOROP") {
       return 0;
@@ -219,13 +225,13 @@ namespace adl {
       Expr* t = ite->getThenBranch();
       Expr* e = ite->getElseBranch();
 
-      if(binOpCheck(i) == 0) {
+      if(i && binOpCheck(i) == 0) {
         printBinNode(n, getBinNode(i));
       }
-      if(binOpCheck(t) == 0) {
+      if(t && binOpCheck(t) == 0) {
         printBinNode(n, getBinNode(t));
       }
-      if(binOpCheck(e) == 0) {
+      if(e && binOpCheck(e) == 0) {
         printBinNode(n, getBinNode(e));
       }
     }
@@ -353,6 +359,7 @@ namespace adl {
 
   std::string typeCheck(Expr* node, Driver& drv) {
     std::string type = "UNKNOWN";
+    if(!node) return type;
     if(binOpCheck(node) == 0) {
       typeCheck(getBinNode(node)->getLHS(),drv);
       typeCheck(getBinNode(node)->getRHS(),drv);
@@ -435,10 +442,10 @@ namespace adl {
         std::vector<Expr*> vv = object->getStatements();
         for(auto& s: vv) {
           Expr* cond = static_cast<CommandNode*>(s)->getCondition();
-          if(binOpCheck(cond) == 0) {
+          if(cond && binOpCheck(cond) == 0) {
             BinNode* bin = getBinNode(cond);
-            typeCheck(bin->getRHS(),drv);
-            typeCheck(bin->getRHS(),drv);
+            if(bin->getLHS()) typeCheck(bin->getLHS(),drv);
+            if(bin->getRHS()) typeCheck(bin->getRHS(),drv);
           }
           if(cond->getToken() == "FUNCTION") {
             typeCheck(cond,drv);
@@ -466,8 +473,22 @@ namespace adl {
     std::cout << "ERROR: VAR " << var << " IS NOT DECLARED\n";
   }
 
+  static std::string objectBaseId(const std::string& id) {
+    const auto dot = id.find('.');
+    return dot == std::string::npos ? id : id.substr(0, dot);
+  }
+
   int checkTables(Driver& drv, Expr* v) {
     std::string var = v->getId();
+    const std::string base = objectBaseId(var);
+    if(base != var) {
+      if(drv.checkObjectTable(base) == 0) return 0;
+      if(drv.checkObjectTable(var) == 0) return 0;
+      if(drv.checkDefinitionTable(var) == 0) return 0;
+      if(drv.checkRegionTable(var) == 0) return 0;
+      printError(var);
+      return 1;
+    }
     if(drv.checkObjectTable(var) == 0) return 0;
     if(drv.checkDefinitionTable(var) == 0) return 0;
     if(drv.checkRegionTable(var) == 0) return 0;
@@ -486,11 +507,11 @@ namespace adl {
     int res = 0;
     int fres = 0;
 
-    if(binOpCheck(lhs) == 0) {
+    if(lhs && binOpCheck(lhs) == 0) {
       res = parseBinNode(drv, getBinNode(lhs));
     }
     if(res == 1) fres = 1;
-    if(binOpCheck(rhs) == 0) {
+    if(rhs && binOpCheck(rhs) == 0) {
       res = parseBinNode(drv, getBinNode(rhs));
     }
     if(res == 1) fres = 1;
@@ -534,10 +555,17 @@ namespace adl {
 #ifdef ADL_DEBUG
             std::cout << "var: " << var << "\n";
 #endif
+            if(cond->getToken() == "FUNCTION") {
+              // TAKE from COMB(...), fmegajets(...), antikT(...), etc.
+              continue;
+            }
             if(tolower(var) == "union") {
 #ifdef ADL_DEBUG
               std::cout << "UNION function\n";
 #endif
+            }
+            else if(drv.check_object_table(var) == 0 || drv.checkObjectTable(var) == 0) {
+              continue;
             }
             else if(drv.check_object_table(var) == 1 && drv.checkObjectTable(var) == 1) {
               printError(var);
@@ -567,7 +595,9 @@ namespace adl {
 #ifdef ADL_DEBUG
           std::cout << "cond->getId(): " << cond->getId() << "\n";
 #endif
-          if(s->getId() == "" || toupper(s->getToken()) == "HISTO" || checkTables(drv,cond) == 0) {
+          std::string stok = toupper(s->getToken());
+          if(stok == "PRINT" || stok == "SAVE" || stok == "BIN" || stok == "WEIGHT" || stok == "COUNTS") continue;
+          if(s->getId() == "" || stok == "HISTO" || (cond && checkTables(drv,cond) == 0)) {
 #ifdef ADL_DEBUG
             std::cout << "continuing\n";
 #endif
@@ -798,6 +828,8 @@ namespace adl {
     }
   }
 
+  static void appendTakeSource(Expr* cond, std::vector<std::string>& out);
+
   // Richer version for analysis use (Phase 2+): returns both the parent DAG
   // and the transitively resolved attributes per object.
   std::pair<
@@ -821,7 +853,11 @@ namespace adl {
         CommandNode* cn = getCommandNode(s);
         Expr* cond = cn->getCondition();
         if(stok == "TAKE") {
-          parents[name].push_back(cond->getId());
+          std::vector<std::string> sources;
+          appendTakeSource(cond, sources);
+          for (const auto& s : sources) {
+            parents[name].push_back(s);
+          }
         }
         else if(stok == "SELECT" || stok == "REJECT") {
           emitAttrs(cond, ownAttrs[name], drv);
@@ -982,6 +1018,354 @@ namespace adl {
     }
 
     return key;
+  }
+
+  // ----- Canonical naming & constraint utilities (disjointness) -----
+  static std::map<std::string, std::string> g_takeAliasToCanon;
+  static bool g_takeAliasesReady = false;
+  static Driver* g_disjointDrv = nullptr;
+
+  static void registerTakeAlias(const std::string& canon, const std::string& alias) {
+    std::string c = toupper(canon);
+    std::string a = toupper(alias);
+    g_takeAliasToCanon[a] = c;
+    g_takeAliasToCanon[c] = c;
+  }
+
+  static void ensureTakeAliases(Driver& drv) {
+    if (g_takeAliasesReady) return;
+    registerTakeAlias("JET", "JET");
+    registerTakeAlias("JET", "JETS");
+    registerTakeAlias("MUON", "MUO");
+    registerTakeAlias("MUON", "MUONS");
+    registerTakeAlias("ELECTRON", "ELE");
+    registerTakeAlias("ELECTRON", "ELECTRONS");
+    registerTakeAlias("MET", "MISSINGET");
+    registerTakeAlias("MET", "METLV");
+    registerTakeAlias("MET", "MHT");
+
+    std::string path = drv.getLibPath().string() + "/object_aliases.txt";
+    std::ifstream fin(path);
+    if (fin.good()) {
+      std::string line;
+      while (std::getline(fin, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::stringstream ss(line);
+        std::string canon, alias;
+        if (!(ss >> canon)) continue;
+        registerTakeAlias(canon, canon);
+        while (ss >> alias) registerTakeAlias(canon, alias);
+      }
+    }
+    g_takeAliasesReady = true;
+  }
+
+  static std::string canonicalTakeRoot(const std::string& raw, Driver& drv) {
+    ensureTakeAliases(drv);
+    std::string u = toupper(raw);
+    auto it = g_takeAliasToCanon.find(u);
+    if (it != g_takeAliasToCanon.end()) return it->second;
+    return u;
+  }
+
+  static std::string objectFromConstraintKey(const std::string& key) {
+    if (key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')') {
+      return key.substr(5, key.size() - 6);
+    }
+    size_t dot = key.find('.');
+    size_t bracket = key.find('[');
+    size_t end = key.size();
+    if (dot != std::string::npos) end = std::min(end, dot);
+    if (bracket != std::string::npos) end = std::min(end, bracket);
+    return key.substr(0, end);
+  }
+
+  static std::string canonicalConstraintKey(const std::string& key, Driver& drv) {
+    if (key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')') {
+      std::string inner = key.substr(5, key.size() - 6);
+      return "size(" + canonicalTakeRoot(inner, drv) + ")";
+    }
+    if (key.rfind("dphi(", 0) == 0 || key.rfind("dr(", 0) == 0 ||
+        key.rfind("deta(", 0) == 0) {
+      return toupper(key);
+    }
+    std::string obj = objectFromConstraintKey(key);
+    if (obj.empty()) return key;
+    size_t dot = key.find('.');
+    size_t bracket = key.find('[');
+    if (dot == std::string::npos && bracket == std::string::npos) {
+      return canonicalTakeRoot(key, drv);
+    }
+    std::string suffix;
+    if (dot != std::string::npos) suffix = key.substr(dot);
+    else if (bracket != std::string::npos) suffix = key.substr(bracket);
+    return canonicalTakeRoot(obj, drv) + suffix;
+  }
+
+  static void appendTakeSource(Expr* cond, std::vector<std::string>& out) {
+    if (!cond) return;
+    if (cond->getToken() == "ID" || cond->getToken() == "VAR") {
+      out.push_back(getVarNode(cond)->getId());
+    } else if (cond->getToken() == "FUNCTION") {
+      out.push_back(getFunctionNode(cond)->getId());
+    }
+  }
+
+  static int particleFamilyFromTakeRoot(const std::string& root, Driver& drv) {
+    std::string u = canonicalTakeRoot(root, drv);
+    auto it = drv.typeTable.find(u);
+    if (it != drv.typeTable.end()) return it->second;
+    return -1;
+  }
+
+  static void mergeConstraintMap(std::map<std::string, SimpleConstraint>& merged,
+                                 const SimpleConstraint& c) {
+    auto it = merged.find(c.key);
+    if (it == merged.end()) {
+      merged[c.key] = c;
+      return;
+    }
+    SimpleConstraint& m = it->second;
+    if (c.isDiscrete && m.isDiscrete && c.discreteValue != m.discreteValue) {
+      m.lo = 1.0;
+      m.hi = 0.0;
+      m.loInclusive = m.hiInclusive = false;
+      return;
+    }
+    m.lo = std::max(m.lo, c.lo);
+    m.hi = std::min(m.hi, c.hi);
+    m.loInclusive = m.loInclusive && c.loInclusive;
+    m.hiInclusive = m.hiInclusive && c.hiInclusive;
+    if (c.isDiscrete) {
+      m.isDiscrete = true;
+      m.discreteValue = c.discreteValue;
+    }
+  }
+
+  static void finalizeMergedConstraints(std::vector<SimpleConstraint>& out,
+                                        std::map<std::string, SimpleConstraint>& merged) {
+    out.clear();
+    for (auto& kv : merged) {
+      if (kv.second.lo <= kv.second.hi) out.push_back(kv.second);
+    }
+  }
+
+  static void collectDefineConstraintMap(Driver& drv,
+      std::map<std::string, std::vector<SimpleConstraint>>& defineCs) {
+    for (auto& n : drv.ast) {
+      if (n->getToken() != "DEFINE") continue;
+      DefineNode* dn = getDefineNode(n);
+      std::vector<SimpleConstraint> cs;
+      extractAllSimpleConstraints(dn->getBody(), cs);
+      std::map<std::string, SimpleConstraint> merged;
+      for (const auto& c : cs) {
+        SimpleConstraint cc = c;
+        cc.key = canonicalConstraintKey(c.key, drv);
+        mergeConstraintMap(merged, cc);
+      }
+      finalizeMergedConstraints(defineCs[dn->getId()], merged);
+    }
+  }
+
+  static void appendDefineConstraints(Expr* e, Driver& drv,
+      const std::map<std::string, std::vector<SimpleConstraint>>& defineCs,
+      std::vector<SimpleConstraint>& out) {
+    if (!e) return;
+    if (e->getToken() == "ID" || e->getToken() == "VAR") {
+      std::string id = getVarNode(e)->getId();
+      if (drv.checkDefinitionTable(id) == 0) {
+        auto it = defineCs.find(id);
+        if (it != defineCs.end()) {
+          for (const auto& c : it->second) out.push_back(c);
+        }
+      }
+    }
+    if (binOpCheck(e) == 0) {
+      BinNode* bn = getBinNode(e);
+      appendDefineConstraints(bn->getLHS(), drv, defineCs, out);
+      appendDefineConstraints(bn->getRHS(), drv, defineCs, out);
+    }
+    if (e->getToken() == "FUNCTION") {
+      for (auto& p : getFunctionNode(e)->getParams()) {
+        appendDefineConstraints(p, drv, defineCs, out);
+      }
+    }
+    if (e->getToken() == "ITE") {
+      ITENode* ite = getITENode(e);
+      appendDefineConstraints(ite->getCondition(), drv, defineCs, out);
+      appendDefineConstraints(ite->getThenBranch(), drv, defineCs, out);
+      appendDefineConstraints(ite->getElseBranch(), drv, defineCs, out);
+    }
+  }
+
+  static void applyCompareOpToInterval(SimpleConstraint& out, const std::string& op,
+                                       double val, bool flipped) {
+    std::string cop = op;
+    if (flipped) {
+      if (cop == ">") cop = "<";
+      else if (cop == ">=") cop = "<=";
+      else if (cop == "<") cop = ">";
+      else if (cop == "<=") cop = ">=";
+    }
+    out.isInterval = true;
+    out.isDiscrete = false;
+    if (cop == ">") {
+      out.lo = val;
+      out.loInclusive = false;
+      out.hi = 1e300;
+      out.hiInclusive = true;
+    } else if (cop == ">=") {
+      out.lo = val;
+      out.loInclusive = true;
+      out.hi = 1e300;
+      out.hiInclusive = true;
+    } else if (cop == "<") {
+      out.lo = -1e300;
+      out.loInclusive = true;
+      out.hi = val;
+      out.hiInclusive = false;
+    } else if (cop == "<=") {
+      out.lo = -1e300;
+      out.loInclusive = true;
+      out.hi = val;
+      out.hiInclusive = true;
+    } else if (cop == "==") {
+      out.lo = out.hi = val;
+      out.loInclusive = out.hiInclusive = true;
+      if (val == 0.0 || val == 1.0) {
+        out.isDiscrete = true;
+        out.discreteValue = val;
+      }
+    }
+  }
+
+  // Complement of a simple constraint (reject X -> NOT X), single-interval form.
+  static void complementConstraint(SimpleConstraint& c) {
+    const double inf = 1e300;
+    if (c.isDiscrete) {
+      if (c.discreteValue == 0.0) c.discreteValue = 1.0;
+      else if (c.discreteValue == 1.0) c.discreteValue = 0.0;
+      return;
+    }
+    if (c.hi >= inf / 2) {
+      bool strictBelow = !c.loInclusive;
+      c.hi = c.lo;
+      c.lo = -inf;
+      c.loInclusive = true;
+      c.hiInclusive = strictBelow;
+      return;
+    }
+    if (c.lo <= -inf / 2) {
+      bool strictAbove = !c.hiInclusive;
+      c.lo = c.hi;
+      c.hi = inf;
+      c.loInclusive = strictAbove;
+      c.hiInclusive = true;
+      return;
+    }
+    if (std::fabs(c.lo - c.hi) < 1e-9 && c.loInclusive && c.hiInclusive) {
+      if (c.key.rfind("size(", 0) == 0) {
+        c.lo = c.hi + 1.0;
+        c.hi = inf;
+        c.loInclusive = true;
+        c.hiInclusive = true;
+        c.isDiscrete = false;
+      }
+    }
+  }
+
+  static std::string angularSepKey(FunctionNode* fn, Driver& drv) {
+    if (!fn || fn->getParams().size() < 2) return "";
+    std::string a = smartKeyFromSide(fn->getParams()[0]);
+    std::string b = smartKeyFromSide(fn->getParams()[1]);
+    if (a.empty() || b.empty()) return "";
+    if (g_disjointDrv) {
+      a = canonicalConstraintKey(a, *g_disjointDrv);
+      b = canonicalConstraintKey(b, *g_disjointDrv);
+    }
+    if (a > b) std::swap(a, b);
+    return tolower(fn->getId()) + "(" + a + "," + b + ")";
+  }
+
+  static bool isAngularSepFunction(const std::string& fname) {
+    return fname == "dphi" || fname == "dr" || fname == "deta";
+  }
+
+  static bool extractAngularCompare(Expr* cond, SimpleConstraint& out, Driver& drv) {
+    if (!cond || binOpCheck(cond) != 0) return false;
+    BinNode* bn = getBinNode(cond);
+    Expr* fnSide = nullptr;
+    Expr* numSide = nullptr;
+    bool flipped = false;
+
+    auto pick = [&](Expr* a, Expr* b) -> bool {
+      if (a->getToken() == "FUNCTION" &&
+          (b->getToken() == "INT" || b->getToken() == "REAL")) {
+        fnSide = a;
+        numSide = b;
+        return true;
+      }
+      return false;
+    };
+
+    if (!pick(bn->getLHS(), bn->getRHS()) && !pick(bn->getRHS(), bn->getLHS())) {
+      return false;
+    }
+    if (fnSide == bn->getRHS()) flipped = true;
+
+    FunctionNode* fn = getFunctionNode(fnSide);
+    std::string fname = tolower(fn->getId());
+    if (!isAngularSepFunction(fname)) return false;
+
+    std::string key = angularSepKey(fn, drv);
+    if (key.empty()) return false;
+
+    out.key = key;
+    std::string op = bn->getOp();
+    if (op != ">" && op != ">=" && op != "<" && op != "<=" && op != "==") return false;
+    applyCompareOpToInterval(out, op, getNumNode(numSide)->value(), flipped);
+    return out.lo <= out.hi || out.isDiscrete;
+  }
+
+  static bool extractFunctionCompare(Expr* cond, SimpleConstraint& out, Driver& drv) {
+    if (!cond || binOpCheck(cond) != 0) return false;
+    BinNode* bn = getBinNode(cond);
+    std::string op = bn->getOp();
+    Expr* fnSide = nullptr;
+    Expr* numSide = nullptr;
+    bool flipped = false;
+
+    auto pick = [&](Expr* a, Expr* b) -> bool {
+      if (a->getToken() == "FUNCTION" &&
+          (b->getToken() == "INT" || b->getToken() == "REAL")) {
+        fnSide = a;
+        numSide = b;
+        return true;
+      }
+      return false;
+    };
+
+    if (!pick(bn->getLHS(), bn->getRHS()) && !pick(bn->getRHS(), bn->getLHS())) {
+      return false;
+    }
+    if (fnSide == bn->getRHS()) flipped = true;
+
+    FunctionNode* fn = getFunctionNode(fnSide);
+    std::string fname = tolower(fn->getId());
+    if (fname != "pt" && fname != "ht" && fname != "eta" && fname != "mass" &&
+        fname != "m" && fname != "phi" && fname != "rap" && fname != "energy" &&
+        fname != "e" && fname != "abseta") {
+      return false;
+    }
+    if (fn->getParams().empty()) return false;
+    std::string objKey = smartKeyFromSide(fn->getParams()[0]);
+    if (objKey.empty()) return false;
+    std::string key = canonicalConstraintKey(objKey + "." + fname, drv);
+
+    out.key = key;
+    if (op != ">" && op != ">=" && op != "<" && op != "<=" && op != "==") return false;
+    applyCompareOpToInterval(out, op, getNumNode(numSide)->value(), flipped);
+    return out.lo <= out.hi || out.isDiscrete;
   }
 
   static bool isTagPropertyName(const std::string& name) {
@@ -1216,7 +1600,9 @@ namespace adl {
     if (fn->getParams().empty()) return "";
     Expr* p = fn->getParams()[0];
     if (p->getToken() == "ID" || p->getToken() == "VAR") {
-      return "size(" + getVarNode(p)->getId() + ")";
+      std::string raw = "size(" + getVarNode(p)->getId() + ")";
+      if (g_disjointDrv) return canonicalConstraintKey(raw, *g_disjointDrv);
+      return raw;
     }
     return "";
   }
@@ -1371,7 +1757,16 @@ namespace adl {
   static bool extractSimpleConstraint(Expr* cond, SimpleConstraint& out) {
     if (!cond) return false;
 
+    if (g_disjointDrv && extractAngularCompare(cond, out, *g_disjointDrv)) {
+      return true;
+    }
+
+    if (g_disjointDrv && extractFunctionCompare(cond, out, *g_disjointDrv)) {
+      return true;
+    }
+
     if (tryExtractSizeConstraint(cond, out)) {
+      if (g_disjointDrv) out.key = canonicalConstraintKey(out.key, *g_disjointDrv);
       return true;
     }
 
@@ -1389,6 +1784,7 @@ namespace adl {
         double val = getNumNode(rhs)->value();
 
         std::string key = buildKeyFromVar(var);
+        if (g_disjointDrv) key = canonicalConstraintKey(key, *g_disjointDrv);
         bool looksLikeTag = isTagProperty(var);
 
         out.key = key;
@@ -1638,6 +2034,7 @@ namespace adl {
       Driver& drv,
       std::set<std::string>& visited) {
     std::set<int> families;
+    ensureTakeAliases(drv);
 
     std::string parentKey = name;
     for (const auto& kv : parents) {
@@ -1650,31 +2047,31 @@ namespace adl {
     if (visited.count(parentKey)) return families;
     visited.insert(parentKey);
 
-    std::string upper = toupper(name);
-
-    if (drv.check_object_table(name) == 0) {
-      auto it = drv.typeTable.find(upper);
-      if (it != drv.typeTable.end()) families.insert(it->second);
-      return families;
+    auto pit = parents.find(parentKey);
+    if (pit != parents.end() && !pit->second.empty()) {
+      for (const auto& src : pit->second) {
+        int fam = particleFamilyFromTakeRoot(src, drv);
+        if (fam >= 0) families.insert(fam);
+        if (drv.check_object_table(src) == 0) {
+          std::set<std::string> visChild;
+          auto sub = resolveParticleFamilies(src, parents, drv, visChild);
+          families.insert(sub.begin(), sub.end());
+        }
+      }
+      if (!families.empty()) return families;
     }
 
-    auto pit = parents.find(parentKey);
-    if (pit != parents.end()) {
-      for (const auto& p : pit->second) {
-        std::set<std::string> visChild;
-        auto sub = resolveParticleFamilies(p, parents, drv, visChild);
-        families.insert(sub.begin(), sub.end());
+    if (drv.check_object_table(name) == 0) {
+      std::string decl = drv.getObjectDeclType(name);
+      if (decl != "NOT FOUND" && decl != "PARENT") {
+        int fam = particleFamilyFromTakeRoot(decl, drv);
+        if (fam >= 0) families.insert(fam);
       }
     }
 
     if (families.empty()) {
-      for (const auto& e : drv.objectTable) {
-        if (toupper(e.first) == upper && e.second != "PARENT") {
-          std::set<std::string> visTake;
-          auto sub = resolveParticleFamilies(e.second, parents, drv, visTake);
-          families.insert(sub.begin(), sub.end());
-        }
-      }
+      int fam = particleFamilyFromTakeRoot(name, drv);
+      if (fam >= 0) families.insert(fam);
     }
 
     return families;
@@ -1702,6 +2099,8 @@ namespace adl {
   }
 
   int analyzeObjectDisjointness(Driver& drv) {
+    g_disjointDrv = &drv;
+    ensureTakeAliases(drv);
     std::cout << "\n==== OBJECT DISJOINTNESS ANALYSIS (experimental) ====\n";
 
     auto [parents, objectAttrs] = collectObjectLineage(drv);
@@ -1770,11 +2169,34 @@ namespace adl {
     std::cout << pairs << " pairs checked: " << provenDisjoint << " disjoint, "
               << possiblyOverlap << " possibly overlapping, " << unknown << " unknown.\n";
     std::cout << "====                 ====\n\n";
+    g_disjointDrv = nullptr;
     return 0;
   }
 
+  static bool objectLineageRelated(const std::string& a, const std::string& b,
+      const std::map<std::string, std::vector<std::string>>& parents, Driver& drv) {
+    if (a == b) return true;
+    if (isAncestorOf(a, b, parents) || isAncestorOf(b, a, parents)) return true;
+    std::string ca = canonicalTakeRoot(a, drv);
+    std::string cb = canonicalTakeRoot(b, drv);
+    if (ca == cb && ca != toupper(a) && ca != toupper(b)) return true;
+    return false;
+  }
+
+  static bool constraintKeysRelated(const std::string& k1, const std::string& k2,
+      const std::map<std::string, std::vector<std::string>>& parents, Driver& drv) {
+    if (k1 == k2) return true;
+    return objectLineageRelated(objectFromConstraintKey(k1), objectFromConstraintKey(k2),
+                                parents, drv);
+  }
+
   int analyzeRegionDisjointness(Driver& drv) {
+    g_disjointDrv = &drv;
+    ensureTakeAliases(drv);
     std::cout << "\n==== REGION DISJOINTNESS ANALYSIS (experimental) ====\n";
+
+    std::map<std::string, std::vector<SimpleConstraint>> defineConstraints;
+    collectDefineConstraintMap(drv, defineConstraints);
 
     // Phase 2+: Get rich object lineage information (parents + resolved attrs).
     auto lineageInfo = collectObjectLineage(drv);
@@ -1826,9 +2248,11 @@ namespace adl {
         for (auto& stmt : current->getStatements()) {
           std::string stok = stmt->getToken();
 
-          if (stok == "SELECT" || stok == "REJECT") {
+          if (stok == "SELECT" || stok == "REJECT" || stok == "COMMAND" ||
+              stok == "CMD" || stok == "CUT") {
             CommandNode* cn = getCommandNode(stmt);
             Expr* cond = cn->getCondition();
+            bool isReject = (stok == "REJECT");
 
             // Bare region name = inheritance
             if (cond->getToken() == "ID") {
@@ -1842,19 +2266,65 @@ namespace adl {
 
             std::vector<SimpleConstraint> extracted;
             extractAllSimpleConstraints(cond, extracted);
-            for (const auto& c : extracted) {
-              info.constraints.push_back(c);
+            appendDefineConstraints(cond, drv, defineConstraints, extracted);
+            for (auto& c : extracted) {
+              c.key = canonicalConstraintKey(c.key, drv);
+              if (isReject) complementConstraint(c);
+              if (c.lo <= c.hi || c.isDiscrete) info.constraints.push_back(c);
             }
           } else if (stok == "BIN") {
             info.hasBins = true;
+            CommandNode* cn = getCommandNode(stmt);
+            Expr* cond = cn->getCondition();
+            if (cond) {
+              std::vector<SimpleConstraint> extracted;
+              extractAllSimpleConstraints(cond, extracted);
+              appendDefineConstraints(cond, drv, defineConstraints, extracted);
+              for (auto& c : extracted) {
+                c.key = canonicalConstraintKey(c.key, drv);
+                info.constraints.push_back(c);
+              }
+            }
           }
         }
       }
+
+      std::map<std::string, SimpleConstraint> merged;
+      for (const auto& c : info.constraints) mergeConstraintMap(merged, c);
+      finalizeMergedConstraints(info.constraints, merged);
 
       regions.push_back(std::move(info));
     }
 
     std::cout << "Regions analyzed (after inheritance): " << regions.size() << "\n";
+    if (!defineConstraints.empty()) {
+      std::cout << "Define constraints available for " << defineConstraints.size()
+                << " symbol(s).\n";
+    }
+
+    std::cout << "Per-region merged constraints:\n";
+    for (const auto& r : regions) {
+      std::cout << "  " << r.name << ": " << r.constraints.size() << " constraint(s)";
+      if (!r.parents.empty()) {
+        std::cout << " (inherits";
+        for (size_t pi = 0; pi < r.parents.size(); ++pi) {
+          std::cout << (pi == 0 ? " " : ", ") << r.parents[pi];
+        }
+        std::cout << ")";
+      }
+      if (r.hasBins) std::cout << " [has BIN]";
+      std::cout << "\n";
+      for (const auto& c : r.constraints) {
+        std::cout << "    - " << c.key;
+        if (c.isDiscrete) {
+          std::cout << " == " << (int)c.discreteValue;
+        } else {
+          std::cout << " in " << (c.loInclusive ? "[" : "(") << c.lo << ", " << c.hi
+                    << (c.hiInclusive ? "]" : ")");
+        }
+        std::cout << "\n";
+      }
+    }
 
     // Quick summary
     int regionsWithBins = 0;
@@ -1868,61 +2338,51 @@ namespace adl {
     int tagMutexDisjoint = 0;
     int cardDisjoint = 0;
 
-    // Helper: check if two keys are related through object lineage (e.g. bjets vs jets)
-    auto keysAreRelated = [&](const std::string& k1, const std::string& k2) -> bool {
-      if (k1 == k2) return true;
-      auto checkChain = [&](const std::string& base, const std::string& target) {
-        auto it = objectParents.find(base);
-        if (it == objectParents.end()) return false;
-        for (const auto& p : it->second) {
-          if (p == target || p.find(target) != std::string::npos) return true;
-        }
-        return false;
-      };
-      return checkChain(k1, k2) || checkChain(k2, k1);
-    };
-
-    // Minimal grouping for readability (no new containers, just track current pair)
-    std::string lastPair;
+    std::set<std::string> printedProofs;
+    int regionPairsWithProof = 0;
 
     for (size_t i = 0; i < regions.size(); ++i) {
       for (size_t j = i + 1; j < regions.size(); ++j) {
         const auto& r1 = regions[i];
         const auto& r2 = regions[j];
         std::string thisPair = r1.name + " vs " + r2.name;
+        int pairProofs = 0;
 
         for (const auto& c1 : r1.constraints) {
           for (const auto& c2 : r2.constraints) {
-            if (c1.key != c2.key && !keysAreRelated(c1.key, c2.key)) continue;
+            if (!constraintKeysRelated(c1.key, c2.key, objectParents, drv)) continue;
 
-            if (thisPair != lastPair) {
-              std::cout << thisPair << ":\n";
-              lastPair = thisPair;
-            }
+            bool isSizeKey = (c1.key.rfind("size(", 0) == 0);
 
-            // --- Numeric interval case (with detailed bounds) ---
             if (c1.isInterval && c2.isInterval) {
               if (c1.hi < c2.lo || c2.hi < c1.lo) {
                 std::string note = (c1.key != c2.key) ? " [via object lineage]" : "";
-                std::cout << "  PROVEN DISJOINT (numeric): ["
-                          << c1.key << " "
-                          << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
-                          << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]" << note << "\n";
-                numericDisjoint++;
+                std::string line = thisPair + " PROVEN DISJOINT (numeric): [" + c1.key + " "
+                  + std::to_string(c1.lo) + "," + std::to_string(c1.hi) + " vs "
+                  + std::to_string(c2.lo) + "," + std::to_string(c2.hi) + "]" + note;
+                if (printedProofs.insert(line).second) {
+                  if (pairProofs++ == 0) std::cout << thisPair << ":\n";
+                  std::cout << "  PROVEN DISJOINT (numeric): ["
+                            << c1.key << " "
+                            << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
+                            << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]" << note << "\n";
+                  numericDisjoint++;
+                }
               }
             }
 
-            // --- Tag / discrete mutex with clear explanation ---
-            bool isSizeKey = (c1.key.rfind("size(", 0) == 0);
             if (c1.isDiscrete && c2.isDiscrete && c1.discreteValue != c2.discreteValue) {
-              if (c1.key == c2.key || keysAreRelated(c1.key, c2.key)) {
+              std::string kind = isSizeKey ? "cardinality" : "tag mutex";
+              std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
+              std::string line = thisPair + " " + kind + " " + c1.key + " " + c2.key;
+              if (printedProofs.insert(line).second) {
+                if (pairProofs++ == 0) std::cout << thisPair << ":\n";
                 if (isSizeKey) {
                   std::cout << "  PROVEN DISJOINT (cardinality): ["
                             << c1.key << " == " << (int)c1.discreteValue
                             << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]\n";
                   cardDisjoint++;
                 } else {
-                  std::string lineage = (c1.key != c2.key) ? " [via object lineage]" : "";
                   std::cout << "  PROVEN DISJOINT (tag mutex): ["
                             << c1.key << " == " << (int)c1.discreteValue
                             << "  vs  " << c2.key << " == " << (int)c2.discreteValue << "]" << lineage << "\n";
@@ -1931,28 +2391,37 @@ namespace adl {
               }
             }
 
-            // --- Non-overlapping cardinality intervals on size(...) keys ---
-            if (isSizeKey && c1.isInterval && c2.isInterval && c1.key == c2.key) {
+            if (isSizeKey && c1.isInterval && c2.isInterval &&
+                constraintKeysRelated(c1.key, c2.key, objectParents, drv)) {
               if (c1.hi < c2.lo || c2.hi < c1.lo) {
-                std::cout << "  PROVEN DISJOINT (cardinality): ["
-                          << c1.key << " "
-                          << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
-                          << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]\n";
-                cardDisjoint++;
+                std::string line = thisPair + " card-interval " + c1.key;
+                if (printedProofs.insert(line).second) {
+                  if (pairProofs++ == 0) std::cout << thisPair << ":\n";
+                  std::cout << "  PROVEN DISJOINT (cardinality): ["
+                            << c1.key << " "
+                            << (c1.loInclusive ? "[" : "(") << c1.lo << ", " << c1.hi << (c1.hiInclusive ? "]" : ")")
+                            << "  vs  " << (c2.loInclusive ? "[" : "(") << c2.lo << ", " << c2.hi << (c2.hiInclusive ? "]" : ")") << "]\n";
+                  cardDisjoint++;
+                }
               }
             }
           }
         }
+        if (pairProofs > 0) regionPairsWithProof++;
       }
     }
 
     int total = numericDisjoint + tagMutexDisjoint + cardDisjoint;
     if (total == 0) {
-      std::cout << "No trivial disjoint pairs found by current rules.\n";
+      std::cout << "No trivial disjoint region pairs found by current rules.\n";
+      if (regions.size() >= 2) {
+        std::cout << "  (Tip: cuts may use forms not yet extracted — functions, defines without use, or OR logic.)\n";
+      }
     } else {
-      std::cout << "Found " << total << " trivial disjoint region pair proofs"
-                << " (numeric intervals: " << numericDisjoint
-                << ", tag/discrete mutex: " << tagMutexDisjoint
+      std::cout << "Found " << total << " disjoint proofs across " << regionPairsWithProof
+                << " region pair(s)"
+                << " (numeric: " << numericDisjoint
+                << ", tag mutex: " << tagMutexDisjoint
                 << ", cardinality: " << cardDisjoint << ").\n";
     }
 
@@ -1962,6 +2431,7 @@ namespace adl {
     }
 
     std::cout << "====                 ====\n\n";
+    g_disjointDrv = nullptr;
 
     return 0;
   }

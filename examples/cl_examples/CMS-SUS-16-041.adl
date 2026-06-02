@@ -50,9 +50,9 @@ object bjets
   select pT(Jet) > 25
   select abs(Eta(Jet)) < 2.4
 
-#object OSdileptons : COMB(leptons[-1] leptons[-2]) alias adilepton
-#  select pdgID(adilepton) == 0
-#  select     m(adilepton) > 12
+object OSdileptons : COMB(leptons[-1] leptons[-2])
+  select pdgID(OSdileptons) == 0
+  select m(OSdileptons) > 12
 
 define theDilepton : OSdileptons[-1]
 define Zreco : leptons[-1] leptons[-2]

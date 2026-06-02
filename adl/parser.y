@@ -61,7 +61,8 @@ namespace adl {
 %start start
 
 %token <std::string> DEFINE  REGION  OBJECT  TAKE  COMMAND  HISTO  HISTOLIST BIN QUO
-%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION  WEIGHT  TRIGGER
+%token <std::string> TABLE TABLETYPE  NVARS  ERRORS  UNION  WEIGHT  TRIGGER PRINT SAVE
+%token <std::string> COUNTSFORMAT PROCESS COUNTS
 %token <std::string> ID  ERROR  FLAG  LPAR  RPAR  VAR  QUOTE  DESC  INFO
 %token <std::string> PLUS  SUBTRACT  MULTIPLY  DIVIDE  POW  ASSIGN  PLUSMINUS
 %token <std::string> GT  LT  GE  LE  EQ NE  TRUE  FALSE
@@ -72,7 +73,7 @@ namespace adl {
 
 %nterm <adl::Expr*> function param_list criterion definition region_block object_block
 %nterm <adl::Expr*> id term factor id_qualifier id_qualifiers dot_op not
-%nterm <adl::Expr*> take_id take real int condition expr range chain chained_cond
+%nterm <adl::Expr*> take_id take real int condition expr range chain chained_cond print_list count_seq
 %nterm <adl::Expr*> table num id_list id_list_params
 %nterm <std::string> compare_op logic_op expr_op factor_op info
 %nterm <std::vector<double>> bins
@@ -98,7 +99,20 @@ objects : object_block                          {}
         | object_block objects                  {}
         | definitions                           {}
         | definitions objects                   {}
+        | countsformat_block objects            {}
+        | countsformat_block                    {}
         ;
+
+countsformat_block : COUNTSFORMAT ID countsformat_lines {}
+
+countsformat_lines : countsformat_line countsformat_lines
+                   | countsformat_line
+                   | {}
+
+countsformat_line : PROCESS id COMMA DESC COMMA id COMMA id
+                  | PROCESS id COMMA DESC COMMA id
+                  | PROCESS id COMMA DESC
+                  ;
 
 definitions : definition                        {}
             | definition definitions            {}
@@ -139,8 +153,22 @@ param_list : chain COMMA param_list             { paramlist.push_back($1); }
 
 object_block : OBJECT id takes                  { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
              | OBJECT id takes criteria         { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
+             | OBJECT id COLON take_id criteria { lists.push_back(new CommandNode(incrementCounter(), "TAKE", $4)); $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
+             | OBJECT id COLON id LPAR comb_args RPAR criteria {
+                                                            Expr* combId = new VarNode(incrementCounter(),"ID","COMB","","",{},"");
+                                                            FunctionNode* combFn = new FunctionNode(incrementCounter(), "FUNCTION", combId, paramlist);
+                                                            paramlist.clear();
+                                                            lists.push_back(new CommandNode(incrementCounter(), "TAKE", combFn));
+                                                            $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists);
+                                                            driver.ast.push_back($$); lists.clear();
+                                                            std::cout << "object: " << $2->getId() << "\n";
+                                                          }
              | TRIGGER id criteria              { $$ = new astObjectNode(incrementCounter(), "OBJECT", $2, lists); driver.ast.push_back($$); lists.clear(); std::cout << "object: " << $2->getId() << "\n"; }
                           ;
+
+comb_args : chain comb_args                     { paramlist.push_back($1); }
+          | chain                               { paramlist.push_back($1); }
+          ;
 
 takes: take takes                               { lists.push_back($1); }
      | take                                     { lists.push_back($1); }
@@ -150,10 +178,26 @@ take : TAKE take_id                             { $$ = new CommandNode(increment
      | COLON take_id                            { $$ = new CommandNode(incrementCounter(), "TAKE",$2); }
      | TAKE UNION LPAR id COMMA id RPAR         { $$ = new CommandNode(incrementCounter(), "TAKE",$4); lists.push_back(new CommandNode(incrementCounter(), "TAKE",$6)); }
      | COLON UNION LPAR id COMMA id RPAR        { $$ = new CommandNode(incrementCounter(), "TAKE",$4); lists.push_back(new CommandNode(incrementCounter(), "TAKE",$6)); }
+     | TAKE id id COMMA id                      {
+                                                  VarNode* base = static_cast<VarNode*>($2);
+                                                  $$ = new CommandNode(incrementCounter(), "TAKE",
+                                                    new VarNode(incrementCounter(),"ID", base->getId(),
+                                                      $5->getId(), "", {}, ""));
+                                                }
      ;
 
 take_id : id                                    { $$ = $1; }
-        | id LPAR id_list RPAR                  { $$ = $1; Expr* cn = new CommandNode(incrementCounter(),"TAKE",$3); lists.push_back(cn); }
+        | id LPAR param_list RPAR               {
+                                                  FunctionNode* fn = new FunctionNode(incrementCounter(), "FUNCTION", $1, paramlist);
+                                                  paramlist.clear();
+                                                  $$ = fn;
+                                                }
+        | id LPAR id_list RPAR                  {
+                                                  ExprVector params;
+                                                  params.push_back($3);
+                                                  FunctionNode* fn = new FunctionNode(incrementCounter(), "FUNCTION", $1, params);
+                                                  $$ = fn;
+                                                }
         | id id_list                            { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),$2->getId(), "", {},""); } // for aliases.
         ;
 
@@ -183,8 +227,26 @@ criterion : COMMAND chained_cond                { $$ = new CommandNode(increment
           | WEIGHT id id                        { $$ = new CommandNode(incrementCounter(), $1, $2);}
           | WEIGHT TRIGGER num                  { $$ = new CommandNode(incrementCounter(), $1, $3); }
           | WEIGHT TRIGGER id                   { $$ = new CommandNode(incrementCounter(), $1, $3); }
+          | PRINT print_list                    { $$ = new CommandNode(incrementCounter(), $1, $2); }
+          | SAVE id id print_list               { $$ = new CommandNode(incrementCounter(), $1, $3); }
+          | COUNTS id count_seq                 { $$ = new CommandNode(incrementCounter(), $1, $2); }
           | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
+
+count_seq : count_seq num                       { $$ = $1; }
+          | count_seq id                        { $$ = $1; }
+          | count_seq PLUSMINUS                 { $$ = $1; }
+          | count_seq COMMA                     { $$ = $1; }
+          | count_seq SUBTRACT                  { $$ = $1; }
+          | count_seq PLUS                      { $$ = $1; }
+          | num                                 { $$ = $1; }
+          | id                                  { $$ = $1; }
+          ;
+
+print_list : chain                              { $$ = $1; }
+           | chain COMMA print_list              { $$ = new adl::BinNode(incrementCounter(), "EXPROP", $1, "+", $3); }
+           | chain print_list                    { $$ = new adl::BinNode(incrementCounter(), "EXPROP", $1, "+", $2); }
+           ;
 
 comma_sep : COMMA comma_sep                     {  }
           | num comma_sep                       { histoParamList.push_back($1); }
@@ -204,7 +266,9 @@ bins : bins num                                 { histoBinsLists.push_back($2); 
 chained_cond : LPAR chain RPAR                              { $$ = $2; } // shift/reduce error caused here
              | LPAR chain RPAR logic_op chained_cond        { $$ = new adl::BinNode(incrementCounter(), "LOGICOP",$2,$4,$5); }
              | chain                                        { $$ = $1; }
-             | chain QUES chain COLON chain                 { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
+             | chain QUES chained_cond COLON chained_cond    { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
+             | chain QUES chained_cond                       { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
+             | chain QUES chain COLON chained_cond            { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
              | chain QUES chain                             { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
              | id_qualifiers range                          {
@@ -273,6 +337,10 @@ term : id_qualifiers              { $$ = $1; }
      | function dot_op            { $$ = $1; }
      | num                        { $$ = $1; }
      | LPAR expr RPAR             { $$ = $2; } // shift/reduce error caused here.
+     | SUBTRACT term              {
+                                    Expr* neg = new adl::NumNode(incrementCounter(), "INT", -1.0);
+                                    $$ = new adl::BinNode(incrementCounter(), "EXPROP", neg, "*", $2);
+                                  }
      ;
 
 id_qualifiers : id_qualifier                  { $$ = $1; }

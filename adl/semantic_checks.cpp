@@ -469,17 +469,8 @@ namespace adl {
   int checkTables(Driver& drv, Expr* v) {
     std::string var = v->getId();
     if(drv.checkObjectTable(var) == 0) return 0;
-    // for(auto e: drv.objectTable) {
-    //   if(var == e) return 0;
-    // }
     if(drv.checkDefinitionTable(var) == 0) return 0;
-    // for(auto e: drv.definitionTable) {
-    //   if(var == e) return 0;
-    // }
     if(drv.checkRegionTable(var) == 0) return 0;
-    // for(auto e: drv.regionTable) {
-    //   if(var == e) return 0;
-    // }
     printError(var);
     return 1;
   }

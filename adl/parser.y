@@ -181,6 +181,8 @@ criterion : COMMAND chained_cond                { $$ = new CommandNode(increment
           | WEIGHT id id LPAR function RPAR     { $$ = new CommandNode(incrementCounter(), $1, $2);}
           | WEIGHT id num                       { $$ = new CommandNode(incrementCounter(), $1, $2);}
           | WEIGHT id id                        { $$ = new CommandNode(incrementCounter(), $1, $2);}
+          | WEIGHT TRIGGER num                  { $$ = new CommandNode(incrementCounter(), $1, $3); }
+          | WEIGHT TRIGGER id                   { $$ = new CommandNode(incrementCounter(), $1, $3); }
           | id                                  { $$ = new CommandNode(incrementCounter(),"SELECT",$1); }
           ;
 

@@ -1,34 +1,36 @@
-# Region analysis pipeline (phases 0–4)
+# Region analysis and SMT
+
+## What SMT gives you
+
+With `z3` on PATH, `./smash -r` encodes each region’s **extracted linear constraints** (intervals on `pT`, `MET.pT`, `size(obj)`, tags, etc.) and checks pairs **R1 ∧ R2**.
+
+| Z3 result | Meaning | Soundness |
+|-----------|---------|-----------|
+| **UNSAT** | **Proven disjoint** — no assignment satisfies both regions in the fragment | Sound: if UNSAT in fragment, real ADL regions cannot overlap on those facts |
+| **SAT + shared dimension** | **Proven overlapping** — ∃ witness (printed) satisfying both | Sound for overlap **within the fragment**; if cuts are missing from IR, overlap in full ADL may still differ |
+| **SAT, no shared dimension** | **Possibly overlapping** only — independent cuts (e.g. MET vs jet multiplicity) | SAT does not prove the SRs compete on the same physics knob |
+| Heuristic only | Interval clash → disjoint; all shared canonical intervals intersect → possibly overlap | Fast; misses multi-constraint interactions Z3 catches |
+
+SMT does **not** encode: `dφ`/`dR`, BDTs, arbitrary functions, OR branches, or per-object indexing (one variable per canonical key).
 
 ## Usage
 
 ```bash
 make
-./smash -r file.adl              # legacy disjointness + IR report
-./smash -r --smt file.adl        # add Z3 on linear constraints (needs `z3` on PATH)
+./smash -r file.adl           # heuristics + Z3 if installed
+./smash -r --no-smt file.adl  # heuristics only
 ./smash -r --json out.json file.adl
-make test-disjoint               # golden fixtures under tests/golden/
-make test-corpus                 # all examples/*.adl parse + -r
+make test-disjoint
 ```
 
-## Architecture
+## Robustness (implementation)
 
-1. **Gather IR** — `gatherRegionConstraints()` in `semantic_checks.cpp` builds merged per-region atoms (inheritance, reject complement, defines, size, tags, dφ/dR where supported).
-2. **Legacy report** — `analyzeRegionDisjointness()` / `analyzeObjectDisjointness()` (human-readable proofs).
-3. **IR layer** — `region_analysis.cpp`: pairwise **disjoint** (interval clash), **overlap possible** (all related intervals compatible), optional **Z3** (`QF_LRA`) on scalar/size keys; skips dφ/dR/BDT.
-
-## Phases
-
-| Phase | Status | Deliverable |
-|-------|--------|-------------|
-| 0 | Done | Merge `disjoint_dev` → `main`, golden tests, corpus scripts |
-| 1 | Done | `RegionConstraintSet`, JSON export, overlap heuristic |
-| 2 | Done | Z3 subprocess spike (`scripts/phase2_z3_spike.sh`, Delphes 033) |
-| 3 | Done | `-r --smt` linear fragment |
-| 4 | Done | CI workflow (optional z3), `make test-*` |
+- **Canonical keys** — related aliases (`JET.pt` vs `jets[0].pt`) share one SMT variable via union-find + object lineage.
+- **Merged intervals** — multiple cuts on the same dimension are intersected before Z3.
+- **Shared dimension** — SAT alone is not labeled “proven overlap” unless at least one canonical key appears in both regions.
+- **Witness** — `(get-model)` summary on proven overlap.
 
 ## Limits
 
-- Single-file only; no cross-file alias alignment beyond `object_aliases.txt`.
-- OR / complex defines / arbitrary functions → unknown unless extracted to intervals.
-- SMT uses one real variable per constraint key (no per-object indexing).
+- Single-file; incomplete extraction → unknown or weak verdicts.
+- Proven overlap is **existential** in the linear fragment, not a guarantee of non-zero efficiency in simulation.

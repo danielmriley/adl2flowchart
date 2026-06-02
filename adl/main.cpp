@@ -38,7 +38,8 @@ int main(int argc, char **argv) {
   set_function_map();
 
   bool doRegionAnalysis = false;
-  bool regionSmt = false;
+  bool regionSmt = true;
+  bool regionNoSmt = false;
   bool regionJsonStdout = false;
   std::string regionJsonPath;
   std::string fileName;
@@ -50,6 +51,9 @@ int main(int argc, char **argv) {
     } else if (arg == "--smt") {
       doRegionAnalysis = true;
       regionSmt = true;
+    } else if (arg == "--no-smt") {
+      doRegionAnalysis = true;
+      regionNoSmt = true;
     } else if (arg == "--json") {
       doRegionAnalysis = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -63,9 +67,9 @@ int main(int argc, char **argv) {
   }
 
   if (fileName.empty()) {
-    std::cerr << "Usage: ./smash [-r] [--smt] [--json [file]] <adl-file>\n"
-                 "  -r  object + region disjointness + IR/overlap analysis\n"
-                 "  --smt  Z3 check on linear constraints (requires z3)\n"
+    std::cerr << "Usage: ./smash [-r] [--no-smt] [--json [file]] <adl-file>\n"
+                 "  -r  region/object analysis + Z3 when installed (overlap/disjoint)\n"
+                 "  --no-smt  skip Z3 even if z3 is on PATH\n"
                  "  --json  write region analysis JSON to file or stdout\n";
     return 1;
   }
@@ -101,6 +105,7 @@ int main(int argc, char **argv) {
     if (res == 0) {
       adl::region_analysis::AnalysisOptions aopt;
       aopt.runSmt = regionSmt;
+      aopt.autoSmt = !regionNoSmt;
       aopt.jsonToStdout = regionJsonStdout;
       aopt.jsonPath = regionJsonPath;
       adl::region_analysis::AnalysisReport areport;

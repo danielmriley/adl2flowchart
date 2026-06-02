@@ -15,10 +15,10 @@ namespace region_analysis {
 
 enum class RelationKind {
   Unknown,
-  ProvenDisjoint,
-  PossiblyOverlapping,
-  PossiblySubset,   // r2 constraints imply tighter than r1 (heuristic)
-  ProvenOverlapSmt  // SAT(R1 ∧ R2) via SMT
+  ProvenDisjoint,       // disjoint intervals or SMT unsat (fragment)
+  ProvenOverlapping,    // SMT sat: ∃ model satisfying R1 ∧ R2 (fragment)
+  PossiblyOverlapping,  // heuristic only: related intervals all compatible
+  PossiblySubset,
 };
 
 struct ConstraintAtom {
@@ -43,13 +43,17 @@ struct PairwiseResult {
   std::string regionB;
   RelationKind kind = RelationKind::Unknown;
   std::string reason;
+  bool usedSmt = false;
+  bool sharedConstraintDimension = false;
+  std::string smtWitness;  // brief model summary when overlap proved
 };
 
 struct AnalysisOptions {
   bool jsonToStdout = false;
   std::string jsonPath;
   bool runOverlapHeuristic = true;
-  bool runSmt = false;
+  bool runSmt = true;       // when z3 on PATH (see autoSmt)
+  bool autoSmt = true;      // run Z3 on -r if z3 installed
   bool verbose = true;
 };
 
@@ -58,23 +62,19 @@ struct AnalysisReport {
   std::vector<PairwiseResult> pairwise;
   int heuristicDisjoint = 0;
   int heuristicOverlap = 0;
+  int provenOverlap = 0;
   int smtDisjoint = 0;
   int smtOverlap = 0;
   int smtUnknown = 0;
+  int smtSkippedNoShared = 0;
   std::string smtNote;
 };
 
-// Build merged per-region constraint IR from AST (requires prior parse/checkDecl).
 int buildRegionConstraintSets(Driver& drv, std::vector<RegionConstraintSet>& out);
-
-// Run full analysis: heuristics + optional Z3 on linear fragment.
 int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report);
-
-// Emit JSON for tooling / regression.
 int writeJson(const AnalysisReport& report, std::ostream& os);
-
-// Human-readable summary (stdout).
 int printReport(const AnalysisReport& report, const AnalysisOptions& opt);
+bool z3Available();
 
 }  // namespace region_analysis
 }  // namespace adl

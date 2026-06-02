@@ -28,23 +28,30 @@ check() {
 
 check "$GOLDEN/disjoint_pt.adl" "PROVEN DISJOINT" "disjoint pT intervals"
 check "$GOLDEN/disjoint_pt.adl" "SR_low vs SR_high" "pairwise line"
-check "$GOLDEN/overlap_met.adl" "POSSIBLY OVERLAPPING\|OVERLAP (SMT" "MET overlap heuristic or SMT"
+check "$GOLDEN/overlap_met.adl" "PROVEN OVERLAPPING\|POSSIBLY OVERLAPPING" "MET overlap"
 check "$GOLDEN/size_bjets.adl" "SR_ge2 vs SR_ge4" "size pairwise present"
 
 if command -v z3 >/dev/null 2>&1; then
-  out=$("$SMASH" -r --smt "$GOLDEN/size_bjets.adl" 2>&1) || fail=1
-  if echo "$out" | grep -q "OVERLAP (SMT sat)\|POSSIBLY OVERLAPPING"; then
-    echo "OK   SMT overlap/subset size(bjets)"
+  out=$("$SMASH" -r "$GOLDEN/size_bjets.adl" 2>&1) || fail=1
+  if echo "$out" | grep -q "PROVEN OVERLAPPING"; then
+    echo "OK   SMT proven overlap size(bjets) (auto with -r)"
   else
-    echo "FAIL SMT size(bjets) — expected overlap sat"
+    echo "FAIL size(bjets) — expected PROVEN OVERLAPPING"
     echo "$out" | tail -20
     fail=1
   fi
-  out=$("$SMASH" -r --smt "$GOLDEN/disjoint_pt.adl" 2>&1) || fail=1
+  out=$("$SMASH" -r --no-smt "$GOLDEN/disjoint_pt.adl" 2>&1) || fail=1
   if echo "$out" | grep -q "PROVEN DISJOINT"; then
+    echo "OK   heuristic disjoint pT (--no-smt)"
+  else
+    echo "FAIL disjoint pT"
+    fail=1
+  fi
+  out=$("$SMASH" -r "$GOLDEN/disjoint_pt.adl" 2>&1) || fail=1
+  if echo "$out" | grep -q "PROVEN DISJOINT.*UNSAT\|PROVEN DISJOINT.*disjoint"; then
     echo "OK   SMT/heuristic disjoint pT"
   else
-    echo "FAIL disjoint pT with --smt"
+    echo "FAIL disjoint pT with Z3"
     fail=1
   fi
 else

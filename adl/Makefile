@@ -14,6 +14,8 @@ EXTFUN=external_functions.cpp
 ASTHPP=ast.hpp
 SEMCHH=semantic_checks.h
 SEMCHCPP=semantic_checks.cpp
+REGH=region_analysis.hpp
+REGCPP=region_analysis.cpp
 LOCHH=location.hh
 CLDEFS=cutlang_declares.h
 CLDEFSCPP=cutlang_declares.cpp
@@ -22,8 +24,8 @@ EXE=smash
 
 all: $(EXE)
 
-$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(DH) $(CLDEFS)
-	@$(CC) -g -std=c++17 $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) $(CLDEFSCPP) -o $(EXE)
+$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(REGH) $(REGCPP) $(DH) $(CLDEFS)
+	@$(CC) -g -std=c++17 $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) $(REGCPP) $(CLDEFSCPP) -o $(EXE)
 
 $(YCPP): $(YFILE)
 	@$(YACC) $(YFILE)

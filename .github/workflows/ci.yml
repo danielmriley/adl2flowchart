@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main, disjoint_dev]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison clang graphviz
+          sudo apt-get install -y z3 || true
+      - name: Build
+        run: make
+      - name: Golden region tests
+        run: make test-disjoint
+      - name: Example corpus parse + region analysis
+        run: make test-corpus
+      - name: Phase-2 Z3 spike (optional)
+        run: chmod +x scripts/phase2_z3_spike.sh && ./scripts/phase2_z3_spike.sh

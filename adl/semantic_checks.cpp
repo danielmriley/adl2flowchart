@@ -1744,7 +1744,7 @@ namespace adl {
 
     if (binOpCheck(cond) == 0) {
       BinNode* bn = getBinNode(cond);
-      if (bn->getOp() == "AND" || bn->getOp() == "and") {
+      if (bn->getOp() == "AND" || bn->getOp() == "and" || bn->getOp() == "&&") {
         extractAllSimpleConstraints(bn->getLHS(), out);
         extractAllSimpleConstraints(bn->getRHS(), out);
       }
@@ -2053,8 +2053,7 @@ namespace adl {
         int fam = particleFamilyFromTakeRoot(src, drv);
         if (fam >= 0) families.insert(fam);
         if (drv.check_object_table(src) == 0) {
-          std::set<std::string> visChild;
-          auto sub = resolveParticleFamilies(src, parents, drv, visChild);
+          auto sub = resolveParticleFamilies(src, parents, drv, visited);
           families.insert(sub.begin(), sub.end());
         }
       }
@@ -2190,21 +2189,26 @@ namespace adl {
                                 parents, drv);
   }
 
-  int analyzeRegionDisjointness(Driver& drv) {
+  bool constraintKeysRelatedPublic(const std::string& k1, const std::string& k2,
+      const std::map<std::string, std::vector<std::string>>& parents, Driver& drv) {
+    return constraintKeysRelated(k1, k2, parents, drv);
+  }
+
+  int gatherObjectParentMap(Driver& drv,
+      std::map<std::string, std::vector<std::string>>& parents) {
+    auto lineageInfo = collectObjectLineage(drv);
+    parents = lineageInfo.first;
+    return 0;
+  }
+
+  int gatherRegionConstraints(Driver& drv, std::vector<RegionConstraintRecord>& out) {
     g_disjointDrv = &drv;
     ensureTakeAliases(drv);
-    std::cout << "\n==== REGION DISJOINTNESS ANALYSIS (experimental) ====\n";
+    out.clear();
 
     std::map<std::string, std::vector<SimpleConstraint>> defineConstraints;
     collectDefineConstraintMap(drv, defineConstraints);
 
-    // Phase 2+: Get rich object lineage information (parents + resolved attrs).
-    auto lineageInfo = collectObjectLineage(drv);
-    const auto& objectParents = lineageInfo.first;
-    const auto& objectAttrs = lineageInfo.second;
-    std::cout << "Object attribute dimensions available: " << objectAttrs.size() << "\n";
-
-    // Build a quick lookup for regions by name (needed for inheritance).
     std::map<std::string, RegionNode*> regionByName;
     for (auto& n : drv.ast) {
       if (n->getToken() == "REGION") {
@@ -2213,23 +2217,13 @@ namespace adl {
       }
     }
 
-    // Collect basic constraints per region, with inheritance.
-    struct RegionInfo {
-      std::string name;
-      std::vector<SimpleConstraint> constraints;
-      std::vector<std::string> parents;   // region names this one inherits from
-      bool hasBins = false;
-    };
-    std::vector<RegionInfo> regions;
-
     for (auto& n : drv.ast) {
       if (n->getToken() != "REGION") continue;
 
       RegionNode* rn = getRegionNode(n);
-      RegionInfo info;
+      RegionConstraintRecord info;
       info.name = rn->getId();
 
-      // Iterative inheritance following + constraint collection
       std::vector<std::string> toProcess;
       std::set<std::string> visited;
       toProcess.push_back(rn->getId());
@@ -2254,11 +2248,10 @@ namespace adl {
             Expr* cond = cn->getCondition();
             bool isReject = (stok == "REJECT");
 
-            // Bare region name = inheritance
             if (cond->getToken() == "ID") {
               std::string ref = cond->getId();
               if (regionByName.count(ref) && !visited.count(ref)) {
-                info.parents.push_back(ref);
+                info.inherits.push_back(ref);
                 toProcess.push_back(ref);
                 continue;
               }
@@ -2270,7 +2263,17 @@ namespace adl {
             for (auto& c : extracted) {
               c.key = canonicalConstraintKey(c.key, drv);
               if (isReject) complementConstraint(c);
-              if (c.lo <= c.hi || c.isDiscrete) info.constraints.push_back(c);
+              if (c.lo <= c.hi || c.isDiscrete) {
+                RegionConstraintAtom a;
+                a.key = c.key;
+                a.lo = c.lo;
+                a.hi = c.hi;
+                a.loInclusive = c.loInclusive;
+                a.hiInclusive = c.hiInclusive;
+                a.isDiscrete = c.isDiscrete;
+                a.discreteValue = c.discreteValue;
+                info.constraints.push_back(a);
+              }
             }
           } else if (stok == "BIN") {
             info.hasBins = true;
@@ -2282,7 +2285,15 @@ namespace adl {
               appendDefineConstraints(cond, drv, defineConstraints, extracted);
               for (auto& c : extracted) {
                 c.key = canonicalConstraintKey(c.key, drv);
-                info.constraints.push_back(c);
+                RegionConstraintAtom a;
+                a.key = c.key;
+                a.lo = c.lo;
+                a.hi = c.hi;
+                a.loInclusive = c.loInclusive;
+                a.hiInclusive = c.hiInclusive;
+                a.isDiscrete = c.isDiscrete;
+                a.discreteValue = c.discreteValue;
+                info.constraints.push_back(a);
               }
             }
           }
@@ -2290,9 +2301,77 @@ namespace adl {
       }
 
       std::map<std::string, SimpleConstraint> merged;
-      for (const auto& c : info.constraints) mergeConstraintMap(merged, c);
-      finalizeMergedConstraints(info.constraints, merged);
+      for (const auto& a : info.constraints) {
+        SimpleConstraint c;
+        c.key = a.key;
+        c.lo = a.lo;
+        c.hi = a.hi;
+        c.loInclusive = a.loInclusive;
+        c.hiInclusive = a.hiInclusive;
+        c.isDiscrete = a.isDiscrete;
+        c.discreteValue = a.discreteValue;
+        mergeConstraintMap(merged, c);
+      }
+      info.constraints.clear();
+      for (const auto& kv : merged) {
+        if (kv.second.lo <= kv.second.hi) {
+          RegionConstraintAtom a;
+          a.key = kv.first;
+          a.lo = kv.second.lo;
+          a.hi = kv.second.hi;
+          a.loInclusive = kv.second.loInclusive;
+          a.hiInclusive = kv.second.hiInclusive;
+          a.isDiscrete = kv.second.isDiscrete;
+          a.discreteValue = kv.second.discreteValue;
+          info.constraints.push_back(a);
+        }
+      }
+      out.push_back(std::move(info));
+    }
 
+    g_disjointDrv = nullptr;
+    return 0;
+  }
+
+  int analyzeRegionDisjointness(Driver& drv) {
+    g_disjointDrv = &drv;
+    ensureTakeAliases(drv);
+    std::cout << "\n==== REGION DISJOINTNESS ANALYSIS (experimental) ====\n";
+
+    auto lineageInfo = collectObjectLineage(drv);
+    const auto& objectParents = lineageInfo.first;
+    const auto& objectAttrs = lineageInfo.second;
+    std::cout << "Object attribute dimensions available: " << objectAttrs.size() << "\n";
+
+    std::map<std::string, std::vector<SimpleConstraint>> defineConstraints;
+    collectDefineConstraintMap(drv, defineConstraints);
+
+    std::vector<RegionConstraintRecord> records;
+    gatherRegionConstraints(drv, records);
+
+    struct RegionInfo {
+      std::string name;
+      std::vector<SimpleConstraint> constraints;
+      std::vector<std::string> parents;
+      bool hasBins = false;
+    };
+    std::vector<RegionInfo> regions;
+    for (const auto& rec : records) {
+      RegionInfo info;
+      info.name = rec.name;
+      info.parents = rec.inherits;
+      info.hasBins = rec.hasBins;
+      for (const auto& a : rec.constraints) {
+        SimpleConstraint c;
+        c.key = a.key;
+        c.lo = a.lo;
+        c.hi = a.hi;
+        c.loInclusive = a.loInclusive;
+        c.hiInclusive = a.hiInclusive;
+        c.isDiscrete = a.isDiscrete;
+        c.discreteValue = a.discreteValue;
+        info.constraints.push_back(c);
+      }
       regions.push_back(std::move(info));
     }
 

@@ -1,3 +1,4 @@
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -7,6 +8,8 @@
 #include "scanner.hpp"
 #include "Parser.h"
 #include "driver.h"
+#include "region_analysis.hpp"
+#include "semantic_checks.h"
 
 std::map<std::string,std::string> function_map;
 
@@ -35,21 +38,35 @@ int main(int argc, char **argv) {
   set_function_map();
 
   bool doRegionAnalysis = false;
+  bool regionSmt = false;
+  bool regionJsonStdout = false;
+  std::string regionJsonPath;
   std::string fileName;
 
-  // Very simple flag handling for Phase 1 (will be improved later).
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--region-analysis" || arg == "-r") {
       doRegionAnalysis = true;
-    } else {
+    } else if (arg == "--smt") {
+      doRegionAnalysis = true;
+      regionSmt = true;
+    } else if (arg == "--json") {
+      doRegionAnalysis = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        regionJsonPath = argv[++i];
+      } else {
+        regionJsonStdout = true;
+      }
+    } else if (!arg.empty() && arg[0] != '-') {
       fileName = arg;
     }
   }
 
   if (fileName.empty()) {
-    std::cerr << "Usage: ./smash [--region-analysis | -r] <adl-file>\n"
-                 "  -r runs experimental object + region disjointness analysis\n";
+    std::cerr << "Usage: ./smash [-r] [--smt] [--json [file]] <adl-file>\n"
+                 "  -r  object + region disjointness + IR/overlap analysis\n"
+                 "  --smt  Z3 check on linear constraints (requires z3)\n"
+                 "  --json  write region analysis JSON to file or stdout\n";
     return 1;
   }
 
@@ -81,6 +98,25 @@ int main(int argc, char **argv) {
   if (res == 0 && doRegionAnalysis) {
     res = adl::analyzeObjectDisjointness(drv);
     if (res == 0) res = adl::analyzeRegionDisjointness(drv);
+    if (res == 0) {
+      adl::region_analysis::AnalysisOptions aopt;
+      aopt.runSmt = regionSmt;
+      aopt.jsonToStdout = regionJsonStdout;
+      aopt.jsonPath = regionJsonPath;
+      adl::region_analysis::AnalysisReport areport;
+      res = adl::region_analysis::runAnalysis(drv, aopt, areport);
+      if (res == 0) res = adl::region_analysis::printReport(areport, aopt);
+      if (res == 0 && regionJsonStdout) {
+        adl::region_analysis::writeJson(areport, std::cout);
+      } else if (res == 0 && !regionJsonPath.empty()) {
+        std::ofstream jf(regionJsonPath);
+        if (jf) adl::region_analysis::writeJson(areport, jf);
+        else {
+          std::cerr << "Could not write JSON to " << regionJsonPath << "\n";
+          res = 1;
+        }
+      }
+    }
   }
 
   // if(res == 0) {

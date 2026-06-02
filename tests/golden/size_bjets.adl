@@ -1,0 +1,13 @@
+object jets
+  take Jet
+  select pT > 30
+
+object bjets
+  take jets
+  select BTag == 1
+
+region SR_ge2
+  select size(bjets) >= 2
+
+region SR_ge4
+  select size(bjets) >= 4

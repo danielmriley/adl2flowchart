@@ -1,0 +1,9 @@
+object MET
+  take MissingET
+
+region SR1
+  select MET.pT > 200
+
+region SR2
+  select MET.pT > 150
+  select MET.pT < 400

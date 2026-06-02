@@ -1,0 +1,10 @@
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_low
+  select pT(jets[0]) > 100
+  select pT(jets[0]) < 200
+
+region SR_high
+  select pT(jets[0]) > 300

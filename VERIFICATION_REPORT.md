@@ -1,8 +1,18 @@
 # ADL2Flowchart verification report
 
 **Date:** 2026-06-02  
-**Branch:** `disjoint_dev` (uncommitted local changes)  
+**Branch:** `main` (merged `disjoint_dev` + region IR / overlap / SMT)  
 **Binary:** `./smash` (clean build from `make`)
+
+### Post-merge validation (phases 0–4)
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Golden region fixtures | `make test-disjoint` | pass |
+| Full examples corpus | `make test-corpus` | 68/68 parse and `-r` |
+| Z3 spike (Delphes 033) | `./scripts/phase2_z3_spike.sh` | pass if `z3` installed |
+
+See `REGION_ANALYSIS.md` for `-r`, `--json`, `--smt` usage.
 
 ## Executive summary
 

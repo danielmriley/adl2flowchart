@@ -4,7 +4,9 @@
 #define SEMANTIC_CHECKS_H
 
 #include <iostream>
+#include <map>
 #include <string>
+#include <vector>
 
 #include "driver.h"
 
@@ -62,6 +64,31 @@ namespace adl {
   // fragment (numeric intervals, discrete tag values, cardinalities).
   // Seeded from the object attribute collection infrastructure.
   int analyzeRegionDisjointness(Driver& drv);
+
+  // Region constraint IR (for JSON / SMT / overlap analysis).
+  struct RegionConstraintAtom {
+    std::string key;
+    double lo = 0.0;
+    double hi = 0.0;
+    bool loInclusive = true;
+    bool hiInclusive = true;
+    bool isDiscrete = false;
+    double discreteValue = 0.0;
+  };
+
+  struct RegionConstraintRecord {
+    std::string name;
+    std::vector<std::string> inherits;
+    bool hasBins = false;
+    std::vector<RegionConstraintAtom> constraints;
+  };
+
+  int gatherRegionConstraints(Driver& drv, std::vector<RegionConstraintRecord>& out);
+  int gatherObjectParentMap(Driver& drv,
+      std::map<std::string, std::vector<std::string>>& parents);
+
+  bool constraintKeysRelatedPublic(const std::string& k1, const std::string& k2,
+      const std::map<std::string, std::vector<std::string>>& parents, Driver& drv);
 } // end namespace adl
 
 #endif

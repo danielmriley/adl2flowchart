@@ -31,13 +31,28 @@ struct ConstraintAtom {
   double discreteValue = 0.0;
 };
 
+struct OrClause {
+  std::vector<std::vector<ConstraintAtom>> alternatives;
+};
+
+struct ImplicationClause {
+  std::vector<ConstraintAtom> guard;
+  std::vector<ConstraintAtom> thenAtoms;
+  std::vector<ConstraintAtom> elseAtoms;
+  bool elseIsAll = false;
+};
+
 struct RegionConstraintSet {
   std::string name;
   std::vector<std::string> inherits;
   bool hasBins = false;
   std::map<std::string, ConstraintAtom> constraints;
+  std::vector<OrClause> orClauses;
+  std::vector<ImplicationClause> implications;
   int encodableForSmt = 0;
   int totalConstraints = 0;
+  int selectStmts = 0;
+  int selectStmtsEncoded = 0;
 };
 
 struct PairwiseResult {
@@ -62,6 +77,8 @@ struct AnalysisOptions {
 struct AnalysisReport {
   std::vector<RegionConstraintSet> regions;
   std::vector<PairwiseResult> pairwise;
+  std::vector<std::string> coverageWarnings;
+  double coverageWarnThreshold = 0.5;
   int heuristicDisjoint = 0;
   int heuristicOverlap = 0;
   int provenOverlap = 0;

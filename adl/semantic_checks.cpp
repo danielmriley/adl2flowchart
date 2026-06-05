@@ -1762,6 +1762,113 @@ namespace adl {
     }
   }
 
+  static RegionConstraintAtom atomFromSimple(const SimpleConstraint& c) {
+    RegionConstraintAtom a;
+    a.key = c.key;
+    a.lo = c.lo;
+    a.hi = c.hi;
+    a.loInclusive = c.loInclusive;
+    a.hiInclusive = c.hiInclusive;
+    a.isDiscrete = c.isDiscrete;
+    a.discreteValue = c.discreteValue;
+    return a;
+  }
+
+  static void simplesToAtoms(const std::vector<SimpleConstraint>& in,
+      std::vector<RegionConstraintAtom>& out) {
+    for (const auto& c : in) {
+      if (c.lo <= c.hi || c.isDiscrete) out.push_back(atomFromSimple(c));
+    }
+  }
+
+  static bool isTrivialAll(Expr* e) {
+    if (!e) return true;
+    if (e->getToken() == "ID") return toupper(e->getId()) == "ALL";
+    if (e->getToken() == "FUNCTION")
+      return toupper(getFunctionNode(e)->getId()) == "ALL";
+    return false;
+  }
+
+  static void collectOrAlternatives(Expr* e,
+      std::vector<std::vector<SimpleConstraint>>& alts) {
+    if (!e) return;
+    if (binOpCheck(e) == 0) {
+      BinNode* bn = getBinNode(e);
+      std::string op = bn->getOp();
+      if (op == "OR" || op == "or" || op == "||") {
+        collectOrAlternatives(bn->getLHS(), alts);
+        collectOrAlternatives(bn->getRHS(), alts);
+        return;
+      }
+    }
+    std::vector<SimpleConstraint> branch;
+    extractAllSimpleConstraints(e, branch);
+    if (!branch.empty()) alts.push_back(branch);
+  }
+
+  static void extractConstraintStructure(Expr* cond,
+      std::vector<SimpleConstraint>& conj,
+      std::vector<RegionOrClause>& ors,
+      std::vector<RegionImplication>& imps) {
+    if (!cond) return;
+
+    if (cond->getToken() == "ITE") {
+      ITENode* ite = getITENode(cond);
+      RegionImplication imp;
+      std::vector<SimpleConstraint> g, t, el;
+      extractAllSimpleConstraints(ite->getCondition(), g);
+      extractAllSimpleConstraints(ite->getThenBranch(), t);
+      imp.elseIsAll = isTrivialAll(ite->getElseBranch());
+      if (!imp.elseIsAll) extractAllSimpleConstraints(ite->getElseBranch(), el);
+      simplesToAtoms(g, imp.guard);
+      simplesToAtoms(t, imp.thenAtoms);
+      simplesToAtoms(el, imp.elseAtoms);
+      if (!imp.guard.empty() || !imp.thenAtoms.empty() || !imp.elseAtoms.empty() ||
+          imp.elseIsAll)
+        imps.push_back(imp);
+      return;
+    }
+
+    if (binOpCheck(cond) == 0) {
+      BinNode* bn = getBinNode(cond);
+      std::string op = bn->getOp();
+      if (op == "OR" || op == "or" || op == "||") {
+        RegionOrClause oc;
+        std::vector<std::vector<SimpleConstraint>> rawAlts;
+        collectOrAlternatives(cond, rawAlts);
+        for (auto& alt : rawAlts) {
+          std::vector<RegionConstraintAtom> atoms;
+          simplesToAtoms(alt, atoms);
+          if (!atoms.empty()) oc.alternatives.push_back(atoms);
+        }
+        if (oc.alternatives.size() >= 2) {
+          ors.push_back(oc);
+          return;
+        }
+        if (oc.alternatives.size() == 1) {
+          for (const auto& a : oc.alternatives[0]) {
+            SimpleConstraint c;
+            c.key = a.key;
+            c.lo = a.lo;
+            c.hi = a.hi;
+            c.loInclusive = a.loInclusive;
+            c.hiInclusive = a.hiInclusive;
+            c.isDiscrete = a.isDiscrete;
+            c.discreteValue = a.discreteValue;
+            conj.push_back(c);
+          }
+          return;
+        }
+      }
+      if (op == "AND" || op == "and" || op == "&&") {
+        extractAllSimpleConstraints(cond, conj);
+        return;
+      }
+    }
+
+    extractAllSimpleConstraints(cond, conj);
+  }
+
   // Very basic extractor for Phase 1/2.
   // Recognizes simple comparisons and ranges, with much better support for
   // tag properties (BTag, cTag, etc.) in real ADL syntax.
@@ -2271,24 +2378,40 @@ namespace adl {
               }
             }
 
+            info.selectStmts++;
             std::vector<SimpleConstraint> extracted;
-            extractAllSimpleConstraints(cond, extracted);
+            std::vector<RegionOrClause> ors;
+            std::vector<RegionImplication> imps;
+            extractConstraintStructure(cond, extracted, ors, imps);
             appendDefineConstraints(cond, drv, defineConstraints, extracted);
+            bool encoded = false;
             for (auto& c : extracted) {
               c.key = canonicalConstraintKey(c.key, drv);
               if (isReject) complementConstraint(c);
               if (c.lo <= c.hi || c.isDiscrete) {
-                RegionConstraintAtom a;
-                a.key = c.key;
-                a.lo = c.lo;
-                a.hi = c.hi;
-                a.loInclusive = c.loInclusive;
-                a.hiInclusive = c.hiInclusive;
-                a.isDiscrete = c.isDiscrete;
-                a.discreteValue = c.discreteValue;
-                info.constraints.push_back(a);
+                info.constraints.push_back(atomFromSimple(c));
+                encoded = true;
               }
             }
+            for (auto& oc : ors) {
+              for (auto& alt : oc.alternatives) {
+                for (auto& a : alt)
+                  a.key = canonicalConstraintKey(a.key, drv);
+              }
+              info.orClauses.push_back(oc);
+              encoded = true;
+            }
+            for (auto& imp : imps) {
+              auto canonAtoms = [&](std::vector<RegionConstraintAtom>& v) {
+                for (auto& a : v) a.key = canonicalConstraintKey(a.key, drv);
+              };
+              canonAtoms(imp.guard);
+              canonAtoms(imp.thenAtoms);
+              canonAtoms(imp.elseAtoms);
+              info.implications.push_back(imp);
+              encoded = true;
+            }
+            if (encoded) info.selectStmtsEncoded++;
           } else if (stok == "BIN") {
             info.hasBins = true;
             CommandNode* cn = getCommandNode(stmt);

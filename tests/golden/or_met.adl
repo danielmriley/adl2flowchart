@@ -1,0 +1,8 @@
+object MET
+  take MissingET
+
+region SR_lo
+  select MET.pT < 100
+
+region SR_hi_or_lo
+  select MET.pT > 200 || MET.pT < 50

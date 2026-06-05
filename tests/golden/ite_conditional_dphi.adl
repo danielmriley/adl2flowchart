@@ -1,0 +1,10 @@
+object jets
+  take Jet
+  select pT > 30
+
+object MHT
+  take MissingET
+
+region SR_ite
+  select size(jets) >= 3
+  select size(jets) >= 3 ? dPhi(jets[2], MHT) > 0.3

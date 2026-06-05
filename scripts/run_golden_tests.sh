@@ -26,6 +26,8 @@ check() {
   fi
 }
 
+check "$GOLDEN/ite_conditional_dphi.adl" "1 ITE" "ITE clause encoded"
+check "$GOLDEN/or_met.adl" "1 OR" "OR clause encoded"
 check "$GOLDEN/disjoint_pt.adl" "PROVEN DISJOINT" "disjoint pT intervals"
 check "$GOLDEN/disjoint_jet_index.adl" "PROVEN DISJOINT" "disjoint same jet index intervals"
 if command -v z3 >/dev/null 2>&1; then

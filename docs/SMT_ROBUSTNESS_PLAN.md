@@ -54,8 +54,14 @@
 - [x] WP4 fragment_coverage in JSON and report
 - [x] WP6 unified `-r` (legacy behind `--legacy-region-report`)
 - [x] Golden: `disjoint_jet_index.adl`, `independent_jet_index.adl`
+## v3 (implemented)
+
+- [x] OR disjunctions in SMT
+- [x] ITE implications in SMT
+- [x] Coverage warnings (<50% encodable / select encoding)
+- [x] Golden: `ite_conditional_dphi.adl`, `or_met.adl`
 - [ ] WP5 subset (deferred)
-- [ ] WP7 Z3 stdin (deferred)
+- [ ] WP7 Z3 stdin (deferred; timeout raised to 15s)
 
 ## Success criteria
 - All golden + corpus pass.

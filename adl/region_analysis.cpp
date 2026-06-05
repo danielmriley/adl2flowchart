@@ -158,23 +158,115 @@ static std::string smtNum(double v, bool asInt) {
   return ss.str();
 }
 
-static void smtAssertInterval(std::ostream& os, const std::string& var,
-    const ConstraintAtom& c, bool asInt) {
+static void atomToPredicates(const std::string& rep, const ConstraintAtom& c,
+    bool asInt, std::vector<std::string>& preds) {
+  const std::string var = smtVarName(rep);
   if (intervalEmpty(c)) {
-    os << "(assert false)\n";
+    preds.push_back("false");
     return;
   }
   if (c.isDiscrete) {
-    os << "(assert (= " << var << " " << smtNum(c.discreteValue, asInt) << "))\n";
+    preds.push_back("(= " + var + " " + smtNum(c.discreteValue, asInt) + ")");
     return;
   }
   if (c.lo > -1e300) {
-    if (c.loInclusive) os << "(assert (>= " << var << " " << smtNum(c.lo, asInt) << "))\n";
-    else os << "(assert (> " << var << " " << smtNum(c.lo, asInt) << "))\n";
+    if (c.loInclusive)
+      preds.push_back("(>= " + var + " " + smtNum(c.lo, asInt) + ")");
+    else
+      preds.push_back("(> " + var + " " + smtNum(c.lo, asInt) + ")");
   }
   if (c.hi < 1e300) {
-    if (c.hiInclusive) os << "(assert (<= " << var << " " << smtNum(c.hi, asInt) << "))\n";
-    else os << "(assert (< " << var << " " << smtNum(c.hi, asInt) << "))\n";
+    if (c.hiInclusive)
+      preds.push_back("(<= " + var + " " + smtNum(c.hi, asInt) + ")");
+    else
+      preds.push_back("(< " + var + " " + smtNum(c.hi, asInt) + ")");
+  }
+}
+
+static std::string smtAndExpr(const std::vector<std::string>& preds) {
+  if (preds.empty()) return "true";
+  if (preds.size() == 1) return preds[0];
+  std::ostringstream os;
+  os << "(and";
+  for (const auto& p : preds) os << " " << p;
+  os << ")";
+  return os.str();
+}
+
+static void collectAtomVar(const ConstraintAtom& a, std::set<std::string>& reps,
+    bool& anyInt) {
+  if (!isSmtEncodableKey(a.key)) return;
+  reps.insert(a.key);
+  if (usesIntSort(a.key)) anyInt = true;
+}
+
+static void collectRegionVars(const RegionConstraintSet& r,
+    const std::map<std::string, ConstraintAtom>& canon, std::set<std::string>& reps,
+    bool& anyInt) {
+  for (const auto& kv : canon) collectAtomVar(kv.second, reps, anyInt);
+  for (const auto& oc : r.orClauses) {
+    for (const auto& alt : oc.alternatives)
+      for (const auto& a : alt) collectAtomVar(a, reps, anyInt);
+  }
+  for (const auto& imp : r.implications) {
+    for (const auto& a : imp.guard) collectAtomVar(a, reps, anyInt);
+    for (const auto& a : imp.thenAtoms) collectAtomVar(a, reps, anyInt);
+    for (const auto& a : imp.elseAtoms) collectAtomVar(a, reps, anyInt);
+  }
+}
+
+static void emitAtomAsserts(std::ostream& os, const std::string& rep,
+    const ConstraintAtom& c) {
+  if (!isSmtEncodableKey(c.key)) return;
+  std::vector<std::string> preds;
+  atomToPredicates(rep, c, usesIntSort(rep), preds);
+  for (const auto& p : preds) os << "(assert " << p << ")\n";
+}
+
+static void emitRegionFormula(std::ostream& os, const RegionConstraintSet& r,
+    const std::map<std::string, ConstraintAtom>& canon, KeyUnionFind& uf) {
+  for (const auto& kv : canon)
+    emitAtomAsserts(os, kv.first, kv.second);
+
+  for (const auto& oc : r.orClauses) {
+    if (oc.alternatives.size() < 2) continue;
+    std::ostringstream orExpr;
+    orExpr << "(or";
+    for (const auto& alt : oc.alternatives) {
+      std::vector<std::string> preds;
+      for (const auto& a : alt) {
+        if (!isSmtEncodableKey(a.key)) continue;
+        std::string rep = uf.find(a.key);
+        std::vector<std::string> ap;
+        atomToPredicates(rep, a, usesIntSort(rep), ap);
+        preds.insert(preds.end(), ap.begin(), ap.end());
+      }
+      orExpr << " " << smtAndExpr(preds);
+    }
+    orExpr << ")";
+    os << "(assert " << orExpr.str() << ")\n";
+  }
+
+  for (const auto& imp : r.implications) {
+    auto predsFor = [&](const std::vector<ConstraintAtom>& atoms) {
+      std::vector<std::string> preds;
+      for (const auto& a : atoms) {
+        if (!isSmtEncodableKey(a.key)) continue;
+        std::string rep = uf.find(a.key);
+        std::vector<std::string> ap;
+        atomToPredicates(rep, a, usesIntSort(rep), ap);
+        preds.insert(preds.end(), ap.begin(), ap.end());
+      }
+      return preds;
+    };
+    std::string guard = smtAndExpr(predsFor(imp.guard));
+    std::string thenE = smtAndExpr(predsFor(imp.thenAtoms));
+    if (!imp.thenAtoms.empty() || imp.elseIsAll)
+      os << "(assert (=> " << guard << " " << thenE << "))\n";
+    if (!imp.elseIsAll && !imp.elseAtoms.empty()) {
+      std::string elseE = smtAndExpr(predsFor(imp.elseAtoms));
+      os << "(assert (=> (not " << guard << ") " << elseE << "))\n";
+    }
   }
 }
 
@@ -223,11 +315,49 @@ static std::set<std::string> sharedSmtReps(
   return shared;
 }
 
+static bool regionsShareDimension(const RegionConstraintSet& r1,
+    const RegionConstraintSet& r2, const std::map<std::string, ConstraintAtom>& c1,
+    const std::map<std::string, ConstraintAtom>& c2,
+    const std::map<std::string, std::vector<std::string>>& parents, Driver& drv) {
+  if (!sharedSmtReps(c1, c2).empty()) return true;
+  auto keysFrom = [&](const RegionConstraintSet& r) {
+    std::set<std::string> ks;
+    for (const auto& kv : r.constraints) ks.insert(kv.first);
+    for (const auto& oc : r.orClauses)
+      for (const auto& alt : oc.alternatives)
+        for (const auto& a : alt) ks.insert(a.key);
+    for (const auto& imp : r.implications) {
+      for (const auto& a : imp.guard) ks.insert(a.key);
+      for (const auto& a : imp.thenAtoms) ks.insert(a.key);
+      for (const auto& a : imp.elseAtoms) ks.insert(a.key);
+    }
+    return ks;
+  };
+  auto k1 = keysFrom(r1);
+  auto k2 = keysFrom(r2);
+  for (const auto& a : k1)
+    for (const auto& b : k2)
+      if (constraintKeysRelatedPublic(a, b, parents, drv)) return true;
+  return false;
+}
+
 static void countFragmentCoverage(RegionConstraintSet& r) {
-  r.totalConstraints = static_cast<int>(r.constraints.size());
+  r.totalConstraints = 0;
   r.encodableForSmt = 0;
-  for (const auto& kv : r.constraints)
-    if (isSmtEncodableKey(kv.first)) r.encodableForSmt++;
+  auto countAtom = [&](const ConstraintAtom& a) {
+    r.totalConstraints++;
+    if (isSmtEncodableKey(a.key)) r.encodableForSmt++;
+  };
+  for (const auto& kv : r.constraints) countAtom(kv.second);
+  for (const auto& oc : r.orClauses) {
+    for (const auto& alt : oc.alternatives)
+      for (const auto& a : alt) countAtom(a);
+  }
+  for (const auto& imp : r.implications) {
+    for (const auto& a : imp.guard) countAtom(a);
+    for (const auto& a : imp.thenAtoms) countAtom(a);
+    for (const auto& a : imp.elseAtoms) countAtom(a);
+  }
 }
 
 struct Z3Answer {
@@ -238,20 +368,19 @@ struct Z3Answer {
 static Z3Answer runZ3(const std::string& script, bool getModel) {
   Z3Answer ans;
   ans.status = "error";
+  std::ostringstream full;
+  full << script;
+  full << "(check-sat)\n";
+  if (getModel) full << "(get-model)\n";
+  const std::string payload = full.str();
+
   char tmp[] = "/tmp/adl_z3_XXXXXX";
   int fd = mkstemps(tmp, 0);
   if (fd < 0) return ans;
   close(fd);
   std::string path = tmp;
-  {
-    std::ostringstream full;
-    full << script;
-    full << "(check-sat)\n";
-    if (getModel) full << "(get-model)\n";
-    std::ofstream f(path);
-    f << full.str();
-  }
-  std::string cmd = "z3 -T:10 " + path + " 2>/dev/null";
+  { std::ofstream f(path); f << payload; }
+  std::string cmd = "z3 -T:15 " + path + " 2>/dev/null";
   FILE* pipe = popen(cmd.c_str(), "r");
   if (!pipe) {
     unlink(path.c_str());
@@ -305,8 +434,8 @@ static PairAnalysis analyzePair(const RegionConstraintSet& r1,
   KeyUnionFind uf = buildKeyUnion(r1, r2, parents, drv);
   auto canon1 = canonicalProjection(r1, uf);
   auto canon2 = canonicalProjection(r2, uf);
-  std::set<std::string> shared = sharedSmtReps(canon1, canon2);
-  out.sharedDimension = !shared.empty();
+  out.sharedDimension =
+      regionsShareDimension(r1, r2, canon1, canon2, parents, drv);
 
   if (runHeuristic) {
     bool anyDisjoint = false;
@@ -338,21 +467,16 @@ static PairAnalysis analyzePair(const RegionConstraintSet& r1,
 
   std::set<std::string> smtReps;
   bool anyInt = false;
-  for (const auto& kv : canon1) {
-    if (!isSmtEncodableKey(kv.first)) continue;
-    smtReps.insert(kv.first);
-    if (usesIntSort(kv.first)) anyInt = true;
-  }
-  for (const auto& kv : canon2) {
-    if (!isSmtEncodableKey(kv.first)) continue;
-    smtReps.insert(kv.first);
-    if (usesIntSort(kv.first)) anyInt = true;
-  }
-  if (smtReps.empty()) {
+  collectRegionVars(r1, canon1, smtReps, anyInt);
+  collectRegionVars(r2, canon2, smtReps, anyInt);
+  if (smtReps.empty() && r1.orClauses.empty() && r2.orClauses.empty() &&
+      r1.implications.empty() && r2.implications.empty()) {
     if (out.kind == RelationKind::Unknown)
       out.reason = "SMT: no encodable constraints";
     return out;
   }
+
+  for (const auto& rep : smtReps) uf.find(rep);
 
   std::ostringstream smt;
   smt << "(set-logic " << (anyInt ? "QF_LIRA" : "QF_LRA") << ")\n";
@@ -360,15 +484,8 @@ static PairAnalysis analyzePair(const RegionConstraintSet& r1,
     bool asInt = usesIntSort(rep);
     smt << "(declare-fun " << smtVarName(rep) << " () " << (asInt ? "Int" : "Real") << ")\n";
   }
-  for (const auto& rep : smtReps) {
-    bool asInt = usesIntSort(rep);
-    auto it1 = canon1.find(rep);
-    if (it1 != canon1.end())
-      smtAssertInterval(smt, smtVarName(rep), it1->second, asInt);
-    auto it2 = canon2.find(rep);
-    if (it2 != canon2.end())
-      smtAssertInterval(smt, smtVarName(rep), it2->second, asInt);
-  }
+  emitRegionFormula(smt, r1, canon1, uf);
+  emitRegionFormula(smt, r2, canon2, uf);
 
   Z3Answer z = runZ3(smt.str(), true);
   out.usedSmt = true;
@@ -415,6 +532,25 @@ int buildRegionConstraintSets(Driver& drv, std::vector<RegionConstraintSet>& out
     rs.hasBins = rec.hasBins;
     for (const auto& a : rec.constraints)
       rs.constraints[a.key] = toAtom(a);
+    for (const auto& oc : rec.orClauses) {
+      OrClause o;
+      for (const auto& alt : oc.alternatives) {
+        std::vector<ConstraintAtom> va;
+        for (const auto& atom : alt) va.push_back(toAtom(atom));
+        o.alternatives.push_back(va);
+      }
+      rs.orClauses.push_back(o);
+    }
+    for (const auto& imp : rec.implications) {
+      ImplicationClause ic;
+      ic.elseIsAll = imp.elseIsAll;
+      for (const auto& a : imp.guard) ic.guard.push_back(toAtom(a));
+      for (const auto& a : imp.thenAtoms) ic.thenAtoms.push_back(toAtom(a));
+      for (const auto& a : imp.elseAtoms) ic.elseAtoms.push_back(toAtom(a));
+      rs.implications.push_back(ic);
+    }
+    rs.selectStmts = rec.selectStmts;
+    rs.selectStmtsEncoded = rec.selectStmtsEncoded;
     countFragmentCoverage(rs);
     out.push_back(std::move(rs));
   }
@@ -432,9 +568,31 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
   if (!z3Installed())
     report.smtNote = "z3 not on PATH — install z3 for proven overlap/disjoint (SMT)";
   else if (doSmt)
-    report.smtNote = "z3: proving overlap (SAT+model) and disjoint (UNSAT) on linear IR";
+    report.smtNote =
+        "z3: SMT on linear IR + OR/ITE (implications); coverage warnings below 50%";
   else
     report.smtNote = "z3 available; SMT disabled (--no-smt)";
+
+  for (const auto& r : report.regions) {
+    if (r.totalConstraints > 0) {
+      double ratio = static_cast<double>(r.encodableForSmt) / r.totalConstraints;
+      if (ratio < report.coverageWarnThreshold) {
+        std::ostringstream w;
+        w << "Region " << r.name << ": low SMT fragment coverage " << r.encodableForSmt
+          << "/" << r.totalConstraints << " (" << static_cast<int>(ratio * 100) << "%)";
+        report.coverageWarnings.push_back(w.str());
+      }
+    }
+    if (r.selectStmts > 0) {
+      double sr = static_cast<double>(r.selectStmtsEncoded) / r.selectStmts;
+      if (sr < report.coverageWarnThreshold) {
+        std::ostringstream w;
+        w << "Region " << r.name << ": only " << r.selectStmtsEncoded << "/"
+          << r.selectStmts << " select statements fully encoded";
+        report.coverageWarnings.push_back(w.str());
+      }
+    }
+  }
 
   for (size_t i = 0; i < report.regions.size(); ++i) {
     for (size_t j = i + 1; j < report.regions.size(); ++j) {
@@ -491,7 +649,11 @@ int writeJson(const AnalysisReport& report, std::ostream& os) {
     }
     os << "], \"hasBins\": " << (r.hasBins ? "true" : "false")
        << ", \"fragment_coverage\": {\"encodable\": " << r.encodableForSmt
-       << ", \"total\": " << r.totalConstraints << "}"
+       << ", \"total\": " << r.totalConstraints
+       << ", \"select_encoded\": " << r.selectStmtsEncoded
+       << ", \"select_total\": " << r.selectStmts
+       << ", \"or_clauses\": " << r.orClauses.size()
+       << ", \"implications\": " << r.implications.size() << "}"
        << ", \"constraints\": {";
     size_t ci = 0;
     for (const auto& kv : r.constraints) {
@@ -531,7 +693,14 @@ int writeJson(const AnalysisReport& report, std::ostream& os) {
      << ", \"smt_overlap\": " << report.smtOverlap
      << ", \"smt_unknown\": " << report.smtUnknown
      << ", \"smt_sat_no_shared_dim\": " << report.smtSkippedNoShared
-     << "}\n}\n";
+     << ", \"coverage_warn_threshold\": " << report.coverageWarnThreshold
+     << "}\n";
+  os << ",\n  \"coverage_warnings\": [";
+  for (size_t i = 0; i < report.coverageWarnings.size(); ++i) {
+    if (i) os << ", ";
+    os << "\"" << jsonEscape(report.coverageWarnings[i]) << "\"";
+  }
+  os << "]\n}\n";
   return 0;
 }
 
@@ -544,7 +713,18 @@ int printReport(const AnalysisReport& report, const AnalysisOptions& opt) {
   std::cout << "Regions: " << report.regions.size() << "\n";
   for (const auto& r : report.regions) {
     std::cout << "  " << r.name << ": " << r.encodableForSmt << "/"
-              << r.totalConstraints << " SMT-encodable constraints\n";
+              << r.totalConstraints << " SMT-encodable atoms";
+    if (!r.orClauses.empty() || !r.implications.empty())
+      std::cout << " (" << r.orClauses.size() << " OR, " << r.implications.size()
+                << " ITE)";
+    if (r.selectStmts > 0)
+      std::cout << "; selects encoded " << r.selectStmtsEncoded << "/" << r.selectStmts;
+    std::cout << "\n";
+  }
+  if (!report.coverageWarnings.empty()) {
+    std::cout << "\nCoverage warnings (threshold "
+              << static_cast<int>(report.coverageWarnThreshold * 100) << "%):\n";
+    for (const auto& w : report.coverageWarnings) std::cout << "  ! " << w << "\n";
   }
 
   std::cout << "\nPairwise:\n";

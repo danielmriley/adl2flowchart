@@ -76,11 +76,26 @@ namespace adl {
     double discreteValue = 0.0;
   };
 
+  struct RegionOrClause {
+    std::vector<std::vector<RegionConstraintAtom>> alternatives;
+  };
+
+  struct RegionImplication {
+    std::vector<RegionConstraintAtom> guard;
+    std::vector<RegionConstraintAtom> thenAtoms;
+    std::vector<RegionConstraintAtom> elseAtoms;
+    bool elseIsAll = false;
+  };
+
   struct RegionConstraintRecord {
     std::string name;
     std::vector<std::string> inherits;
     bool hasBins = false;
     std::vector<RegionConstraintAtom> constraints;
+    std::vector<RegionOrClause> orClauses;
+    std::vector<RegionImplication> implications;
+    int selectStmts = 0;
+    int selectStmtsEncoded = 0;
   };
 
   int gatherRegionConstraints(Driver& drv, std::vector<RegionConstraintRecord>& out);

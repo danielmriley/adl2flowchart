@@ -10,7 +10,7 @@
 |-------|---------|--------|
 | Golden region fixtures | `make test-disjoint` | pass |
 | Full examples corpus | `make test-corpus` | 68/68 parse and `-r` |
-| Z3 spike (Delphes 033) | `./scripts/phase2_z3_spike.sh` | pass if `z3` installed |
+| Z3 spike (Delphes 033) | `./scripts/phase2_z3_spike.sh` | pass if `z3` installed (checks `PROVEN OVERLAPPING [SMT]` / summary) |
 
 See `REGION_ANALYSIS.md` for `-r`, `--json`, `--smt` usage.
 

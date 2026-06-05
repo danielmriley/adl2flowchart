@@ -11,11 +11,12 @@ if ! command -v z3 >/dev/null 2>&1; then
   exit 0
 fi
 
-out=$("$SMASH" -r --smt "$FILE" 2>&1)
-echo "$out" | grep -E "SR[0-9]+ vs SR[0-9]+" | head -20
-if echo "$out" | grep -q "SMT disjoint=\|OVERLAP (SMT"; then
+out=$("$SMASH" -r "$FILE" 2>&1)
+echo "$out" | grep -E "SR[0-9]+ vs SR[0-9]+" | head -20 || true
+if echo "$out" | grep -qE "PROVEN OVERLAPPING \[SMT\]|SMT proven_overlap=[1-9]|PROVEN DISJOINT.*UNSAT"; then
   echo "OK   Phase-2 Z3 spike on Delphes 033"
   exit 0
 fi
-echo "FAIL Phase-2 spike — no SMT pairwise results"
+echo "FAIL Phase-2 spike — expected SMT proven overlap or disjoint"
+echo "$out" | grep -E "Pairwise|Summary|z3:" | tail -15
 exit 1

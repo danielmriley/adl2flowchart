@@ -36,6 +36,8 @@ struct RegionConstraintSet {
   std::vector<std::string> inherits;
   bool hasBins = false;
   std::map<std::string, ConstraintAtom> constraints;
+  int encodableForSmt = 0;
+  int totalConstraints = 0;
 };
 
 struct PairwiseResult {

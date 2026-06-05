@@ -1,0 +1,10 @@
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+# Different indices: regions can overlap (lead jet hot, subjet soft).
+region SR_lead_high
+  select pT(jets[0]) > 300
+
+region SR_sub_low
+  select pT(jets[1]) < 200

@@ -1,0 +1,10 @@
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+# Same jet index, disjoint pT intervals -> must prove disjoint.
+region SR_high
+  select pT(jets[0]) > 300
+
+region SR_low
+  select pT(jets[0]) < 200

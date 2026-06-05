@@ -1080,6 +1080,14 @@ namespace adl {
     return key.substr(0, end);
   }
 
+  static std::string bracketIndexSuffix(const std::string& key) {
+    size_t b = key.find('[');
+    if (b == std::string::npos) return "";
+    size_t e = key.find(']', b);
+    if (e == std::string::npos) return key.substr(b);
+    return key.substr(b, e - b + 1);
+  }
+
   static std::string canonicalConstraintKey(const std::string& key, Driver& drv) {
     if (key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')') {
       std::string inner = key.substr(5, key.size() - 6);
@@ -1096,10 +1104,13 @@ namespace adl {
     if (dot == std::string::npos && bracket == std::string::npos) {
       return canonicalTakeRoot(key, drv);
     }
-    std::string suffix;
-    if (dot != std::string::npos) suffix = key.substr(dot);
-    else if (bracket != std::string::npos) suffix = key.substr(bracket);
-    return canonicalTakeRoot(obj, drv) + suffix;
+    std::string canonObj = canonicalTakeRoot(obj, drv);
+    // Keep [i] before .property (jets[0].pt must not collapse to JETS.pt).
+    if (bracket != std::string::npos && dot != std::string::npos && bracket < dot)
+      return canonObj + key.substr(bracket);
+    if (dot != std::string::npos) return canonObj + key.substr(dot);
+    if (bracket != std::string::npos) return canonObj + key.substr(bracket);
+    return canonObj;
   }
 
   static void appendTakeSource(Expr* cond, std::vector<std::string>& out) {
@@ -2185,6 +2196,9 @@ namespace adl {
   static bool constraintKeysRelated(const std::string& k1, const std::string& k2,
       const std::map<std::string, std::vector<std::string>>& parents, Driver& drv) {
     if (k1 == k2) return true;
+    std::string i1 = bracketIndexSuffix(k1);
+    std::string i2 = bracketIndexSuffix(k2);
+    if (!i1.empty() && !i2.empty() && i1 != i2) return false;
     return objectLineageRelated(objectFromConstraintKey(k1), objectFromConstraintKey(k2),
                                 parents, drv);
   }

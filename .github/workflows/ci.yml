@@ -14,7 +14,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y flex bison clang graphviz
-          sudo apt-get install -y z3 || true
+          sudo apt-get install -y z3
       - name: Build
         run: make
       - name: Golden region tests

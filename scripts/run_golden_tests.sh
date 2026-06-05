@@ -27,6 +27,16 @@ check() {
 }
 
 check "$GOLDEN/disjoint_pt.adl" "PROVEN DISJOINT" "disjoint pT intervals"
+check "$GOLDEN/disjoint_jet_index.adl" "PROVEN DISJOINT" "disjoint same jet index intervals"
+if command -v z3 >/dev/null 2>&1; then
+  out=$("$SMASH" -r "$GOLDEN/independent_jet_index.adl" 2>&1) || fail=1
+  if echo "$out" | grep -q "SR_lead_high vs SR_sub_low: PROVEN OVERLAPPING\|POSSIBLY OVERLAPPING"; then
+    echo "OK   independent jet indices may overlap"
+  else
+    echo "FAIL independent_jet_index — expected overlap/sat"
+    fail=1
+  fi
+fi
 check "$GOLDEN/disjoint_pt.adl" "SR_low vs SR_high" "pairwise line"
 check "$GOLDEN/overlap_met.adl" "PROVEN OVERLAPPING\|POSSIBLY OVERLAPPING" "MET overlap"
 check "$GOLDEN/size_bjets.adl" "SR_ge2 vs SR_ge4" "size pairwise present"

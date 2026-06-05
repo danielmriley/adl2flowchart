@@ -130,14 +130,17 @@ static ConstraintAtom toAtom(const RegionConstraintAtom& a) {
   return c;
 }
 
-static bool isSmtLinearKey(const std::string& key) {
+static bool isSizeKey(const std::string& key) {
+  return key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')';
+}
+
+static bool isSmtEncodableKey(const std::string& key) {
   if (key.empty()) return false;
-  if (key.rfind("dphi(", 0) == 0 || key.rfind("dR(", 0) == 0 ||
-      key.rfind("dEta(", 0) == 0)
-    return false;
   if (key.find("BDT") != std::string::npos) return false;
   return true;
 }
+
+static bool usesIntSort(const std::string& key) { return isSizeKey(key); }
 
 static std::string smtVarName(const std::string& key) {
   std::string v = "v_";
@@ -148,23 +151,30 @@ static std::string smtVarName(const std::string& key) {
   return v;
 }
 
+static std::string smtNum(double v, bool asInt) {
+  if (asInt) return std::to_string(static_cast<long long>(v));
+  std::ostringstream ss;
+  ss << v;
+  return ss.str();
+}
+
 static void smtAssertInterval(std::ostream& os, const std::string& var,
-    const ConstraintAtom& c) {
+    const ConstraintAtom& c, bool asInt) {
   if (intervalEmpty(c)) {
     os << "(assert false)\n";
     return;
   }
   if (c.isDiscrete) {
-    os << "(assert (= " << var << " " << c.discreteValue << "))\n";
+    os << "(assert (= " << var << " " << smtNum(c.discreteValue, asInt) << "))\n";
     return;
   }
   if (c.lo > -1e300) {
-    if (c.loInclusive) os << "(assert (>= " << var << " " << c.lo << "))\n";
-    else os << "(assert (> " << var << " " << c.lo << "))\n";
+    if (c.loInclusive) os << "(assert (>= " << var << " " << smtNum(c.lo, asInt) << "))\n";
+    else os << "(assert (> " << var << " " << smtNum(c.lo, asInt) << "))\n";
   }
   if (c.hi < 1e300) {
-    if (c.hiInclusive) os << "(assert (<= " << var << " " << c.hi << "))\n";
-    else os << "(assert (< " << var << " " << c.hi << "))\n";
+    if (c.hiInclusive) os << "(assert (<= " << var << " " << smtNum(c.hi, asInt) << "))\n";
+    else os << "(assert (< " << var << " " << smtNum(c.hi, asInt) << "))\n";
   }
 }
 
@@ -207,10 +217,17 @@ static std::set<std::string> sharedSmtReps(
     const std::map<std::string, ConstraintAtom>& c2) {
   std::set<std::string> shared;
   for (const auto& kv : c1) {
-    if (!isSmtLinearKey(kv.first)) continue;
+    if (!isSmtEncodableKey(kv.first)) continue;
     if (c2.count(kv.first)) shared.insert(kv.first);
   }
   return shared;
+}
+
+static void countFragmentCoverage(RegionConstraintSet& r) {
+  r.totalConstraints = static_cast<int>(r.constraints.size());
+  r.encodableForSmt = 0;
+  for (const auto& kv : r.constraints)
+    if (isSmtEncodableKey(kv.first)) r.encodableForSmt++;
 }
 
 struct Z3Answer {
@@ -320,27 +337,37 @@ static PairAnalysis analyzePair(const RegionConstraintSet& r1,
   if (!runSmt || !z3Installed()) return out;
 
   std::set<std::string> smtReps;
-  for (const auto& kv : canon1)
-    if (isSmtLinearKey(kv.first)) smtReps.insert(kv.first);
-  for (const auto& kv : canon2)
-    if (isSmtLinearKey(kv.first)) smtReps.insert(kv.first);
+  bool anyInt = false;
+  for (const auto& kv : canon1) {
+    if (!isSmtEncodableKey(kv.first)) continue;
+    smtReps.insert(kv.first);
+    if (usesIntSort(kv.first)) anyInt = true;
+  }
+  for (const auto& kv : canon2) {
+    if (!isSmtEncodableKey(kv.first)) continue;
+    smtReps.insert(kv.first);
+    if (usesIntSort(kv.first)) anyInt = true;
+  }
   if (smtReps.empty()) {
     if (out.kind == RelationKind::Unknown)
-      out.reason = "SMT: no encodable linear constraints";
+      out.reason = "SMT: no encodable constraints";
     return out;
   }
 
   std::ostringstream smt;
-  smt << "(set-logic QF_LRA)\n";
-  for (const auto& rep : smtReps)
-    smt << "(declare-fun " << smtVarName(rep) << " () Real)\n";
+  smt << "(set-logic " << (anyInt ? "QF_LIRA" : "QF_LRA") << ")\n";
   for (const auto& rep : smtReps) {
+    bool asInt = usesIntSort(rep);
+    smt << "(declare-fun " << smtVarName(rep) << " () " << (asInt ? "Int" : "Real") << ")\n";
+  }
+  for (const auto& rep : smtReps) {
+    bool asInt = usesIntSort(rep);
     auto it1 = canon1.find(rep);
     if (it1 != canon1.end())
-      smtAssertInterval(smt, smtVarName(rep), it1->second);
+      smtAssertInterval(smt, smtVarName(rep), it1->second, asInt);
     auto it2 = canon2.find(rep);
     if (it2 != canon2.end())
-      smtAssertInterval(smt, smtVarName(rep), it2->second);
+      smtAssertInterval(smt, smtVarName(rep), it2->second, asInt);
   }
 
   Z3Answer z = runZ3(smt.str(), true);
@@ -388,6 +415,7 @@ int buildRegionConstraintSets(Driver& drv, std::vector<RegionConstraintSet>& out
     rs.hasBins = rec.hasBins;
     for (const auto& a : rec.constraints)
       rs.constraints[a.key] = toAtom(a);
+    countFragmentCoverage(rs);
     out.push_back(std::move(rs));
   }
   return 0;
@@ -462,6 +490,8 @@ int writeJson(const AnalysisReport& report, std::ostream& os) {
       os << "\"" << jsonEscape(r.inherits[k]) << "\"";
     }
     os << "], \"hasBins\": " << (r.hasBins ? "true" : "false")
+       << ", \"fragment_coverage\": {\"encodable\": " << r.encodableForSmt
+       << ", \"total\": " << r.totalConstraints << "}"
        << ", \"constraints\": {";
     size_t ci = 0;
     for (const auto& kv : r.constraints) {
@@ -512,6 +542,10 @@ int printReport(const AnalysisReport& report, const AnalysisOptions& opt) {
             << (smtOn ? " + Z3 SMT" : "") << ") ====\n";
   if (!report.smtNote.empty()) std::cout << report.smtNote << "\n";
   std::cout << "Regions: " << report.regions.size() << "\n";
+  for (const auto& r : report.regions) {
+    std::cout << "  " << r.name << ": " << r.encodableForSmt << "/"
+              << r.totalConstraints << " SMT-encodable constraints\n";
+  }
 
   std::cout << "\nPairwise:\n";
   for (const auto& p : report.pairwise) {

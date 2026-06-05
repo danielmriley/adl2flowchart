@@ -18,6 +18,12 @@ With `z3` on PATH, `./smash -r` encodes extracted constraints and checks **R1 �
 - **Angular cuts** — `dphi`/`dR`/`dEta` interval keys are SMT-encoded when extracted.
 - **Fragment coverage** — each region reports `SMT-encodable N/M` and JSON `fragment_coverage`.
 
+## Encoding (v3)
+
+- **OR** — `select A || B` → `(assert (or (and ...) (and ...)))`.
+- **ITE** — `cond ? cut : ALL` → `(assert (=> guard then))`; else branch when not `ALL`.
+- **Coverage warnings** — printed when encodable atoms or encoded selects fall below **50%**.
+
 ## Usage
 
 ```bash
@@ -30,6 +36,6 @@ make test-disjoint
 
 ## Limits
 
-- Single-file; incomplete extraction → weak verdicts.
-- OR/ITE branches not fully encoded as disjunctions.
+- Single-file; incomplete extraction → weak verdicts (see coverage warnings).
+- Deeply nested OR/ITE may not fully flatten; BDTs and arbitrary functions still skipped.
 - Proven overlap = ∃ model in fragment, not simulation yield.

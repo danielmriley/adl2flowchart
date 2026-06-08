@@ -1,5 +1,5 @@
-% ADL2Flowchart disjointness & region analysis report
-% Compile: pdflatex disjointness_report.tex  (run twice for TOC/refs)
+% Informal talking guide — disjointness work in ADL2Flowchart
+% Compile: pdflatex disjointness_report.tex  (twice for TOC)
 %          or: latexmk -pdf disjointness_report.tex
 
 \documentclass[11pt,a4paper]{article}
@@ -7,510 +7,217 @@
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
-\usepackage{microtype}
 \usepackage{geometry}
-\geometry{margin=2.5cm}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{longtable}
+\geometry{margin=2.2cm}
 \usepackage{hyperref}
-\usepackage{xcolor}
-\usepackage{listings}
 \usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta, positioning, fit, backgrounds}
+\usetikzlibrary{arrows.meta, positioning}
 
-\hypersetup{
-  colorlinks=true,
-  linkcolor=blue!60!black,
-  citecolor=blue!60!black,
-  urlcolor=blue!60!black
-}
+\hypersetup{colorlinks=true, linkcolor=blue!55!black, urlcolor=blue!55!black}
 
 \definecolor{codebg}{RGB}{248,248,248}
 \lstset{
   basicstyle=\ttfamily\small,
   backgroundcolor=\color{codebg},
   frame=single,
-  framerule=0.4pt,
-  breaklines=true,
-  columns=fullflexible,
-  showstringspaces=false
+  breaklines=true
 }
 
-\title{%
-  \textbf{Disjointness and Region Analysis in ADL2Flowchart}\\[0.4em]
-  \large Progress report for collaborators
-}
-\author{ADL2Flowchart development team}
+\setlist[itemize]{topsep=4pt, itemsep=2pt}
+\setlist[enumerate]{topsep=4pt, itemsep=2pt}
+
+\title{\textbf{Talking guide: disjointness \& region analysis}\\[0.3em]
+\large What we added to \texttt{smash} and how to demo it}
+\author{}
 \date{June 2026}
 
 \begin{document}
 \maketitle
 
-\begin{abstract}
-This report summarises work on \emph{single-file} disjointness and overlap analysis
-in the ADL2Flowchart compiler (\texttt{smash}), from the first experimental
-\texttt{-r} pass through SMT-backed region proofs (Z3), constraint IR export, and
-automated regression. The effort combined (i)~corpus hardening so that 68/68
-example ADL files parse and analyse without crash, (ii)~heuristic object and
-region disjointness, (iii)~a structured region constraint intermediate
-representation, and (iv)~optional SMT encoding with proven overlap/disjoint
-verdicts on a growing linear fragment. All changes are on the \texttt{main}
-branch of the repository as of June 2026.
-\end{abstract}
+\noindent\textbf{What this is:} notes for a conversation with collaborators --- not a paper.
+Use it as a script: what we built, why it matters, what to try live, and what \emph{not}
+to over-claim.
 
 \tableofcontents
 \newpage
 
-%=============================================================================
-\section{Motivation and goals}
-%=============================================================================
+%-----------------------------------------------------------------------------
+\section{The one-sentence pitch}
+%-----------------------------------------------------------------------------
 
-Analysis Description Language (ADL) files describe event selections as named
-\emph{regions} (signal regions, control regions, bins) built from cuts on
-physics objects. For reinterpretation, combination studies, and systematic
-validation, it is valuable to know whether two regions can share events:
+We taught \texttt{./smash} to read an ADL file and answer, for each pair of regions:
+\emph{can the same event pass both?} or \emph{are they forced apart?} --- using
+heuristics plus optional Z3 proofs on the cuts we can extract.
 
-\begin{itemize}[noitemsep]
-  \item \textbf{Disjoint} --- no event can satisfy both regions' constraints.
-  \item \textbf{Overlapping} --- at least one event can pass both (existence).
-  \item \textbf{Unknown} --- the tool cannot decide with current extraction.
+%-----------------------------------------------------------------------------
+\section{Why we bothered}
+%-----------------------------------------------------------------------------
+
+\begin{itemize}
+  \item Signal regions in one card often look related (SR1 vs SR6, etc.).
+  \item Before this work, we only had flowcharts --- no static check for overlap/disjointness.
+  \item Useful for: combination studies, catching accidental double-counting, sanity-checking
+        reinterpretation maps.
 \end{itemize}
 
-ADL2Flowchart already parsed ADL and produced Graphviz flowcharts; the
-disjointness programme added \textbf{static analysis} on top of the existing
-AST and symbol tables, without changing the core parse $\rightarrow$ typecheck
-$\rightarrow$ DOT pipeline.
+\textbf{Scope we're honest about:} single file only, and only the cuts the extractor
+understands. If half the cuts are weird BDTs, the tool will say so (coverage warnings).
 
-\paragraph{Scope.} Analysis is \textbf{single-file}: cross-file alias alignment
-beyond \texttt{object\_aliases.txt} is not attempted. Conclusions are stated
-relative to an \emph{extracted fragment} of each region's cuts; incomplete
-extraction is surfaced via coverage metrics (Section~\ref{sec:coverage}).
+%-----------------------------------------------------------------------------
+\section{What changed --- quick timeline}
+%-----------------------------------------------------------------------------
 
-%=============================================================================
-\section{Timeline and development phases}
-%=============================================================================
+Talk through this in order if people want the story:
 
-Table~\ref{tab:phases} maps the main delivery phases. Git commits on
-\texttt{main} provide a finer-grained audit trail.
-
-\begin{table}[ht]
-  \centering
-  \caption{Major phases of the disjointness implementation.}
-  \label{tab:phases}
-  \begin{tabular}{@{}clp{7.2cm}@{}}
-    \toprule
-    Phase & Label & Deliverables \\
-    \midrule
-    0 & Corpus hygiene & Parser/lexer/semantic fixes; 68/68 examples pass;
-        object attribute baseline; \texttt{VERIFICATION\_REPORT.md} \\
-    1 & Constraint IR & \texttt{gatherRegionConstraints()}, interval/tag/size
-        extraction; overlap heuristics; JSON export \\
-    2 & Z3 spike & Subprocess SMT-LIB; Delphes CMS-SUS-16-033 validation script \\
-    3 & CLI integration & \texttt{-r} with auto-Z3; \texttt{--no-smt};
-        \texttt{--json}; golden tests \\
-    4 & CI \& docs & GitHub Actions; \texttt{make test-disjoint},
-        \texttt{make test-corpus} \\
-    v2 & SMT robustness & Index-safe keys; QF\_LIRA; angular encoding;
-        unified report; coverage in JSON \\
-    v3 & Logic fragment & OR disjunctions; ITE implications; coverage warnings \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\paragraph{Branch history.} Feature work landed on \texttt{disjoint\_dev}, was
-merged into \texttt{main} (commit \texttt{0804db0}), then extended through
-SMT v2/v3 (\texttt{8fa48a9}--\texttt{b6658b1}).
-
-%=============================================================================
-\section{Compiler pipeline and analysis architecture}
-%=============================================================================
-
-Figure~\ref{fig:pipeline} shows where new analysis hooks attach. The default
-user-facing entry point remains \texttt{./smash <file.adl>}; region analysis
-is opt-in via \texttt{-r}.
-
-\begin{figure}[ht]
-  \centering
-  \begin{tikzpicture}[
-    node distance=0.55cm and 0.4cm,
-    box/.style={draw, rounded corners, minimum width=3.6cm, minimum height=0.75cm,
-                align=center, font=\small},
-    arr/.style={-{Stealth[length=2mm]}, thick}
-  ]
-    \node[box] (lex) {Flex lexer};
-    \node[box, below=of lex] (parse) {Bison parser $\rightarrow$ AST};
-    \node[box, below=of parse] (sem) {Semantic checks};
-    \node[box, below=of sem] (dot) {AST \& flowchart DOT};
-    \node[box, below=of dot, fill=blue!8] (obj) {Object disjointness};
-    \node[box, below=of obj, fill=blue!8] (reg) {Region analysis IR + Z3};
-    \node[box, below=of reg, fill=gray!10, dashed] (leg) {Legacy region report\\
-      (\texttt{--legacy-region-report})};
-
-    \draw[arr] (lex) -- (parse);
-    \draw[arr] (parse) -- (sem);
-    \draw[arr] (sem) -- (dot);
-    \draw[arr] (dot) -- (obj);
-    \draw[arr] (obj) -- (reg);
-    \draw[arr, dashed] (reg) -- (leg);
-
-    \begin{scope}[on background layer]
-      \node[fit=(obj)(reg)(leg), draw=blue!40, rounded corners, inner sep=0.25cm,
-            label={[font=\small]right:\texttt{-r}}] {};
-    \end{scope}
-  \end{tikzpicture}
-  \caption{ADL2Flowchart pipeline with optional disjointness analysis (\texttt{-r}).}
-  \label{fig:pipeline}
-\end{figure}
-
-\paragraph{Key modules.}
-\begin{itemize}[noitemsep]
-  \item \texttt{adl/semantic\_checks.cpp} --- constraint extraction, legacy
-        \texttt{analyzeRegionDisjointness}, \texttt{analyzeObjectDisjointness},
-        \texttt{gatherRegionConstraints}.
-  \item \texttt{adl/region\_analysis.cpp} --- IR pairwise analysis, Z3 driver,
-        JSON export, coverage warnings.
-  \item \texttt{adl/object\_aliases.txt} --- canonical naming for take roots.
-  \item \texttt{tests/golden/} --- small ADL fixtures with expected verdicts.
-\end{itemize}
-
-%=============================================================================
-\section{Corpus hardening (Phase 0)}
-%=============================================================================
-
-Before disjointness could be trusted on real analyses, the example corpus had to
-parse reliably.
-
-\subsection{Baseline vs.\ current status}
-
-\begin{table}[ht]
-  \centering
-  \caption{Example corpus verification (\texttt{examples/**/*.adl}, $N{=}68$).}
-  \label{tab:corpus}
-  \begin{tabular}{@{}lcc@{}}
-    \toprule
-    Metric & Before disjoint work & Current \\
-    \midrule
-    Parse success & 49 / 68 & \textbf{68 / 68} \\
-    Post-parse crashes (exit 134) & 5 & \textbf{0} \\
-    \texttt{./smash -r} without error & --- & \textbf{68 / 68} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\subsection{Representative fixes}
-
-\begin{description}[style=nextline, font=\normalfont\ttfamily]
-  \item[Lexer] Delphes-style IDs (\texttt{Delphes\_Photon}); path-like tokens;
-        single-letter IDs for expressions such as \texttt{matchedCaloEnergy / p < 0.20}.
-  \item[Grammar] Unary minus; chained ternaries; \texttt{print}/\texttt{save}/\texttt{counts};
-        CutLang aliases; \texttt{object X : JET/COMB}; function-form \texttt{take}.
-  \item[Semantics] Null-safe \texttt{binOpCheck}, \texttt{printITE}, \texttt{typeCheck};
-        skip PRINT/SAVE in region declaration checks; dotted properties (\texttt{MET.pT}).
-  \item[Stdlib] Extensions to \texttt{ext\_lib.txt} and \texttt{ext\_objs.txt}.
-  \item[Stability] Fixed infinite recursion in \texttt{resolveParticleFamilies}
-        (stack overflow on large \texttt{-r} runs).
-\end{description}
-
-Automated sweep: \texttt{make test-corpus} runs parse and \texttt{-r} on all 68 files.
-
-%=============================================================================
-\section{Object disjointness}
-%=============================================================================
-
-\texttt{analyzeObjectDisjointness} classifies pairs of user-defined \texttt{object}
-declarations using take-lineage and \texttt{typeTable} particle families.
-
-\paragraph{Verdicts.}
-\begin{itemize}[noitemsep]
-  \item \textbf{PROVEN DISJOINT} --- resolved families are incompatible (e.g.\
-        electron vs.\ jet families with no shared ancestor).
-  \item \textbf{POSSIBLY OVERLAPPING} --- shared lineage or unresolved family.
-  \item \textbf{UNKNOWN} --- could not resolve particle family.
-\end{itemize}
-
-This pass is informational and runs automatically with \texttt{-r}. It
-complements region analysis: disjoint objects often motivate disjoint region
-cuts, but region-level proofs require the constraint IR below.
-
-%=============================================================================
-\section{Region constraint extraction}
-%=============================================================================
-
-\subsection{Supported cut forms}
-
-The extractor walks region \texttt{select}/\texttt{reject}/\texttt{bin} conditions
-(with inheritance) and builds a normalised constraint set per region.
-
-\begin{table}[ht]
-  \centering
-  \caption{Constraint forms recognised in the IR (non-exhaustive).}
-  \label{tab:extract}
-  \begin{tabular}{@{}ll@{}}
-    \toprule
-    ADL surface syntax & IR key / notes \\
-    \midrule
-    \texttt{MET.pT > 200}, \texttt{pT(jets[0]) > 100} & Interval on scalar key \\
-    \texttt{size(bjets) >= 2} & \texttt{size(canonical\_object)} \\
-    \texttt{BTag == 1}, tags & Discrete 0/1 \\
-    \texttt{dPhi(jets[0], MHT) > 0.5} & Angular interval key \\
-    \texttt{reject} cuts & Complemented interval \\
-    \texttt{define} used in cut & Inlined where referenced \\
-    Inherited region name & Constraints merged from parent region \\
-    \texttt{A || B} & OR clause (v3) \\
-    \texttt{cond ? cut : ALL} & Implication clause (v3) \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\subsection{Canonical keys and indexing}
-
-A recurring bug class was \emph{key collapse}: \texttt{jets[0].pt} and
-\texttt{jets[1].pt} were merged because object lineage logic ignored bracket
-indices. \textbf{v2} fixes:
-
-\begin{itemize}[noitemsep]
-  \item \texttt{canonicalConstraintKey} preserves \texttt{[i]} before property suffixes.
-  \item \texttt{constraintKeysRelated} refuses to relate keys with different index
-        suffixes.
-  \item Union-find in SMT only merges alias-equivalent keys (e.g.\ \texttt{JET[0].pt}
-        with \texttt{jets[0].pt}), not different jet indices.
-\end{itemize}
-
-\paragraph{Important distinction.} Cuts on \texttt{jets[0]} and \texttt{jets[1]} are
-\emph{independent variables} in the fragment: disjoint intervals on different indices
-do \textbf{not} imply region disjointness (the same event can have a hard leading jet
-and a soft subleading jet).
-
-%=============================================================================
-\section{Region pairwise analysis and verdicts}
-%=============================================================================
-
-For each unordered pair of regions $(R_1, R_2)$ the tool reports a relation:
-
-\begin{table}[ht]
-  \centering
-  \caption{Region pairwise verdicts (IR + optional Z3).}
-  \label{tab:verdicts}
-  \begin{tabular}{@{}p{3.2cm}p{9.5cm}@{}}
-    \toprule
-    Verdict & Meaning \\
-    \midrule
-    PROVEN DISJOINT &
-    Heuristic: disjoint intervals on a shared canonical key; or Z3 UNSAT on
-    $R_1 \wedge R_2$ in the encoded fragment. UNSAT is sound for the fragment. \\
-    PROVEN OVERLAPPING &
-    Z3 SAT on $R_1 \wedge R_2$ with at least one \emph{shared constraint dimension};
-    witness model printed. Existential in the fragment, not simulation yield. \\
-    POSSIBLY OVERLAPPING &
-    Heuristic interval compatibility; or SAT without shared dimension (independent cuts). \\
-    UNKNOWN &
-    Missing extraction, timeout, or inconclusive Z3 response. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\paragraph{Legacy report.} The original verbose \texttt{analyzeRegionDisjointness}
-printer remains available as \texttt{--legacy-region-report}. Default \texttt{-r}
-output uses the unified \texttt{region\_analysis} summary only.
-
-%=============================================================================
-\section{SMT integration (Z3)}
-%=============================================================================
-
-\subsection{Design choices}
-
-\begin{itemize}[noitemsep]
-  \item \textbf{Subprocess, not libz3} --- SMT-LIB scripts via \texttt{z3} on PATH;
-        avoids link-time dependency; CI installs \texttt{z3} via apt.
-  \item \textbf{Logic} --- \texttt{QF\_LIRA} when any \texttt{size(...)} constraint
-        uses \texttt{Int}; otherwise \texttt{QF\_LRA} for scalar intervals.
-  \item \textbf{Auto-enable} --- \texttt{-r} runs Z3 when installed; \texttt{--no-smt}
-        disables it.
-  \item \textbf{Timeout} --- 15\,s per pair check (configurable in source).
-\end{itemize}
-
-\subsection{Encoding sketch}
-
-For each region, constraints become a conjunction of:
-\begin{itemize}[noitemsep]
-  \item interval assertions on declared variables (one per canonical key);
-  \item \textbf{OR} groups: \texttt{(assert (or (and ...) (and ...)))};
-  \item \textbf{ITE}: \texttt{(assert (=> guard then))} and, if else $\neq$
-        \texttt{ALL}, \texttt{(assert (=> (not guard) else))}.
-\end{itemize}
-
-Pairwise check: assert region~1 formula $\wedge$ region~2 formula, \texttt{check-sat};
-optional \texttt{get-model} for overlap witnesses.
-
-\subsection{Soundness caveats (present clearly to collaborators)}
-
-\begin{enumerate}[noitemsep]
-  \item Verdicts are over the \textbf{extracted fragment}, not full ADL semantics.
-  \item BDTs, arbitrary functions, and deeply nested logic may be omitted.
-  \item One SMT variable per canonical key --- no per-event multiplicities beyond
-        \texttt{size()}.
-  \item PROVEN OVERLAPPING = $\exists$ model satisfying linear constraints, not
-        ``non-zero efficiency'' in simulation.
+\begin{enumerate}
+  \item \textbf{Make real ADL parse.} Example corpus went 49/68 $\rightarrow$ 68/68;
+        fixed crashes on Delphes-style files.
+  \item \textbf{Object disjointness (\texttt{-r}).} ``Are \texttt{bjets} and \texttt{electrons}
+        the same kind of thing?''
+  \item \textbf{Region heuristics.} Interval clashes on \texttt{MET.pT}, \texttt{size(bjets)}, tags.
+  \item \textbf{Constraint IR + JSON.} Structured per-region facts for tooling.
+  \item \textbf{Z3 (SMT).} SAT = overlap proved (with witness); UNSAT = disjoint proved.
+  \item \textbf{Robustness pass.} Index-safe keys (\texttt{jets[0]} vs \texttt{jets[1]}),
+        \texttt{size} as Int, \texttt{dPhi} in SMT.
+  \item \textbf{OR / ITE.} \texttt{A || B} and \texttt{size >= 3 ? dPhi(...) : ALL} like Delphes presel.
 \end{enumerate}
 
-%=============================================================================
-\section{Fragment coverage and warnings}
-\label{sec:coverage}
-%=============================================================================
-
-To avoid over-interpreting weak verdicts, \textbf{v3} reports coverage per region:
-
-\begin{itemize}[noitemsep]
-  \item \texttt{SMT-encodable $N$ / $M$ atoms} --- counts flat, OR, and ITE atoms.
-  \item \texttt{selects encoded $K$ / $S$} --- fraction of select statements from
-        which at least one constraint structure was extracted.
-  \item \textbf{Warnings} if either ratio falls below \textbf{50\%}.
-\end{itemize}
-
-JSON export (\texttt{--json}) includes \texttt{fragment\_coverage} per region and a
-top-level \texttt{coverage\_warnings} array for tooling and regression.
-
-%=============================================================================
-\section{Command-line interface}
-%=============================================================================
+%-----------------------------------------------------------------------------
+\section{How to run it (demo script)}
+%-----------------------------------------------------------------------------
 
 \begin{lstlisting}
 make
-./smash file.adl                          # parse + DOT (unchanged)
-./smash -r file.adl                       # object + region IR/SMT analysis
-./smash -r --no-smt file.adl              # heuristics only
-./smash -r --legacy-region-report file.adl
-./smash -r --json analysis.json file.adl
-make test-disjoint                        # golden fixtures
-make test-corpus                          # 68 example files
-./scripts/phase2_z3_spike.sh              # Delphes 033 SMT smoke test
+./smash -r myfile.adl                    # analysis + Z3 if installed
+./smash -r --no-smt myfile.adl           # fast, heuristics only
+./smash -r --json out.json myfile.adl    # machine-readable
+make test-disjoint                       # small golden tests
 \end{lstlisting}
 
-%=============================================================================
-\section{Testing and continuous integration}
-%=============================================================================
-
-\subsection{Golden fixtures (\texttt{tests/golden/})}
-
-\begin{table}[ht]
-  \centering
-  \caption{Golden ADL tests and what they exercise.}
-  \label{tab:golden}
-  \small
-  \begin{tabular}{@{}ll@{}}
-    \toprule
-    File & Intent \\
-    \midrule
-    \texttt{disjoint\_pt.adl} & Disjoint $p_\mathrm{T}$ intervals \\
-    \texttt{disjoint\_jet\_index.adl} & Same-index disjoint intervals \\
-    \texttt{independent\_jet\_index.adl} & Different indices may overlap \\
-    \texttt{overlap\_met.adl} & Overlapping \texttt{MET.pT} intervals \\
-    \texttt{size\_bjets.adl} & \texttt{size(bjets)} subset overlap (SMT) \\
-    \texttt{or\_met.adl} & OR disjunction encoding \\
-    \texttt{ite\_conditional\_dphi.adl} & ITE + angular cut (Delphes-style) \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\subsection{CI (\texttt{.github/workflows/ci.yml})}
-
-On push/PR to \texttt{main}: install flex, bison, clang, graphviz, \textbf{z3};
-\texttt{make}; \texttt{make test-disjoint}; \texttt{make test-corpus};
-phase-2 Z3 spike on \texttt{CMS-SUS-16-033\_Delphes.adl}.
-
-%=============================================================================
-\section{Validation highlights}
-%=============================================================================
-
-\begin{itemize}[noitemsep]
-  \item \textbf{68/68} example ADL files: parse and \texttt{-r} complete without crash.
-  \item \textbf{Delphes 033}: dozens of \texttt{PROVEN OVERLAPPING [SMT]} pairs among
-        signal regions (expected for nested $p_\mathrm{T}$/multiplicity ladders).
-  \item \textbf{CMS-SUS-16-032}: structured BTag recognition; large disjoint pair count
-        in legacy analysis after tag-key fix.
-  \item All golden tests pass with Z3 4.8.x when installed.
+\textbf{Good demo files:}
+\begin{itemize}
+  \item \texttt{tests/golden/disjoint\_pt.adl} --- clear PROVEN DISJOINT
+  \item \texttt{tests/golden/size\_bjets.adl} --- PROVEN OVERLAPPING (subset of multiplicity cuts)
+  \item \texttt{examples/CMS/CMS-SUS-16-033\_Delphes.adl} --- real card, many SR pairs
 \end{itemize}
 
-%=============================================================================
-\section{Known limitations and future work}
-%=============================================================================
+%-----------------------------------------------------------------------------
+\section{What the output means}
+%-----------------------------------------------------------------------------
 
-\begin{table}[ht]
-  \centering
-  \caption{Open items (not yet implemented).}
-  \label{tab:future}
-  \begin{tabular}{@{}p{4.5cm}p{8.5cm}@{}}
-    \toprule
-    Topic & Notes \\
-    \midrule
-    Cross-file analysis & Align region/object names across multiple ADL cards. \\
-    Subset detection & Heuristic ``$R_2 \subseteq R_1$'' (deferred; easy false positives). \\
-    Richer SMT & Nested OR/ITE flattening; per-jet indexed theories; BDT bounds. \\
-    Grammar cleanup & 57 shift/reduce + 30 reduce/reduce Bison conflicts (pre-existing). \\
-    Simulation link & Map SMT witnesses to CutLang execution / efficiencies. \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\begin{description}[style=nextline, leftmargin=2.8cm]
+  \item[PROVEN DISJOINT] Intervals clash, or Z3 says UNSAT on $R_1 \wedge R_2$.
+        Trust disjoint more than overlap --- UNSAT is sound for what we encoded.
+  \item[PROVEN OVERLAPPING] Z3 SAT + regions share a constraint dimension + witness printed.
+        Means: \emph{there exists} numbers satisfying both cut sets in our fragment.
+        Not the same as ``these SRs have yield in MC.''
+  \item[POSSIBLY OVERLAPPING] Heuristic only, or SAT on unrelated knobs (MET vs jet count).
+  \item[UNKNOWN] Extraction gap, timeout, or logic we don't encode yet.
+\end{description}
 
-%=============================================================================
-\section{Summary for collaborators}
-%=============================================================================
+%-----------------------------------------------------------------------------
+\section{Pipeline sketch (whiteboard version)}
+%-----------------------------------------------------------------------------
 
-We extended ADL2Flowchart from a visualisation-focused compiler to a tool that
-can \textbf{audit region relationships} on real CMS/ATLAS-style ADL cards:
+\begin{center}
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.7cm,
+              align=center, font=\small},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[box] (p) {parse ADL};
+  \node[box, right=0.5cm of p] (d) {DOT output};
+  \node[box, below=0.6cm of p] (o) {object pairs};
+  \node[box, right=0.5cm of o] (r) {region IR + Z3};
+  \draw[arr] (p) -- (d);
+  \draw[arr] (p) -- (o);
+  \draw[arr] (o) -- (r);
+  \node[font=\footnotesize, below=0.15cm of r] {\texttt{-r}};
+\end{tikzpicture}
+\end{center}
 
-\begin{enumerate}[noitemsep]
-  \item The \textbf{example corpus is production-stable} for parse and analysis.
-  \item \textbf{Object and region analyses} give fast, explainable heuristics.
-  \item A \textbf{constraint IR + JSON export} supports external tooling.
-  \item \textbf{Z3} supplies machine-checked \emph{proven disjoint} (UNSAT) and
-        \emph{proven overlapping} (SAT + witness) results on a documented linear
-        fragment, including OR and Delphes-style ITE cuts.
-  \item \textbf{Coverage warnings} flag when conclusions may be incomplete.
+Main code: \texttt{semantic\_checks.cpp} (extract cuts), \texttt{region\_analysis.cpp} (pairs + Z3).
+
+%-----------------------------------------------------------------------------
+\section{What we actually extract}
+%-----------------------------------------------------------------------------
+
+\textbf{Works well:}
+\begin{itemize}
+  \item Scalar cuts: \texttt{MET.pT > 200}, \texttt{pT(jets[0]) > 100}
+  \item Multiplicity: \texttt{size(bjets) >= 2}
+  \item Tags: \texttt{BTag == 1}
+  \item Angular: \texttt{dPhi(jets[0], MHT) > 0.5}
+  \item Inheritance: \texttt{select presel}
+  \item \texttt{reject} (complemented)
+  \item OR and Delphes-style ITE (v3)
+\end{itemize}
+
+\textbf{Still weak / skipped:}
+\begin{itemize}
+  \item BDT scores, arbitrary functions
+  \item Deeply nested OR/ITE
+  \item Cross-file name alignment
+\end{itemize}
+
+Watch the line \texttt{N/M SMT-encodable} and coverage warnings --- if it's low, don't
+treat Z3 verdicts as the full story.
+
+%-----------------------------------------------------------------------------
+\section{Gotchas worth mentioning}
+%-----------------------------------------------------------------------------
+
+\begin{itemize}
+  \item \textbf{Different jet indices are not disjoint.} \texttt{jets[0].pt > 300} and
+        \texttt{jets[1].pt < 200} can both be true on one event. We fixed a bug where
+        those were wrongly merged.
+  \item \textbf{Subset $\neq$ disjoint.} \texttt{size >= 4} and \texttt{size >= 2} overlap
+        heavily --- Z3 correctly says PROVEN OVERLAPPING.
+  \item \textbf{Z3 optional but recommended.} \texttt{apt install z3}; CI expects it.
+  \item \textbf{Legacy verbose report} still exists: \texttt{--legacy-region-report} if someone
+        wants the old wall of text.
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section{Validation (if someone asks ``is it tested?'')}
+%-----------------------------------------------------------------------------
+
+\begin{itemize}
+  \item 68/68 files under \texttt{examples/} parse and survive \texttt{-r}
+  \item 7 golden ADL fixtures in \texttt{tests/golden/}
+  \item GitHub Actions: build + golden + corpus + Delphes Z3 spike
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section{What's next (only if the conversation goes there)}
+%-----------------------------------------------------------------------------
+
+\begin{itemize}
+  \item Cross-file region comparison
+  \item Richer SMT (nested logic, per-jet variables)
+  \item Tie witnesses to actual CutLang execution / yields
+  \item Clean up Bison grammar conflicts (separate chore)
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\section{Suggested 10-minute walkthrough}
+%-----------------------------------------------------------------------------
+
+\begin{enumerate}
+  \item Show \texttt{./smash -r tests/golden/disjoint\_pt.adl} --- one PROVEN DISJOINT line.
+  \item Show \texttt{size\_bjets.adl} --- PROVEN OVERLAPPING + witness.
+  \item Open \texttt{CMS-SUS-16-033\_Delphes.adl} --- ``this is a real card, not a toy.''
+  \item Show JSON: \texttt{--json /tmp/x.json} and point at \texttt{fragment\_coverage}.
+  \item Close with limits: fragment, not full simulation.
 \end{enumerate}
 
-For hands-on exploration, start with:
-\begin{lstlisting}
-./smash -r examples/CMS/CMS-SUS-16-033_Delphes.adl
-./smash -r --json /tmp/out.json tests/golden/ite_conditional_dphi.adl
-\end{lstlisting}
+\vfill
+\noindent\hrulefill
 
-Further reading in the repository: \texttt{REGION\_ANALYSIS.md},
+\noindent\small More detail in repo: \texttt{REGION\_ANALYSIS.md},
 \texttt{VERIFICATION\_REPORT.md}, \texttt{docs/SMT\_ROBUSTNESS\_PLAN.md}.
-
-%=============================================================================
-\appendix
-\section{Repository file index}
-%=============================================================================
-
-\begin{longtable}{@{}p{5.5cm}p{8.5cm}@{}}
-\toprule
-Path & Role \\
-\midrule
-\endhead
-\texttt{adl/semantic\_checks.cpp} & Extraction, object/legacy region analysis \\
-\texttt{adl/region\_analysis.cpp} & IR pairwise analysis, Z3, JSON, warnings \\
-\texttt{adl/region\_analysis.hpp} & Public analysis types and API \\
-\texttt{adl/object\_aliases.txt} & Take-root canonicalisation \\
-\texttt{adl/main.cpp} & CLI flags (\texttt{-r}, \texttt{--json}, etc.) \\
-\texttt{scripts/run\_golden\_tests.sh} & Regression driver \\
-\texttt{scripts/validate\_corpus.sh} & Full example sweep \\
-\texttt{scripts/phase2\_z3\_spike.sh} & Delphes SMT smoke test \\
-\texttt{.github/workflows/ci.yml} & Continuous integration \\
-\texttt{tests/golden/*.adl} & Minimal ADL regression fixtures \\
-\bottomrule
-\end{longtable}
-
-\section{Suggested talking points for a presentation}
-\begin{itemize}
-  \item Show before/after: 49 $\rightarrow$ 68 parse success; zero crashes on \texttt{-r}.
-  \item Live demo: \texttt{disjoint\_pt.adl} $\rightarrow$ PROVEN DISJOINT; \texttt{size\_bjets.adl}
-        $\rightarrow$ PROVEN OVERLAPPING with witness.
-  \item Explain \textbf{fragment} honestly: SMT proves properties of the encoded cuts,
-        not the full physics simulation.
-  \item Position Z3 as optional but recommended (\texttt{apt install z3}).
-\end{itemize}
 
 \end{document}

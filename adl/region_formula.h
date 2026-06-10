@@ -20,10 +20,20 @@ namespace rf {
 
 enum class CmpOp { LT, LE, GT, GE, EQ, NE };
 
+struct Term {
+  double coeff = 1.0;
+  std::string key;  // canonical variable key (one scalar per event)
+};
+
+// Linear atom: sum(coeff_i * key_i)  op  value.
+// Most atoms are "simple": one term with coefficient 1.
 struct Atom {
-  std::string key;   // canonical variable key (one scalar per event)
+  std::vector<Term> terms;
   CmpOp op = CmpOp::EQ;
   double value = 0.0;
+
+  bool isSimple() const { return terms.size() == 1 && terms[0].coeff == 1.0; }
+  const std::string& key() const { return terms[0].key; }
 };
 
 enum class FKind { True, False, Unknown, Leaf, And, Or };
@@ -48,7 +58,16 @@ inline Formula fUnknown(const std::string& why) {
 inline Formula fAtom(const std::string& key, CmpOp op, double v) {
   Formula f;
   f.kind = FKind::Leaf;
-  f.atom.key = key;
+  f.atom.terms.push_back(Term{1.0, key});
+  f.atom.op = op;
+  f.atom.value = v;
+  return f;
+}
+
+inline Formula fLinearAtom(std::vector<Term> terms, CmpOp op, double v) {
+  Formula f;
+  f.kind = FKind::Leaf;
+  f.atom.terms = std::move(terms);
   f.atom.op = op;
   f.atom.value = v;
   return f;
@@ -154,7 +173,8 @@ inline Formula project(const Formula& f, bool overApprox) {
 }
 
 inline void collectKeys(const Formula& f, std::set<std::string>& keys) {
-  if (f.kind == FKind::Leaf) keys.insert(f.atom.key);
+  if (f.kind == FKind::Leaf)
+    for (const auto& t : f.atom.terms) keys.insert(t.key);
   for (const auto& k : f.kids) collectKeys(k, keys);
 }
 

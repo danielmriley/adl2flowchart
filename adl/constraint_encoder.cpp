@@ -418,67 +418,186 @@ bool keyIsEventScalar(const std::string& key, EncodeCtx& ctx, bool topLevel) {
 
 rf::Formula encodeExpr(Expr* e, EncodeCtx& ctx);
 
+// Linear expression over event-scalar keys: sum(coeff*key) + constant.
+struct LinExpr {
+  std::vector<rf::Term> terms;
+  double c = 0.0;
+
+  void add(const LinExpr& o, double scale) {
+    c += scale * o.c;
+    for (const auto& t : o.terms) {
+      bool merged = false;
+      for (auto& mt : terms) {
+        if (mt.key == t.key) {
+          mt.coeff += scale * t.coeff;
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) terms.push_back(rf::Term{scale * t.coeff, t.key});
+    }
+    terms.erase(std::remove_if(terms.begin(), terms.end(),
+                               [](const rf::Term& t) { return t.coeff == 0.0; }),
+                terms.end());
+  }
+};
+
+bool linearize(Expr* e, EncodeCtx& ctx, LinExpr& out) {
+  if (!e) return false;
+  double num;
+  if (numericValueOf(e, num)) {
+    out.c += num;
+    return true;
+  }
+  std::string t = e->getToken();
+  if (t == "ID" || t == "VAR" || t == "FUNCTION") {
+    std::string key = keyFromExpr(e, ctx);
+    if (key.empty() || !keyIsEventScalar(key, ctx, false)) return false;
+    LinExpr one;
+    one.terms.push_back(rf::Term{1.0, key});
+    out.add(one, 1.0);
+    return true;
+  }
+  if (t == "EXPROP" || t == "FACTOROP") {
+    BinNode* bn = getBinNode(e);
+    std::string op = bn->getOp();
+    if (op == "+" || op == "-") {
+      LinExpr l, r;
+      if (!linearize(bn->getLHS(), ctx, l) || !linearize(bn->getRHS(), ctx, r))
+        return false;
+      out.add(l, 1.0);
+      out.add(r, op == "+" ? 1.0 : -1.0);
+      return true;
+    }
+    if (op == "*") {
+      double k;
+      Expr* other = nullptr;
+      if (numericValueOf(bn->getLHS(), k)) other = bn->getRHS();
+      else if (numericValueOf(bn->getRHS(), k)) other = bn->getLHS();
+      if (!other) return false;  // nonlinear product
+      LinExpr o;
+      if (!linearize(other, ctx, o)) return false;
+      out.add(o, k);
+      return true;
+    }
+    if (op == "/" || op == "div") {
+      double k;
+      if (!numericValueOf(bn->getRHS(), k) || k == 0.0) return false;
+      LinExpr l;
+      if (!linearize(bn->getLHS(), ctx, l)) return false;
+      out.add(l, 1.0 / k);
+      return true;
+    }
+  }
+  return false;
+}
+
+rf::CmpOp cmpFromString(const std::string& cop, bool& ok) {
+  ok = true;
+  if (cop == "<") return rf::CmpOp::LT;
+  if (cop == "<=") return rf::CmpOp::LE;
+  if (cop == ">") return rf::CmpOp::GT;
+  if (cop == ">=") return rf::CmpOp::GE;
+  if (cop == "==") return rf::CmpOp::EQ;
+  if (cop == "!=" || cop == "~=") return rf::CmpOp::NE;
+  ok = false;
+  return rf::CmpOp::EQ;
+}
+
+rf::CmpOp flipCmp(rf::CmpOp op) {
+  switch (op) {
+    case rf::CmpOp::LT: return rf::CmpOp::GT;
+    case rf::CmpOp::GT: return rf::CmpOp::LT;
+    case rf::CmpOp::LE: return rf::CmpOp::GE;
+    case rf::CmpOp::GE: return rf::CmpOp::LE;
+    default: return op;
+  }
+}
+
+// terms op value, simplifying a fully-constant comparison to True/False.
+rf::Formula atomOrConst(LinExpr lin, rf::CmpOp op, double rhsConst) {
+  double value = rhsConst - lin.c;
+  if (lin.terms.empty()) {
+    bool truth = false;
+    switch (op) {
+      case rf::CmpOp::LT: truth = 0.0 < value; break;
+      case rf::CmpOp::LE: truth = 0.0 <= value; break;
+      case rf::CmpOp::GT: truth = 0.0 > value; break;
+      case rf::CmpOp::GE: truth = 0.0 >= value; break;
+      case rf::CmpOp::EQ: truth = 0.0 == value; break;
+      case rf::CmpOp::NE: truth = 0.0 != value; break;
+    }
+    return truth ? rf::fTrue() : rf::fFalse();
+  }
+  return rf::fLinearAtom(std::move(lin.terms), op, value);
+}
+
+// Exact encoding of (L / D) op c with a non-constant denominator:
+//   (D > 0 ∧ L op c·D) ∨ (D < 0 ∧ L flip(op) c·D)
+// D == 0 (undefined ratio) is treated as failing the cut.
+rf::Formula encodeRatioCompare(Expr* ratioSide, rf::CmpOp op, double c,
+                               EncodeCtx& ctx) {
+  BinNode* bn = getBinNode(ratioSide);
+  LinExpr L, D;
+  if (!linearize(bn->getLHS(), ctx, L) || !linearize(bn->getRHS(), ctx, D))
+    return rf::fUnknown("ratio with un-encodable numerator or denominator");
+  if (D.terms.empty()) return rf::fUnknown("constant denominator ratio");
+
+  auto branch = [&](bool positive) {
+    LinExpr dCopy = D;
+    rf::Formula sign =
+        atomOrConst(dCopy, positive ? rf::CmpOp::GT : rf::CmpOp::LT, 0.0);
+    LinExpr diff = L;          // L - c*D  op  0
+    diff.add(D, -c);
+    rf::Formula rel = atomOrConst(diff, positive ? op : flipCmp(op), 0.0);
+    return rf::fAnd({sign, rel});
+  };
+  return rf::fOr({branch(true), branch(false)});
+}
+
 rf::Formula leafFromCompare(BinNode* bn, EncodeCtx& ctx) {
   std::string op = bn->getOp();
   Expr* lhs = bn->getLHS();
   Expr* rhs = bn->getRHS();
 
+  bool opOk = false;
+  rf::CmpOp fop = cmpFromString(op, opOk);
+  if (!opOk) return rf::fUnknown("unsupported comparison operator " + op);
+
+  // ratio pattern: (L/D) op const  or  const op (L/D)
+  auto isRatio = [&](Expr* e) {
+    if (!e || e->getToken() != "FACTOROP") return false;
+    BinNode* b = getBinNode(e);
+    if (b->getOp() != "/" && b->getOp() != "div") return false;
+    double k;
+    return !numericValueOf(b->getRHS(), k);  // non-constant denominator
+  };
+  double c;
+  if (isRatio(lhs) && numericValueOf(rhs, c))
+    return encodeRatioCompare(lhs, fop, c, ctx);
+  if (isRatio(rhs) && numericValueOf(lhs, c))
+    return encodeRatioCompare(rhs, flipCmp(fop), c, ctx);
+
+  LinExpr l, r;
+  if (linearize(lhs, ctx, l) && linearize(rhs, ctx, r)) {
+    LinExpr diff = l;
+    diff.add(r, -1.0);
+    double rhsConst = -diff.c;
+    diff.c = 0.0;
+    return atomOrConst(std::move(diff), fop, rhsConst);
+  }
+
+  // Diagnose for the dropped-cuts report.
   double num = 0.0;
   Expr* varSide = nullptr;
-  bool flipped = false;
-  if (numericValueOf(rhs, num)) {
-    varSide = lhs;
-  } else if (numericValueOf(lhs, num)) {
-    varSide = rhs;
-    flipped = true;
-  } else {
-    return rf::fUnknown("comparison without a constant side");
+  if (numericValueOf(rhs, num)) varSide = lhs;
+  else if (numericValueOf(lhs, num)) varSide = rhs;
+  if (varSide) {
+    std::string key = keyFromExpr(varSide, ctx);
+    if (!key.empty() && !keyIsEventScalar(key, ctx, true))
+      return rf::fUnknown("collection-level cut without index: " + key);
   }
-
-  std::string key = keyFromExpr(varSide, ctx);
-  if (key.empty())
-    return rf::fUnknown("cannot name quantity in comparison (" + op + " " +
-                        fmtNum(num) + ")");
-  if (!keyIsEventScalar(key, ctx, true))
-    return rf::fUnknown("collection-level cut without index: " + key);
-
-  std::string cop = op;
-  if (flipped) {
-    if (cop == ">") cop = "<";
-    else if (cop == ">=") cop = "<=";
-    else if (cop == "<") cop = ">";
-    else if (cop == "<=") cop = ">=";
-  }
-
-  rf::CmpOp fop;
-  if (cop == "<") fop = rf::CmpOp::LT;
-  else if (cop == "<=") fop = rf::CmpOp::LE;
-  else if (cop == ">") fop = rf::CmpOp::GT;
-  else if (cop == ">=") fop = rf::CmpOp::GE;
-  else if (cop == "==") fop = rf::CmpOp::EQ;
-  else if (cop == "!=" || cop == "~=") fop = rf::CmpOp::NE;
-  else return rf::fUnknown("unsupported comparison operator " + op);
-
-  return rf::fAtom(key, fop, num);
-}
-
-// size(a) + size(b) == 0  =>  size(a) == 0 AND size(b) == 0
-rf::Formula trySizeSumZero(BinNode* bn, EncodeCtx& ctx) {
-  if (bn->getOp() != "==") return rf::fUnknown("");
-  Expr* sumSide = nullptr;
-  double num = -1.0;
-  if (numericValueOf(bn->getRHS(), num)) sumSide = bn->getLHS();
-  else if (numericValueOf(bn->getLHS(), num)) sumSide = bn->getRHS();
-  if (!sumSide || num != 0.0) return rf::fUnknown("");
-  if (sumSide->getToken() != "EXPROP") return rf::fUnknown("");
-  BinNode* sum = getBinNode(sumSide);
-  if (sum->getOp() != "+") return rf::fUnknown("");
-  std::string ka = keyFromExpr(sum->getLHS(), ctx);
-  std::string kb = keyFromExpr(sum->getRHS(), ctx);
-  if (ka.rfind("size(", 0) != 0 || kb.rfind("size(", 0) != 0)
-    return rf::fUnknown("");
-  return rf::fAnd({rf::fAtom(ka, rf::CmpOp::EQ, 0.0),
-                   rf::fAtom(kb, rf::CmpOp::EQ, 0.0)});
+  return rf::fUnknown("cannot encode comparison (" + op + ")");
 }
 
 rf::Formula encodeExpr(Expr* e, EncodeCtx& ctx) {
@@ -496,10 +615,7 @@ rf::Formula encodeExpr(Expr* e, EncodeCtx& ctx) {
   }
 
   if (t == "COMPAREOP") {
-    BinNode* bn = getBinNode(e);
-    rf::Formula sumZero = trySizeSumZero(bn, ctx);
-    if (sumZero.kind != rf::FKind::Unknown) return sumZero;
-    return leafFromCompare(bn, ctx);
+    return leafFromCompare(getBinNode(e), ctx);
   }
 
   if (t == "ITE") {

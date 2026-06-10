@@ -110,11 +110,40 @@ std::string smtInt(long long v) {
   return std::to_string(v);
 }
 
+const char* smtCmp(rf::CmpOp op) {
+  switch (op) {
+    case rf::CmpOp::LT: return "<";
+    case rf::CmpOp::LE: return "<=";
+    case rf::CmpOp::GT: return ">";
+    case rf::CmpOp::GE: return ">=";
+    default: return "=";
+  }
+}
+
 // Atom -> SMT predicate, with integer rounding for size(...) variables so
 // fractional bounds stay sound (size <= 2.5  =>  size <= 2).
 std::string atomSmt(const rf::Atom& a, const VarTable& vars) {
-  const std::string& v = vars.var(a.key);
-  if (!keyUsesIntSort(a.key))
+  if (!a.isSimple()) {
+    // linear combination: emit sum with Int vars coerced to Real
+    std::ostringstream lhs;
+    lhs << "(+";
+    for (const auto& t : a.terms) {
+      std::string v = vars.var(t.key);
+      if (keyUsesIntSort(t.key)) v = "(to_real " + v + ")";
+      if (t.coeff == 1.0) lhs << " " << v;
+      else lhs << " (* " << smtReal(t.coeff) << " " << v << ")";
+    }
+    lhs << ")";
+    std::string cmp = smtCmp(a.op);
+    std::string pred =
+        "(" + cmp + " " + lhs.str() + " " + smtReal(a.value) + ")";
+    if (a.op == rf::CmpOp::NE)
+      pred = "(not (= " + lhs.str() + " " + smtReal(a.value) + "))";
+    return pred;
+  }
+
+  const std::string& v = vars.var(a.key());
+  if (!keyUsesIntSort(a.key()))
     switch (a.op) {
       case rf::CmpOp::LT: return "(< " + v + " " + smtReal(a.value) + ")";
       case rf::CmpOp::LE: return "(<= " + v + " " + smtReal(a.value) + ")";
@@ -363,8 +392,22 @@ std::map<std::string, Interval> conjunctIntervals(const rf::Formula& plus) {
   std::vector<rf::Atom> atoms;
   rf::collectTopConjunctAtoms(plus, atoms);
   std::map<std::string, Interval> out;
-  for (const auto& a : atoms) out[a.key].apply(a);
+  for (const auto& a : atoms)
+    if (a.isSimple()) out[a.key()].apply(a);
   return out;
+}
+
+std::string atomLhsStr(const rf::Atom& a) {
+  std::ostringstream os;
+  for (size_t i = 0; i < a.terms.size(); ++i) {
+    const auto& t = a.terms[i];
+    if (i) os << (t.coeff < 0 ? " - " : " + ");
+    else if (t.coeff < 0) os << "-";
+    double c = std::fabs(t.coeff);
+    if (c != 1.0) os << c << "*";
+    os << t.key;
+  }
+  return os.str();
 }
 
 // ------------------------------------------------------------- z3 driver
@@ -803,7 +846,7 @@ int writeJson(const AnalysisReport& report, std::ostream& os) {
     rf::collectTopConjunctAtoms(r.plus, atoms);
     for (size_t k = 0; k < atoms.size(); ++k) {
       if (k) os << ", ";
-      os << "{\"key\": \"" << jsonEscape(atoms[k].key) << "\", \"op\": \""
+      os << "{\"key\": \"" << jsonEscape(atomLhsStr(atoms[k])) << "\", \"op\": \""
          << opStr(atoms[k].op) << "\", \"value\": " << atoms[k].value << "}";
     }
     os << "]}";

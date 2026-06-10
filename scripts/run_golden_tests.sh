@@ -75,6 +75,8 @@ check_absent "$GOLDEN/tag_index.adl" "SR_lead_btag vs SR_sub_nobtag: PROVEN DISJ
 if command -v z3 >/dev/null 2>&1; then
   check "$GOLDEN/btag_threshold.adl" "SR_no vs SR_yes: PROVEN DISJOINT" \
     "tag {0,1} axiom proves threshold complement disjoint"
+  check "$GOLDEN/ratio_met.adl" "SR_ratio vs SR_lowmet: PROVEN DISJOINT.*exact" \
+    "ratio cut (L/D op c) encoded exactly"
   check "$GOLDEN/vacuous_dphi.adl" "provably selects no events" \
     "dphi range axiom catches vacuous region"
   check "$GOLDEN/vacuous_dphi.adl" "SR_dead vs SR_any: PROVEN DISJOINT" \

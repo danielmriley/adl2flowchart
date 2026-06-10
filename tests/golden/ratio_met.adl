@@ -1,0 +1,8 @@
+object MET
+  take MissingET
+
+region SR_ratio
+  select (MET.pT + 100) / MET.pT < 1.5
+
+region SR_lowmet
+  select MET.pT < 150

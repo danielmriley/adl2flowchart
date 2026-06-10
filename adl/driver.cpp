@@ -549,7 +549,7 @@ namespace adl {
     else if(lFuncItr != lfunction_map.end()) {
       std::cout << "NEED TO MAKE AN LFUNCNODE\n";
 
-      VarNode* param = getVarNode(params[1]);
+      VarNode* param = getVarNode(params[0]);
       // Fill particlesList with the particles that are params.
       std::cout << "PARAM: " << param->getId() << std::endl;;
       std::cout << "TYPE: " << findDep(param->getId()) << "\n";

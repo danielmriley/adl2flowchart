@@ -108,8 +108,8 @@ namespace adl {
 
   // BinaryNode functions
   double add(double left, double right) { return left + right; }
-  double mult(double left, double right) { return left - right; }
-  double sub(double left, double right) { return left * right; }
+  double mult(double left, double right) { return left * right; }
+  double sub(double left, double right) { return left - right; }
   double div(double left, double right) { return left / right; }
 
   //double power ALREADY EXIST
@@ -150,18 +150,15 @@ namespace adl {
 
     // MR
   double fMR(std::vector<TLorentzVector> j){
-      double temp;
-      return temp;
+      return 0.0;
   }
 
     // MTR
   double fMTR(std::vector<TLorentzVector> j, TVector2 amet){
-      double temp;
-      return temp;
+      return 0.0;
   }
   double fMTR2(std::vector<TLorentzVector> j, TLorentzVector amet){
-    double temp;
-    return temp;
+    return 0.0;
   }
 
     // MT

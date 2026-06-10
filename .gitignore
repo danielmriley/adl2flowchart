@@ -10,3 +10,8 @@ fc.dot
 fc.pdf
 
 smash
+# LaTeX build artifacts
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc

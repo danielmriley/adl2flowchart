@@ -106,8 +106,7 @@ objects : object_block                          {}
 countsformat_block : COUNTSFORMAT ID countsformat_lines {}
 
 countsformat_lines : countsformat_line countsformat_lines
-                   | countsformat_line
-                   | {}
+                   | %empty {}
 
 countsformat_line : PROCESS id COMMA DESC COMMA id COMMA id
                   | PROCESS id COMMA DESC COMMA id
@@ -269,7 +268,6 @@ chained_cond : LPAR chain RPAR                              { $$ = $2; } // shif
              | chain QUES chained_cond COLON chained_cond    { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
              | chain QUES chained_cond                       { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | chain QUES chain COLON chained_cond            { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, $5); }
-             | chain QUES chain                             { std::cout << "MAKING ITE ASTNODE\n"; $$ = new ITENode(incrementCounter(), "ITE", $1, $3, nullptr); }
              | id range                                     { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"","",intLists); intLists.clear(); }
              | id_qualifiers range                          {
                                                             VarNode* vn = static_cast<VarNode*>($1);
@@ -393,6 +391,6 @@ id : ID                     { $$ = new adl::VarNode(incrementCounter(), "ID", $1
 %%
 
 void adl::Parser::error(const location_type& l, const std::string& msg) {
-    std::cerr << "ERROR: line " << incrementCounter() << " : " << msg << "\n";
-    std::cerr << " : Last token was " << scanner.YYText() << "\n";
+    std::cerr << "ERROR at line " << l.begin.line << ": " << msg << "\n";
+    std::cerr << "  last token: '" << scanner.YYText() << "'\n";
 }

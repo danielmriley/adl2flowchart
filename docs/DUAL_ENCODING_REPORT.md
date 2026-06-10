@@ -113,35 +113,39 @@ CMS-SUS-16-033 the analysis now proves the size(BJETS)/HT/MHT signal-region
 binning disjoint and identifies SR ⊆ presel subsets — with all 13 regions at
 100% leaf coverage.
 
-## 4. What should come next
+## 4. Roadmap status (second pass, June 2026)
 
-In rough priority order:
+All five "next steps" from the first pass are implemented:
 
-1. **Physical range axioms** for bounded quantities (dR ≥ 0, b-tag ∈ {0,1},
-   plausibly |Δφ| ≤ π once the convention is pinned down). Today a witness
-   may set `aplanarity = 1.9`; the verdict is still sound relative to the
-   encoded cuts, but range axioms would make witnesses physical and catch
-   vacuous regions (cuts that no physical event can satisfy).
-2. **Arithmetic atoms.** The one cut dropped in CMS-SUS-16-032 is a ratio,
-   `(pT(...) + MET)/MET < 0.5`. Encoding linear arithmetic over named
-   scalars (sums, differences, constant multiples — and ratios via
-   multiplication when the sign is known) is squarely within QF_LRA and
-   would push most real files to exact encodings.
-3. **Per-object quantification.** The remaining honest gap: model
-   `pt(jets) > 30`-style cuts with a small bounded-index expansion
-   (quantify over the first k elements + size guard) instead of dropping
-   them. This would also let filtered-collection relations (`bjets ⊆ jets`)
-   be expressed per element rather than only via size monotonicity.
-4. **Partition checking for bins**: `bin` lists partition a region by
-   construction; verifying the bins actually cover and don't overlap
-   (UNSAT pairwise ∧ region ⊆ union of bins) is a one-evening feature on
-   this engine and a real analysis-review aid.
-5. **Compiler core debt** (tracked in REVIEW_NOTES §4): the remaining 5
-   reduce/reduce conflicts (take_id grammar), AST ownership (arena model),
-   splitting semantic_checks.cpp, deleting the unreachable CutLang lowering
-   path (~1000 lines), and a unit-test harness beyond stdout greps —
-   property-based testing (random small regions vs. brute-force sampling)
-   would guard the encoder itself.
-6. **Retire the legacy printer** (`--legacy-region-report` and its
-   extraction stack in semantic_checks.cpp) once collaborators have
-   migrated; it still contains the old unsound lineage merging.
+1. **Physical range axioms** — dR/abs ≥ 0, |Δφ| ≤ π, pt/mass/energy ≥ 0,
+   tags/triggers ∈ {0,1} — plus per-region vacuous-cut detection. This
+   immediately found a real bug in the example corpus: CMS-SUS-16-032's
+   compressed regions cut `(pT+MET)/MET < 0.5` with `MET > 250`, which is
+   unsatisfiable as written (a vector-sum quantity transcribed as scalar
+   addition); the tool now proves those regions empty.
+2. **Linear arithmetic atoms** — atoms are linear combinations with exact
+   two-branch ratio encoding; CMS-SUS-16-032 encodes 100% of its leaves.
+3. **Bounded per-object quantification** — a Dual formula node carries
+   separate over/under-approximations (negation swaps branches); unindexed
+   collection cuts expand to a k=3 form sound under both any/all readings.
+   Building this exposed and removed an unsound axiom ("referencing C[i]
+   implies size ≥ i+1" is false under guards).
+4. **Bin partition checking** — per-region proofs that bins are pairwise
+   disjoint and cover the region, with gap flagging.
+5. **Core debt** — legacy analyzer retired (last copy of the unsound
+   lineage merging deleted), unreachable CutLang lowering removed
+   (~1,900 lines total), dead take_id grammar alternative dropped,
+   BinNode::clone(int) self-mutation fixed.
+
+## 5. Remaining work
+
+- Physical bin edges: the parser stores boundary lists as ints, so
+  fractional bin edges truncate; widen the accessor type.
+- Arena ownership for AST nodes and a physical split of the remaining
+  semantic_checks.cpp (1.2k lines: DOT output + decl checks + lineage).
+- The five remaining reduce/reduce conflicts (take_id vs comb_args need a
+  grammar redesign).
+- Property-based testing of the encoder (random regions vs. brute-force
+  sampling) and CI.
+- ~~Retire the legacy printer~~ done; remove the deprecation shim after one
+  release cycle.

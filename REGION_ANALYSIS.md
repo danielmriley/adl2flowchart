@@ -43,8 +43,19 @@ the report says **exact encoding**.
   renames (`object X take Y` with no cuts) merge; *filtered* collections do
   NOT merge with their parents (`bjets[0].pt` ≠ `jets[0].pt`).
 - **Background axioms** asserted with every check (true of every event):
-  pT-ordering of indexed elements, `size ≥ 0`, `C[i]` referenced ⇒
-  `size(C) ≥ i+1`, `size(child) ≤ size(parent)` for derived collections.
+  pT-ordering of indexed elements, `size ≥ 0`, `size(child) ≤ size(parent)`
+  for derived collections, and physical ranges — `dR/abs(...) ≥ 0`,
+  `|Δφ| ≤ π`, `pt/mass/energy ≥ 0`, b/c/τ tags and trigger flags ∈ {0,1}.
+  A per-region check reports regions whose cuts contradict the axioms
+  ("provably selects no events").
+- **Linear arithmetic**: sums, differences, constant multiples and exact
+  two-branch ratios `(L/D) op c` encode as linear atoms.
+- **Bounded quantification**: an unindexed collection cut like
+  `pT(jets) > 100` expands to a k=3 bounded form sound under both the
+  any-element and all-elements readings (proofs possible when paired with
+  size cuts; otherwise stays POSSIBLY).
+- **Bin partition checks**: `bin` statements are verified per region —
+  pairwise bin disjointness and coverage of the region.
 
 ## Performance
 
@@ -63,9 +74,8 @@ make test                                # goldens + corpus + z3 spike
 
 ## Limits
 
-- Per-event scalar model: per-object quantification is not modeled; cuts that
-  need it are reported as dropped (see per-region `dropped:` lines).
-- PROVEN OVERLAPPING means a model exists in the scalar fragment; it does not
-  assert simulation yield, and physically-bounded quantities (e.g. angular
-  ranges) are not range-constrained yet.
-- BIN statements are treated as partitioning, not constraining, the region.
+- Per-event scalar model: per-object quantification beyond the bounded k=3
+  expansion is not modeled; affected cuts are listed per region.
+- PROVEN OVERLAPPING means a model exists in the scalar fragment; it does
+  not assert simulation yield.
+- Boundary-list bin edges are parsed as integers (parser limitation).

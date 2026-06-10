@@ -5,6 +5,7 @@
 // #define ADL_DEBUG
 
 #include "semantic_checks.h"
+#include "constraint_encoder.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -943,8 +944,8 @@ namespace adl {
   static bool extractSimpleConstraint(Expr* cond, SimpleConstraint& out);
   static bool extractSizeSumZeroConstraint(Expr* cond, std::vector<SimpleConstraint>& out);
   static void extractAllSimpleConstraints(Expr* cond, std::vector<SimpleConstraint>& out);
-  static bool isTagPropertyName(const std::string& name);
-  static std::string buildKeyFromVar(VarNode* vn);
+  // isTagPropertyName / buildKeyFromVar / canonicalConstraintKey and friends
+  // now live in constraint_encoder.cpp (shared with the formula encoder).
 
   // Small helper: given an expression that is either a VarNode or FunctionNode in a comparison,
   // try to build a nice key using our best synthesis logic.
@@ -970,148 +971,10 @@ namespace adl {
     return "";
   }
 
-  // Helper to produce a more canonical key string from a VarNode.
-  // Includes array accessors/ranges when present (very common for leading jets, etc.).
-  static std::string buildKeyFromVar(VarNode* vn) {
-    if (!vn) return "";
-    std::string id = vn->getId();
-    std::string dot = vn->getDotOp();
-    std::string alias = vn->getAlias();
-
-    // Heuristic: if alias looks like a clean property name (BTag, cTag, etc.),
-    // prefer "baseObject.alias" form. This helps a lot with braced syntax.
-    std::string prop = alias;
-    if (!prop.empty()) {
-      size_t lastDot = prop.find_last_of('.');
-      if (lastDot != std::string::npos) prop = prop.substr(lastDot + 1);
-    }
-
-    std::string key;
-    if (!id.empty() && !prop.empty() && isTagPropertyName(prop)) {
-      key = id;
-      if (!dot.empty()) key += "." + dot;
-      key += "." + prop;
-    } else {
-      key = id;
-      if (!dot.empty()) key += "." + dot;
-      if (!alias.empty()) {
-        // avoid duplicating if alias is already the whole thing
-        if (key.find(alias) == std::string::npos) {
-          key += "." + alias;
-        }
-      }
-    }
-
-    // Add array accessors/ranges
-    std::vector<int> acc = vn->getAccessor();
-    if (!acc.empty()) {
-      key += "[";
-      for (size_t i = 0; i < acc.size(); ++i) {
-        if (i > 0) key += ":";
-        if (acc[i] == 6213) {
-          key += "";
-        } else {
-          key += std::to_string(acc[i]);
-        }
-      }
-      key += "]";
-    }
-
-    return key;
-  }
-
   // ----- Canonical naming & constraint utilities (disjointness) -----
-  static std::map<std::string, std::string> g_takeAliasToCanon;
-  static bool g_takeAliasesReady = false;
+  // Key synthesis (buildKeyFromVar, canonicalConstraintKey, alias handling)
+  // is shared with the formula encoder; see constraint_encoder.cpp.
   static Driver* g_disjointDrv = nullptr;
-
-  static void registerTakeAlias(const std::string& canon, const std::string& alias) {
-    std::string c = toupper(canon);
-    std::string a = toupper(alias);
-    g_takeAliasToCanon[a] = c;
-    g_takeAliasToCanon[c] = c;
-  }
-
-  static void ensureTakeAliases(Driver& drv) {
-    if (g_takeAliasesReady) return;
-    registerTakeAlias("JET", "JET");
-    registerTakeAlias("JET", "JETS");
-    registerTakeAlias("MUON", "MUO");
-    registerTakeAlias("MUON", "MUONS");
-    registerTakeAlias("ELECTRON", "ELE");
-    registerTakeAlias("ELECTRON", "ELECTRONS");
-    registerTakeAlias("MET", "MISSINGET");
-    registerTakeAlias("MET", "METLV");
-    registerTakeAlias("MET", "MHT");
-
-    std::string path = drv.getLibPath().string() + "/object_aliases.txt";
-    std::ifstream fin(path);
-    if (fin.good()) {
-      std::string line;
-      while (std::getline(fin, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::stringstream ss(line);
-        std::string canon, alias;
-        if (!(ss >> canon)) continue;
-        registerTakeAlias(canon, canon);
-        while (ss >> alias) registerTakeAlias(canon, alias);
-      }
-    }
-    g_takeAliasesReady = true;
-  }
-
-  static std::string canonicalTakeRoot(const std::string& raw, Driver& drv) {
-    ensureTakeAliases(drv);
-    std::string u = toupper(raw);
-    auto it = g_takeAliasToCanon.find(u);
-    if (it != g_takeAliasToCanon.end()) return it->second;
-    return u;
-  }
-
-  static std::string objectFromConstraintKey(const std::string& key) {
-    if (key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')') {
-      return key.substr(5, key.size() - 6);
-    }
-    size_t dot = key.find('.');
-    size_t bracket = key.find('[');
-    size_t end = key.size();
-    if (dot != std::string::npos) end = std::min(end, dot);
-    if (bracket != std::string::npos) end = std::min(end, bracket);
-    return key.substr(0, end);
-  }
-
-  static std::string bracketIndexSuffix(const std::string& key) {
-    size_t b = key.find('[');
-    if (b == std::string::npos) return "";
-    size_t e = key.find(']', b);
-    if (e == std::string::npos) return key.substr(b);
-    return key.substr(b, e - b + 1);
-  }
-
-  static std::string canonicalConstraintKey(const std::string& key, Driver& drv) {
-    if (key.rfind("size(", 0) == 0 && key.size() > 6 && key.back() == ')') {
-      std::string inner = key.substr(5, key.size() - 6);
-      return "size(" + canonicalTakeRoot(inner, drv) + ")";
-    }
-    if (key.rfind("dphi(", 0) == 0 || key.rfind("dr(", 0) == 0 ||
-        key.rfind("deta(", 0) == 0) {
-      return toupper(key);
-    }
-    std::string obj = objectFromConstraintKey(key);
-    if (obj.empty()) return key;
-    size_t dot = key.find('.');
-    size_t bracket = key.find('[');
-    if (dot == std::string::npos && bracket == std::string::npos) {
-      return canonicalTakeRoot(key, drv);
-    }
-    std::string canonObj = canonicalTakeRoot(obj, drv);
-    // Keep [i] before .property (jets[0].pt must not collapse to JETS.pt).
-    if (bracket != std::string::npos && dot != std::string::npos && bracket < dot)
-      return canonObj + key.substr(bracket);
-    if (dot != std::string::npos) return canonObj + key.substr(dot);
-    if (bracket != std::string::npos) return canonObj + key.substr(bracket);
-    return canonObj;
-  }
 
   static void appendTakeSource(Expr* cond, std::vector<std::string>& out) {
     if (!cond) return;
@@ -1377,17 +1240,6 @@ namespace adl {
     if (op != ">" && op != ">=" && op != "<" && op != "<=" && op != "==") return false;
     applyCompareOpToInterval(out, op, getNumNode(numSide)->value(), flipped);
     return out.lo <= out.hi || out.isDiscrete;
-  }
-
-  static bool isTagPropertyName(const std::string& name) {
-    std::string lower = name;
-    for (char& c : lower) {
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-
-    return (lower.find("btag") != std::string::npos ||
-            lower.find("ctag") != std::string::npos ||
-            lower.find("charge") != std::string::npos);
   }
 
   // Helper: find any VarNode anywhere in the expression tree (used as last resort when we know a tag property is textually present)

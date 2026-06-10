@@ -7,25 +7,22 @@ YFILE=parser.y
 LCPP=Scanner.cpp
 YCPP=Parser.cpp
 YHPP=Parser.h
-MAIN=main.cpp
-DH=driver.h
-DCPP=driver.cpp
-EXTFUN=external_functions.cpp
-ASTHPP=ast.hpp
-SEMCHH=semantic_checks.h
-SEMCHCPP=semantic_checks.cpp
-REGH=region_analysis.hpp
-REGCPP=region_analysis.cpp
 LOCHH=location.hh
-CLDEFS=cutlang_declares.h
-CLDEFSCPP=cutlang_declares.cpp
+
+SRCS=main.cpp driver.cpp $(LCPP) $(YCPP) external_functions.cpp \
+     semantic_checks.cpp region_analysis.cpp constraint_encoder.cpp \
+     cutlang_declares.cpp
+HDRS=ast.hpp driver.h semantic_checks.h region_analysis.hpp \
+     region_formula.h constraint_encoder.hpp cutlang_declares.h scanner.hpp
+
+CXXFLAGS=-g -std=c++17 -Wall
 
 EXE=smash
 
 all: $(EXE)
 
-$(EXE): $(YCPP) $(LCPP) $(MAIN) $(DCPP) $(EXTFUN) $(ASTHPP) $(SEMCHH) $(SEMCHCPP) $(REGH) $(REGCPP) $(DH) $(CLDEFS)
-	@$(CC) -g -std=c++17 $(MAIN) $(DCPP) $(LCPP) $(YCPP) $(EXTFUN) $(SEMCHCPP) $(REGCPP) $(CLDEFSCPP) -o $(EXE)
+$(EXE): $(SRCS) $(HDRS)
+	@$(CC) $(CXXFLAGS) $(filter %.cpp,$(SRCS)) -o $(EXE)
 
 $(YCPP): $(YFILE)
 	@$(YACC) $(YFILE)
@@ -35,4 +32,4 @@ $(LCPP): $(LFILE)
 
 
 clean:
-	@rm $(LCPP) $(YCPP) $(YHPP) ../$(EXE) $(LOCHH) $(EXE)
+	@rm -f $(LCPP) $(YCPP) $(YHPP) ../$(EXE) $(LOCHH) $(EXE)

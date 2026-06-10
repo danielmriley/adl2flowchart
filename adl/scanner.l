@@ -75,6 +75,7 @@
 
 "AND"|"and"|"&&"         { return adl::Parser::make_AND(YYText(), adl::location()); }
 "OR"|"or"|"||"           { return adl::Parser::make_OR(YYText(), adl::location()); }
+"NOT"|"not"|"!"          { return adl::Parser::make_NOT(YYText(), adl::location()); }
 
 "TRUE"|"true"            { return adl::Parser::make_TRUE(YYText(), adl::location()); }
 "FALSE"|"false"          { return adl::Parser::make_FALSE(YYText(), adl::location()); }

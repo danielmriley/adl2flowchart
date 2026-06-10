@@ -344,7 +344,11 @@ term : id_qualifiers              { $$ = $1; }
      ;
 
 id_qualifiers : id_qualifier                  { $$ = $1; }
-              | id_qualifier id_qualifiers    { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),"",$2->getId(), {},""); std::cout << "ID list\n"; }
+              | id_qualifier id_qualifiers    {
+                                                /* keep the accessor: jets[0].BTag must stay indexed */
+                                                VarNode* v1 = static_cast<VarNode*>($1);
+                                                $$ = new VarNode(incrementCounter(),"ID",v1->getId(),v1->getAlias(),$2->getId(), v1->getAccessor(),v1->getType());
+                                              }
               ;
 
 id_qualifier : dot_op                                            { $$ = $1; }

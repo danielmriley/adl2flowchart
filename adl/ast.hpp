@@ -107,14 +107,20 @@ namespace adl {
     }
 
     double value() {
-      if((lhs->getToken() == "INT" && rhs->getToken() == "INT")
-          || (lhs->getToken() == "REAL" && rhs->getToken() == "REAL")) {
-        if(op == "+") return lhs->value() + rhs->value();
-        if(op == "-") return lhs->value() - rhs->value();
-        if(op == "*") return lhs->value() * rhs->value();
-        if(op == "/" || op == "div") return lhs->value() / rhs->value();
+      Token lt = lhs->getToken();
+      Token rt = rhs->getToken();
+      bool lNum = (lt == "INT" || lt == "REAL" || lt == "EXPROP" || lt == "FACTOROP");
+      bool rNum = (rt == "INT" || rt == "REAL" || rt == "EXPROP" || rt == "FACTOROP");
+      if(lNum && rNum) {
+        double lv = lhs->value();
+        double rv = rhs->value();
+        if(std::isnan(lv) || std::isnan(rv)) return std::nan("");
+        if(op == "+") return lv + rv;
+        if(op == "-") return lv - rv;
+        if(op == "*") return lv * rv;
+        if(op == "/" || op == "div") return lv / rv;
       }
-      return std::nan(""); // this is not a good thing to do...
+      return std::nan("");
     }
 
   private:

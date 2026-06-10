@@ -1,8 +1,14 @@
-# Canonical take-root aliases for disjointness analysis (one canonical name per line, then aliases).
-JET Jet JET jets jet Jets AK4jet AK4jets AK8jet FatJet FJet BJet QCJET Delphes_Jet JETclean JETsr
-MUON Muon MUO Muo muons muon Muons MUON MUOclean Delphes_Muon
-ELECTRON Electron Ele ELE electrons electron Elec ELEclean ELEveryclean Delphes_Electron
-PHOTON Photon Pho PHO photons Delphes_Photon
-TAU Tau
-MET MissingET METLV MHT Delphes_MissingET Delphes_scalarHT scalarHT
-TRACK Track Trk
+# Spelling aliases for the SAME base collection (matching is already
+# case-insensitive, so case variants need no entry).
+#
+# Do NOT list filtered or derived collections here (bjets, cleaned jets,
+# fat jets, ...): a cut on a derived collection is a different event
+# quantity than a cut on its parent, and merging them can produce false
+# disjointness proofs. In-file renames (object X take Y with no cuts) are
+# detected automatically.
+JET AK4jet AK4jets Delphes_Jet
+MUON Muo Delphes_Muon
+ELECTRON Ele Elec Delphes_Electron
+PHOTON Pho Delphes_Photon
+MET MissingET METLV Delphes_MissingET
+TRACK Trk

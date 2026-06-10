@@ -3,8 +3,11 @@
 
 #include <map>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
+
+#include "region_formula.h"
 
 namespace adl {
 class Driver;
@@ -13,46 +16,34 @@ class Driver;
 namespace adl {
 namespace region_analysis {
 
+// Verdict semantics (sound by construction):
+//   ProvenDisjoint    UNSAT(R1+ ∧ R2+) where R+ ⊇ R  — no event can pass both
+//   ProvenOverlapping SAT(R1- ∧ R2-)  where R- ⊆ R  — a model passes both
+//                     (within the per-event scalar model), shared dimension
+//   PossiblyOverlapping anything weaker: heuristic intersection, SAT on the
+//                     over-approximation only, or SAT without a shared
+//                     constraint dimension
 enum class RelationKind {
   Unknown,
-  ProvenDisjoint,       // disjoint intervals or SMT unsat (fragment)
-  ProvenOverlapping,    // SMT sat: ∃ model satisfying R1 ∧ R2 (fragment)
-  PossiblyOverlapping,  // heuristic only: related intervals all compatible
-  PossiblySubset,
+  ProvenDisjoint,
+  ProvenOverlapping,
+  PossiblyOverlapping,
 };
 
-struct ConstraintAtom {
-  std::string key;
-  double lo = 0.0;
-  double hi = 0.0;
-  bool loInclusive = true;
-  bool hiInclusive = true;
-  bool isDiscrete = false;
-  double discreteValue = 0.0;
-};
-
-struct OrClause {
-  std::vector<std::vector<ConstraintAtom>> alternatives;
-};
-
-struct ImplicationClause {
-  std::vector<ConstraintAtom> guard;
-  std::vector<ConstraintAtom> thenAtoms;
-  std::vector<ConstraintAtom> elseAtoms;
-  bool elseIsAll = false;
-};
-
-struct RegionConstraintSet {
+struct RegionEncoding {
   std::string name;
   std::vector<std::string> inherits;
   bool hasBins = false;
-  std::map<std::string, ConstraintAtom> constraints;
-  std::vector<OrClause> orClauses;
-  std::vector<ImplicationClause> implications;
-  int encodableForSmt = 0;
-  int totalConstraints = 0;
+  rf::Formula exact;   // may contain Unknown leaves
+  rf::Formula plus;    // over-approximation  (Unknown -> True)
+  rf::Formula minus;   // under-approximation (Unknown -> False)
+  bool isExact = false;
+  int leavesTotal = 0;
+  int leavesUnknown = 0;
   int selectStmts = 0;
-  int selectStmtsEncoded = 0;
+  int selectStmtsExact = 0;
+  std::vector<std::string> dropped;
+  std::set<std::string> keys;
 };
 
 struct PairwiseResult {
@@ -62,34 +53,36 @@ struct PairwiseResult {
   std::string reason;
   bool usedSmt = false;
   bool sharedConstraintDimension = false;
-  std::string smtWitness;  // brief model summary when overlap proved
+  bool exactPair = false;     // both formulas free of Unknown leaves
+  bool subsetAB = false;      // proven A ⊆ B
+  bool subsetBA = false;      // proven B ⊆ A
+  std::string smtWitness;
 };
 
 struct AnalysisOptions {
   bool jsonToStdout = false;
   std::string jsonPath;
   bool runOverlapHeuristic = true;
-  bool runSmt = true;       // when z3 on PATH (see autoSmt)
-  bool autoSmt = true;      // run Z3 on -r if z3 installed
+  bool runSmt = true;
+  bool autoSmt = true;
   bool verbose = true;
 };
 
 struct AnalysisReport {
-  std::vector<RegionConstraintSet> regions;
+  std::vector<RegionEncoding> regions;
   std::vector<PairwiseResult> pairwise;
   std::vector<std::string> coverageWarnings;
   double coverageWarnThreshold = 0.5;
   int heuristicDisjoint = 0;
-  int heuristicOverlap = 0;
-  int provenOverlap = 0;
   int smtDisjoint = 0;
-  int smtOverlap = 0;
+  int provenOverlap = 0;
+  int possiblyOverlap = 0;
   int smtUnknown = 0;
-  int smtSkippedNoShared = 0;
+  int smtSatNoShared = 0;
+  int subsetPairs = 0;
   std::string smtNote;
 };
 
-int buildRegionConstraintSets(Driver& drv, std::vector<RegionConstraintSet>& out);
 int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report);
 int writeJson(const AnalysisReport& report, std::ostream& os);
 int printReport(const AnalysisReport& report, const AnalysisOptions& opt);

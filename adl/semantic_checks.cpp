@@ -366,29 +366,20 @@ namespace adl {
       typeCheck(getBinNode(node)->getRHS(),drv);
     }
 
-#ifdef ADL_DEBUG
-    std::cout << "typecheck token: " << node->getToken() << "\n";
-    if(node->getToken() == "INT") { std::cout << " : INTEGER\n"; return node->getToken(); }
-    if(node->getToken() == "REAL") { std::cout << " : DOUBLE\n"; return node->getToken(); }
+    if(node->getToken() == "INT" || node->getToken() == "REAL") {
+      return node->getToken();
+    }
     if(node->getToken() == "ID") {
-      std::cout << "VAR := " << node->getId() << " \n";
       VarNode* vn = getVarNode(node);
       if(vn->getType() == "") {
-        std::cout << "vn type empty\n";
         vn->setType(drv.findDep(vn->getId()));
-        std::cout << "Type set: " << vn->getType() << "\n";
-        type = vn->getType();
       }
-      else {
-        std::cout << "Type Found: " << vn->getType() << "\n";
-        type = vn->getType();
-      }
-    }
-    if(node->getToken() == "FUNCTION") {
-      // Here the function input and output should be checked.
-      std::cout << "FUNCTION NODE\n";
-    }
+      type = vn->getType();
+#ifdef ADL_DEBUG
+      std::cout << "VAR := " << node->getId() << " type: " << type << "\n";
 #endif
+    }
+    // FUNCTION nodes: input/output types not modeled yet.
     return type;
   }
 
@@ -407,9 +398,14 @@ namespace adl {
         Expr* body = define->getBody();
         if(binOpCheck(body) == 0) {
           BinNode* bin = getBinNode(body);
-          type = typeCheck(bin->getLHS(),drv);
-          type = typeCheck(bin->getRHS(),drv);
-          drv.dependencyChart[toupper(type)].push_back(define->getId());
+          std::string lhsType = typeCheck(bin->getLHS(),drv);
+          std::string rhsType = typeCheck(bin->getRHS(),drv);
+          type = (rhsType != "UNKNOWN" && rhsType != "") ? rhsType : lhsType;
+          // Only file the define under a real type; "UNKNOWN" entries
+          // corrupt findDep/getVarNodeType lookups downstream.
+          if(type != "UNKNOWN" && type != "") {
+            drv.dependencyChart[toupper(type)].push_back(define->getId());
+          }
         }
         if(body->getToken() == "FUNCTION") {
           type = typeCheck(body,drv);

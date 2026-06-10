@@ -1,5 +1,10 @@
 # Project review notes — June 2026
 
+> **Status update:** the disjointness soundness bugs in §1 and the
+> top-priority core fixes are resolved by the dual-encoding rewrite — see
+> `docs/DUAL_ENCODING_REPORT.md` for what changed and the remaining roadmap.
+> §4's architecture/test debt items remain open except where noted there.
+
 Focus: overall code health + deep dive on disjointness/overlap detection
 (`adl/region_analysis.cpp`, extraction in `adl/semantic_checks.cpp`).
 

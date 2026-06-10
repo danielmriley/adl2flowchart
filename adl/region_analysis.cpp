@@ -235,6 +235,36 @@ std::vector<std::string> backgroundAxioms(
   for (const auto& r : sizeRoots)
     axioms.push_back("(>= " + vars.var("size(" + r + ")") + " 0)");
 
+  // Physical ranges (true of every event; sound in both proof directions).
+  for (const auto& k : keys) {
+    const std::string& v = vars.var(k);
+    if (k.rfind("dr(", 0) == 0 || k.rfind("abs(", 0) == 0) {
+      axioms.push_back("(>= " + v + " 0.0)");
+      continue;
+    }
+    if (k.rfind("dphi(", 0) == 0) {
+      // covers both signed [-pi,pi] and absolute [0,pi] conventions
+      axioms.push_back("(>= " + v + " (- 3.1416))");
+      axioms.push_back("(<= " + v + " 3.1416)");
+      continue;
+    }
+    if (k.rfind("trigger(", 0) == 0) {
+      axioms.push_back("(or (= " + v + " 0.0) (= " + v + " 1.0))");
+      continue;
+    }
+    size_t lastDot = k.find_last_of('.');
+    if (lastDot == std::string::npos) continue;
+    std::string prop = k.substr(lastDot + 1);
+    if (prop == "pt" || prop == "m" || prop == "mass" || prop == "e" ||
+        prop == "energy" || prop == "ht") {
+      axioms.push_back("(>= " + v + " 0.0)");
+    } else if (prop.find("btag") != std::string::npos ||
+               prop.find("ctag") != std::string::npos ||
+               prop.find("tautag") != std::string::npos) {
+      axioms.push_back("(or (= " + v + " 0.0) (= " + v + " 1.0))");
+    }
+  }
+
   // Derived collections are subsets: size(child) <= size(parent).
   for (const auto& a : sizeRoots) {
     for (const auto& b : sizeRoots) {
@@ -543,7 +573,7 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
   }
 
   // ---------------- batched SMT pass ----------------
-  if (!smtPairs.empty()) {
+  if (doSmt && (!smtPairs.empty() || !report.regions.empty())) {
     VarTable vars;
     for (const auto& r : report.regions)
       for (const auto& k : r.keys) vars.add(k);
@@ -574,6 +604,18 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       script << "(check-sat)\n(pop 1)\n";
     };
 
+    // vacuous-region checks: UNSAT(R+ ∧ axioms) proves no physical event
+    // can pass the region's cuts
+    for (size_t i = 0; i < report.regions.size(); ++i) {
+      const auto& r = report.regions[i];
+      if (r.keys.empty() || r.plus.kind == rf::FKind::False) continue;
+      script << "(push 1)\n(echo \"REGION " << i << "\")\n";
+      for (const auto& ax : backgroundAxioms(r.keys, vars, canonParents))
+        script << "(assert " << ax << ")\n";
+      script << "(assert " << formulaSmt(r.plus, vars) << ")\n";
+      script << "(check-sat)\n(pop 1)\n";
+    }
+
     for (const auto& pc : smtPairs) {
       const auto& r1 = report.regions[pc.i];
       const auto& r2 = report.regions[pc.j];
@@ -594,28 +636,46 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       std::string line;
       size_t curI = 0, curJ = 0;
       std::string curTag;
-      bool havePair = false;
+      enum { NONE, PAIR, REGION } mode = NONE;
       while (std::getline(iss, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
           line.pop_back();
         if (line.rfind("PAIR ", 0) == 0) {
           std::istringstream ls(line.substr(5));
           ls >> curI >> curJ >> curTag;
-          havePair = true;
+          mode = PAIR;
           continue;
         }
-        if (!havePair) continue;
+        if (line.rfind("REGION ", 0) == 0) {
+          std::istringstream ls(line.substr(7));
+          ls >> curI;
+          mode = REGION;
+          continue;
+        }
+        if (mode == NONE) continue;
         if (line == "sat" || line == "unsat" || line == "unknown") {
-          auto it = byPair.find({curI, curJ});
-          if (it != byPair.end()) {
-            if (curTag == "P") it->second->plusStatus = line;
-            else if (curTag == "M") it->second->minusStatus = line;
-            else if (curTag == "A") it->second->subsetABStatus = line;
-            else if (curTag == "B") it->second->subsetBAStatus = line;
+          if (mode == REGION) {
+            if (line == "unsat" && curI < report.regions.size())
+              report.regions[curI].provenEmpty = true;
+          } else {
+            auto it = byPair.find({curI, curJ});
+            if (it != byPair.end()) {
+              if (curTag == "P") it->second->plusStatus = line;
+              else if (curTag == "M") it->second->minusStatus = line;
+              else if (curTag == "A") it->second->subsetABStatus = line;
+              else if (curTag == "B") it->second->subsetBAStatus = line;
+            }
           }
-          havePair = false;
+          mode = NONE;
         }
       }
+    }
+
+    for (const auto& r : report.regions) {
+      if (r.provenEmpty)
+        report.coverageWarnings.push_back(
+            "Region " + r.name +
+            ": provably selects no events (cuts contradict physical axioms)");
     }
 
     // verdicts from batch results
@@ -629,6 +689,14 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       PairwiseResult* pr = prByName[{r1.name, r2.name}];
       if (!pr) continue;
       pr->usedSmt = true;
+
+      if (r1.provenEmpty || r2.provenEmpty) {
+        pr->kind = RelationKind::ProvenDisjoint;
+        pr->reason = "region '" + (r1.provenEmpty ? r1.name : r2.name) +
+                     "' provably selects no events";
+        report.smtDisjoint++;
+        continue;
+      }
 
       if (pc.plusStatus == "unsat") {
         pr->kind = RelationKind::ProvenDisjoint;

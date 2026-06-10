@@ -1,0 +1,11 @@
+object jets
+  take Jet
+
+object MET
+  take MissingET
+
+region SR_dead
+  select dPhi(jets[0], MET) > 3.5
+
+region SR_any
+  select MET.pT > 100

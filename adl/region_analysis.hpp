@@ -38,6 +38,7 @@ struct RegionEncoding {
   rf::Formula plus;    // over-approximation  (Unknown -> True)
   rf::Formula minus;   // under-approximation (Unknown -> False)
   bool isExact = false;
+  bool provenEmpty = false;  // UNSAT(R+ ∧ physical axioms)
   int leavesTotal = 0;
   int leavesUnknown = 0;
   int selectStmts = 0;

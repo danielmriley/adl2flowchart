@@ -73,6 +73,12 @@ check_absent "$GOLDEN/tag_index.adl" "SR_lead_btag vs SR_sub_nobtag: PROVEN DISJ
   "different jet indices must not alias into one tag variable"
 
 if command -v z3 >/dev/null 2>&1; then
+  check "$GOLDEN/btag_threshold.adl" "SR_no vs SR_yes: PROVEN DISJOINT" \
+    "tag {0,1} axiom proves threshold complement disjoint"
+  check "$GOLDEN/vacuous_dphi.adl" "provably selects no events" \
+    "dphi range axiom catches vacuous region"
+  check "$GOLDEN/vacuous_dphi.adl" "SR_dead vs SR_any: PROVEN DISJOINT" \
+    "empty region disjoint from everything"
   check "$GOLDEN/reject_or_band.adl" "SR_band vs SR_mid: PROVEN OVERLAPPING" \
     "reject of OR-band proves overlap"
   check "$GOLDEN/reject_or_band.adl" "PROVEN SUBSET: SR_mid within SR_band" \

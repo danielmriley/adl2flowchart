@@ -57,53 +57,10 @@ namespace adl {
   // of user-defined objects as proven disjoint, possibly overlapping, or unknown.
   int analyzeObjectDisjointness(Driver& drv);
 
-  // Region disjointness / overlap analysis pass.
-  // Performs lightweight abstract interpretation over the selection
-  // formulas of regions (after resolving inheritance) to find pairs
-  // that can be *soundly proven* disjoint within the supported
-  // fragment (numeric intervals, discrete tag values, cardinalities).
-  // Seeded from the object attribute collection infrastructure.
-  int analyzeRegionDisjointness(Driver& drv);
 
-  // Region constraint IR (for JSON / SMT / overlap analysis).
-  struct RegionConstraintAtom {
-    std::string key;
-    double lo = 0.0;
-    double hi = 0.0;
-    bool loInclusive = true;
-    bool hiInclusive = true;
-    bool isDiscrete = false;
-    double discreteValue = 0.0;
-  };
-
-  struct RegionOrClause {
-    std::vector<std::vector<RegionConstraintAtom>> alternatives;
-  };
-
-  struct RegionImplication {
-    std::vector<RegionConstraintAtom> guard;
-    std::vector<RegionConstraintAtom> thenAtoms;
-    std::vector<RegionConstraintAtom> elseAtoms;
-    bool elseIsAll = false;
-  };
-
-  struct RegionConstraintRecord {
-    std::string name;
-    std::vector<std::string> inherits;
-    bool hasBins = false;
-    std::vector<RegionConstraintAtom> constraints;
-    std::vector<RegionOrClause> orClauses;
-    std::vector<RegionImplication> implications;
-    int selectStmts = 0;
-    int selectStmtsEncoded = 0;
-  };
-
-  int gatherRegionConstraints(Driver& drv, std::vector<RegionConstraintRecord>& out);
   int gatherObjectParentMap(Driver& drv,
       std::map<std::string, std::vector<std::string>>& parents);
 
-  bool constraintKeysRelatedPublic(const std::string& k1, const std::string& k2,
-      const std::map<std::string, std::vector<std::string>>& parents, Driver& drv);
 } // end namespace adl
 
 #endif

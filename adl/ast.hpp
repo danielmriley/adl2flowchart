@@ -78,10 +78,10 @@ namespace adl {
     }
 
     Expr* clone(int c) {
+      // plain copy; the old implementation also mutated *this* by
+      // re-cloning its own children, leaking the originals
       Expr* on = new BinNode(*this);
       on->uid = c;
-      lhs = lhs->clone(incrementCounter());
-      rhs = rhs->clone(incrementCounter());
       return on;
     }
 

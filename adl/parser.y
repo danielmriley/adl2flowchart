@@ -191,12 +191,8 @@ take_id : id                                    { $$ = $1; }
                                                   paramlist.clear();
                                                   $$ = fn;
                                                 }
-        | id LPAR id_list RPAR                  {
-                                                  ExprVector params;
-                                                  params.push_back($3);
-                                                  FunctionNode* fn = new FunctionNode(incrementCounter(), "FUNCTION", $1, params);
-                                                  $$ = fn;
-                                                }
+        /* "id LPAR id_list RPAR" was unreachable: bison's reduce/reduce
+           resolution always preferred the param_list alternative. */
         | id id_list                            { $$ = new VarNode(incrementCounter(),"ID",$1->getId(),$2->getId(), "", {},""); } // for aliases.
         ;
 

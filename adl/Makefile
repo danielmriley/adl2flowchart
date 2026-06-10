@@ -9,11 +9,10 @@ YCPP=Parser.cpp
 YHPP=Parser.h
 LOCHH=location.hh
 
-SRCS=main.cpp driver.cpp $(LCPP) $(YCPP) external_functions.cpp \
-     semantic_checks.cpp region_analysis.cpp constraint_encoder.cpp \
-     cutlang_declares.cpp
+SRCS=main.cpp driver.cpp $(LCPP) $(YCPP) \
+     semantic_checks.cpp region_analysis.cpp constraint_encoder.cpp
 HDRS=ast.hpp driver.h semantic_checks.h region_analysis.hpp \
-     region_formula.h constraint_encoder.hpp cutlang_declares.h scanner.hpp
+     region_formula.h constraint_encoder.hpp scanner.hpp
 
 CXXFLAGS=-g -std=c++17 -Wall
 

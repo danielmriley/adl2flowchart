@@ -4,8 +4,6 @@
 #include "scanner.hpp"
 #include "Parser.h"
 #include "ast.hpp"
-#include "cutlang_declares.h"
-// #include "NodeTree.h"
 
 #include <map>
 #include <set>
@@ -16,20 +14,29 @@
 #include <algorithm>
 #include <filesystem>
 
-class Node;
-class myParticle;
-struct cntHisto;
-class dbxParticle;
-class AnalysisObjects;
-
 namespace fs = std::filesystem;
 
 namespace adl {
 
-  typedef double (*UnFunction)(double);
-  typedef double (*LFunction)(dbxParticle*,dbxParticle*);
-  typedef double (*PropFunction)(dbxParticle*);
-  typedef double (*SFunction)(AnalysisObjects*, std::string, float);
+  // Particle families for the typeTable / object disjointness analysis.
+  enum particleType {
+    none_t = 0,
+    electron_t = 1,
+    jet_t = 2,
+    bjet_t = 3,
+    lightjet_t = 4,
+    muonlikeV_t = 5,
+    electronlikeV_t = 6,
+    pureV_t = 7,
+    photon_t = 8,
+    fjet_t = 9,
+    truth_t = 10,
+    tau_t = 11,
+    muon_t = 12,
+    track_t = 19,
+    combo_t = 20,
+    consti_t = 21
+  };
 
   class Driver
   {
@@ -45,11 +52,9 @@ namespace adl {
     int visitAST(int (*f)(ExprVector& ast));
     void fillTypeTable();
     void setDependencyChart();
-    void fillParentObjectsMap();
     int check_function_table(std::string id);
     int check_object_table(std::string id);
     int check_property_table(std::string id);
-
 
     void loadFromLibraries();
     std::string getBinType(Expr* expr);
@@ -61,46 +66,21 @@ namespace adl {
     std::string getObjectDeclType(std::string s);
     std::string getVarNodeType(std::string vn);
 
-
     int checkObjectTable(std::string id);
     int checkDefinitionTable(std::string id);
     int checkRegionTable(std::string id);
-    int ast2cuts(std::list<std::string> *_parts,std::map<std::string,Node*>* _NodeVars,
-                 std::map<std::string, std::vector<myParticle*> >* _ListParts,
-                 std::map<int,Node*>* _NodeCuts,
-                 std::map<int,Node*>* _BinCuts,
-                 std::map<std::string,Node*>* _ObjectCuts,
-                 std::vector<std::string>* _Initializations,
-                 std::vector<int>* _TRGValues,
-                 std::map<std::string, std::pair<std::vector<float>, bool> >* _ListTables,
-                 std::map<std::string, std::vector<cntHisto> >* _cntHistos,
-                 std::map<int, std::vector<std::string> > *_systmap);
 
     std::vector<Expr*> ast;
     // map of object name to either PARENT (predefined) or TAKE type (declared)
     std::map<std::string,std::string> objectTable; // objectTable[NAME] = TYPE
     std::vector<std::string> regionTable;
-//    std::vector<std::string> regionVarsTable;
     std::vector<std::string> definitionTable;
     std::map<std::string, int> typeTable;
     std::map<std::string, std::vector<std::string>> dependencyChart;
-    std::map<std::string, Node*> parentParticleObjects;
 
-    Node* makeNode(Expr* expr);
-    Node* getFuncNode(Expr* fn);
     std::string findDep(std::string var);
     void processDefBinNode(DefineNode* dn, Expr* body);
-    void processObject(astObjectNode* on);
-    void processRegion(RegionNode* rn);
-    Node* createParentObject(std::string id);
-    myParticle* createParticle(VarNode* vn);
-    void gatherParticles(Expr* body, std::vector<myParticle*> &particles);
-    void fillFuncMaps(std::map<std::string, PropFunction> &function_map,
-                      std::map<std::string, LFunction> &lfunction_map,
-                      std::map<std::string, UnFunction> &unfunction_map,
-                      std::map<std::string, SFunction> &sfunction_map) ;
     fs::path getLibPath() const { return libPath; }
-    // std::map<std::string,pair<particleType,std::string>> particle_map;
 
   private:
     Scanner scanner;
@@ -112,25 +92,6 @@ namespace adl {
     std::string objsLib = "ext_objs.txt";
     std::string functionsLib = "ext_lib.txt";
     std::string propertiesLib = "property_vars.txt";
-
-    std::map<std::string, PropFunction> function_map;
-    std::map<std::string, LFunction> lfunction_map;
-    std::map<std::string, UnFunction> unfunction_map;
-    std::map<std::string, SFunction> sfunction_map;
-    std::map<std::string, SFunction> fsfunction_map;
-
-    // CutLang data structures.
-    std::list<std::string> *parts;
-    std::map<std::string,Node*> *NodeVars;
-    std::map<std::string, std::vector<myParticle*> >* ListParts;
-    std::map<int,Node*>* NodeCuts;
-    std::map<int,Node*>* BinCuts;
-    std::map<std::string,Node*>* ObjectCuts;
-    std::vector<std::string>* Initializations;
-    std::vector<int>* TRGValues;
-    std::map<std::string, std::pair<std::vector<float>, bool> >* ListTables;
-    std::map<std::string, std::vector<cntHisto> >*cntHistos;
-    std::map<int, std::vector<std::string> > *systmap;
 
     void incrementLocation(unsigned int loc);
   }; // end driver class

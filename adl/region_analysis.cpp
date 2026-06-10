@@ -177,7 +177,9 @@ std::string formulaSmt(const rf::Formula& f, const VarTable& vars) {
   switch (f.kind) {
     case rf::FKind::True: return "true";
     case rf::FKind::False: return "false";
-    case rf::FKind::Unknown: return "true";  // callers must project first
+    case rf::FKind::Unknown:
+    case rf::FKind::Dual:
+      return "true";  // unreachable: callers project before emission
     case rf::FKind::Leaf: return atomSmt(f.atom, vars);
     case rf::FKind::And:
     case rf::FKind::Or: {

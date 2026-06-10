@@ -87,8 +87,9 @@ int main(int argc, char **argv) {
 
   if (res == 0 && doRegionAnalysis) {
     res = adl::analyzeObjectDisjointness(drv);
-    if (res == 0 && legacyRegionReport)
-      res = adl::analyzeRegionDisjointness(drv);
+    if (legacyRegionReport)
+      std::cerr << "NOTE: --legacy-region-report is retired; the dual-encoding "
+                   "region analysis below supersedes it.\n";
     if (res == 0) {
       adl::region_analysis::AnalysisOptions aopt;
       aopt.runSmt = regionSmt;

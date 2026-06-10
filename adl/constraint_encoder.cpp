@@ -219,11 +219,6 @@ struct EncodeCtx {
   std::set<std::string> activeDefines;  // cycle guard
 };
 
-bool isCompareOp(const std::string& op) {
-  return op == "<" || op == "<=" || op == ">" || op == ">=" || op == "==" ||
-         op == "!=" || op == "~=";
-}
-
 bool isAndOp(const std::string& op) {
   return op == "AND" || op == "and" || op == "&&";
 }

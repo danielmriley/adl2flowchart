@@ -1,0 +1,10 @@
+object MET
+  take MissingET
+
+region SR_binned
+  select MET.pT > 250
+  bin MET 250 300 500
+
+region SR_gap
+  select MET.pT > 250
+  bin MET 300 500

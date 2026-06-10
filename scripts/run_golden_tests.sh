@@ -81,6 +81,10 @@ if command -v z3 >/dev/null 2>&1; then
     "bounded quantifier + ordering proves collection cut disjoint"
   check_absent "$GOLDEN/collection_quant.adl" "SR_unbounded vs SR_softlead: PROVEN DISJOINT" \
     "unbounded collection cut must not prove disjoint"
+  check "$GOLDEN/bins_partition.adl" "SR_binned \[MET\]: 3 bins; disjoint 3/3 pairs; coverage: proven" \
+    "complete binning proven disjoint and covering"
+  check "$GOLDEN/bins_partition.adl" "SR_gap \[MET\]: 2 bins; disjoint 1/1 pairs; coverage: not proven" \
+    "incomplete binning flags possible gap"
   check "$GOLDEN/vacuous_dphi.adl" "provably selects no events" \
     "dphi range axiom catches vacuous region"
   check "$GOLDEN/vacuous_dphi.adl" "SR_dead vs SR_any: PROVEN DISJOINT" \

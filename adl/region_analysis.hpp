@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "constraint_encoder.hpp"
 #include "region_formula.h"
 
 namespace adl {
@@ -45,6 +46,18 @@ struct RegionEncoding {
   int selectStmtsExact = 0;
   std::vector<std::string> dropped;
   std::set<std::string> keys;
+  std::vector<RegionBinSet> binSets;
+};
+
+// Partition verification for a region's BIN statements.
+struct BinCheckResult {
+  std::string region;
+  std::string label;        // binned variable or "conditions"
+  int bins = 0;
+  int pairsTotal = 0;
+  int pairsDisjoint = 0;    // proven non-overlapping bin pairs
+  std::string coverage;     // "proven" | "not proven" | "unknown" | "skipped"
+  std::string overlapNote;  // first unproven pair, if any
 };
 
 struct PairwiseResult {
@@ -72,6 +85,7 @@ struct AnalysisOptions {
 struct AnalysisReport {
   std::vector<RegionEncoding> regions;
   std::vector<PairwiseResult> pairwise;
+  std::vector<BinCheckResult> binChecks;
   std::vector<std::string> coverageWarnings;
   double coverageWarnThreshold = 0.5;
   int heuristicDisjoint = 0;

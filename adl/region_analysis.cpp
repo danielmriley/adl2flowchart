@@ -510,6 +510,7 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
     re.selectStmts = fi.selectStmts;
     re.selectStmtsExact = fi.selectStmtsExact;
     re.dropped = fi.dropped;
+    re.binSets = std::move(fi.binSets);
     rf::collectKeys(re.exact, re.keys);
     report.regions.push_back(std::move(re));
   }
@@ -612,8 +613,14 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
   // ---------------- batched SMT pass ----------------
   if (doSmt && (!smtPairs.empty() || !report.regions.empty())) {
     VarTable vars;
-    for (const auto& r : report.regions)
+    for (const auto& r : report.regions) {
       for (const auto& k : r.keys) vars.add(k);
+      for (const auto& bs : r.binSets) {
+        std::set<std::string> bk;
+        for (const auto& b : bs.bins) rf::collectKeys(b, bk);
+        for (const auto& k : bk) vars.add(k);
+      }
+    }
 
     auto canonParents = canonicalAncestors(drv);
 
@@ -662,6 +669,53 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       pairBlock(pc, "B", r2.plus, rf::fNot(r1.minus));   // B subset of A?
     }
 
+    // bin partition checks: bins must not overlap (within the region) and
+    // should cover the region
+    struct BinJob {
+      size_t r, s;
+      int i = -1, j = -1;       // bin pair; -1/-1 means coverage check
+      std::string status = "skipped";
+    };
+    std::vector<BinJob> binJobs;
+    for (size_t r = 0; r < report.regions.size(); ++r) {
+      const auto& reg = report.regions[r];
+      for (size_t s = 0; s < reg.binSets.size(); ++s) {
+        const auto& bs = reg.binSets[s];
+        if (bs.bins.size() < 2) continue;
+        std::set<std::string> ck = reg.keys;
+        for (const auto& b : bs.bins) rf::collectKeys(b, ck);
+        auto axioms = backgroundAxioms(ck, vars, canonParents);
+        auto emitHeader = [&](const std::string& tag) {
+          script << "(push 1)\n(echo \"" << tag << "\")\n";
+          for (const auto& ax : axioms) script << "(assert " << ax << ")\n";
+          script << "(assert " << formulaSmt(reg.plus, vars) << ")\n";
+        };
+        for (size_t i = 0; i < bs.bins.size(); ++i) {
+          for (size_t j = i + 1; j < bs.bins.size(); ++j) {
+            BinJob job;
+            job.r = r; job.s = s;
+            job.i = static_cast<int>(i); job.j = static_cast<int>(j);
+            emitHeader("BIN " + std::to_string(r) + " " + std::to_string(s) +
+                       " P " + std::to_string(i) + " " + std::to_string(j));
+            script << "(assert "
+                   << formulaSmt(rf::project(bs.bins[i], true), vars) << ")\n";
+            script << "(assert "
+                   << formulaSmt(rf::project(bs.bins[j], true), vars) << ")\n";
+            script << "(check-sat)\n(pop 1)\n";
+            binJobs.push_back(job);
+          }
+        }
+        BinJob cov;
+        cov.r = r; cov.s = s;
+        emitHeader("BIN " + std::to_string(r) + " " + std::to_string(s) + " C");
+        for (const auto& b : bs.bins)
+          script << "(assert " << formulaSmt(rf::project(rf::fNot(b), true), vars)
+                 << ")\n";
+        script << "(check-sat)\n(pop 1)\n";
+        binJobs.push_back(cov);
+      }
+    }
+
     bool ok = false;
     std::string out = runProcessCapture("z3 -T:120", script.str(), ok);
 
@@ -673,7 +727,8 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       std::string line;
       size_t curI = 0, curJ = 0;
       std::string curTag;
-      enum { NONE, PAIR, REGION } mode = NONE;
+      BinJob* curBin = nullptr;
+      enum { NONE, PAIR, REGION, BIN } mode = NONE;
       while (std::getline(iss, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
           line.pop_back();
@@ -689,9 +744,28 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
           mode = REGION;
           continue;
         }
+        if (line.rfind("BIN ", 0) == 0) {
+          std::istringstream ls(line.substr(4));
+          size_t r, s;
+          std::string kind;
+          int bi = -1, bj = -1;
+          ls >> r >> s >> kind;
+          if (kind == "P") ls >> bi >> bj;
+          curBin = nullptr;
+          for (auto& job : binJobs) {
+            if (job.r == r && job.s == s && job.i == bi && job.j == bj) {
+              curBin = &job;
+              break;
+            }
+          }
+          mode = BIN;
+          continue;
+        }
         if (mode == NONE) continue;
         if (line == "sat" || line == "unsat" || line == "unknown") {
-          if (mode == REGION) {
+          if (mode == BIN) {
+            if (curBin) curBin->status = line;
+          } else if (mode == REGION) {
             if (line == "unsat" && curI < report.regions.size())
               report.regions[curI].provenEmpty = true;
           } else {
@@ -713,6 +787,36 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
         report.coverageWarnings.push_back(
             "Region " + r.name +
             ": provably selects no events (cuts contradict physical axioms)");
+    }
+
+    // summarize bin partition results
+    for (size_t r = 0; r < report.regions.size(); ++r) {
+      const auto& reg = report.regions[r];
+      for (size_t s = 0; s < reg.binSets.size(); ++s) {
+        const auto& bs = reg.binSets[s];
+        if (bs.bins.size() < 2) continue;
+        BinCheckResult bc;
+        bc.region = reg.name;
+        bc.label = bs.label;
+        bc.bins = static_cast<int>(bs.bins.size());
+        for (const auto& job : binJobs) {
+          if (job.r != r || job.s != s) continue;
+          if (job.i >= 0) {
+            bc.pairsTotal++;
+            if (job.status == "unsat") {
+              bc.pairsDisjoint++;
+            } else if (bc.overlapNote.empty()) {
+              bc.overlapNote = bs.binLabels[job.i] + " vs " +
+                               bs.binLabels[job.j] + " " + job.status;
+            }
+          } else {
+            bc.coverage = (job.status == "unsat") ? "proven"
+                          : (job.status == "sat") ? "not proven (gap possible)"
+                                                  : job.status;
+          }
+        }
+        report.binChecks.push_back(std::move(bc));
+      }
     }
 
     // verdicts from batch results
@@ -867,6 +971,17 @@ int writeJson(const AnalysisReport& report, std::ostream& os) {
        << ", \"subset_b_in_a\": " << (p.subsetBA ? "true" : "false")
        << ", \"witness\": \"" << jsonEscape(p.smtWitness) << "\"}";
   }
+  os << "\n  ],\n  \"bin_checks\": [\n";
+  for (size_t i = 0; i < report.binChecks.size(); ++i) {
+    const auto& bc = report.binChecks[i];
+    if (i) os << ",\n";
+    os << "    {\"region\": \"" << jsonEscape(bc.region) << "\", \"label\": \""
+       << jsonEscape(bc.label) << "\", \"bins\": " << bc.bins
+       << ", \"pairs_total\": " << bc.pairsTotal
+       << ", \"pairs_disjoint\": " << bc.pairsDisjoint << ", \"coverage\": \""
+       << jsonEscape(bc.coverage) << "\", \"note\": \""
+       << jsonEscape(bc.overlapNote) << "\"}";
+  }
   os << "\n  ],\n  \"summary\": {"
      << "\"heuristic_disjoint\": " << report.heuristicDisjoint
      << ", \"smt_disjoint\": " << report.smtDisjoint
@@ -914,6 +1029,19 @@ int printReport(const AnalysisReport& report, const AnalysisOptions& opt) {
               << "%):\n";
     for (const auto& w : report.coverageWarnings)
       std::cout << "  ! " << w << "\n";
+  }
+
+  if (!report.binChecks.empty()) {
+    std::cout << "\nBin partition checks:\n";
+    for (const auto& bc : report.binChecks) {
+      std::cout << "  " << bc.region << " [" << bc.label << "]: " << bc.bins
+                << " bins; disjoint " << bc.pairsDisjoint << "/"
+                << bc.pairsTotal << " pairs";
+      if (!bc.overlapNote.empty())
+        std::cout << " (first unproven: " << bc.overlapNote << ")";
+      if (!bc.coverage.empty()) std::cout << "; coverage: " << bc.coverage;
+      std::cout << "\n";
+    }
   }
 
   std::cout << "\nPairwise:\n";

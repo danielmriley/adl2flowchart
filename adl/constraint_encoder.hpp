@@ -43,11 +43,21 @@ std::string canonicalConstraintKey(const std::string& key, Driver& drv);
 
 // ---- region formula construction ----
 
+// One partition of a region: either a boundary-list bin statement
+// ("bin MET 250 300 500" -> three formulas) or the pooled boolean bin
+// conditions of the region.
+struct RegionBinSet {
+  std::string label;
+  std::vector<std::string> binLabels;
+  std::vector<rf::Formula> bins;
+};
+
 struct RegionFormulaInfo {
   std::string name;
   std::vector<std::string> inherits;
   bool hasBins = false;
   rf::Formula formula;        // exact, may contain Unknown leaves
+  std::vector<RegionBinSet> binSets;
   int selectStmts = 0;
   int selectStmtsExact = 0;   // statements encoded without any Unknown
   int leavesTotal = 0;

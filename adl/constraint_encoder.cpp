@@ -182,6 +182,11 @@ std::string canonicalConstraintKey(const std::string& key, Driver& drv) {
   size_t dot = key.find('.');
   size_t bracket = key.find('[');
   std::string canonObj = canonicalTakeRoot(obj, drv);
+  // A bare MET-family name used as a value means its magnitude: unify
+  // "MET" with "MET.pt" so selects and bins land on the same variable.
+  if (dot == std::string::npos && bracket == std::string::npos &&
+      canonObj == "MET")
+    return "MET.pt";
   std::string suffix;
   if (bracket != std::string::npos && (dot == std::string::npos || bracket < dot))
     suffix = key.substr(bracket);
@@ -761,8 +766,51 @@ int buildRegionFormulas(Driver& drv, std::vector<RegionFormulaInfo>& out) {
         if (info && !rf::hasUnknown(f)) info->selectStmtsExact++;
         conj.push_back(std::move(f));
       } else if (stok == "BIN") {
-        // Bins partition a region; they do not constrain membership.
-        if (info) info->hasBins = true;
+        // Bins partition a region; they do not constrain membership, but
+        // we capture them for partition checking.
+        if (info) {
+          info->hasBins = true;
+          CommandNode* cn = getCommandNode(stmt);
+          Expr* cond = cn->getCondition();
+          if (cond && (cond->getToken() == "ID" || cond->getToken() == "VAR") &&
+              getVarNode(cond)->getAccSize() >= 1) {
+            // boundary list: bin VAR b0 b1 ... -> [b0,b1), ..., [bn, inf)
+            VarNode* vn = getVarNode(cond);
+            std::vector<int> bounds = vn->getAccessor();
+            std::string key = canonicalConstraintKey(vn->getId(), drv);
+            RegionBinSet set;
+            set.label = vn->getId();
+            for (size_t bi = 0; bi < bounds.size(); ++bi) {
+              double lo = bounds[bi];
+              std::vector<rf::Formula> parts;
+              parts.push_back(rf::fAtom(key, rf::CmpOp::GE, lo));
+              std::string lab = vn->getId() + "[" + std::to_string(bounds[bi]);
+              if (bi + 1 < bounds.size()) {
+                parts.push_back(
+                    rf::fAtom(key, rf::CmpOp::LT, bounds[bi + 1]));
+                lab += "," + std::to_string(bounds[bi + 1]) + ")";
+              } else {
+                lab += ",inf)";
+              }
+              set.bins.push_back(rf::fAnd(std::move(parts)));
+              set.binLabels.push_back(lab);
+            }
+            if (set.bins.size() >= 1) info->binSets.push_back(std::move(set));
+          } else {
+            // boolean bin condition: pool all of them into one set
+            RegionBinSet* pool = nullptr;
+            for (auto& s : info->binSets)
+              if (s.label == "conditions") pool = &s;
+            if (!pool) {
+              info->binSets.push_back(RegionBinSet{});
+              info->binSets.back().label = "conditions";
+              pool = &info->binSets.back();
+            }
+            pool->bins.push_back(encodeExpr(cond, ctx));
+            pool->binLabels.push_back(
+                "bin#" + std::to_string(pool->bins.size()));
+          }
+        }
       } else if (stok == "TRIGGER") {
         CommandNode* cn = getCommandNode(stmt);
         Expr* cond = cn->getCondition();

@@ -1,0 +1,8 @@
+object jets
+  take Jet
+
+region SR_btag
+  select jets[0].BTag == 1
+
+region SR_nobtag
+  select not jets[0].BTag == 1

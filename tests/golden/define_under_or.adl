@@ -1,0 +1,11 @@
+object MET
+  take MissingET
+
+define lowmet = MET.pT < 100
+
+region SR_a
+  select lowmet || MET.pT > 500
+
+region SR_b
+  select MET.pT > 150
+  select MET.pT < 400

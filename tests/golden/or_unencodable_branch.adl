@@ -1,0 +1,12 @@
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+object MET
+  take MissingET
+
+region SR_orcut
+  select MET.pT > 500 || aplanarity(jets) > 0.9
+
+region SR_lowmet
+  select MET.pT < 100

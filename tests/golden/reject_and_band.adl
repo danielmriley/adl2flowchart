@@ -1,0 +1,9 @@
+object MET
+  take MissingET
+
+region SR_band
+  reject MET.pT > 100 && MET.pT < 200
+
+region SR_mid
+  select MET.pT > 120
+  select MET.pT < 180

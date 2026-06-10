@@ -4,6 +4,11 @@ all:
 	@make -s -C ./adl/
 	@cp ./adl/smash ./
 
+test: all
+	@./scripts/run_golden_tests.sh
+	@./scripts/validate_corpus.sh
+	@./scripts/phase2_z3_spike.sh
+
 test-disjoint: all
 	@./scripts/run_golden_tests.sh
 

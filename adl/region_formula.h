@@ -36,13 +36,16 @@ struct Atom {
   const std::string& key() const { return terms[0].key; }
 };
 
-enum class FKind { True, False, Unknown, Leaf, And, Or };
+// Dual: a construct whose over- and under-approximations differ (e.g. a
+// bounded quantifier expansion). kids[0] is the formula to use when
+// over-approximating, kids[1] when under-approximating.
+enum class FKind { True, False, Unknown, Leaf, And, Or, Dual };
 
 struct Formula {
   FKind kind = FKind::True;
   Atom atom;                  // valid when kind == Leaf
-  std::vector<Formula> kids;  // valid when kind == And / Or
-  std::string note;           // valid when kind == Unknown: what was dropped
+  std::vector<Formula> kids;  // And/Or children; Dual: {plus, minus}
+  std::string note;           // Unknown/Dual: what was dropped or bounded
 };
 
 inline Formula fTrue() { return Formula{}; }
@@ -111,6 +114,15 @@ inline Formula fOr(std::vector<Formula> kids) {
   return f;
 }
 
+inline Formula fDual(Formula plus, Formula minus, const std::string& note) {
+  Formula f;
+  f.kind = FKind::Dual;
+  f.kids.push_back(std::move(plus));
+  f.kids.push_back(std::move(minus));
+  f.note = note;
+  return f;
+}
+
 inline CmpOp negateOp(CmpOp op) {
   switch (op) {
     case CmpOp::LT: return CmpOp::GE;
@@ -147,6 +159,9 @@ inline Formula fNot(const Formula& f) {
       for (const auto& k : f.kids) kids.push_back(fNot(k));
       return fAnd(std::move(kids));
     }
+    case FKind::Dual:
+      // over-approx of ¬X is ¬(under-approx of X): branches swap
+      return fDual(fNot(f.kids[1]), fNot(f.kids[0]), f.note);
   }
   return fUnknown("negation of malformed formula");
 }
@@ -156,6 +171,7 @@ inline Formula fNot(const Formula& f) {
 inline Formula project(const Formula& f, bool overApprox) {
   switch (f.kind) {
     case FKind::Unknown: return overApprox ? fTrue() : fFalse();
+    case FKind::Dual: return project(f.kids[overApprox ? 0 : 1], overApprox);
     case FKind::And: {
       std::vector<Formula> kids;
       kids.reserve(f.kids.size());
@@ -179,16 +195,25 @@ inline void collectKeys(const Formula& f, std::set<std::string>& keys) {
 }
 
 inline void countLeaves(const Formula& f, int& total, int& unknown) {
-  if (f.kind == FKind::Leaf) total++;
+  if (f.kind == FKind::Leaf) {
+    total++;
+    return;
+  }
   if (f.kind == FKind::Unknown) {
     total++;
     unknown++;
+    return;
+  }
+  if (f.kind == FKind::Dual) {
+    total++;  // partially encoded: one source-level leaf
+    return;
   }
   for (const auto& k : f.kids) countLeaves(k, total, unknown);
 }
 
+// "Exact" means both projections coincide: no Unknown and no Dual.
 inline bool hasUnknown(const Formula& f) {
-  if (f.kind == FKind::Unknown) return true;
+  if (f.kind == FKind::Unknown || f.kind == FKind::Dual) return true;
   for (const auto& k : f.kids) {
     if (hasUnknown(k)) return true;
   }
@@ -196,7 +221,10 @@ inline bool hasUnknown(const Formula& f) {
 }
 
 inline void collectUnknownNotes(const Formula& f, std::vector<std::string>& out) {
-  if (f.kind == FKind::Unknown && !f.note.empty()) out.push_back(f.note);
+  if ((f.kind == FKind::Unknown || f.kind == FKind::Dual) && !f.note.empty()) {
+    out.push_back(f.note);
+    return;
+  }
   for (const auto& k : f.kids) collectUnknownNotes(k, out);
 }
 

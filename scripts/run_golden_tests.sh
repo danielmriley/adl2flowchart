@@ -77,6 +77,10 @@ if command -v z3 >/dev/null 2>&1; then
     "tag {0,1} axiom proves threshold complement disjoint"
   check "$GOLDEN/ratio_met.adl" "SR_ratio vs SR_lowmet: PROVEN DISJOINT.*exact" \
     "ratio cut (L/D op c) encoded exactly"
+  check "$GOLDEN/collection_quant.adl" "SR_allhard vs SR_softlead: PROVEN DISJOINT" \
+    "bounded quantifier + ordering proves collection cut disjoint"
+  check_absent "$GOLDEN/collection_quant.adl" "SR_unbounded vs SR_softlead: PROVEN DISJOINT" \
+    "unbounded collection cut must not prove disjoint"
   check "$GOLDEN/vacuous_dphi.adl" "provably selects no events" \
     "dphi range axiom catches vacuous region"
   check "$GOLDEN/vacuous_dphi.adl" "SR_dead vs SR_any: PROVEN DISJOINT" \

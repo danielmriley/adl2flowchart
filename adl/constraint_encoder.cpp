@@ -555,6 +555,48 @@ rf::Formula encodeRatioCompare(Expr* ratioSide, rf::CmpOp op, double c,
   return rf::fOr({branch(true), branch(false)});
 }
 
+// Bounded expansion of a cut on a collection property without an index,
+// e.g. "pT(jets) > 100". The intended quantifier (any/all elements) is
+// ambiguous, so each projection must be sound under BOTH readings:
+//   plus  = (∃ i<k: size>i ∧ cut(C[i]))  ∨  size > k
+//           — any event passing under either reading lands here
+//   minus = (∀ i<k: size>i ⇒ cut(C[i])) ∧ 1 <= size <= k
+//           — with all elements covered and nonempty, ∀ holds and ∀⇒∃
+constexpr int kQuantBound = 3;
+
+rf::Formula tryBoundedCollectionCut(const std::string& key, rf::CmpOp op,
+                                    double value, EncodeCtx& ctx) {
+  if (key.find('(') != std::string::npos ||
+      key.find('[') != std::string::npos)
+    return rf::fUnknown("");
+  size_t dot = key.find('.');
+  if (dot == std::string::npos || key.find('.', dot + 1) != std::string::npos)
+    return rf::fUnknown("");
+  std::string root = key.substr(0, dot);
+  std::string prop = key.substr(dot + 1);
+  std::string sizeKey = "size(" + root + ")";
+
+  std::vector<rf::Formula> existAlts;
+  std::vector<rf::Formula> forallParts;
+  for (int i = 0; i < kQuantBound; ++i) {
+    std::string elemKey = root + "[" + std::to_string(i) + "]." + prop;
+    rf::Formula present = rf::fAtom(sizeKey, rf::CmpOp::GE, i + 1);
+    rf::Formula absent = rf::fAtom(sizeKey, rf::CmpOp::LE, i);
+    rf::Formula cut = rf::fAtom(elemKey, op, value);
+    existAlts.push_back(rf::fAnd({present, cut}));
+    forallParts.push_back(rf::fOr({absent, cut}));
+  }
+  existAlts.push_back(rf::fAtom(sizeKey, rf::CmpOp::GT, kQuantBound));
+  forallParts.push_back(rf::fAtom(sizeKey, rf::CmpOp::GE, 1));
+  forallParts.push_back(rf::fAtom(sizeKey, rf::CmpOp::LE, kQuantBound));
+
+  return rf::fDual(rf::fOr(std::move(existAlts)),
+                   rf::fAnd(std::move(forallParts)),
+                   "bounded any/all expansion (k=" +
+                       std::to_string(kQuantBound) + ") for collection cut: " +
+                       key);
+}
+
 rf::Formula leafFromCompare(BinNode* bn, EncodeCtx& ctx) {
   std::string op = bn->getOp();
   Expr* lhs = bn->getLHS();
@@ -587,15 +629,19 @@ rf::Formula leafFromCompare(BinNode* bn, EncodeCtx& ctx) {
     return atomOrConst(std::move(diff), fop, rhsConst);
   }
 
-  // Diagnose for the dropped-cuts report.
+  // Collection cut without an index: bounded quantifier expansion.
   double num = 0.0;
   Expr* varSide = nullptr;
   if (numericValueOf(rhs, num)) varSide = lhs;
   else if (numericValueOf(lhs, num)) varSide = rhs;
   if (varSide) {
     std::string key = keyFromExpr(varSide, ctx);
-    if (!key.empty() && !keyIsEventScalar(key, ctx, true))
+    if (!key.empty() && !keyIsEventScalar(key, ctx, true)) {
+      rf::CmpOp o = (varSide == rhs) ? flipCmp(fop) : fop;
+      rf::Formula d = tryBoundedCollectionCut(key, o, num, ctx);
+      if (d.kind == rf::FKind::Dual) return d;
       return rf::fUnknown("collection-level cut without index: " + key);
+    }
   }
   return rf::fUnknown("cannot encode comparison (" + op + ")");
 }

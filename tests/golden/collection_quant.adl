@@ -1,0 +1,13 @@
+object jets
+  take Jet
+
+region SR_allhard
+  select size(jets) >= 1
+  select size(jets) <= 2
+  select pT(jets) > 100
+
+region SR_unbounded
+  select pT(jets) > 100
+
+region SR_softlead
+  select pT(jets[0]) < 50

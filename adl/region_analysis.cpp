@@ -223,9 +223,8 @@ std::vector<std::string> backgroundAxioms(
     const std::map<std::string, std::set<std::string>>& canonParents) {
   std::vector<std::string> axioms;
 
-  // collection -> index -> pt-key   and   collection -> max index used
+  // collection -> index -> pt-key
   std::map<std::string, std::map<int, std::string>> ptKeys;
-  std::map<std::string, int> maxIndex;
   std::set<std::string> sizeRoots;
 
   for (const auto& k : keys) {
@@ -235,9 +234,6 @@ std::vector<std::string> backgroundAxioms(
     }
     KeyIndexProp kip;
     if (!parseIndexedKey(k, kip)) continue;
-    auto mi = maxIndex.find(kip.collection);
-    if (mi == maxIndex.end() || kip.index > mi->second)
-      maxIndex[kip.collection] = kip.index;
     if (kip.prop == "pt") ptKeys[kip.collection][kip.index] = k;
   }
 
@@ -253,12 +249,10 @@ std::vector<std::string> backgroundAxioms(
     }
   }
 
-  // Referencing C[i] implies the collection has at least i+1 elements.
-  for (const auto& mi : maxIndex) {
-    if (!sizeRoots.count(mi.first)) continue;
-    axioms.push_back("(>= " + vars.var("size(" + mi.first + ")") + " " +
-                     std::to_string(mi.second + 1) + ")");
-  }
+  // NOTE: no "referencing C[i] implies size(C) >= i+1" axiom — references
+  // can sit under guards (ITE conditions, bounded quantifier expansions)
+  // where the element need not exist, so that implication is not a truth
+  // about every event.
 
   // size is non-negative.
   for (const auto& r : sizeRoots)
@@ -510,7 +504,7 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
     re.exact = fi.formula;
     re.plus = rf::project(fi.formula, /*overApprox=*/true);
     re.minus = rf::project(fi.formula, /*overApprox=*/false);
-    re.isExact = (fi.leavesUnknown == 0);
+    re.isExact = !rf::hasUnknown(fi.formula);
     re.leavesTotal = fi.leavesTotal;
     re.leavesUnknown = fi.leavesUnknown;
     re.selectStmts = fi.selectStmts;

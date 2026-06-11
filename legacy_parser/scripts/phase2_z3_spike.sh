@@ -3,7 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMASH="${SMASH:-$ROOT/smash}"
-FILE="$ROOT/examples/CMS/CMS-SUS-16-033_Delphes.adl"
+FILE="$ROOT/../examples/CMS/CMS-SUS-16-033_Delphes.adl"
+cd "$ROOT"
 
 if [[ ! -x "$SMASH" ]]; then make -C "$ROOT"; fi
 if ! command -v z3 >/dev/null 2>&1; then

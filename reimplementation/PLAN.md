@@ -128,7 +128,7 @@ spec/audit), legacy-better (fix ADL2 before the gate), or spec change
 (document in PARITY.md). Performance: ≤ 2× legacy wall-clock on
 SUS-16-033 (expect faster via native incremental solving).
 
-Exit: signed-off `retry/PARITY.md`; legacy marked deprecated in the
+Exit: signed-off `reimplementation/PARITY.md`; legacy marked deprecated in the
 README; `make test` switched to ADL2 with the legacy run kept as a
 nightly comparison for one release cycle.
 

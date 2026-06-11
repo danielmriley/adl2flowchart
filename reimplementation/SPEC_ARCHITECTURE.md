@@ -7,7 +7,7 @@ and ownership safety are first-class requirements that Rust meets natively.
 ## 1. Workspace layout
 
 ```
-retry/                      (this spec)
+reimplementation/          (this spec)
 adl2/                       (cargo workspace — created in Phase 1)
 ├── crates/
 │   ├── adl-syntax      lexer, recursive-descent parser, AST, spans, snapshots

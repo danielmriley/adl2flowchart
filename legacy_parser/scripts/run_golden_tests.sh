@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMASH="${SMASH:-$ROOT/smash}"
 GOLDEN="$ROOT/tests/golden"
+cd "$ROOT"
 
 if [[ ! -x "$SMASH" ]]; then
   echo "Build smash first: make"

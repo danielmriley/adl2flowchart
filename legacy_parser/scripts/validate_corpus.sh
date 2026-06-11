@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMASH="${SMASH:-$ROOT/smash}"
 cd "$ROOT"
+EXAMPLES="${EXAMPLES:-$ROOT/../examples}"
 
 if [[ ! -x "$SMASH" ]]; then make; fi
 
@@ -15,7 +16,7 @@ while IFS= read -r -d '' f; do
     echo "FAIL $f"
     bad=$((bad+1))
   fi
-done < <(find examples -name '*.adl' -print0)
+done < <(find "$EXAMPLES" -name '*.adl' -print0)
 echo "Parsed $n files, failures: $bad"
 
 echo "=== Region analysis sweep (-r) ==="
@@ -25,7 +26,7 @@ while IFS= read -r -d '' f; do
     echo "FAIL -r $f"
     rbad=$((rbad+1))
   fi
-done < <(find examples -name '*.adl' -print0)
+done < <(find "$EXAMPLES" -name '*.adl' -print0)
 echo "Region analysis $n files, failures: $rbad"
 
 if [[ $bad -ne 0 || $rbad -ne 0 ]]; then exit 1; fi

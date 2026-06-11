@@ -1,8 +1,8 @@
-adl/location.hh
-adl/Parser.cpp
-adl/Parser.h
-adl/Scanner.cpp
-adl/smash
+legacy_parser/adl/location.hh
+legacy_parser/adl/Parser.cpp
+legacy_parser/adl/Parser.h
+legacy_parser/adl/Scanner.cpp
+legacy_parser/adl/smash
 
 ast.dot
 ast.pdf
@@ -10,6 +10,11 @@ fc.dot
 fc.pdf
 
 smash
+legacy_parser/smash
+legacy_parser/ast.dot
+legacy_parser/fc.dot
+legacy_parser/ast.pdf
+legacy_parser/fc.pdf
 # LaTeX build artifacts
 docs/*.aux
 docs/*.log

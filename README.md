@@ -1,5 +1,15 @@
 # ADL Flowchart Generation
 
+Repository layout:
+
+- **`legacy_parser/`** — the original flex/bison C++ tool (`smash`):
+  parsing, DOT visualization, and the dual-encoding region
+  disjointness/overlap analysis. Build and run from inside that folder.
+- **`reimplementation/`** — the ADL2 from-scratch re-implementation:
+  specs, plan, and (eventually) the Rust workspace.
+- **`examples/`** — the shared ADL corpus used by both.
+- **`docs/`** — audits, reports, and plans.
+
 ## Dependencies
 
 `flex`, `bison`, `graphviz`, and `make` are required.
@@ -12,11 +22,13 @@ apt install flex bison graphviz make
 
 ## To compile
 
-Run `make` and the executeable `smash` will be generated.
+Run `make` at the repo root (delegates to `legacy_parser/`) or inside
+`legacy_parser/`; the executable `legacy_parser/smash` will be generated.
 
 To run:
 
 ```bash
+cd legacy_parser
 ./smash <FILE>
 ./smash -r <FILE>   # also run object/region disjointness analysis (stdout)
 ```

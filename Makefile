@@ -1,22 +1,12 @@
-# Makefile of adl root dir
+# Root delegator. Legacy tool lives in legacy_parser/; the ADL2
+# reimplementation spec (and eventually the adl2/ workspace) lives in
+# reimplementation/.
 
 all:
-	@make -s -C ./adl/
-	@cp ./adl/smash ./
+	@$(MAKE) -s -C legacy_parser
 
-test: all
-	@./scripts/run_golden_tests.sh
-	@./scripts/validate_corpus.sh
-	@./scripts/phase2_z3_spike.sh
-
-test-disjoint: all
-	@./scripts/run_golden_tests.sh
-
-test-corpus: all
-	@./scripts/validate_corpus.sh
-
-test-z3-spike: all
-	@./scripts/phase2_z3_spike.sh
+test:
+	@$(MAKE) -s -C legacy_parser test
 
 clean:
-	@make -C ./adl/ -f Makefile clean
+	@$(MAKE) -s -C legacy_parser clean

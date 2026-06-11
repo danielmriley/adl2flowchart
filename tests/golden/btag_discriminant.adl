@@ -1,0 +1,10 @@
+object jets
+  take Jet
+
+region SR_a
+  select jets[0].btagDeepB > 0.2
+  select jets[0].btagDeepB < 0.8
+
+region SR_b
+  select jets[0].btagDeepB > 0.3
+  select jets[0].btagDeepB < 0.7

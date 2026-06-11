@@ -1,0 +1,15 @@
+object eles
+  take Ele
+
+object muons
+  take Muo
+
+region SR_a
+  select size(eles) >= 1
+  select size(muons) >= 1
+  select dEta(eles[0], muons[0]) > 1
+
+region SR_b
+  select size(eles) >= 1
+  select size(muons) >= 1
+  select dEta(muons[0], eles[0]) > 1

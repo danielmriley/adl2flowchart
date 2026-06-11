@@ -1,0 +1,11 @@
+object MET
+  take MissingET
+
+define halfmet = MET.pT / 2
+
+region SR_a
+  select MET.pT > 100
+  select halfmet < 10
+
+region SR_b
+  select MET.pT > 100

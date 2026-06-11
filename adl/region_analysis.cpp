@@ -260,6 +260,25 @@ std::vector<std::string> backgroundAxioms(
   for (const auto& r : sizeRoots)
     axioms.push_back("(>= " + vars.var("size(" + r + ")") + " 0)");
 
+  // Reversed-argument angular twins: dphi(A,B) and dphi(B,A) are equal
+  // under the absolute convention and negatives under the signed one.
+  // The disjunction holds under both, so it is a valid axiom either way.
+  for (const auto& k : keys) {
+    size_t par = k.find('(');
+    if (par == std::string::npos || k.back() != ')') continue;
+    std::string fn = k.substr(0, par);
+    if (fn != "dphi" && fn != "deta") continue;
+    std::string args = k.substr(par + 1, k.size() - par - 2);
+    size_t comma = args.find(',');
+    if (comma == std::string::npos) continue;
+    std::string rev = fn + "(" + args.substr(comma + 1) + "," +
+                      args.substr(0, comma) + ")";
+    if (keys.count(rev) && k < rev) {
+      axioms.push_back("(or (= " + vars.var(k) + " " + vars.var(rev) +
+                       ") (= " + vars.var(k) + " (- " + vars.var(rev) + ")))");
+    }
+  }
+
   // Physical ranges (true of every event; sound in both proof directions).
   for (const auto& k : keys) {
     const std::string& v = vars.var(k);
@@ -283,9 +302,9 @@ std::vector<std::string> backgroundAxioms(
     if (prop == "pt" || prop == "m" || prop == "mass" || prop == "e" ||
         prop == "energy" || prop == "ht") {
       axioms.push_back("(>= " + v + " 0.0)");
-    } else if (prop.find("btag") != std::string::npos ||
-               prop.find("ctag") != std::string::npos ||
-               prop.find("tautag") != std::string::npos) {
+    } else if (prop == "btag" || prop == "ctag" || prop == "tautag") {
+      // exact names only: properties like btagDeepB are continuous
+      // discriminants, not {0,1} booleans
       axioms.push_back("(or (= " + v + " 0.0) (= " + v + " 1.0))");
     }
   }
@@ -313,10 +332,15 @@ std::map<std::string, std::set<std::string>> canonicalAncestors(Driver& drv) {
   std::map<std::string, std::set<std::string>> direct;
   for (const auto& kv : parents) {
     std::string c = canonicalTakeRoot(kv.first, drv);
+    std::set<std::string> srcs;
     for (const auto& p : kv.second) {
       std::string cp = canonicalTakeRoot(p, drv);
-      if (cp != c) direct[c].insert(cp);
+      if (cp != c) srcs.insert(cp);
     }
+    // Only a single-source take is a subset (size(child) <= size(parent)).
+    // Multiple sources mean a union, where that axiom is false for any
+    // event containing both species.
+    if (srcs.size() == 1) direct[c].insert(*srcs.begin());
   }
   // transitive closure (small graphs)
   std::map<std::string, std::set<std::string>> closed = direct;
@@ -483,11 +507,28 @@ std::string summarizeModel(const std::string& out) {
 
 struct PairChecks {
   size_t i = 0, j = 0;
+  bool angularTwins = false;  // both arg orders of a dphi/deta pair present
   std::string plusStatus = "skipped";
   std::string minusStatus = "skipped";
   std::string subsetABStatus = "skipped";
   std::string subsetBAStatus = "skipped";
 };
+
+bool hasAngularTwins(const std::set<std::string>& keys) {
+  for (const auto& k : keys) {
+    size_t par = k.find('(');
+    if (par == std::string::npos || k.back() != ')') continue;
+    std::string fn = k.substr(0, par);
+    if (fn != "dphi" && fn != "deta") continue;
+    std::string args = k.substr(par + 1, k.size() - par - 2);
+    size_t comma = args.find(',');
+    if (comma == std::string::npos) continue;
+    if (keys.count(fn + "(" + args.substr(comma + 1) + "," +
+                   args.substr(0, comma) + ")"))
+      return true;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -596,6 +637,9 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
         PairChecks pc;
         pc.i = i;
         pc.j = j;
+        std::set<std::string> pk = r1.keys;
+        pk.insert(r2.keys.begin(), r2.keys.end());
+        pc.angularTwins = hasAngularTwins(pk);
         smtPairs.push_back(pc);
       } else if (!decided) {
         if (pr.sharedConstraintDimension) {
@@ -764,6 +808,13 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
           continue;
         }
         if (mode == NONE) continue;
+        if (line.rfind("(error", 0) == 0) {
+          // z3 rejected something in this block; its result is meaningless
+          // and, if an assert was dropped, SAT answers would be unsound.
+          if (mode == BIN && curBin) curBin->status = "error";
+          mode = NONE;
+          continue;
+        }
         if (line == "sat" || line == "unsat" || line == "unknown") {
           if (mode == BIN) {
             if (curBin) curBin->status = line;
@@ -855,6 +906,16 @@ int runAnalysis(Driver& drv, const AnalysisOptions& opt, AnalysisReport& report)
       if (pr->subsetAB || pr->subsetBA) report.subsetPairs++;
 
       if (pc.minusStatus == "sat") {
+        if (pc.angularTwins) {
+          // a model exists, but whether it is realizable depends on the
+          // (unknown) sign convention relating dphi(A,B) to dphi(B,A)
+          pr->kind = RelationKind::PossiblyOverlapping;
+          pr->reason =
+              "SMT: SAT, but reversed-argument angular cuts make the verdict "
+              "convention-dependent";
+          report.possiblyOverlap++;
+          continue;
+        }
         if (pr->sharedConstraintDimension) {
           pr->kind = RelationKind::ProvenOverlapping;
           pr->reason = pr->exactPair

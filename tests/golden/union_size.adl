@@ -1,0 +1,18 @@
+object eles
+  take Ele
+
+object muons
+  take Muo
+
+object leptons
+  take union(eles, muons)
+
+region SR_a
+  select size(leptons) >= 2
+  select size(eles) == 1
+  select size(muons) == 1
+
+region SR_b
+  select size(eles) == 1
+  select size(muons) == 1
+  select size(leptons) >= 2

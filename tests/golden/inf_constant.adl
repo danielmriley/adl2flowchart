@@ -1,0 +1,11 @@
+object MET
+  take MissingET
+
+object eles
+  take Ele
+
+region SR_a
+  select MET.pT + eles[0].pT > 100 / 0
+
+region SR_b
+  select MET.pT > 50

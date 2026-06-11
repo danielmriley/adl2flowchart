@@ -85,6 +85,19 @@ if command -v z3 >/dev/null 2>&1; then
     "complete binning proven disjoint and covering"
   check "$GOLDEN/bins_partition.adl" "SR_gap \[MET\]: 2 bins; disjoint 1/1 pairs; coverage: not proven" \
     "incomplete binning flags possible gap"
+  # ---- audit regression suite (June 2026 adversarial audit) ----
+  check_absent "$GOLDEN/quant_empty_forall.adl" "SR_nojets vs SR_hardjets: PROVEN (DISJOINT|OVERLAPPING)" \
+    "empty collection under all-reading: no proven verdict"
+  check "$GOLDEN/define_arith.adl" "SR_a vs SR_b: PROVEN DISJOINT" \
+    "define in arithmetic is inlined (no opaque free scalar)"
+  check_absent "$GOLDEN/angular_order.adl" "SR_a vs SR_b: PROVEN (DISJOINT|OVERLAPPING)" \
+    "reversed angular args stay convention-neutral"
+  check_absent "$GOLDEN/union_size.adl" "provably selects no events" \
+    "union take must not get subset size axiom"
+  check_absent "$GOLDEN/inf_constant.adl" "PROVEN OVERLAPPING" \
+    "non-finite constant cut becomes Unknown, not dropped assert"
+  check "$GOLDEN/btag_discriminant.adl" "SR_a vs SR_b: PROVEN OVERLAPPING" \
+    "continuous btag discriminant not forced to {0,1}"
   check "$GOLDEN/vacuous_dphi.adl" "provably selects no events" \
     "dphi range axiom catches vacuous region"
   check "$GOLDEN/vacuous_dphi.adl" "SR_dead vs SR_any: PROVEN DISJOINT" \

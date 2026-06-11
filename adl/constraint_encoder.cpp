@@ -241,11 +241,14 @@ bool numericValueOf(Expr* e, double& out) {
   std::string t = e->getToken();
   if (t == "INT" || t == "REAL") {
     out = e->value();
-    return true;
+    return std::isfinite(out);
   }
   if (t == "EXPROP" || t == "FACTOROP") {
     double v = e->value();
-    if (!std::isnan(v)) {
+    // non-finite constants (e.g. 100/0) must never reach the SMT layer:
+    // z3 rejects the literal, drops the assert, and the weakened formula
+    // would corrupt SAT-direction proofs
+    if (std::isfinite(v)) {
       out = v;
       return true;
     }
@@ -307,7 +310,10 @@ std::string keyFromFunction(FunctionNode* fn, EncodeCtx& ctx) {
     std::string a = keyFromExpr(params[0], ctx);
     std::string b = keyFromExpr(params[1], ctx);
     if (a.empty() || b.empty()) return "";
-    if (a > b) std::swap(a, b);
+    // dR is symmetric, so argument order may be normalized. dPhi/dEta are
+    // antisymmetric under the signed convention (dphi(x,y) = -dphi(y,x)),
+    // so merging reversed-argument keys could equate different quantities.
+    if (lowname == "dr" && a > b) std::swap(a, b);
     return lowname + "(" + a + "," + b + ")";
   }
 
@@ -451,6 +457,24 @@ bool linearize(Expr* e, EncodeCtx& ctx, LinExpr& out) {
   }
   std::string t = e->getToken();
   if (t == "ID" || t == "VAR" || t == "FUNCTION") {
+    // Defines must be inlined here, not keyed as opaque scalars: an opaque
+    // variable loses the functional link to its body, and an overlap
+    // witness could then assign it a value the body forbids.
+    if (t != "FUNCTION") {
+      auto dit = ctx.defineBodies.find(e->getId());
+      if (dit != ctx.defineBodies.end() &&
+          !ctx.activeDefines.count(e->getId())) {
+        ctx.activeDefines.insert(e->getId());
+        LinExpr body;
+        bool ok = linearize(dit->second, ctx, body);
+        ctx.activeDefines.erase(e->getId());
+        if (ok) {
+          out.add(body, 1.0);
+          return true;
+        }
+        return false;  // un-linearizable define: Unknown, never opaque
+      }
+    }
     std::string key = keyFromExpr(e, ctx);
     if (key.empty() || !keyIsEventScalar(key, ctx, false)) return false;
     LinExpr one;
@@ -587,6 +611,9 @@ rf::Formula tryBoundedCollectionCut(const std::string& key, rf::CmpOp op,
     forallParts.push_back(rf::fOr({absent, cut}));
   }
   existAlts.push_back(rf::fAtom(sizeKey, rf::CmpOp::GT, kQuantBound));
+  // Under the all-elements reading an EMPTY collection passes vacuously,
+  // so the over-approximation must include size == 0 as well.
+  existAlts.push_back(rf::fAtom(sizeKey, rf::CmpOp::LE, 0));
   forallParts.push_back(rf::fAtom(sizeKey, rf::CmpOp::GE, 1));
   forallParts.push_back(rf::fAtom(sizeKey, rf::CmpOp::LE, kQuantBound));
 

@@ -18,11 +18,21 @@ level constructs, with explicit compatibility notes below.
 
 ## 2. Lexical structure
 
-- **Encoding/whitespace**: UTF-8; space/tab separate tokens; newlines are
-  *not* significant to the grammar (statements are keyword-introduced),
-  but the lexer records line/column spans for every token.
+- **Encoding/whitespace**: UTF-8; space/tab separate tokens. Newlines
+  are insignificant *except* as terminators for the four greedy
+  token-sequence productions (`info-line`, `boundary-list`, `counts-stmt`
+  tails, table rows), which end at end-of-line or at the next statement
+  keyword, whichever comes first. The lexer emits a NEWLINE token that
+  only those productions consult; all spans carry line/column.
 - **Comments**: `#` to end of line.
-- **Identifiers**: `[A-Za-z][A-Za-z0-9_]*`. Case is preserved in
+- **Identifiers**: `[A-Za-z][A-Za-z0-9]*` segments joined by `_` only
+  when the next character is a letter:
+  `ident = [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }`.
+  An `_` followed by a digit is NOT part of the identifier — it is the
+  underscore-indexing operator (`goodJets_1` lexes as `goodJets` `_` `1`;
+  live in the corpus: ex04, ex10, CMS-SUS-16-033). `m_T2`, `HLT_iso_mu`
+  remain single identifiers. The lexer emits a note when an identifier is
+  split this way so ambiguous intent is visible. Case is preserved in
   diagnostics; resolution is case-insensitive **[VERIFY]** (legacy corpus
   mixes `Size`/`size`, `pT`/`pt`).
 - **Keywords** (reserved, case-insensitive): `define def object obj
@@ -31,6 +41,8 @@ level constructs, with explicit compatibility notes below.
   process counts countsformat print save sort all none and or not true
   false`.
 - **Numbers**: unsigned `[0-9]+` (int) and `[0-9]+ "." [0-9]+` (real).
+  No scientific notation in v1 (corpus-checked: none used); `1e6` is a
+  lexical error with a "write 1000000.0" help.
   **No signed-literal lexing**: negation is the grammar's unary minus,
   valid in every numeric position (expressions, range bounds, bin
   boundaries, table cells). This removes the legacy `5-3`/table-cell
@@ -79,7 +91,6 @@ bin-stmt        = "bin" [ string ] bin-body ;
 bin-body        = postfix boundary-list       (* boundary-list binning *)
                 | condition ;                 (* boolean bin *)
 boundary-list   = signed-num signed-num { signed-num } ;
-weight-stmt     = "weight" ident ( signed-num | ident | func-call ) ;
 trigger-stmt    = "trigger" condition ;
 histo-stmt      = "histo" ident "," string { "," histo-arg } ;
 
@@ -103,10 +114,35 @@ primary         = number | ident | func-call
                 | "|" additive "|"                  (* abs *)
                 | "{" arg-list "}" ident ;          (* braced property *)
 func-call       = ident "(" [ arg-list ] ")" ;
-arg-list        = arg { ("," ) arg } ;              (* see §3.1 *)
-index           = [ "-" ] integer ;
+arg-list        = arg { "," arg } ;
+arg             = particle-list | condition | string | path-token ;
+particle-list   = postfix postfix { postfix } ;   (* >=2 adjacent object
+                     refs form one ParticleList node: pT(jets[0] jets[1]),
+                     comb(...) args — divergence 7 *)
+path-token      = (* bare weight-file token containing "-"/"."/"/";
+                     only valid as an arg; deprecation warning *) ;
+index           = [ "-" ] integer ;               (* negative pending OPEN-3 *)
 signed-num      = [ "-" ] number ;
+
+info-line       = ident { ident | string | signed-num } ;
+table-block     = "table" ident "tabletype" ident "nvars" integer
+                  "errors" ("true"|"false") { signed-num } ;
+countsformat-block = "countsformat" ident
+                  { "process" ident "," string { "," ident } } ;
+weight-stmt     = "weight" ( ident | "trigger" )
+                  ( signed-num | ident | func-call ) ;
+histo-arg       = signed-num | condition
+                | "[" signed-num { signed-num } "]" ;
+print-stmt      = "print" arg-list ;
+save-stmt       = "save" ident ident arg-list ;
+counts-stmt     = "counts" ident { signed-num | ident | "+" | "-" | "+-" } ;
+sort-stmt       = "sort" (* consumed to end of statement;
+                            always an Unsupported node *) ;
 ```
+`region-stmt` additionally includes `print-stmt` and `sort-stmt`.
+A bare `ident` region statement must resolve (in sema) to a prior region
+(inheritance) or to a boolean define (sugar for `select ident`); any
+other resolution is a diagnostic — never a silent no-op.
 
 ### 3.1 Deliberate divergences from the legacy grammar
 

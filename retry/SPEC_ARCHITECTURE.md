@@ -66,7 +66,9 @@ pub struct QuantityId(u32);            // interned
 pub enum Quantity {
     EventScalar(ScalarSource),         // MET.pt, scalarHT, user define (numeric)
     Size(CollectionId),
-    ElemProp { coll: CollectionId, index: u32, prop: PropId },
+    ElemProp { coll: CollectionId, index: ElemIndex, prop: PropId },
+    //        ElemIndex = FromFront(u32) | FromBack(u32)  — FromBack
+    //        gated on OPEN-3; until resolved the parser diagnoses [-n]
     AngularSep { kind: AngKind,        // DPhi | DEta | DR
                  a: ParticleRef, b: ParticleRef,
                  oriented: bool },     // DR unoriented; DPhi/DEta oriented

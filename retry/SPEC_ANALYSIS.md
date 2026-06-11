@@ -56,9 +56,10 @@ verdicts.
 ## 3. Explanations (new requirement, not in legacy)
 
 Every solver-proven verdict must answer "why": UNSAT verdicts report the
-unsat core mapped back to source spans ("disjoint because `region A
-line 12: HT [] 200 500` conflicts with `region B line 9: HT >= 500` —
-wait, those touch: the core names the actual conflicting cut pair");
+unsat core mapped back to source spans — e.g. "disjoint because
+`region A line 12: select HT [] 200 450` cannot hold together with
+`region B line 9: select HT >= 500`". The core names the minimal
+conflicting cut set, so incidental cuts never appear in the explanation.
 SAT verdicts report the witness with quantities in source notation and
 axiom-derived values marked. Cores/witnesses are part of the JSON schema.
 
@@ -75,7 +76,7 @@ axiom-derived values marked. Cores/witnesses are part of the JSON schema.
 | TAG | exact-name `btag/ctag/tautag`, `trig(·)` ∈ {0,1} | tags boolean; discriminants excluded by exact-name rule |
 | TWIN | oriented twins: `x = y ∨ x = −y` | either convention (OPEN-2) |
 | EPRED | elements of filtered F satisfy F's predicate: `size(F)>i ⇒ predF(F[i])` | take = filter (new vs legacy: element-fact propagation) |
-| IDOM | `pt(F[i]) ≤ p t(P[i])` for filtered F⊆P | ORD + SUB (new vs legacy) |
+| IDOM | `pt(F[i]) ≤ pt(P[i])` for filtered F⊆P | ORD + SUB (new vs legacy) |
 
 Prohibited-by-history: "referencing C[i] implies size(C)>i" (false under
 guards — removed in legacy after a false empty-region proof). Pairs whose
@@ -97,7 +98,9 @@ edges (SPEC_LANGUAGE divergence 5).
 - JSON (versioned schema): regions[], pairwise[] (kind, reason, witness,
   core, subset flags, exact, shared_dimensions), bin_checks[], axioms
   used, fragment diagnostics. Stable ordering.
-- Exit code reflects parse/sema errors only; verdicts never fail the run.
+- Exit code reflects parse/sema errors only; verdicts never fail the run
+  by default. `--fail-on=overlap|gap|empty|non-exact` lets CI pipelines
+  gate on physics findings explicitly.
 
 ## 7. Cross-file (forward design — Phase 8)
 

@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: ratio_met.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+== regions ==
+region SR_ratio
+  select (((MET.pt + 100) / MET.pt) < 1.5)
+region SR_lowmet
+  select (MET.pt < 150)
+== diagnostics ==

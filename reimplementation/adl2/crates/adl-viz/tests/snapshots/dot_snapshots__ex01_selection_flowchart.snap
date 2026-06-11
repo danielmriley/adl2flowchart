@@ -1,0 +1,42 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: fc
+---
+digraph flowchart {
+  rankdir=LR;
+  node [shape=box, fontname="monospace"];
+  label="ex01_selection.adl";
+  labelloc=t;
+  subgraph cluster_objects {
+    label="objects";
+    color=gray70;
+    coll0 [label="JET\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll1 [label="goodJets\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+    coll2 [label="goodbJets\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+    coll3 [label="ELECTRON\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll4 [label="goodEles\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+    coll5 [label="MUON\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll6 [label="goodMuos\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+    coll7 [label="leptons\n[union]", style=filled, fillcolor="#e0f0ff"];
+  }
+  coll0 -> coll1 [label="take"];
+  coll1 -> coll2 [label="take"];
+  coll3 -> coll4 [label="take"];
+  coll5 -> coll6 [label="take"];
+  coll4 -> coll7 [label="union"];
+  coll6 -> coll7 [label="union"];
+  subgraph cluster_regions {
+    label="regions";
+    color=gray70;
+    region0 [label="baseline\lselect true\lselect (size(goodJets) >= 3)\lselect (size(goodbJets) >= 1)\lselect (goodJets[0].pt > 200)\lselect (size(leptons) == 1)\l", style=filled, fillcolor="#f0fff0"];
+    region1 [label="singleelectron\linherit baseline\lselect (size(goodEles) == 1)\l", style=filled, fillcolor="#f0fff0"];
+    region2 [label="singlemuon\linherit baseline\lselect (size(goodMuos) == 1)\l", style=filled, fillcolor="#f0fff0"];
+  }
+  region0 -> region1 [label="inherit", style=dashed];
+  region0 -> region2 [label="inherit", style=dashed];
+  coll1 -> region0 [style=dotted, color=gray60];
+  coll2 -> region0 [style=dotted, color=gray60];
+  coll7 -> region0 [style=dotted, color=gray60];
+  coll4 -> region1 [style=dotted, color=gray60];
+  coll6 -> region2 [style=dotted, color=gray60];
+}

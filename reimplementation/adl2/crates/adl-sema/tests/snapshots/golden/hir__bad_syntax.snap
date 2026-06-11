@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: bad_syntax.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+== defines ==
+== regions ==
+region SR
+  (unresolved-ref: unsupported: `selct` does not name a prior region or a define)
+== diagnostics ==
+error: `selct` is not a statement keyword
+error: `selct` does not name a prior region or a define

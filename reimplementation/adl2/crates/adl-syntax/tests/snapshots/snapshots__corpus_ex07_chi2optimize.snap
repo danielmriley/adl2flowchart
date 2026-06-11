@@ -1,0 +1,183 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex07_chi2optimize.adl\")"
+---
+File
+  Info name=analysis @16:1
+    Line key=title items=[str:"ADL/CL ex7: Chi2 optimization for hadronic ttbar reconstruction without b tagging"]
+  Object kw=object name=goodjet @20:1
+    Take kw=take src=JET @21:3
+    Cut kw=select @22:3
+      Cmp op=>
+        Call name=pT
+          Ident JET
+        Num 30
+    Cut kw=select @23:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident JET
+        Num 2.5
+  Define kw=define name=W1 @32:1
+    Binary op=+
+      Index -1
+        Ident goodjet
+      Index -1
+        Ident goodjet
+  Define kw=define name=W2 @33:1
+    Binary op=+
+      Index -3
+        Ident goodjet
+      Index -3
+        Ident goodjet
+  Define kw=define name=Wchi2 @35:1
+    Binary op=+
+      Binary op=^
+        Binary op=/
+          Binary op=-
+            Call name=m
+              Ident W1
+            Num 80.4
+          Num 2.1
+        Num 2
+      Binary op=^
+        Binary op=/
+          Binary op=-
+            Call name=m
+              Ident W2
+            Num 80.4
+          Num 2.1
+        Num 2
+  Define kw=define name=bcand1 @39:1
+    Index -2
+      Ident goodjet
+  Define kw=define name=bcand2 @40:1
+    Index -4
+      Ident goodjet
+  Define kw=define name=Top1 @42:1
+    Binary op=+
+      Ident W1
+      Ident bcand1
+  Define kw=define name=Top2 @43:1
+    Binary op=+
+      Ident W2
+      Ident bcand2
+  Define kw=define name=topchi2 @45:1
+    Binary op=^
+      Binary op=/
+        Binary op=-
+          Call name=m
+            Ident Top1
+          Call name=m
+            Ident Top2
+        Num 4.2
+      Num 2
+  Define kw=define name=totchi2 @48:1
+    Binary op=+
+      Ident topchi2
+      Ident Wchi2
+  Region kw=histoList name=chi2histos @51:1
+    Histo name=hW1m title="W1 mass (GeV)" @52:3
+      Num 100
+      Num 0
+      Num 200
+      Call name=m
+        Ident W1
+    Histo name=hW2m title="W2 mass (GeV)" @53:3
+      Num 100
+      Num 0
+      Num 200
+      Call name=m
+        Ident W1
+    Histo name=hW1mW2m title="W2 vs W1 mass (GeV)" @54:3
+      Num 50
+      Num 0
+      Num 200
+      Num 50
+      Num 0
+      Num 200
+      Call name=m
+        Ident W1
+      Call name=m
+        Ident W2
+    Histo name=hTop1m title="Top1 mass (GeV)" @55:3
+      Num 100
+      Num 0
+      Num 400
+      Call name=m
+        Ident Top1
+    Histo name=hTop2m title="Top2 mass (GeV)" @56:3
+      Num 100
+      Num 0
+      Num 400
+      Call name=m
+        Ident Top1
+    Histo name=hTop1mTop2m title="W2 vs W1 mass (GeV)" @57:3
+      Num 50
+      Num 0
+      Num 400
+      Num 50
+      Num 0
+      Num 400
+      Call name=m
+        Ident Top1
+      Call name=m
+        Ident Top2
+    Histo name=htotchi2 title="total chi2" @58:3
+      Num 50
+      Num 0
+      Num 100
+      Ident totchi2
+  Region kw=region name=besttop @62:1
+    Cut kw=select @64:3
+      Cmp op=>=
+        Call name=Size
+          Ident goodjet
+        Num 6
+    Cut kw=select @66:3
+      Cmp op=~=
+        Ident totchi2
+        Num 0
+    RegionRef name=chi2histos @68:3
+    Cut kw=select @70:3
+      Cmp op=<
+        Ident totchi2
+        Num 20.0
+    RegionRef name=chi2histos @72:3
+---- diagnostics ----
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:32:21
+   |
+32 | define W1 = goodjet[-1] + goodjet[-1] 
+   |                     ^^ parsed, but tagged Unsupported in semantic analysis
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:32:35
+   |
+32 | define W1 = goodjet[-1] + goodjet[-1] 
+   |                                   ^^ parsed, but tagged Unsupported in semantic analysis
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:33:21
+   |
+33 | define W2 = goodjet[-3] + goodjet[-3] 
+   |                     ^^ parsed, but tagged Unsupported in semantic analysis
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:33:35
+   |
+33 | define W2 = goodjet[-3] + goodjet[-3] 
+   |                                   ^^ parsed, but tagged Unsupported in semantic analysis
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:39:25
+   |
+39 | define bcand1 = goodjet[-2] 
+   |                         ^^ parsed, but tagged Unsupported in semantic analysis
+warning: negative index: semantics reserved pending OPEN-3
+  --> examples/tutorials/ex07_chi2optimize.adl:40:25
+   |
+40 | define bcand2 = goodjet[-4] 
+   |                         ^^ parsed, but tagged Unsupported in semantic analysis
+warning: `~=` semantics are unverified (OPEN-4)
+  --> examples/tutorials/ex07_chi2optimize.adl:66:18
+   |
+66 |   select totchi2 ~= 0  
+   |                  ^^ treated as `!=` downstream, matching the legacy parser
+   = help: this warning is emitted once per file

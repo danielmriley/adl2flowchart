@@ -1,0 +1,36 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+digraph ast {
+  node [shape=box, fontname="monospace"];
+  label="disjoint_pt.adl (AST)";
+  labelloc=t;
+  n0 [label="object jets", style=filled, fillcolor="#e0f0ff"];
+  n1 [label=">"];
+  n2 [label="this.pt"];
+  n1 -> n2;
+  n3 [label="30"];
+  n1 -> n3;
+  n0 -> n1 [label="predicate"];
+  n4 [label="region SR_low", style=filled, fillcolor="#f0fff0"];
+  n5 [label=">"];
+  n6 [label="jets[0].pt"];
+  n5 -> n6;
+  n7 [label="100"];
+  n5 -> n7;
+  n4 -> n5 [label="select"];
+  n8 [label="<"];
+  n9 [label="jets[0].pt"];
+  n8 -> n9;
+  n10 [label="200"];
+  n8 -> n10;
+  n4 -> n8 [label="select"];
+  n11 [label="region SR_high", style=filled, fillcolor="#f0fff0"];
+  n12 [label=">"];
+  n13 [label="jets[0].pt"];
+  n12 -> n13;
+  n14 [label="300"];
+  n12 -> n14;
+  n11 -> n12 [label="select"];
+}

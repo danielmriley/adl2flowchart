@@ -1,0 +1,1250 @@
+//! Name resolution: AST → HIR + QuantityTable (SPEC_ARCHITECTURE §4).
+//!
+//! Resolution facts established here, by construction:
+//! - pure renames (`object X take Y`, no cuts) bind the SAME
+//!   `CollectionId` as their source (transitively);
+//! - filtered collections are distinct identities from their parents;
+//! - indexed element properties, oriented angular pairs, and external
+//!   functions intern structurally — no string canonicalization;
+//! - numeric defines inline their body HIR at every reference; boolean
+//!   defines inline their predicate; definition cycles are errors;
+//! - every HIR node carries an `InFragment`/`Unsupported(reason)` tag.
+
+use crate::dump::RenderCtx;
+use crate::ext::ExtDecls;
+use crate::hir::{
+    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirObject, HirRegion,
+    HirRegionStmt,
+};
+use crate::intern::{Symbol, SymbolTable};
+use crate::quantity::{
+    AngKind, Collection, CollectionId, ElemIndex, ElemPredId, ParticleRef, PropId, Quantity,
+    QuantityArg, QuantityId, QuantityTable, ScalarSource,
+};
+use adl_syntax::ast::{
+    self, Arg, BinBody, BinOp, CmpOp, Expr, IndexVal, ObjectKw, ObjectStmt, RegionStmt, Section,
+    TakeSource, UnaryOp,
+};
+use adl_syntax::diag::Diagnostic;
+use adl_syntax::span::Span;
+use std::collections::{HashMap, HashSet};
+
+/// Resolve a parsed file into HIR. `unit` labels the analysis unit
+/// (usually the file name); `ext` is the ingested standard library.
+#[must_use]
+pub fn analyze(file: &ast::File, unit: &str, ext: &ExtDecls) -> Hir {
+    let mut r = Resolver::new(file, ext);
+    r.run();
+    r.finish(unit)
+}
+
+/// Convenience: parse `src` and resolve it; parse diagnostics are merged
+/// in front of sema diagnostics.
+#[must_use]
+pub fn analyze_str(src: &str, unit: &str, ext: &ExtDecls) -> Hir {
+    let parsed = adl_syntax::parse(src);
+    let mut hir = analyze(&parsed.file, unit, ext);
+    let mut diags = parsed.diags;
+    diags.append(&mut hir.diags);
+    hir.diags = diags;
+    hir
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum State<T> {
+    Pending,
+    InProgress,
+    Done(T),
+}
+
+/// Expression-resolution context.
+#[derive(Default, Clone)]
+struct Ctx {
+    /// Inside an object block: the source collection being filtered.
+    elem_source: Option<CollectionId>,
+    /// Binder names meaning "this element" (single-binder take).
+    elem_aliases: HashSet<String>,
+    /// Composite binder slots (multi-binder takes).
+    binders: HashMap<String, ParticleRef>,
+    /// Inside a `trigger` statement: bare names are trigger flags.
+    in_trigger: bool,
+}
+
+/// What an expression denotes when used as an object/particle argument.
+enum Target {
+    Coll(CollectionId),
+    Particle(ParticleRef),
+    Met,
+    /// The implicit element of the enclosing object block.
+    ElemSelf,
+    None,
+}
+
+struct Resolver<'a> {
+    ext: &'a ExtDecls,
+    symbols: SymbolTable,
+    table: QuantityTable,
+    coll_names: Vec<Vec<Symbol>>,
+    elem_preds: Vec<ElemPred>,
+    elem_pred_ids: HashMap<String, ElemPredId>,
+
+    ast_objects: Vec<&'a ast::ObjectBlock>,
+    ast_defines: Vec<&'a ast::Define>,
+    ast_regions: Vec<&'a ast::RegionBlock>,
+    objects_by_key: HashMap<String, usize>,
+    defines_by_key: HashMap<String, usize>,
+
+    obj_state: Vec<State<CollectionId>>,
+    obj_hir: Vec<Option<HirObject>>,
+    def_state: Vec<State<(DefineKind, HNode)>>,
+
+    regions: Vec<HirRegion>,
+    regions_by_key: HashMap<String, usize>,
+    region_name_order: Vec<Symbol>,
+
+    diags: Vec<Diagnostic>,
+    warned_names: HashSet<String>,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(file: &'a ast::File, ext: &'a ExtDecls) -> Self {
+        let mut ast_objects = Vec::new();
+        let mut ast_defines = Vec::new();
+        let mut ast_regions = Vec::new();
+        for section in &file.sections {
+            match section {
+                Section::Object(o) => ast_objects.push(o),
+                Section::Define(d) => ast_defines.push(d),
+                Section::Region(r) => ast_regions.push(r),
+                Section::Info(_) | Section::Table(_) | Section::CountsFormat(_) => {}
+            }
+        }
+        let mut objects_by_key = HashMap::new();
+        for (i, o) in ast_objects.iter().enumerate() {
+            // First binding wins; a duplicate is diagnosed when resolved.
+            objects_by_key
+                .entry(o.name.name.to_ascii_lowercase())
+                .or_insert(i);
+        }
+        let mut defines_by_key = HashMap::new();
+        for (i, d) in ast_defines.iter().enumerate() {
+            defines_by_key
+                .entry(d.name.name.to_ascii_lowercase())
+                .or_insert(i);
+        }
+        let obj_state = vec![State::Pending; ast_objects.len()];
+        let obj_hir = vec![None; ast_objects.len()];
+        let def_state = vec![State::Pending; ast_defines.len()];
+        Self {
+            ext,
+            symbols: SymbolTable::default(),
+            table: QuantityTable::default(),
+            coll_names: Vec::new(),
+            elem_preds: Vec::new(),
+            elem_pred_ids: HashMap::new(),
+            ast_objects,
+            ast_defines,
+            ast_regions,
+            objects_by_key,
+            defines_by_key,
+            obj_state,
+            obj_hir,
+            def_state,
+            regions: Vec::new(),
+            regions_by_key: HashMap::new(),
+            region_name_order: Vec::new(),
+            diags: Vec::new(),
+            warned_names: HashSet::new(),
+        }
+    }
+
+    fn run(&mut self) {
+        for i in 0..self.ast_objects.len() {
+            self.resolve_object(i);
+        }
+        for i in 0..self.ast_defines.len() {
+            self.resolve_define(i);
+        }
+        for i in 0..self.ast_regions.len() {
+            self.resolve_region(i);
+        }
+    }
+
+    fn finish(mut self, unit: &str) -> Hir {
+        let objects = self
+            .obj_hir
+            .iter_mut()
+            .filter_map(Option::take)
+            .collect::<Vec<_>>();
+        let defines = self
+            .ast_defines
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let (kind, body) = match &self.def_state[i] {
+                    State::Done(done) => done.clone(),
+                    // Unreachable in practice: every define is resolved in
+                    // `run`; keep a defensive placeholder.
+                    _ => (
+                        DefineKind::Numeric,
+                        HNode::unsupported(d.span, "unresolved define"),
+                    ),
+                };
+                HirDefine {
+                    name: self.symbols.intern(&d.name.name),
+                    kind,
+                    body,
+                    span: d.span,
+                }
+            })
+            .collect();
+        Hir {
+            unit: unit.to_owned(),
+            symbols: self.symbols,
+            table: self.table,
+            coll_names: self.coll_names,
+            elem_preds: self.elem_preds,
+            objects,
+            defines,
+            regions: self.regions,
+            region_name_order: self.region_name_order,
+            diags: self.diags,
+        }
+    }
+
+    // ---- shared helpers -------------------------------------------------
+
+    fn warn_once(&mut self, key: String, d: Diagnostic) {
+        if self.warned_names.insert(key) {
+            self.diags.push(d);
+        }
+    }
+
+    fn intern_coll(&mut self, c: Collection) -> CollectionId {
+        let id = self.table.intern_collection(c);
+        while self.coll_names.len() <= id.0 as usize {
+            self.coll_names.push(Vec::new());
+        }
+        id
+    }
+
+    fn bind_coll_name(&mut self, id: CollectionId, name: &str) {
+        let sym = self.symbols.intern(name);
+        let names = &mut self.coll_names[id.0 as usize];
+        if !names.contains(&sym) {
+            names.push(sym);
+        }
+    }
+
+    fn render_node(&self, node: &HNode) -> String {
+        RenderCtx {
+            symbols: &self.symbols,
+            table: &self.table,
+            coll_names: &self.coll_names,
+            region_names: &self.region_name_order,
+        }
+        .node(node)
+    }
+
+    fn intern_prop(&mut self, name: &str) -> PropId {
+        let (key, display) = self.ext.prop_canon(name);
+        self.table.intern_prop(&key, &display)
+    }
+
+    fn is_met_coll(&self, id: CollectionId) -> bool {
+        matches!(self.table.collection(id), Collection::Base(sym)
+            if self.symbols.key(*sym) == crate::ext::MET_FAMILY_KEY)
+    }
+
+    fn met_scalar(&mut self, prop_name: &str, span: Span) -> HNode {
+        let prop = self.intern_prop(prop_name);
+        let q = self
+            .table
+            .intern_quantity(Quantity::EventScalar(ScalarSource::MetProp(prop)));
+        HNode::new(HKind::Quantity(q), span)
+    }
+
+    /// Wrap an interned quantity, tagging `Unsupported` if it involves a
+    /// reserved back-index (PHASE0 OPEN-3).
+    fn quantity_node(&self, q: QuantityId, span: Span) -> HNode {
+        let mut node = HNode::new(HKind::Quantity(q), span);
+        if self.quantity_uses_back_index(q) {
+            node.tag = Fragment::unsupported("negative index `[-n]` is reserved (OPEN-3)");
+        }
+        node
+    }
+
+    fn quantity_uses_back_index(&self, q: QuantityId) -> bool {
+        fn particle(p: &ParticleRef) -> bool {
+            matches!(
+                p,
+                ParticleRef::Elem {
+                    index: ElemIndex::FromBack(_),
+                    ..
+                }
+            )
+        }
+        match self.table.quantity(q) {
+            Quantity::ElemProp {
+                index: ElemIndex::FromBack(_),
+                ..
+            } => true,
+            Quantity::AngularSep { a, b, .. } => particle(a) || particle(b),
+            Quantity::ExternalFn { args, .. } => args.iter().any(|a| match a {
+                QuantityArg::Particle(p) => particle(p),
+                QuantityArg::Quantity(inner) => self.quantity_uses_back_index(*inner),
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
+
+    fn index_val(v: IndexVal) -> ElemIndex {
+        let n = u32::try_from(v.value).unwrap_or(u32::MAX);
+        if v.neg {
+            ElemIndex::FromBack(n)
+        } else {
+            ElemIndex::FromFront(n)
+        }
+    }
+
+    // ---- objects --------------------------------------------------------
+
+    /// Resolve a collection-valued name (take sources, function args).
+    fn resolve_collection_name(&mut self, name: &str, span: Span) -> CollectionId {
+        if let Some(&idx) = self.objects_by_key.get(&name.to_ascii_lowercase()) {
+            return self.resolve_object(idx);
+        }
+        self.resolve_base_name(name, span)
+    }
+
+    /// Resolve a name as an external (or private) base collection,
+    /// bypassing user object blocks.
+    fn resolve_base_name(&mut self, name: &str, span: Span) -> CollectionId {
+        if let Some(canon) = self.ext.base_collection(name) {
+            let canon = canon.to_owned();
+            let sym = self.symbols.intern(&canon);
+            return self.intern_coll(Collection::Base(sym));
+        }
+        self.warn_once(
+            format!("coll:{}", name.to_ascii_lowercase()),
+            Diagnostic::warning(
+                span,
+                format!("unknown collection `{name}`; treated as a private base collection"),
+            ),
+        );
+        let sym = self.symbols.intern(name);
+        self.intern_coll(Collection::Base(sym))
+    }
+
+    fn resolve_object(&mut self, idx: usize) -> CollectionId {
+        match &self.obj_state[idx] {
+            State::Done(id) => return *id,
+            State::InProgress => {
+                let obj = self.ast_objects[idx];
+                let name = obj.name.name.clone();
+                let span = obj.name.span;
+                self.warn_once(
+                    format!("objcycle:{}", name.to_ascii_lowercase()),
+                    Diagnostic::error(span, format!("object take cycle involving `{name}`")),
+                );
+                let sym = self.symbols.intern(&name);
+                return self.intern_coll(Collection::Base(sym));
+            }
+            State::Pending => {}
+        }
+        self.obj_state[idx] = State::InProgress;
+        let obj = self.ast_objects[idx];
+        let self_key = obj.name.name.to_ascii_lowercase();
+
+        let mut sources: Vec<CollectionId> = Vec::new();
+        let mut cuts: Vec<(bool, &Expr)> = Vec::new(); // (is_reject, cond)
+        let mut ctx = Ctx::default();
+        let mut alias_names: Vec<String> = Vec::new();
+        let mut comb_take = false;
+        let mut unsupported_reason: Option<String> = None;
+
+        for stmt in &obj.stmts {
+            match stmt {
+                ObjectStmt::Take {
+                    source,
+                    binders,
+                    alias,
+                    ..
+                } => {
+                    let src = match source {
+                        TakeSource::Ident(id) => {
+                            // `object met take MET`: a source spelled like
+                            // the block's own name refers to the external
+                            // base, not to the block being defined.
+                            if id.name.to_ascii_lowercase() == self_key {
+                                Some(self.resolve_base_name(&id.name, id.span))
+                            } else {
+                                Some(self.resolve_collection_name(&id.name, id.span))
+                            }
+                        }
+                        TakeSource::Union { members, .. } => {
+                            let ids: Vec<CollectionId> = members
+                                .iter()
+                                .map(|m| self.resolve_collection_name(&m.name, m.span))
+                                .collect();
+                            Some(match ids.as_slice() {
+                                [single] => *single,
+                                _ => self.intern_coll(Collection::Union(ids)),
+                            })
+                        }
+                        TakeSource::Call { name, args } => {
+                            if name.name.eq_ignore_ascii_case("comb") {
+                                comb_take = true;
+                                let mut parts = Vec::new();
+                                for a in args {
+                                    if let Arg::Expr(e) = a
+                                        && let Some(c) = self.target_collection(e, &ctx)
+                                    {
+                                        parts.push(c);
+                                    }
+                                }
+                                unsupported_reason = Some(
+                                    "combinatorial composite (COMB) is outside the checked fragment"
+                                        .to_owned(),
+                                );
+                                if parts.is_empty() {
+                                    None
+                                } else {
+                                    Some(self.intern_coll(Collection::Combination { parts }))
+                                }
+                            } else {
+                                unsupported_reason = Some(format!(
+                                    "take source `{}(...)` is not supported",
+                                    name.name
+                                ));
+                                None
+                            }
+                        }
+                    };
+                    if let Some(src) = src {
+                        if binders.len() == 1 {
+                            ctx.elem_aliases
+                                .insert(binders[0].name.to_ascii_lowercase());
+                        } else {
+                            for b in binders {
+                                let name = self.symbols.intern(&b.name);
+                                ctx.binders.insert(
+                                    b.name.to_ascii_lowercase(),
+                                    ParticleRef::Binder { coll: src, name },
+                                );
+                            }
+                            if binders.len() > 1 {
+                                comb_take = true;
+                                unsupported_reason.get_or_insert_with(|| {
+                                    "multi-binder take (combinatorial block) is outside the checked fragment".to_owned()
+                                });
+                            }
+                        }
+                        sources.push(src);
+                    }
+                    if let Some(a) = alias {
+                        alias_names.push(a.name.clone());
+                    }
+                }
+                ObjectStmt::Cut { cond, .. } => cuts.push((false, cond)),
+                ObjectStmt::Reject { cond, .. } => cuts.push((true, cond)),
+            }
+        }
+
+        let self_sym = self.symbols.intern(&obj.name.name);
+        let combined = match sources.as_slice() {
+            [] => {
+                self.warn_once(
+                    format!("notake:{}", obj.name.name.to_ascii_lowercase()),
+                    Diagnostic::warning(
+                        obj.name.span,
+                        format!("object `{}` has no take statement", obj.name.name),
+                    ),
+                );
+                self.intern_coll(Collection::Base(self_sym))
+            }
+            [single] => *single,
+            _ => {
+                if obj.keyword == ObjectKw::Composite || comb_take {
+                    let parts = sources.clone();
+                    self.intern_coll(Collection::Combination { parts })
+                } else {
+                    self.intern_coll(Collection::Union(sources.clone()))
+                }
+            }
+        };
+
+        if obj.keyword == ObjectKw::Composite && unsupported_reason.is_none() {
+            unsupported_reason =
+                Some("composite block semantics are outside the checked fragment".to_owned());
+        }
+
+        let (coll, pure_alias_of) = if cuts.is_empty() {
+            // No cuts: `object X take Y` is a pure rename — identity with
+            // its source is a theorem of the semantics (SPEC_LANGUAGE §4.2),
+            // so the analyzer unifies as a resolution fact.
+            let alias = (sources.len() == 1).then_some(combined);
+            (combined, alias)
+        } else {
+            ctx.elem_source = Some(combined);
+            // Inside this block's cuts, the block's own name means the
+            // implicit element (`select pdgID(OSdileptons) == 0`).
+            ctx.elem_aliases.insert(self_key.clone());
+            let pred_parts: Vec<HNode> = cuts
+                .iter()
+                .map(|(is_reject, cond)| {
+                    let node = self.resolve_expr(cond, &ctx);
+                    if *is_reject {
+                        let span = node.span;
+                        HNode::new(HKind::Not(Box::new(node)), span)
+                    } else {
+                        node
+                    }
+                })
+                .collect();
+            let pred = match pred_parts.len() {
+                1 => pred_parts.into_iter().next().expect("len checked"),
+                _ => {
+                    let span = obj.span;
+                    HNode::new(HKind::And(pred_parts), span)
+                }
+            };
+            let pred_id = self.intern_elem_pred(pred);
+            let id = self.intern_coll(Collection::Filtered {
+                parent: combined,
+                pred: pred_id,
+            });
+            (id, None)
+        };
+
+        self.bind_coll_name(coll, &obj.name.name);
+        for alias in &alias_names {
+            self.bind_coll_name(coll, alias);
+        }
+
+        let tag = match unsupported_reason {
+            Some(reason) => Fragment::Unsupported(reason),
+            None => Fragment::InFragment,
+        };
+        self.obj_hir[idx] = Some(HirObject {
+            name: self_sym,
+            coll,
+            pure_alias_of,
+            tag,
+            span: obj.span,
+        });
+        self.obj_state[idx] = State::Done(coll);
+        coll
+    }
+
+    fn intern_elem_pred(&mut self, node: HNode) -> ElemPredId {
+        let render = self.render_node(&node);
+        if let Some(&id) = self.elem_pred_ids.get(&render) {
+            return id;
+        }
+        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
+        self.elem_pred_ids.insert(render.clone(), id);
+        self.elem_preds.push(ElemPred { node, render });
+        id
+    }
+
+    // ---- defines ----------------------------------------------------------
+
+    fn resolve_define(&mut self, idx: usize) -> (DefineKind, HNode) {
+        match &self.def_state[idx] {
+            State::Done(done) => return done.clone(),
+            State::InProgress => {
+                let def = self.ast_defines[idx];
+                let name = def.name.name.clone();
+                self.diags.push(Diagnostic::error(
+                    def.name.span,
+                    format!("definition cycle involving `{name}`"),
+                ));
+                return (
+                    DefineKind::Numeric,
+                    HNode::unsupported(def.span, format!("definition cycle involving `{name}`")),
+                );
+            }
+            State::Pending => {}
+        }
+        self.def_state[idx] = State::InProgress;
+        let def = self.ast_defines[idx];
+        let ctx = Ctx::default();
+        let body = self.resolve_expr(&def.body, &ctx);
+        let kind = if Self::is_boolean(&body) {
+            DefineKind::Boolean
+        } else {
+            DefineKind::Numeric
+        };
+        self.def_state[idx] = State::Done((kind, body.clone()));
+        (kind, body)
+    }
+
+    fn is_boolean(node: &HNode) -> bool {
+        match &node.kind {
+            HKind::Bool(_)
+            | HKind::Cmp { .. }
+            | HKind::Band { .. }
+            | HKind::And(_)
+            | HKind::Or(_)
+            | HKind::Not(_)
+            | HKind::RegionPred(_) => true,
+            HKind::Ternary { then, els, .. } => {
+                Self::is_boolean(then) && els.as_deref().is_none_or(Self::is_boolean)
+            }
+            _ => false,
+        }
+    }
+
+    // ---- regions ----------------------------------------------------------
+
+    fn resolve_region(&mut self, idx: usize) {
+        let region = self.ast_regions[idx];
+        let ctx = Ctx::default();
+        let mut stmts = Vec::new();
+        for stmt in &region.stmts {
+            match stmt {
+                RegionStmt::Cut { cond, .. } => {
+                    stmts.push(HirRegionStmt::Select(self.resolve_expr(cond, &ctx)));
+                }
+                RegionStmt::Reject { cond, .. } => {
+                    stmts.push(HirRegionStmt::Reject(self.resolve_expr(cond, &ctx)));
+                }
+                RegionStmt::RegionRef(id) => {
+                    let key = id.name.to_ascii_lowercase();
+                    if let Some(&prior) = self.regions_by_key.get(&key) {
+                        stmts.push(HirRegionStmt::Inherit {
+                            region: prior,
+                            span: id.span,
+                        });
+                    } else if let Some(&didx) = self.defines_by_key.get(&key) {
+                        let (kind, body) = self.resolve_define(didx);
+                        if kind == DefineKind::Numeric {
+                            self.diags.push(Diagnostic::warning(
+                                id.span,
+                                format!("numeric define `{}` used as a predicate", id.name),
+                            ));
+                        }
+                        stmts.push(HirRegionStmt::Select(body));
+                    } else {
+                        self.diags.push(Diagnostic::error(
+                            id.span,
+                            format!("`{}` does not name a prior region or a define", id.name),
+                        ));
+                        stmts.push(HirRegionStmt::NonMembership {
+                            kind: "unresolved-ref",
+                            tag: Fragment::unsupported(format!(
+                                "`{}` does not name a prior region or a define",
+                                id.name
+                            )),
+                            span: id.span,
+                        });
+                    }
+                }
+                RegionStmt::Bin { label, body, span } => {
+                    let label = label.as_ref().map(|l| l.value.clone());
+                    match body {
+                        BinBody::Boundaries { var, edges } => {
+                            stmts.push(HirRegionStmt::Bin {
+                                label,
+                                var: self.resolve_expr(var, &ctx),
+                                edges: edges.iter().map(ast::NumLit::canon).collect(),
+                                span: *span,
+                            });
+                        }
+                        BinBody::Cond(cond) => {
+                            stmts.push(HirRegionStmt::BinCond {
+                                label,
+                                cond: self.resolve_expr(cond, &ctx),
+                                span: *span,
+                            });
+                        }
+                    }
+                }
+                RegionStmt::Trigger { cond, span: _ } => {
+                    let tctx = Ctx {
+                        in_trigger: true,
+                        ..ctx.clone()
+                    };
+                    stmts.push(HirRegionStmt::Trigger(self.resolve_expr(cond, &tctx)));
+                }
+                RegionStmt::Histo { span, .. } => stmts.push(Self::non_membership("histo", *span)),
+                RegionStmt::Weight { span, .. } => {
+                    stmts.push(Self::non_membership("weight", *span));
+                }
+                RegionStmt::Save { span, .. } => stmts.push(Self::non_membership("save", *span)),
+                RegionStmt::Print { span, .. } => stmts.push(Self::non_membership("print", *span)),
+                RegionStmt::Counts { span, .. } => {
+                    stmts.push(Self::non_membership("counts", *span));
+                }
+                RegionStmt::TypeTag { span, .. } => stmts.push(Self::non_membership("type", *span)),
+                RegionStmt::Sort { span, .. } => stmts.push(HirRegionStmt::NonMembership {
+                    kind: "sort",
+                    tag: Fragment::unsupported("`sort` is outside the checked fragment"),
+                    span: *span,
+                }),
+            }
+        }
+        let name = self.symbols.intern(&region.name.name);
+        self.regions.push(HirRegion {
+            name,
+            stmts,
+            span: region.span,
+        });
+        self.region_name_order.push(name);
+        self.regions_by_key
+            .entry(region.name.name.to_ascii_lowercase())
+            .or_insert(idx);
+    }
+
+    fn non_membership(kind: &'static str, span: Span) -> HirRegionStmt {
+        HirRegionStmt::NonMembership {
+            kind,
+            tag: Fragment::InFragment,
+            span,
+        }
+    }
+
+    // ---- expressions -------------------------------------------------------
+
+    /// What does `e` denote as an object/particle argument?
+    fn resolve_target(&mut self, e: &Expr, ctx: &Ctx) -> Target {
+        match e {
+            Expr::Ident(id) => {
+                let key = id.name.to_ascii_lowercase();
+                if ctx.elem_aliases.contains(&key) {
+                    return Target::ElemSelf;
+                }
+                if let Some(p) = ctx.binders.get(&key) {
+                    return Target::Particle(p.clone());
+                }
+                if let Some(&oidx) = self.objects_by_key.get(&key) {
+                    let c = self.resolve_object(oidx);
+                    return if self.is_met_coll(c) {
+                        Target::Met
+                    } else {
+                        Target::Coll(c)
+                    };
+                }
+                if self.defines_by_key.contains_key(&key) {
+                    return Target::None;
+                }
+                if self.ext.base_collection(&id.name).is_some()
+                    && !self.ext.is_event_scalar(&id.name)
+                {
+                    if self.ext.is_met_family(&id.name) {
+                        return Target::Met;
+                    }
+                    let c = self.resolve_collection_name(&id.name, id.span);
+                    return Target::Coll(c);
+                }
+                Target::None
+            }
+            Expr::Index { base, index, .. } | Expr::UnderscoreIndex { base, index, .. } => {
+                match self.resolve_target(base, ctx) {
+                    Target::Met => Target::Met, // METLV_0 is the MET vector
+                    Target::Coll(c) => Target::Particle(ParticleRef::Elem {
+                        coll: c,
+                        index: Self::index_val(*index),
+                    }),
+                    _ => Target::None,
+                }
+            }
+            Expr::UnderscoreAll { base, .. } => match self.resolve_target(base, ctx) {
+                Target::Met => Target::Met,
+                Target::Coll(c) => Target::Particle(ParticleRef::Whole(c)),
+                t @ (Target::Particle(_) | Target::ElemSelf) => t,
+                Target::None => Target::None,
+            },
+            _ => Target::None,
+        }
+    }
+
+    fn target_collection(&mut self, e: &Expr, ctx: &Ctx) -> Option<CollectionId> {
+        match self.resolve_target(e, ctx) {
+            Target::Coll(c) | Target::Particle(ParticleRef::Whole(c)) => Some(c),
+            Target::Particle(ParticleRef::Elem { coll, .. } | ParticleRef::Binder { coll, .. }) => {
+                Some(coll)
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_expr(&mut self, e: &Expr, ctx: &Ctx) -> HNode {
+        match e {
+            Expr::Num(n) => HNode::new(HKind::Num(n.canon()), n.span),
+            Expr::True(s) | Expr::All(s) => HNode::new(HKind::Bool(true), *s),
+            Expr::False(s) | Expr::NoneKw(s) => HNode::new(HKind::Bool(false), *s),
+            Expr::Error(s) => HNode::unsupported(*s, "parse error"),
+            Expr::Ident(id) => self.resolve_value_ident(id, ctx),
+            Expr::Unary { op, expr, span } => {
+                let inner = self.resolve_expr(expr, ctx);
+                let kind = match op {
+                    UnaryOp::Neg => HKind::Neg(Box::new(inner)),
+                    UnaryOp::Not => HKind::Not(Box::new(inner)),
+                };
+                HNode::new(kind, *span)
+            }
+            Expr::Binary { op, lhs, rhs, span } => self.resolve_binary(*op, lhs, rhs, *span, ctx),
+            Expr::Cmp { op, lhs, rhs, span } => {
+                // OPEN-4: `~=` is treated as `!=` downstream (parser warned).
+                let op = if *op == CmpOp::ApproxEq {
+                    CmpOp::Ne
+                } else {
+                    *op
+                };
+                let lhs = self.resolve_expr(lhs, ctx);
+                let rhs = self.resolve_expr(rhs, ctx);
+                HNode::new(
+                    HKind::Cmp {
+                        op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    *span,
+                )
+            }
+            Expr::Band {
+                kind,
+                expr,
+                lo,
+                hi,
+                span,
+            } => {
+                let inner = self.resolve_expr(expr, ctx);
+                HNode::new(
+                    HKind::Band {
+                        kind: *kind,
+                        expr: Box::new(inner),
+                        lo: lo.canon(),
+                        hi: hi.canon(),
+                    },
+                    *span,
+                )
+            }
+            Expr::Ternary {
+                guard,
+                then,
+                els,
+                span,
+            } => {
+                let guard = self.resolve_expr(guard, ctx);
+                let then = self.resolve_expr(then, ctx);
+                let els = els.as_ref().map(|e| Box::new(self.resolve_expr(e, ctx)));
+                HNode::new(
+                    HKind::Ternary {
+                        guard: Box::new(guard),
+                        then: Box::new(then),
+                        els,
+                    },
+                    *span,
+                )
+            }
+            Expr::Abs { expr, span } => {
+                let inner = self.resolve_expr(expr, ctx);
+                HNode::new(HKind::Abs(Box::new(inner)), *span)
+            }
+            Expr::Call { name, args, span } => self.resolve_call(name, args, *span, ctx),
+            Expr::Dot { base, field, span } => self.resolve_dot(base, field, *span, ctx),
+            Expr::Index { span, .. } | Expr::UnderscoreIndex { span, .. } => {
+                match self.resolve_target(e, ctx) {
+                    Target::Met => self.met_scalar("pt", *span),
+                    Target::Particle(p) => {
+                        let back = matches!(
+                            p,
+                            ParticleRef::Elem {
+                                index: ElemIndex::FromBack(_),
+                                ..
+                            }
+                        );
+                        let mut node = HNode::new(HKind::Particle(p), *span);
+                        node.tag = Fragment::unsupported(if back {
+                            "negative index `[-n]` is reserved (OPEN-3)"
+                        } else {
+                            "particle value used as a scalar"
+                        });
+                        node
+                    }
+                    _ => HNode::unsupported(*span, "unsupported indexed expression"),
+                }
+            }
+            Expr::UnderscoreAll { span, .. } => match self.resolve_target(e, ctx) {
+                Target::Met => self.met_scalar("pt", *span),
+                Target::Particle(p) => {
+                    let mut node = HNode::new(HKind::Particle(p), *span);
+                    node.tag = Fragment::unsupported("collection value used as a scalar");
+                    node
+                }
+                _ => HNode::unsupported(*span, "unsupported `_` reference"),
+            },
+            Expr::Slice { span, .. } => {
+                HNode::unsupported(*span, "slice expressions are outside the checked fragment")
+            }
+            Expr::Braced { args, prop, span } => self.resolve_braced(args, prop, *span, ctx),
+            Expr::ParticleList { span, .. } => HNode::unsupported(
+                *span,
+                "particle-list value is only supported as a function argument",
+            ),
+        }
+    }
+
+    fn resolve_binary(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        ctx: &Ctx,
+    ) -> HNode {
+        let l = self.resolve_expr(lhs, ctx);
+        let r = self.resolve_expr(rhs, ctx);
+        let kind = match op {
+            BinOp::And | BinOp::Or => {
+                let mut parts = Vec::new();
+                for side in [l, r] {
+                    match (op, side.kind) {
+                        (BinOp::And, HKind::And(v)) | (BinOp::Or, HKind::Or(v)) => parts.extend(v),
+                        (_, kind) => parts.push(HNode {
+                            kind,
+                            span: side.span,
+                            tag: side.tag,
+                        }),
+                    }
+                }
+                if op == BinOp::And {
+                    HKind::And(parts)
+                } else {
+                    HKind::Or(parts)
+                }
+            }
+            BinOp::Add => Self::arith(ArithOp::Add, l, r),
+            BinOp::Sub => Self::arith(ArithOp::Sub, l, r),
+            BinOp::Mul => Self::arith(ArithOp::Mul, l, r),
+            BinOp::Div => Self::arith(ArithOp::Div, l, r),
+            BinOp::Pow => Self::arith(ArithOp::Pow, l, r),
+        };
+        HNode::new(kind, span)
+    }
+
+    fn arith(op: ArithOp, l: HNode, r: HNode) -> HKind {
+        HKind::Binary {
+            op,
+            lhs: Box::new(l),
+            rhs: Box::new(r),
+        }
+    }
+
+    fn resolve_value_ident(&mut self, id: &ast::Ident, ctx: &Ctx) -> HNode {
+        let key = id.name.to_ascii_lowercase();
+        let span = id.span;
+
+        if ctx.elem_aliases.contains(&key) {
+            return HNode::unsupported(span, "bare element reference used as a scalar");
+        }
+        if let Some(p) = ctx.binders.get(&key) {
+            let mut node = HNode::new(HKind::Particle(p.clone()), span);
+            node.tag = Fragment::unsupported("composite binder used as a scalar");
+            return node;
+        }
+        if let Some(&didx) = self.defines_by_key.get(&key) {
+            // Defines resolve to their body HIR: inline by construction.
+            let (_, body) = self.resolve_define(didx);
+            return body;
+        }
+        if let Some(&oidx) = self.objects_by_key.get(&key) {
+            let c = self.resolve_object(oidx);
+            if self.is_met_coll(c) {
+                // A bare MET-family value means its .pt magnitude.
+                return self.met_scalar("pt", span);
+            }
+            let mut node = HNode::new(HKind::CollValue(c), span);
+            node.tag = Fragment::unsupported("collection used as a scalar value");
+            return node;
+        }
+        if let Some(&ridx) = self.regions_by_key.get(&key) {
+            return HNode::new(HKind::RegionPred(ridx), span);
+        }
+        if ctx.elem_source.is_some() && self.ext.is_property(&id.name) {
+            let prop = self.intern_prop(&id.name);
+            return HNode::new(HKind::ElemSelfProp(prop), span);
+        }
+        if self.ext.is_met_family(&id.name) {
+            return self.met_scalar("pt", span);
+        }
+        if self.ext.is_event_scalar(&id.name) {
+            let sym = self.symbols.intern(&id.name);
+            let q = self
+                .table
+                .intern_quantity(Quantity::EventScalar(ScalarSource::EventVar(sym)));
+            return HNode::new(HKind::Quantity(q), span);
+        }
+        if self.ext.base_collection(&id.name).is_some() {
+            let c = self.resolve_collection_name(&id.name, span);
+            let mut node = HNode::new(HKind::CollValue(c), span);
+            node.tag = Fragment::unsupported("collection used as a scalar value");
+            return node;
+        }
+        if ctx.in_trigger {
+            let sym = self.symbols.intern(&id.name);
+            let q = self
+                .table
+                .intern_quantity(Quantity::EventScalar(ScalarSource::Trigger(sym)));
+            return HNode::new(HKind::Quantity(q), span);
+        }
+        self.warn_once(
+            format!("ident:{key}"),
+            Diagnostic::warning(span, format!("unresolved identifier `{}`", id.name)),
+        );
+        HNode::unsupported(span, format!("unresolved identifier `{}`", id.name))
+    }
+
+    fn resolve_dot(&mut self, base: &Expr, field: &ast::Ident, span: Span, ctx: &Ctx) -> HNode {
+        match self.resolve_target(base, ctx) {
+            Target::Met => self.met_scalar(&field.name, span),
+            Target::ElemSelf => {
+                let prop = self.intern_prop(&field.name);
+                HNode::new(HKind::ElemSelfProp(prop), span)
+            }
+            Target::Coll(c) | Target::Particle(ParticleRef::Whole(c)) => {
+                if field.name.eq_ignore_ascii_case("size") {
+                    let q = self.table.intern_quantity(Quantity::Size(c));
+                    return self.quantity_node(q, span);
+                }
+                let prop = self.intern_prop(&field.name);
+                if ctx.elem_source == Some(c) {
+                    return HNode::new(HKind::ElemSelfProp(prop), span);
+                }
+                HNode::new(HKind::CollProp { coll: c, prop }, span)
+            }
+            Target::Particle(ParticleRef::Elem { coll, index }) => {
+                let prop = self.intern_prop(&field.name);
+                let q = self
+                    .table
+                    .intern_quantity(Quantity::ElemProp { coll, index, prop });
+                self.quantity_node(q, span)
+            }
+            Target::Particle(p @ ParticleRef::Binder { .. }) => {
+                let name = self.symbols.intern(&field.name);
+                let q = self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: vec![QuantityArg::Particle(p)],
+                });
+                let mut node = HNode::new(HKind::Quantity(q), span);
+                node.tag = Fragment::unsupported(
+                    "composite binder property is outside the checked fragment",
+                );
+                node
+            }
+            Target::Particle(ParticleRef::Met) | Target::None => HNode::unsupported(
+                span,
+                format!("property `.{}` on an unsupported base", field.name),
+            ),
+        }
+    }
+
+    fn resolve_braced(&mut self, args: &[Arg], prop: &ast::Ident, span: Span, ctx: &Ctx) -> HNode {
+        if let [Arg::Expr(e)] = args {
+            return self.resolve_prop_access(e, prop, span, ctx);
+        }
+        // Multi-argument braced property ({a b}m): opaque external fn.
+        let name = self.symbols.intern(&prop.name);
+        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let q = self
+            .table
+            .intern_quantity(Quantity::ExternalFn { name, args: qargs });
+        self.quantity_node(q, span)
+    }
+
+    /// Property applied to a target: `{X}prop`, `prop(X)`, `X.prop`.
+    fn resolve_prop_access(
+        &mut self,
+        target_expr: &Expr,
+        prop: &ast::Ident,
+        span: Span,
+        ctx: &Ctx,
+    ) -> HNode {
+        match self.resolve_target(target_expr, ctx) {
+            Target::Met => self.met_scalar(&prop.name, span),
+            Target::ElemSelf => {
+                let p = self.intern_prop(&prop.name);
+                HNode::new(HKind::ElemSelfProp(p), span)
+            }
+            Target::Coll(c) | Target::Particle(ParticleRef::Whole(c)) => {
+                let p = self.intern_prop(&prop.name);
+                if ctx.elem_source == Some(c) {
+                    HNode::new(HKind::ElemSelfProp(p), span)
+                } else {
+                    HNode::new(HKind::CollProp { coll: c, prop: p }, span)
+                }
+            }
+            Target::Particle(ParticleRef::Elem { coll, index }) => {
+                let p = self.intern_prop(&prop.name);
+                let q = self.table.intern_quantity(Quantity::ElemProp {
+                    coll,
+                    index,
+                    prop: p,
+                });
+                self.quantity_node(q, span)
+            }
+            Target::Particle(b @ ParticleRef::Binder { .. }) => {
+                let name = self.symbols.intern(&prop.name);
+                let q = self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: vec![QuantityArg::Particle(b)],
+                });
+                let mut node = HNode::new(HKind::Quantity(q), span);
+                node.tag = Fragment::unsupported(
+                    "composite binder property is outside the checked fragment",
+                );
+                node
+            }
+            Target::Particle(ParticleRef::Met) | Target::None => {
+                // Not a typed target (e.g. `{jets[0] jets[1]}m` handled by
+                // caller; arbitrary expressions stay opaque).
+                let name = self.symbols.intern(&prop.name);
+                let arg = self.opaque_arg(target_expr, ctx);
+                let q = self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: vec![arg],
+                });
+                self.quantity_node(q, span)
+            }
+        }
+    }
+
+    fn resolve_call(&mut self, name: &ast::Ident, args: &[Arg], span: Span, ctx: &Ctx) -> HNode {
+        let lc = name.name.to_ascii_lowercase();
+
+        if lc == "abs"
+            && let [Arg::Expr(e)] = args
+        {
+            let inner = self.resolve_expr(e, ctx);
+            return HNode::new(HKind::Abs(Box::new(inner)), span);
+        }
+
+        let ang = match lc.as_str() {
+            "dr" => Some(AngKind::DR),
+            "dphi" => Some(AngKind::DPhi),
+            "deta" => Some(AngKind::DEta),
+            _ => None,
+        };
+        if let Some(kind) = ang
+            && let [Arg::Expr(a), Arg::Expr(b)] = args
+            && let Some(pa) = self.target_particle(a, ctx)
+            && let Some(pb) = self.target_particle(b, ctx)
+        {
+            let q = self.table.intern_angular(kind, pa, pb);
+            return self.quantity_node(q, span);
+        }
+
+        if matches!(lc.as_str(), "size" | "count")
+            && let [Arg::Expr(e)] = args
+        {
+            match self.resolve_target(e, ctx) {
+                Target::Coll(c) | Target::Particle(ParticleRef::Whole(c)) => {
+                    let q = self.table.intern_quantity(Quantity::Size(c));
+                    return self.quantity_node(q, span);
+                }
+                _ => {}
+            }
+        }
+
+        if self.ext.is_property(&name.name)
+            && let [Arg::Expr(e)] = args
+        {
+            if let Expr::ParticleList { items, .. } = e.as_ref() {
+                let parts: Option<Vec<ParticleRef>> = items
+                    .iter()
+                    .map(|item| self.target_particle(item, ctx))
+                    .collect();
+                if let Some(parts) = parts {
+                    let fname = self.symbols.intern(&name.name);
+                    let qargs = parts.into_iter().map(QuantityArg::Particle).collect();
+                    let q = self.table.intern_quantity(Quantity::ExternalFn {
+                        name: fname,
+                        args: qargs,
+                    });
+                    return self.quantity_node(q, span);
+                }
+            }
+            if !matches!(self.resolve_target(e, ctx), Target::None) {
+                return self.resolve_prop_access(e, name, span, ctx);
+            }
+        }
+
+        let declared = self.ext.is_function(&name.name) || self.ext.is_property(&name.name);
+        let fname = self.symbols.intern(&name.name);
+        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let q = self.table.intern_quantity(Quantity::ExternalFn {
+            name: fname,
+            args: qargs,
+        });
+        let mut node = self.quantity_node(q, span);
+        if !declared {
+            self.warn_once(
+                format!("fn:{lc}"),
+                Diagnostic::warning(
+                    name.span,
+                    format!(
+                        "function `{}` is not declared in the external library",
+                        name.name
+                    ),
+                ),
+            );
+            node.tag = Fragment::unsupported(format!(
+                "function `{}` is not declared in the external library",
+                name.name
+            ));
+        }
+        node
+    }
+
+    fn target_particle(&mut self, e: &Expr, ctx: &Ctx) -> Option<ParticleRef> {
+        match self.resolve_target(e, ctx) {
+            Target::Met => Some(ParticleRef::Met),
+            Target::Coll(c) => Some(ParticleRef::Whole(c)),
+            Target::Particle(p) => Some(p),
+            Target::ElemSelf | Target::None => None,
+        }
+    }
+
+    fn quantity_arg(&mut self, arg: &Arg, ctx: &Ctx) -> QuantityArg {
+        match arg {
+            Arg::Str(s) => QuantityArg::Opaque(format!("{:?}", s.value)),
+            Arg::Path(p) => QuantityArg::Opaque(p.value.clone()),
+            Arg::Expr(e) => {
+                if let Expr::Num(n) = e.as_ref() {
+                    return QuantityArg::Num(n.canon());
+                }
+                match self.resolve_target(e, ctx) {
+                    Target::Met => return QuantityArg::Particle(ParticleRef::Met),
+                    Target::Coll(c) => return QuantityArg::Collection(c),
+                    Target::Particle(p) => return QuantityArg::Particle(p),
+                    Target::ElemSelf | Target::None => {}
+                }
+                self.opaque_arg(e, ctx)
+            }
+        }
+    }
+
+    /// Resolve an expression argument to the most precise `QuantityArg`.
+    fn opaque_arg(&mut self, e: &Expr, ctx: &Ctx) -> QuantityArg {
+        if let Expr::ParticleList { items, .. } = e {
+            let parts: Vec<String> = items
+                .iter()
+                .map(|item| {
+                    let node = self.resolve_expr(item, ctx);
+                    self.render_node(&node)
+                })
+                .collect();
+            return QuantityArg::Opaque(format!("[{}]", parts.join(" ")));
+        }
+        let node = self.resolve_expr(e, ctx);
+        match node.kind {
+            HKind::Quantity(q) if node.tag.is_in_fragment() => QuantityArg::Quantity(q),
+            HKind::CollProp { coll, prop } => QuantityArg::CollProp { coll, prop },
+            _ => QuantityArg::Opaque(self.render_node(&node)),
+        }
+    }
+}

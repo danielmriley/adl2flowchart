@@ -1,0 +1,221 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex12_counts.adl\")"
+---
+File
+  Info name=analysis @25:1
+    Line key=title items=[str:"ADL/CL ex12: External counts and errors"]
+  CountsFormat name=results @31:1
+    Process name=estbg title="Total estimated BG" columns=[stat, syst]
+    Process name=obsdata title="Observed data" columns=[]
+  CountsFormat name=signals @36:1
+    Process name=bsm1 title="BSM model benchmark 1" columns=[stat]
+    Process name=bsm2 title="BSM model benchmark 2" columns=[stat]
+    Process name=bsm3 title="BSM model benchmark 3" columns=[stat]
+  Object kw=object name=jets @42:1
+    Take kw=take src=Jet @43:3
+    Cut kw=select @44:3
+      Cmp op=>
+        Call name=pT
+          Ident Jet
+        Num 50
+    Cut kw=select @45:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Jet
+        Num 2.4
+  Object kw=object name=leptons @47:1
+    Take kw=: src=union(ELE,MUO) @47:16
+  Define kw=define name=MTl @50:1
+    Call name=sqrt
+      Binary op=*
+        Binary op=*
+          Binary op=*
+            Num 2
+            Call name=pT
+              Index 0
+                Ident leptons
+          Ident MET
+        Binary op=-
+          Num 1
+          Call name=cos
+            Binary op=-
+              Call name=Phi
+                Index 0
+                  Ident METLV
+              Call name=Phi
+                Index 0
+                  Ident leptons
+  Define kw=define name=HT @51:1
+    Call name=fHT
+      Ident jets
+  Define kw=define name=MT2j0j1 @52:1
+    Call name=fMT2
+      Index 0
+        Ident Jet
+      Index 1
+        Ident Jet
+      Index 0
+        Ident METLV
+  Region kw=region name=hadronic @58:1
+    Cut kw=select @59:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 4
+    Cut kw=select @60:3
+      Cmp op===
+        Call name=size
+          Ident leptons
+        Num 0
+    Cut kw=select @61:3
+      Cmp op=>
+        Ident HT
+        Num 300
+    Cut kw=select @62:3
+      Cmp op=>
+        Call name=dphi
+          Index 0
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @63:3
+      Cmp op=>
+        Call name=dphi
+          Index 1
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @64:3
+      Cmp op=>
+        Call name=dphi
+          Index 2
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @65:3
+      Cmp op=>
+        Call name=dR
+          Index 0
+            Ident jets
+          Index 1
+            Ident jets
+        Num 1.0
+    Cut kw=select @66:3
+      Cmp op=>
+        Ident MT2j0j1
+        Num 300
+    Bin @67:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=300 hi=500
+          Ident MT2j0j1
+    Counts format=results items=[997 +- 32 +- 40 , 933] @68:3
+    Bin @69:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=500 hi=800
+          Ident MT2j0j1
+    Counts format=results items=[293 +- 14 +- 16 , 277] @70:3
+    Bin @71:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=800 hi=1000
+          Ident MT2j0j1
+    Counts format=results items=[50.7 + 6.7 - 5.0 +- 5.1 , 50] @72:3
+    Bin @73:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Cmp op=>
+          Ident MT2j0j1
+          Num 1000
+    Counts format=results items=[32.3 + 3.8 - 2.1 +- 4.8 , 31] @74:3
+    Bin @75:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Band kind=in lo=300 hi=500
+          Ident MT2j0j1
+    Counts format=results items=[132 +- 10 +- 15 , 127] @76:3
+    Bin @77:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Band kind=in lo=500 hi=800
+          Ident MT2j0j1
+    Counts format=results items=[27.5 + 4.9 + 3.4 - 3.1 - 3.1 , 23] @78:3
+    Bin @79:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Cmp op=>
+          Ident MT2j0j1
+          Num 800
+    Counts format=results items=[6.0 + 3.6 - 0.6 +- 1.1 , 5] @80:3
+  Region kw=region name=leptonic @86:1
+    Cut kw=select @87:3
+      All
+    Counts format=signals items=[100.0 +- 0.2 , 100.0 +- 0.5 , 100.0 +- 0.5] @88:3
+    Cut kw=select @89:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 3
+    Counts format=signals items=[98.7 +- 0.4 , 98.3 +- 0.5 , 98.9 +- 0.6] @90:3
+    Cut kw=select @91:3
+      Cmp op===
+        Call name=size
+          Ident leptons
+        Num 1
+    Counts format=signals items=[74.5 +- 1.2 , 79.6 +- 1.4 , 88.1 +- 1.4] @92:3
+    Cut kw=select @93:3
+      Cmp op=>
+        Binary op=+
+          Call name=fHT
+            Ident jets
+          Call name=pT
+            Index 0
+              Ident leptons
+        Num 300
+    Counts format=signals items=[58.7 +- 1.4 , 77.9 +- 1.4 , 86.7 +- 1.5] @94:3
+    Cut kw=select @95:3
+      Cmp op=>
+        Ident MET
+        Num 150
+    Counts format=signals items=[43.8 +- 1.4 , 75.2 +- 1.5 , 83.6 +- 1.6] @96:3
+    Bin @101:3
+      Band kind=in lo=250 hi=350
+        Ident MTl
+    Counts format=signals items=[7.0 +- 0.2 , 13.8 +- 0.2 , 29.1 +- 0.5] @102:3
+    Bin @103:3
+      Band kind=in lo=350 hi=500
+        Ident MTl
+    Counts format=signals items=[5.4 +- 0.1 , 9.2 +- 0.2 , 11.2 +- 0.3] @104:3
+    Bin @105:3
+      Band kind=in lo=500 hi=800
+        Ident MTl
+    Counts format=signals items=[3.9 +- 0.1 , 6.3 +- 0.1 , 7.1 +- 0.2] @106:3
+    Bin @107:3
+      Cmp op=>
+        Ident MTl
+        Num 800
+    Counts format=signals items=[1.8 +- 0.1 , 4.1 +- 0.2 , 5.2 +- 0.1] @108:3
+---- diagnostics ----

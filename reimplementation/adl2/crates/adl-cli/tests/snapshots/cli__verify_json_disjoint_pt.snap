@@ -1,0 +1,85 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+{
+  "schema_version": 1,
+  "unit": "disjoint_pt.adl",
+  "solver": "none",
+  "regions": [
+    {
+      "name": "SR_low",
+      "leaves_encoded": 4,
+      "leaves_total": 4,
+      "exact": true,
+      "or_clauses": 0,
+      "dual_hedges": 0,
+      "dropped": [],
+      "empty": "unknown",
+      "empty_core": []
+    },
+    {
+      "name": "SR_high",
+      "leaves_encoded": 2,
+      "leaves_total": 2,
+      "exact": true,
+      "or_clauses": 0,
+      "dual_hedges": 0,
+      "dropped": [],
+      "empty": "unknown",
+      "empty_core": []
+    }
+  ],
+  "pairwise": [
+    {
+      "a": "SR_low",
+      "b": "SR_high",
+      "kind": "proven_disjoint",
+      "reason": "intervals cannot intersect on jets[0].pt: SR_low requires (100, 200), SR_high requires (300, inf]",
+      "exact": true,
+      "shared_dimensions": [
+        "jets[0].pt",
+        "size(jets)"
+      ],
+      "subset_a_in_b": false,
+      "subset_b_in_a": false,
+      "witness": [],
+      "witness_validated": null,
+      "core": []
+    }
+  ],
+  "bin_checks": [],
+  "axioms_used": [
+    {
+      "id": "SZ0",
+      "statement": "size(C) >= 0",
+      "assumption": "none",
+      "instances": 2
+    },
+    {
+      "id": "SUB",
+      "statement": "size(F) <= size(P) for single-source filtered F of P",
+      "assumption": "take = filter",
+      "instances": 1
+    },
+    {
+      "id": "NNEG",
+      "statement": "pt, m, e, ht-family scalars, MET.pt, dR >= 0",
+      "assumption": "none",
+      "instances": 2
+    },
+    {
+      "id": "EPRED",
+      "statement": "size(F) > i implies predF(F[i]) for filtered F (exactly-encodable conjuncts of predF)",
+      "assumption": "take = filter",
+      "instances": 1
+    },
+    {
+      "id": "IDOM",
+      "statement": "pt(F[i]) <= pt(P[i]) for filtered F of P",
+      "assumption": "ORD + SUB",
+      "instances": 1
+    }
+  ],
+  "internal_diagnostics": []
+}

@@ -1,0 +1,33 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: quantity_table_dump(&hir)
+---
+unit: CMS-SUS-16-033_Delphes.adl
+== collections ==
+C0 = Base(JET)
+C1 = Filtered(parent=C0#JET, pred=P0)  names=[jets]
+C2 = Filtered(parent=C0#JET, pred=P1)  names=[jetsmht]
+C3 = Filtered(parent=C1#jets, pred=P2)  names=[bjets]
+C4 = Base(MUON)
+C5 = Filtered(parent=C4#MUON, pred=P3)  names=[muons]
+C6 = Base(ELECTRON)
+C7 = Filtered(parent=C6#ELECTRON, pred=P4)  names=[electrons]
+C8 = Union(C7#electrons, C5#muons)  names=[leptons]
+C9 = Base(MET)  names=[MET, MHT]
+== element predicates ==
+P0 = ((this.pt > 30) and (abs(this.eta) < 2.4))
+P1 = ((this.pt > 30) and (abs(this.eta) < 5))
+P2 = (this.btag == 1)
+P3 = ((this.pt > 10) and (abs(this.eta) < 2.4) and (<unsupported: unresolved identifier `D0`> < 2))
+P4 = ((this.pt > 10) and (abs(this.eta) < 2.5) and (<unsupported: unresolved identifier `D0`> < 2))
+== quantities ==
+ang(or) dphi(C1#jets[0], MET)
+ang(or) dphi(C1#jets[1], MET)
+ang(or) dphi(C1#jets[2], MET)
+ang(or) dphi(C1#jets[3], MET)
+extfn   sum(C1#jets[*].pt)
+scalar  MET.pt
+size    size(C1#jets)
+size    size(C3#bjets)
+size    size(C5#muons)
+size    size(C7#electrons)

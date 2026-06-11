@@ -1,0 +1,18 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: collection_quant.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+== defines ==
+== regions ==
+region SR_allhard
+  select (size(C0#jets) >= 1)
+  select (size(C0#jets) <= 2)
+  select (C0#jets[*].pt > 100)
+region SR_unbounded
+  select (C0#jets[*].pt > 100)
+region SR_softlead
+  select (C0#jets[0].pt < 50)
+== diagnostics ==

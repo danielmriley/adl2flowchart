@@ -1,0 +1,34 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/btag_discriminant.adl\")"
+---
+File
+  Object kw=object name=jets @1:1
+    Take kw=take src=Jet @2:3
+  Region kw=region name=SR_a @4:1
+    Cut kw=select @5:3
+      Cmp op=>
+        Dot field=btagDeepB
+          Index 0
+            Ident jets
+        Num 0.2
+    Cut kw=select @6:3
+      Cmp op=<
+        Dot field=btagDeepB
+          Index 0
+            Ident jets
+        Num 0.8
+  Region kw=region name=SR_b @8:1
+    Cut kw=select @9:3
+      Cmp op=>
+        Dot field=btagDeepB
+          Index 0
+            Ident jets
+        Num 0.3
+    Cut kw=select @10:3
+      Cmp op=<
+        Dot field=btagDeepB
+          Index 0
+            Ident jets
+        Num 0.7
+---- diagnostics ----

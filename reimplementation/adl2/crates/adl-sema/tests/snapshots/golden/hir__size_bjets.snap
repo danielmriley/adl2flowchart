@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: size_bjets.adl
+== objects ==
+object jets -> C1#jets
+object bjets -> C2#bjets
+== defines ==
+== regions ==
+region SR_ge2
+  select (size(C2#bjets) >= 2)
+region SR_ge4
+  select (size(C2#bjets) >= 4)
+== diagnostics ==

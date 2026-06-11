@@ -1,0 +1,32 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/ite_conditional_dphi.adl\")"
+---
+File
+  Object kw=object name=jets @1:1
+    Take kw=take src=Jet @2:3
+    Cut kw=select @3:3
+      Cmp op=>
+        Ident pT
+        Num 30
+  Object kw=object name=MHT @5:1
+    Take kw=take src=MissingET @6:3
+  Region kw=region name=SR_ite @8:1
+    Cut kw=select @9:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 3
+    Cut kw=select @10:3
+      Ternary has_else=false
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 3
+        Cmp op=>
+          Call name=dPhi
+            Index 2
+              Ident jets
+            Ident MHT
+          Num 0.3
+---- diagnostics ----

@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: vacuous_dphi.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+object MET -> C1#MET  (pure rename of C1#MET)
+== defines ==
+== regions ==
+region SR_dead
+  select (dphi(C0#jets[0], MET) > 3.5)
+region SR_any
+  select (MET.pt > 100)
+== diagnostics ==

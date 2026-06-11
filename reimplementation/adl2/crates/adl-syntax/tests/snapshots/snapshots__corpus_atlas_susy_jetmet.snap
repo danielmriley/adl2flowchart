@@ -1,0 +1,305 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl\")"
+---
+File
+  Define kw=def name=Meffs @15:1
+    Binary op=+
+      Ident MET
+      Ident HT
+  Object kw=obj name=JETclean @21:1
+    Take kw=: src=JET @21:15
+    Cut kw=cmd @22:1
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident JET
+        Num 20.0
+    Cut kw=cmd @23:1
+      Cmp op=<
+        Braced prop=AbsEta
+          UAll
+            Ident JET
+        Num 2.8
+    Cut kw=cmd @24:1
+      Cmp op=>=
+        Braced prop=dR
+          UAll
+            Ident JET
+          UAll
+            Ident ELE
+        Num 0.2
+  Object kw=obj name=MUOclean @26:1
+    Take kw=: src=MUO @26:15
+    Cut kw=cmd @27:1
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident MUO
+        Num 10.0
+    Cut kw=cmd @28:1
+      Cmp op=<
+        Braced prop=AbsEta
+          UAll
+            Ident MUO
+        Num 2.7
+    Cut kw=cmd @29:1
+      Cmp op=>=
+        Braced prop=dR
+          UAll
+            Ident MUO
+          UAll
+            Ident JETclean
+        Num 0.4
+  Object kw=obj name=ELEclean @32:1
+    Take kw=: src=ELE @32:15
+    Cut kw=cmd @33:1
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident ELE
+        Num 10.0
+    Cut kw=cmd @34:1
+      Cmp op=<
+        Braced prop=AbsEta
+          UAll
+            Ident ELE
+        Num 2.47
+    Cut kw=cmd @35:1
+      Cmp op=>=
+        Braced prop=dR
+          UAll
+            Ident ELE
+          UAll
+            Ident JETclean
+        Num 0.4
+  Object kw=obj name=ELEveryclean @37:1
+    Take kw=: src=ELEclean @37:19
+    Cut kw=cmd @38:1
+      Cmp op=>=
+        Braced prop=dR
+          UAll
+            Ident ELEclean
+          UAll
+            Ident JETclean
+        Num 0.4
+  Object kw=obj name=JETsr @40:1
+    Take kw=: src=JETclean @40:12
+    Cut kw=cmd @41:1
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident JETclean
+        Num 50
+  Define kw=def name=Jsr0MEtFi @43:1
+    Braced prop=dPhi
+      UIndex 0
+        Ident JETsr
+      UIndex 0
+        Ident METLV
+  Define kw=def name=Jsr1MEtFi @44:1
+    Braced prop=dPhi
+      UIndex 1
+        Ident JETsr
+      UIndex 0
+        Ident METLV
+  Define kw=def name=Jsr2MEtFi @45:1
+    Braced prop=dPhi
+      UIndex 2
+        Ident JETsr
+      UIndex 0
+        Ident METLV
+  Define kw=def name=Dac @46:1
+    Binary op=-
+      Ident Jsr0MEtFi
+      Ident Jsr2MEtFi
+  Define kw=def name=Dab @47:1
+    Binary op=-
+      Ident Jsr0MEtFi
+      Ident Jsr1MEtFi
+  Define kw=def name=Dbc @48:1
+    Binary op=-
+      Ident Jsr1MEtFi
+      Ident Jsr2MEtFi
+  Define kw=def name=Meff @49:1
+    Binary op=+
+      Ident MET
+      Call name=HT
+        Ident JETsr
+  Define kw=def name=Meff3j @50:1
+    Binary op=+
+      Binary op=+
+        Binary op=+
+          Ident MET
+          Braced prop=Pt
+            UIndex 0
+              Ident JETsr
+        Braced prop=Pt
+          UIndex 1
+            Ident JETsr
+      Braced prop=Pt
+        UIndex 2
+          Ident JETsr
+  Region kw=algo name=preselection @53:1
+    Cut kw=cmd @54:1
+      All
+    Cut kw=cmd @55:1
+      Cmp op=>
+        Ident MET
+        Num 200
+    Cut kw=cmd @56:1
+      Cmp op===
+        Call name=Size
+          Ident MUOclean
+        Num 0
+    Cut kw=cmd @57:1
+      Cmp op===
+        Call name=Size
+          Ident ELEveryclean
+        Num 0
+    Cut kw=cmd @58:1
+      Cmp op=>
+        Call name=Size
+          Ident JETclean
+        Num 0
+    Cut kw=cmd @59:1
+      Cmp op=>
+        Call name=Size
+          Ident JETsr
+        Num 0
+    Cut kw=cmd @60:1
+      Cmp op=>
+        Call name=Size
+          Ident JETsr
+        Num 1
+    Cut kw=cmd @61:1
+      Cmp op=>
+        Braced prop=Pt
+          UIndex 0
+            Ident JETsr
+        Num 200
+    Cut kw=cmd @62:1
+      Cmp op=>=
+        Call name=Size
+          Ident JETsr
+        Num 2
+    Cut kw=cmd @66:1
+      Cmp op=>=
+        Call name=Size
+          Ident JETsr
+        Num 3
+    Cut kw=cmd @69:1
+      Ternary has_else=true
+        Cmp op=<
+          Ident Dab
+          Num 0
+        Ternary has_else=true
+          Cmp op=<
+            Ident Dac
+            Num 0
+          Cmp op=>
+            Ident Jsr0MEtFi
+            Num 0.8
+          Cmp op=>
+            Ident Jsr2MEtFi
+            Num 0.8
+        Ternary has_else=true
+          Cmp op=<
+            Ident Dbc
+            Num 0
+          Cmp op=>
+            Ident Jsr1MEtFi
+            Num 0.8
+          Cmp op=>
+            Ident Jsr2MEtFi
+            Num 0.8
+    Cut kw=cmd @70:1
+      Cmp op=>
+        Braced prop=Pt
+          UIndex 1
+            Ident JETsr
+        Num 200
+    Cut kw=cmd @71:1
+      Cmp op=>
+        Binary op=/
+          Ident MET
+          Binary op=^
+            Call name=HT
+              Ident JETsr
+            Num 0.5
+        Num 20
+    Cut kw=cmd @73:1
+      Cmp op=>
+        Ident Meff
+        Num 2000
+    Cut kw=cmd @74:1
+      Cmp op=>
+        Ident Meff3j
+        Num 3000
+---- diagnostics ----
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:43:18
+   |
+43 | def Jsr0MEtFi : {JETsr_0,METLV_0}dPhi 
+   |                  ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:43:26
+   |
+43 | def Jsr0MEtFi : {JETsr_0,METLV_0}dPhi 
+   |                          ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:44:18
+   |
+44 | def Jsr1MEtFi : {JETsr_1,METLV_0}dPhi 
+   |                  ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:44:26
+   |
+44 | def Jsr1MEtFi : {JETsr_1,METLV_0}dPhi 
+   |                          ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:45:18
+   |
+45 | def Jsr2MEtFi : {JETsr_2,METLV_0}dPhi 
+   |                  ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:45:26
+   |
+45 | def Jsr2MEtFi : {JETsr_2,METLV_0}dPhi 
+   |                          ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:22
+   |
+50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
+   |                      ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:38
+   |
+50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
+   |                                      ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:54
+   |
+50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
+   |                                                      ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:61:9
+   |
+61 | cmd   { JETsr_0 }Pt > 200 
+   |         ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:70:9
+   |
+70 | cmd   { JETsr_1 }Pt > 200 
+   |         ^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit

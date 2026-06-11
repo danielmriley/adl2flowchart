@@ -1,0 +1,23 @@
+[package]
+name = "adl-difftest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# 100k-case mode for the encoder-vs-interpreter property battery
+# (TESTING §2); normal `cargo test` runs 2000 cases.
+deep = []
+
+[dependencies]
+adl-syntax.workspace = true
+adl-sema.workspace = true
+adl-interp.workspace = true
+adl-analysis.workspace = true
+serde_json.workspace = true
+proptest.workspace = true
+
+[dev-dependencies]
+adl-formula.workspace = true

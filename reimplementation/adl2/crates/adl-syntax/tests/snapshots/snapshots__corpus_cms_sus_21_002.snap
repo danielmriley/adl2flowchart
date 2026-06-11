@@ -1,0 +1,450 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/cl_examples/CMS-SUS-21-002.adl\")"
+---
+File
+  Object kw=object name=ak4jets @19:1
+    Take kw=take src=AK4jet @20:3
+    Cut kw=select @21:3
+      Cmp op=>
+        Ident pT
+        Num 30
+    Cut kw=select @22:3
+      Cmp op=<
+        Call name=abs
+          Ident Eta
+        Num 2.4
+  Object kw=object name=bjets @24:1
+    Take kw=take src=ak4jets @25:3
+    Cut kw=select @26:3
+      Cmp op=>
+        Ident DeepCSVM
+        Num 0.6321
+    Cut kw=select @27:3
+      Cmp op=>
+        Ident DeepCSVM
+        Num 0.4941
+    Cut kw=select @28:3
+      Cmp op=>
+        Ident DeepCSVM
+        Num 0.4184
+  Object kw=object name=ak8jets @30:1
+    Take kw=take src=AK8jet @31:3
+    Cut kw=select @32:3
+      Cmp op=>
+        Ident pT
+        Num 200
+    Cut kw=select @33:3
+      Cmp op=<
+        Call name=abs
+          Ident Eta
+        Num 2
+  Object kw=object name=ak8jetsm50 @35:1
+    Take kw=take src=ak8jets @36:3
+    Cut kw=select @37:3
+      Cmp op=>
+        Ident m
+        Num 50
+  Object kw=object name=ak8jetsmV @39:1
+    Take kw=take src=ak8jets @40:3
+    Cut kw=select @41:3
+      Band kind=in lo=65 hi=105
+        Ident m
+  Object kw=object name=Hcands @43:1
+    Take kw=take src=ak8jets @44:3
+    Cut kw=select @45:3
+      Band kind=in lo=75 hi=140
+        Ident m
+    Cut kw=select @46:3
+      Cmp op=<
+        Call name=dR
+          Ident ak8jets
+          Ident bjets
+        Num 0.8
+  Object kw=object name=Wcands @48:1
+    Take kw=take src=ak8jets @49:3
+    Cut kw=select @50:3
+      Band kind=in lo=65 hi=105
+        Ident m
+    Cut kw=select @51:3
+      Cmp op=>
+        Call name=dR
+          Ident ak8jets
+          Ident bjets
+        Num 0.8
+  Object kw=object name=Htags @53:1
+    Take kw=take src=Hcands @54:3
+    Cut kw=select @55:3
+      Cmp op===
+        Ident pfMassDecorrelatedDeepBoostedDiscriminatorsJetTagsbbvsLight
+        Num 1
+  Object kw=object name=Hnotags @57:1
+    Take kw=take src=Hcands @58:3
+    Cut kw=select @59:3
+      Cmp op===
+        Ident pfMassDecorrelatedDeepBoostedDiscriminatorsJetTagsbbvsLight
+        Num 0
+  Object kw=object name=Wtags @61:1
+    Take kw=take src=Wcands @62:3
+    Cut kw=select @63:3
+      Cmp op===
+        Ident pfDeepBoostedDiscriminatorsJetTagsWvsQCD
+        Num 1
+  Object kw=object name=Wnotags @65:1
+    Take kw=take src=Wcands @66:3
+    Cut kw=select @67:3
+      Cmp op===
+        Ident pfDeepBoostedDiscriminatorsJetTagsWvsQCD
+        Num 0
+  Object kw=object name=Ws @69:1
+    Take kw=take src=ak8jetsmV @70:3
+    Cut kw=select @71:3
+      Ident pfDeepBoostedDiscriminatorsJetTagsWvsQCD
+  Object kw=object name=Vs @73:1
+    Take kw=take src=ak8jetsmV @74:3
+    Cut kw=select @75:3
+      Ident pfMassDecorrelatedDeepBoostedDiscriminatorsJetTagsWvsQCD
+  Object kw=object name=electrons @77:1
+    Take kw=take src=Electron @78:3
+    Cut kw=select @79:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @80:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.5
+    Cut kw=select @81:3
+      Cmp op===
+        Ident Fall17v2CutBasedvetoID
+        Num 1
+    Cut kw=select @82:3
+      Cmp op=<
+        Ident miniiso
+        Num 0.1
+  Object kw=object name=muons @84:1
+    Take kw=take src=Muon @85:3
+    Cut kw=select @86:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @87:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.4
+    Cut kw=select @88:3
+      Cmp op===
+        Ident mediumID
+        Num 1
+    Cut kw=select @89:3
+      Cmp op=<
+        Ident miniiso
+        Num 0.2
+  Object kw=object name=leptons @91:1
+    Take kw=take src=union(electrons,muons) @92:3
+  Object kw=object name=isolatedtracks @94:1
+    Take kw=take src=Track @95:3
+    Cut kw=select @96:3
+      Ternary has_else=true
+        Binary op=or
+          Cmp op===
+            Call name=abs
+              Ident pdgID
+            Num 11
+          Cmp op===
+            Call name=abs
+              Ident pdgID
+            Num 13
+        Cmp op=>
+          Ident pT
+          Num 5
+        Cmp op=>
+          Ident pT
+          Num 10
+    Cut kw=select @97:3
+      Ternary has_else=true
+        Binary op=or
+          Cmp op===
+            Call name=abs
+              Ident pdgID
+            Num 11
+          Cmp op===
+            Call name=abs
+              Ident pdgID
+            Num 13
+        Cmp op=<
+          Ident Itk
+          Num 0.2
+        Cmp op=>
+          Ident Itk
+          Num 0.1
+  Object kw=object name=photons @101:1
+    Take kw=take src=Photon @102:3
+    Cut kw=select @103:3
+      Cmp op=>
+        Ident pT
+        Num 100
+    Cut kw=select @104:3
+      Binary op=and
+        Cmp op=<
+          Call name=abs
+            Ident eta
+          Num 1.4442
+        Band kind=in lo=1.566 hi=2.5
+          Call name=abs
+            Ident eta
+    Cut kw=select @105:3
+      Cmp op===
+        Ident Fall17v2Loose
+        Num 1
+  Define kw=define name=HT @108:1
+    Call name=sum
+      Call name=pT
+        Ident ak4jets
+  Define kw=define name=Itk @109:1
+    Binary op=/
+      Call name=sum
+        Call name=pT
+          Num 0.3
+      Ident pT
+  Region kw=region name=baseline @113:1
+    Cut kw=select @115:3
+      Cmp op===
+        Call name=n
+          Ident leptons
+        Num 0
+    Cut kw=select @116:3
+      Cmp op===
+        Call name=n
+          Ident isolatedtracks
+        Num 0
+    Cut kw=select @117:3
+      Cmp op===
+        Call name=n
+          Ident photons
+        Num 0
+    Cut kw=select @118:3
+      Cmp op=>
+        Ident MET
+        Num 200
+    Cut kw=select @119:3
+      Cmp op=>
+        Ident HT
+        Num 300
+    Cut kw=select @120:3
+      Band kind=in lo=2 hi=6
+        Call name=n
+          Ident ak4jets
+    Cut kw=select @121:3
+      Cmp op=>
+        Call name=n
+          Ident ak8jets
+        Num 1
+    Cut kw=select @122:3
+      Cmp op=>
+        Call name=n
+          Ident ak8jetsm50
+        Num 1
+    Cut kw=select @123:3
+      Cmp op=>
+        Call name=dphi
+          Index 0
+            Ident ak4jets
+          Ident METLV
+        Num 1.5
+    Cut kw=select @124:3
+      Cmp op=>
+        Call name=dphi
+          Index 1
+            Ident ak4jets
+          Ident METLV
+        Num 0.5
+    Cut kw=select @125:3
+      Ternary has_else=false
+        Cmp op=>
+          Call name=n
+            Ident ak4jets
+          Num 2
+        Cmp op=>
+          Call name=dphi
+            Index 2
+              Ident ak4jets
+            Ident METLV
+          Num 0.3
+    Cut kw=select @126:3
+      Ternary has_else=false
+        Cmp op=>
+          Call name=n
+            Ident ak4jets
+          Num 2
+        Cmp op=>
+          Call name=dphi
+            Index 3
+              Ident ak4jets
+            Ident METLV
+          Num 0.3
+    Cut kw=select @127:3
+      Cmp op=>
+        Call name=dphi
+          Index 0
+            Ident ak8jets
+          Ident METLV
+        Num 1.5
+    Cut kw=select @128:3
+      Cmp op=>
+        Call name=dphi
+          Index 1
+            Ident ak8jets
+          Ident METLV
+        Num 0.5
+  Region kw=region name=bveto @130:1
+    RegionRef name=baseline @131:3
+    Cut kw=select @132:3
+      Cmp op===
+        Call name=n
+          Ident bjets
+        Num 0
+  Region kw=region name=bvetoSR @134:1
+    RegionRef name=bveto @136:3
+    Cut kw=select @137:3
+      Cmp op=>=
+        Call name=n
+          Ident Ws
+        Num 1
+    Cut kw=select @138:3
+      Cmp op=>=
+        Call name=n
+          Ident Vs
+        Num 1
+    Cut kw=select @139:3
+      Cmp op=>=
+        Binary op=+
+          Call name=n
+            Ident Ws
+          Call name=n
+            Ident Vs
+        Num 2
+  Region kw=region name=bveto0tagCR @142:1
+    TypeTag value=control @143:3
+    RegionRef name=bveto @144:3
+    Cut kw=select @145:3
+      Cmp op===
+        Call name=n
+          Ident bjets
+        Num 0
+    Cut kw=select @146:3
+      Cmp op===
+        Call name=n
+          Ident Ws
+        Num 0
+    Cut kw=select @147:3
+      Cmp op===
+        Call name=n
+          Ident Vs
+        Num 0
+  Region kw=region name=bveto1tagCR @150:1
+    TypeTag value=control @151:3
+    RegionRef name=bveto @152:3
+    Cut kw=select @153:3
+      Cmp op===
+        Call name=n
+          Ident bjets
+        Num 0
+    Cut kw=select @154:3
+      Cmp op===
+        Call name=n
+          Ident Vs
+        Num 1
+    Cut kw=select @155:3
+      Cmp op===
+        Call name=n
+          Ident Ws
+        Num 0
+  Region kw=region name=btag @158:1
+    RegionRef name=baseline @159:3
+    Cut kw=select @160:3
+      Cmp op=>
+        Call name=n
+          Ident bjets
+        Num 0
+  Region kw=region name=btagHW @162:1
+    TypeTag value=search @163:3
+    RegionRef name=btag @164:3
+    Cut kw=select @165:3
+      Cmp op=>=
+        Call name=n
+          Ident Wtags
+        Num 1
+    Cut kw=select @166:3
+      Cmp op=>=
+        Call name=n
+          Ident Htags
+        Num 1
+  Region kw=region name=btagW @169:1
+    TypeTag value=search @170:3
+    RegionRef name=btag @171:3
+    Cut kw=select @172:3
+      Cmp op=>=
+        Call name=n
+          Ident Wtags
+        Num 1
+    Cut kw=select @173:3
+      Cmp op===
+        Call name=n
+          Ident Htags
+        Num 0
+  Region kw=region name=btagH @176:1
+    TypeTag value=search @177:3
+    RegionRef name=btag @178:3
+    Cut kw=select @179:3
+      Cmp op===
+        Call name=n
+          Ident Wtags
+        Num 0
+    Cut kw=select @180:3
+      Cmp op=>=
+        Call name=n
+          Ident Htags
+        Num 1
+  Region kw=region name=btagHWantitag @183:1
+    TypeTag value=control @184:3
+    RegionRef name=btag @185:3
+    Cut kw=select @186:3
+      Cmp op=>=
+        Call name=n
+          Ident Wnotags
+        Num 1
+    Cut kw=select @187:3
+      Cmp op=>=
+        Call name=n
+          Ident Hnotags
+        Num 1
+  Region kw=region name=btagWantitag @190:1
+    TypeTag value=control @191:3
+    RegionRef name=btag @192:3
+    Cut kw=select @193:3
+      Cmp op=>=
+        Call name=n
+          Ident Wnotags
+        Num 1
+    Cut kw=select @194:3
+      Cmp op===
+        Call name=n
+          Ident Hnotags
+        Num 0
+  Region kw=region name=btagHantitag @197:1
+    TypeTag value=search @198:3
+    RegionRef name=btag @199:3
+    Cut kw=select @200:3
+      Cmp op===
+        Call name=n
+          Ident Wnotags
+        Num 0
+    Cut kw=select @201:3
+      Cmp op=>=
+        Call name=n
+          Ident Hnotags
+        Num 1
+---- diagnostics ----

@@ -1,0 +1,7 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+{"event":0,"regions":[{"bins":[{"bin":0,"kind":"boundary","label":null,"value":280.0}],"name":"SR_binned","pass":true},{"bins":[{"bin":null,"kind":"boundary","label":null,"value":280.0}],"name":"SR_gap","pass":true}]}
+{"event":1,"regions":[{"bins":[{"bin":1,"kind":"boundary","label":null,"value":450.0}],"name":"SR_binned","pass":true},{"bins":[{"bin":0,"kind":"boundary","label":null,"value":450.0}],"name":"SR_gap","pass":true}]}
+{"event":2,"regions":[{"name":"SR_binned","pass":false},{"name":"SR_gap","pass":false}]}

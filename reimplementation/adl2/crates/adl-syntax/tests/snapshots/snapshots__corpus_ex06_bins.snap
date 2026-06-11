@@ -1,0 +1,186 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex06_bins.adl\")"
+---
+File
+  Info name=analysis @20:1
+    Line key=title items=[str:"ADL/CL ex6: Bins in regions"]
+  Object kw=object name=jets @24:1
+    Take kw=take src=Jet @25:3
+    Cut kw=select @26:3
+      Cmp op=>
+        Call name=pT
+          Ident Jet
+        Num 50
+    Cut kw=select @27:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Jet
+        Num 2.4
+  Object kw=object name=leptons @29:1
+    Take kw=: src=union(ELE,MUO) @29:16
+  Define kw=define name=MTl @32:1
+    Call name=sqrt
+      Binary op=*
+        Binary op=*
+          Binary op=*
+            Num 2
+            Call name=pT
+              Index 0
+                Ident leptons
+          Ident MET
+        Binary op=-
+          Num 1
+          Call name=cos
+            Binary op=-
+              Call name=Phi
+                Index 0
+                  Ident METLV
+              Call name=Phi
+                Index 0
+                  Ident leptons
+  Define kw=define name=HT @33:1
+    Call name=fHT
+      Ident jets
+  Define kw=define name=MT2j0j1 @34:1
+    Call name=fMT2
+      Index 0
+        Ident jets
+      Index 1
+        Ident jets
+      Index 0
+        Ident METLV
+  Region kw=region name=hadronic @37:1
+    Cut kw=select @38:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 4
+    Cut kw=select @39:3
+      Cmp op===
+        Call name=size
+          Ident leptons
+        Num 0
+    Cut kw=select @40:3
+      Cmp op=>
+        Ident HT
+        Num 300
+    Cut kw=select @41:3
+      Cmp op=>
+        Call name=dphi
+          Index 0
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @42:3
+      Cmp op=>
+        Call name=dphi
+          Index 1
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @43:3
+      Cmp op=>
+        Call name=dphi
+          Index 2
+            Ident jets
+          Index 0
+            Ident METLV
+        Num 0.5
+    Cut kw=select @44:3
+      Cmp op=>
+        Call name=dR
+          Index 0
+            Ident jets
+          Index 1
+            Ident jets
+        Num 1.0
+    Cut kw=select @45:3
+      Cmp op=>
+        Ident MT2j0j1
+        Num 300
+    Bin @48:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=300 hi=500
+          Ident MT2j0j1
+    Bin @49:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=500 hi=800
+          Ident MT2j0j1
+    Bin @50:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Band kind=in lo=800 hi=1000
+          Ident MT2j0j1
+    Bin @51:3
+      Binary op=and
+        Band kind=in lo=4 hi=5
+          Call name=size
+            Ident jets
+        Cmp op=>
+          Ident MT2j0j1
+          Num 1000
+    Bin @52:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Band kind=in lo=300 hi=500
+          Ident MT2j0j1
+    Bin @53:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Band kind=in lo=500 hi=800
+          Ident MT2j0j1
+    Bin @54:3
+      Binary op=and
+        Cmp op=>=
+          Call name=size
+            Ident jets
+          Num 6
+        Cmp op=>
+          Ident MT2j0j1
+          Num 800
+  Region kw=region name=leptonic @56:1
+    Cut kw=select @57:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 3
+    Cut kw=select @58:3
+      Cmp op===
+        Call name=size
+          Ident leptons
+        Num 1
+    Cut kw=select @59:3
+      Cmp op=>
+        Binary op=+
+          Call name=fHT
+            Ident jets
+          Call name=pT
+            Index 0
+              Ident leptons
+        Num 300
+    Cut kw=select @60:3
+      Cmp op=>
+        Ident MET
+        Num 150
+    Bin @62:3
+      Boundaries edges=[250 350 500 800]
+        Ident MTl
+---- diagnostics ----

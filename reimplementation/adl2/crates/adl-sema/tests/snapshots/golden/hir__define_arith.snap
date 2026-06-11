@@ -1,0 +1,16 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: define_arith.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+define halfmet [numeric] = (MET.pt / 2)
+== regions ==
+region SR_a
+  select (MET.pt > 100)
+  select ((MET.pt / 2) < 10)
+region SR_b
+  select (MET.pt > 100)
+== diagnostics ==

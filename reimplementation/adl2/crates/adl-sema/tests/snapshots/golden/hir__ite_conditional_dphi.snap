@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: ite_conditional_dphi.adl
+== objects ==
+object jets -> C1#jets
+object MHT -> C2#MHT  (pure rename of C2#MHT)
+== defines ==
+== regions ==
+region SR_ite
+  select (size(C1#jets) >= 3)
+  select ((size(C1#jets) >= 3) ? (dphi(C1#jets[2], MET) > 0.3) : true)
+== diagnostics ==

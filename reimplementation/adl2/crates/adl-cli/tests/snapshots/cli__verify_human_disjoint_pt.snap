@@ -1,0 +1,23 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+ADL2 analysis report — disjoint_pt.adl
+solver: none
+
+== regions ==
+SR_low: encoded leaves 4/4 (exact)
+SR_high: encoded leaves 2/2 (exact)
+
+== pairwise ==
+SR_low vs SR_high: PROVEN DISJOINT — intervals cannot intersect on jets[0].pt: SR_low requires (100, 200), SR_high requires (300, inf]
+
+== axioms used ==
+SZ0 (2 instances; assumes: none)
+SUB (1 instances; assumes: take = filter)
+NNEG (2 instances; assumes: none)
+EPRED (1 instances; assumes: take = filter)
+IDOM (1 instances; assumes: ORD + SUB)
+
+== summary ==
+pairs: 1; proven disjoint: 1; proven overlapping: 0; possibly overlapping: 0; unknown: 0

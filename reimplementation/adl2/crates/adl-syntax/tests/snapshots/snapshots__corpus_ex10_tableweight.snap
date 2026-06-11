@@ -1,0 +1,80 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex10_tableweight.adl\")"
+---
+File
+  Info name=analysis @12:1
+    Line key=title items=[str:"ADL/CL ex10: Tables, weights, efficiencies"]
+  Table name=eleTrigger1 type=efficiency nvars=1 errors=false @16:1
+    Values [0.3 0.0 10.0 0.5 10.0 20.0 0.7 20.0 50.0 0.8 50.0 70.0 0.95 70.0 7000.0]
+  Table name=eleTrigger2 type=efficiency nvars=2 errors=false @27:1
+    Values [0.1 0.0 10.0 -5.5 0.0 0.1 0.0 10.0 0.0 5.5 0.2 10.0 20.0 -5.5 0.0 0.5 10.0 20.0 0.0 5.5 0.4 20.0 50.0 -5.5 0.0 0.4 20.0 50.0 0.0 5.5 0.7 50.0 70.0 -5.5 0.0 0.7 50.0 70.0 0.0 5.5 0.95 70.0 7000.0 -5.5 0.0 0.95 70.0 7000.0 0.0 5.5]
+  Table name=eleMediumID type=efficiency nvars=2 errors=true @43:1
+    Values [0.1 0.01 0.02 0.0 10.0 -5.5 0.0 0.1 0.01 0.02 0.0 10.0 0.0 5.5 0.2 0.01 0.03 10.0 20.0 -5.5 0.0 0.2 0.01 0.03 10.0 20.0 0.0 5.5 0.4 0.01 0.04 20.0 50.0 -5.5 0.0 0.4 0.01 0.04 20.0 50.0 0.0 5.5 0.7 0.01 0.05 50.0 70.0 -5.5 0.0 0.7 0.01 0.05 50.0 70.0 0.0 5.5 0.95 0.01 0.06 70.0 7000.0 -5.5 0.0 0.95 0.01 0.06 70.0 7000.0 0.0 5.5]
+  Table name=btagMedium type=efficiency nvars=1 errors=true @59:1
+    Values [0.1 0.01 0.02 20.0 50.0 -5.5 0.0 0.1 0.01 0.02 20.0 50.0 0.0 5.5 0.2 0.03 0.03 50.0 70.0 -5.5 0.0 0.2 0.03 0.03 50.0 70.0 0.0 5.5 0.4 0.04 0.03 70.0 100.0 -5.5 0.0 0.4 0.04 0.03 70.0 100.0 0.0 5.5 0.7 0.04 0.05 100.0 200.0 -5.5 0.0 0.7 0.04 0.05 100.0 200.0 0.0 5.5 0.75 0.08 0.07 200.0 7000.0 -5.5 0.0 0.75 0.07 0.09 200.0 7000.0 0.0 5.5]
+  Object kw=object name=mediumEle @76:1
+    Take kw=take src=ELE @77:3
+    Cut kw=select @78:3
+      Cmp op=>
+        Call name=pT
+          Ident ELE
+        Num 10
+    Cut kw=select @80:3
+      Call name=applyHM
+        Cmp op===
+          Call name=eleMediumID
+            Braced prop=pT
+              Ident ELE
+            Braced prop=Eta
+              Ident ELE
+          Num 1
+  Define kw=define name=run2lumi @83:1
+    Num 138
+  Region kw=region name=baseline @86:1
+    Cut kw=select @88:3
+      All
+    Weight name=xsecWeight @89:3
+      Num 0.0123
+    Weight name=lumiWeight @90:3
+      Ident run2lumi
+    Cut kw=select @91:3
+      Cmp op=>=
+        Call name=Size
+          Ident mediumEle
+        Num 1
+    Weight name=eleTrig1Weight @94:3
+      Call name=eleTrigger1
+        Braced prop=pT
+          UIndex 0
+            Ident mediumEle
+    Cut kw=select @98:3
+      Call name=applyHM
+        Cmp op===
+          Call name=btagMedium
+            Braced prop=pT
+              UIndex 0
+                Ident JET
+            Braced prop=Eta
+              UIndex 0
+                Ident JET
+          Num 0
+---- diagnostics ----
+note: identifier `mediumEle` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex10_tableweight.adl:94:39
+   |
+94 |   weight eleTrig1Weight eleTrigger1( {mediumEle_0}pT ) 
+   |                                       ^^^^^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JET` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex10_tableweight.adl:98:32
+   |
+98 |   select applyHM( btagMedium( {JET_0}pT , {JET_0}Eta ) == 0) # 0 to reject, 1 to accept.
+   |                                ^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `JET` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex10_tableweight.adl:98:44
+   |
+98 |   select applyHM( btagMedium( {JET_0}pT , {JET_0}Eta ) == 0) # 0 to reject, 1 to accept.
+   |                                            ^^^^ 
+   = help: write `name[i]` to make the indexing explicit

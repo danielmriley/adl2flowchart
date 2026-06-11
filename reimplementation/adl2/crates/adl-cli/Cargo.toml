@@ -1,0 +1,32 @@
+[package]
+name = "adl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "smash2"
+path = "src/main.rs"
+
+[features]
+# Forwarded solver-backend feature: `--no-default-features` builds the CLI
+# against the SMT-LIB subprocess backend (or the no-solver degradation),
+# matching adl-analysis's own feature.
+default = ["native"]
+native = ["adl-analysis/native"]
+
+[dependencies]
+adl-syntax.workspace = true
+adl-sema.workspace = true
+adl-interp.workspace = true
+adl-viz.workspace = true
+# Direct path dep (not workspace-inherited): inheritance cannot override
+# default-features, and the CLI must forward the `native` backend feature.
+adl-analysis = { path = "../adl-analysis", default-features = false }
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

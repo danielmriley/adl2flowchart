@@ -1,0 +1,42 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: ast
+---
+digraph ast {
+  node [shape=box, fontname="monospace"];
+  label="collection_quant.adl (AST)";
+  labelloc=t;
+  n0 [label="region SR_allhard", style=filled, fillcolor="#f0fff0"];
+  n1 [label=">="];
+  n2 [label="size(jets)"];
+  n1 -> n2;
+  n3 [label="1"];
+  n1 -> n3;
+  n0 -> n1 [label="select"];
+  n4 [label="<="];
+  n5 [label="size(jets)"];
+  n4 -> n5;
+  n6 [label="2"];
+  n4 -> n6;
+  n0 -> n4 [label="select"];
+  n7 [label=">"];
+  n8 [label="jets[*].pt"];
+  n7 -> n8;
+  n9 [label="100"];
+  n7 -> n9;
+  n0 -> n7 [label="select"];
+  n10 [label="region SR_unbounded", style=filled, fillcolor="#f0fff0"];
+  n11 [label=">"];
+  n12 [label="jets[*].pt"];
+  n11 -> n12;
+  n13 [label="100"];
+  n11 -> n13;
+  n10 -> n11 [label="select"];
+  n14 [label="region SR_softlead", style=filled, fillcolor="#f0fff0"];
+  n15 [label="<"];
+  n16 [label="jets[0].pt"];
+  n15 -> n16;
+  n17 [label="50"];
+  n15 -> n17;
+  n14 -> n15 [label="select"];
+}

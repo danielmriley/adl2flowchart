@@ -1,0 +1,30 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: ast
+---
+digraph ast {
+  node [shape=box, fontname="monospace"];
+  label="disjoint_jet_index.adl (AST)";
+  labelloc=t;
+  n0 [label="object jets", style=filled, fillcolor="#e0f0ff"];
+  n1 [label=">"];
+  n2 [label="this.pt"];
+  n1 -> n2;
+  n3 [label="30"];
+  n1 -> n3;
+  n0 -> n1 [label="predicate"];
+  n4 [label="region SR_high", style=filled, fillcolor="#f0fff0"];
+  n5 [label=">"];
+  n6 [label="jets[0].pt"];
+  n5 -> n6;
+  n7 [label="300"];
+  n5 -> n7;
+  n4 -> n5 [label="select"];
+  n8 [label="region SR_low", style=filled, fillcolor="#f0fff0"];
+  n9 [label="<"];
+  n10 [label="jets[0].pt"];
+  n9 -> n10;
+  n11 [label="200"];
+  n9 -> n11;
+  n8 -> n9 [label="select"];
+}

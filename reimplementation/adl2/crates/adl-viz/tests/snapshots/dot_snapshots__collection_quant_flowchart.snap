@@ -1,0 +1,25 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: fc
+---
+digraph flowchart {
+  rankdir=LR;
+  node [shape=box, fontname="monospace"];
+  label="collection_quant.adl";
+  labelloc=t;
+  subgraph cluster_objects {
+    label="objects";
+    color=gray70;
+    coll0 [label="jets\n[base]", style=filled, fillcolor="#e0f0ff"];
+  }
+  subgraph cluster_regions {
+    label="regions";
+    color=gray70;
+    region0 [label="SR_allhard\lselect (size(jets) >= 1)\lselect (size(jets) <= 2)\lselect (jets[*].pt > 100)\l", style=filled, fillcolor="#f0fff0"];
+    region1 [label="SR_unbounded\lselect (jets[*].pt > 100)\l", style=filled, fillcolor="#f0fff0"];
+    region2 [label="SR_softlead\lselect (jets[0].pt < 50)\l", style=filled, fillcolor="#f0fff0"];
+  }
+  coll0 -> region0 [style=dotted, color=gray60];
+  coll0 -> region1 [style=dotted, color=gray60];
+  coll0 -> region2 [style=dotted, color=gray60];
+}

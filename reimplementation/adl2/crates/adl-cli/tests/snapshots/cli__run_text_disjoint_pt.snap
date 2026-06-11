@@ -1,0 +1,10 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+event 0: SR_low -> fail
+event 0: SR_high -> PASS
+event 1: SR_low -> PASS
+event 1: SR_high -> fail
+event 2: SR_low -> fail
+event 2: SR_high -> fail

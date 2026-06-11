@@ -1,0 +1,232 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/small_samples/cms.adl\")"
+---
+File
+  Object kw=object name=jets @14:1
+    Take kw=take src=Jet @15:3
+    Cut kw=select @16:3
+      Cmp op=>
+        Ident pT
+        Num 25
+    Cut kw=select @17:3
+      Cmp op=<
+        Call name=abs
+          Ident Eta
+        Num 2.4
+  Object kw=object name=bjets @19:1
+    Take kw=take src=jets @20:3
+    Cut kw=select @21:3
+      Cmp op===
+        Ident BTag
+        Num 1
+  Object kw=object name=cjets @23:1
+    Take kw=take src=jets @24:3
+    Cut kw=select @28:3
+      Cmp op===
+        Ident cTag
+        Num 1
+  Object kw=object name=muons @30:1
+    Take kw=take src=Muon @31:3
+    Cut kw=select @32:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @33:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.4
+    Cut kw=select @34:3
+      Cmp op=<
+        Ident D0
+        Num 2
+  Object kw=object name=electrons @37:1
+    Take kw=take src=Electron @38:3
+    Cut kw=select @39:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @40:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.4
+    Cut kw=select @41:3
+      Cmp op=<
+        Ident D0
+        Num 2
+  Object kw=object name=leptons @44:1
+    Take kw=take src=electrons @45:3
+    Take kw=take src=muons @46:3
+  Object kw=object name=MET @55:1
+    Take kw=take src=MissingET @56:3
+  Define kw=define name=MTj1 @59:1
+    Call name=sqrt
+      Binary op=*
+        Binary op=*
+          Binary op=*
+            Num 2
+            Dot field=pT
+              Index 0
+                Ident jets
+          Ident MET
+        Binary op=-
+          Num 1
+          Call name=cos
+            Binary op=+
+              Dot field=phi
+                Ident MET
+              Dot field=phi
+                Index 0
+                  Ident jets
+  Define kw=define name=MTj2 @60:1
+    Call name=sqrt
+      Binary op=*
+        Binary op=*
+          Binary op=*
+            Num 2
+            Dot field=pT
+              Index 1
+                Ident jets
+          Ident MET
+        Binary op=-
+          Num 1
+          Call name=cos
+            Binary op=+
+              Dot field=phi
+                Ident MET
+              Dot field=phi
+                Index 1
+                  Ident jets
+  Define kw=define name=MCT @61:1
+    Binary op=*
+      Binary op=*
+        Binary op=*
+          Num 2
+          Dot field=pT
+            Index 0
+              Ident jets
+        Index 1
+          Ident jets
+      Binary op=+
+        Num 1
+        Call name=cos
+          Call name=dphi
+            Index 0
+              Ident jets
+            Index 1
+              Ident jets
+  Define kw=define name=dphimin2j @62:1
+    Call name=min
+      Call name=dphi
+        Slice 0:1
+          Ident jets
+        Ident MET
+  Define kw=define name=dphimin @63:1
+    Call name=min
+      Call name=dphi
+        Slice 0:2
+          Ident jets
+        Ident MET
+  Define kw=define name=HT01 @64:1
+    Binary op=+
+      Index 0
+        Ident jets
+      Index 1
+        Ident jets
+  Define kw=define name=HTbc @65:1
+    Binary op=+
+      Call name=sum
+        Dot field=pT
+          Ident bjets
+      Call name=sum
+        Dot field=pT
+          Ident cjets
+  Region kw=region name=noncompressed @69:1
+    Cut kw=select @70:3
+      Band kind=in lo=2 hi=4
+        Call name=size
+          Ident jets
+    Cut kw=select @72:3
+      Cmp op===
+        Binary op=+
+          Call name=size
+            Ident electrons
+          Call name=size
+            Ident muons
+        Num 0
+    Cut kw=select @73:3
+      Cmp op=>
+        Dot field=pT
+          Index 0
+            Ident jets
+        Num 100
+    Cut kw=select @74:3
+      Cmp op===
+        Dot field=BTag
+          Index 0
+            Ident jets
+        Num 1
+    Cut kw=select @75:3
+      Cmp op=>
+        Dot field=pT
+          Index 1
+            Ident jets
+        Num 75
+    Cut kw=select @76:3
+      Cmp op===
+        Dot field=BTag
+          Index 1
+            Ident jets
+        Num 1
+    Cut kw=select @77:3
+      Cmp op=>
+        Dot field=pT
+          Index 2
+            Ident jets
+        Num 30
+    Cut kw=select @78:3
+      Cmp op=>
+        Dot field=pT
+          Index 3
+            Ident jets
+        Num 30
+    Cut kw=select @79:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 250
+    Cut kw=select @82:3
+      Cmp op=>
+        Ident MCT
+        Num 150
+  Region kw=region name=noncompressedHT1 @84:3
+    Cut kw=select @85:5
+      Ident noncompressed
+    Cut kw=select @86:5
+      Band kind=in lo=200 hi=500
+        Ident HT01
+    Bin @87:5
+      Boundaries edges=[150 250 350 450]
+        Ident MCT
+  Region kw=region name=noncompressedHT2 @89:3
+    Cut kw=select @90:5
+      Ident noncompressed
+    Cut kw=select @91:5
+      Band kind=in lo=500 hi=1000
+        Ident HT01
+    Bin @92:5
+      Boundaries edges=[150 250 350 450 600]
+        Ident MCT
+  Region kw=region name=noncompressedHT3 @94:3
+    Cut kw=select @95:5
+      Ident noncompressed
+    Cut kw=select @96:5
+      Cmp op=>
+        Ident HT01
+        Num 1000
+    Bin @97:5
+      Boundaries edges=[150 250 350 450 600 800]
+        Ident MCT
+---- diagnostics ----

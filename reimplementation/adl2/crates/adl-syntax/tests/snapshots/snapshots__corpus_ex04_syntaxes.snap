@@ -1,0 +1,150 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex04_syntaxes.adl\")"
+---
+File
+  Info name=analysis @19:1
+    Line key=title items=[str:"ADL/CL ex4: Alternative syntaxes"]
+  Object kw=object name=goodJets @23:1
+    Take kw=take src=Jet @24:3
+    Cut kw=select @25:3
+      Cmp op=>
+        Call name=pT
+          Ident Jet
+        Num 50
+    Cut kw=select @26:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Jet
+        Num 2.4
+  Object kw=object name=goodbJets @28:1
+    Take kw=take src=goodJets @29:3
+    Cut kw=select @30:3
+      Cmp op===
+        Call name=BTag
+          Ident goodJets
+        Num 1
+  Object kw=object name=goodEles @33:1
+    Take kw=: src=Ele @33:17
+    Cut kw=select @34:3
+      Cmp op=>
+        Braced prop=Pt
+          Ident Ele
+        Num 20
+    Cut kw=select @35:3
+      Cmp op=<
+        Call name=abs
+          Braced prop=Eta
+            Ident Ele
+        Num 2.1
+  Object kw=object name=goodMuos @37:1
+    Take kw=take src=Muo @38:3
+    Cut kw=select @39:3
+      Cmp op=>
+        Call name=pT
+          Ident Muo
+        Num 20
+    Cut kw=select @40:3
+      Cmp op=<
+        Call name=abs
+          Braced prop=Eta
+            Ident Muo
+        Num 2.1
+  Object kw=object name=leptons @42:1
+    Take kw=: src=union(goodEles,goodMuos) @42:16
+  Region kw=region name=baseline @48:1
+    Cut kw=select @49:3
+      All
+    Cut kw=select @50:3
+      Cmp op=>=
+        Call name=size
+          Ident goodJets
+        Num 4
+    Cut kw=select @51:3
+      Cmp op=>=
+        Call name=size
+          Ident goodbJets
+        Num 1
+    Cut kw=select @52:3
+      Cmp op=>
+        Call name=pT
+          Index 0
+            Ident goodJets
+        Num 200
+    Cut kw=select @53:3
+      Cmp op=>
+        Call name=pT
+          UIndex 1
+            Ident goodJets
+        Num 100
+    Cut kw=select @54:3
+      Cmp op=>
+        Braced prop=Pt
+          Index 2
+            Ident goodJets
+        Num 50
+    Cut kw=select @55:3
+      Cmp op=>
+        Braced prop=Pt
+          UIndex 2
+            Ident goodJets
+        Num 50
+  Region kw=region name=singleelectron @57:1
+    RegionRef name=baseline @58:3
+    Cut kw=select @59:3
+      Cmp op===
+        Call name=size
+          Ident goodEles
+        Num 1
+    Cut kw=select @60:3
+      Cmp op=>
+        Call name=m
+          ParticleList
+            Index 0
+              Ident goodEles
+            Index 0
+              Ident goodbJets
+        Num 100
+  Region kw=region name=singlemuon @62:1
+    RegionRef name=baseline @63:3
+    Cut kw=select @64:3
+      Cmp op===
+        Call name=size
+          Ident goodMuos
+        Num 1
+    Cut kw=select @65:3
+      Cmp op=>
+        Binary op=+
+          Braced prop=m
+            UIndex 0
+              Ident goodMuos
+          Braced prop=m
+            UIndex 0
+              Ident goodbJets
+        Num 100
+---- diagnostics ----
+note: identifier `goodJets` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex04_syntaxes.adl:53:13
+   |
+53 |   select pT(goodJets_1) > 100
+   |             ^^^^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `goodJets` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex04_syntaxes.adl:55:11
+   |
+55 |   select {goodJets_2}Pt > 50
+   |           ^^^^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `goodMuos` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex04_syntaxes.adl:65:11
+   |
+65 |   select {goodMuos_0}m + {goodbJets_0}m > 100
+   |           ^^^^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit
+note: identifier `goodbJets` ends before `_`: `_<digit>` is the underscore-indexing operator
+  --> examples/tutorials/ex04_syntaxes.adl:65:27
+   |
+65 |   select {goodMuos_0}m + {goodbJets_0}m > 100
+   |                           ^^^^^^^^^^ 
+   = help: write `name[i]` to make the indexing explicit

@@ -1,0 +1,187 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex02_histograms.adl\")"
+---
+File
+  Info name=analysis @16:1
+    Line key=title items=[str:"ADL/CL ex2: Histograms in a simple semileptonic final state"]
+  Object kw=object name=goodJets @20:1
+    Take kw=take src=Jet @21:3
+    Cut kw=select @22:3
+      Cmp op=>
+        Call name=pT
+          Ident Jet
+        Num 50
+    Cut kw=select @23:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Jet
+        Num 2.4
+  Object kw=object name=goodbJets @25:1
+    Take kw=take src=goodJets @26:3
+    Cut kw=select @27:3
+      Cmp op===
+        Call name=BTag
+          Ident goodJets
+        Num 1
+  Object kw=object name=goodEles @29:1
+    Take kw=take src=Ele @30:3
+    Cut kw=select @31:3
+      Cmp op=>
+        Call name=pT
+          Ident Ele
+        Num 20
+    Cut kw=select @32:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Ele
+        Num 2.1
+  Object kw=object name=goodMuos @34:1
+    Take kw=take src=Muo @35:3
+    Cut kw=select @36:3
+      Cmp op=>
+        Call name=pT
+          Ident Muo
+        Num 20
+    Cut kw=select @37:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Muo
+        Num 2.1
+  Object kw=object name=leptons @39:1
+    Take kw=: src=union(goodEles,goodMuos) @39:16
+  Region kw=histoList name=jetHistos @42:1
+    Histo name=hnjets title="number of jets" @43:3
+      Num 20
+      Num 0
+      Num 20
+      Call name=size
+        Ident goodJets
+    Histo name=hjet1pt title="jet1 pT (GeV)" @44:3
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 0
+          Ident goodJets
+    Histo name=hjet2pt title="jet2 pT (GeV)" @45:3
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 1
+          Ident goodJets
+    Histo name=hjet3pt title="jet3 pT (GeV)" @46:3
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 2
+          Ident goodJets
+    Histo name=hjet1eta title="jet1 eta" @47:3
+      Num 40
+      Num -3
+      Num 3
+      Call name=eta
+        Index 0
+          Ident goodJets
+    Histo name=hjet2eta title="jet2 eta" @48:3
+      Num 40
+      Num -3
+      Num 3
+      Call name=eta
+        Index 1
+          Ident goodJets
+    Histo name=hjet3eta title="jet3 eta" @49:3
+      Num 40
+      Num -3
+      Num 3
+      Call name=eta
+        Index 2
+          Ident goodJets
+  Region kw=histoList name=leptonHistos @51:1
+    Histo name=hlep1pt title="lepton1 pT (GeV)" @52:3
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 0
+          Ident leptons
+    Histo name=hlep1eta title="lepton1 eta" @53:3
+      Num 40
+      Num -3
+      Num 3
+      Call name=eta
+        Index 0
+          Ident leptons
+    Histo name=hlep1ptMET title="MET vs. lepton1 pT (GeV)" @54:3
+      Num 40
+      Num 0
+      Num 1000
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 0
+          Ident leptons
+      Ident MET
+  Region kw=region name=baseline @57:1
+    Cut kw=select @58:3
+      All
+    Cut kw=select @59:3
+      Cmp op=>=
+        Call name=size
+          Ident goodJets
+        Num 3
+    Cut kw=select @60:3
+      Cmp op=>=
+        Call name=size
+          Ident goodbJets
+        Num 1
+    Cut kw=select @61:3
+      Cmp op=>
+        Call name=pT
+          Index 0
+            Ident goodJets
+        Num 200
+    Histo name=hmet title="MET (GeV)" @63:3
+      Num 40
+      Num 0
+      Num 1000
+      Ident MET
+    Histo name=hj1ptMET title="MET vs. jet1 pT (GeV)" @65:3
+      Num 40
+      Num 0
+      Num 1000
+      Num 40
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 0
+          Ident goodJets
+      Ident MET
+    Histo name=hmetvarbin title="MET (GeV) variable bin" @67:3
+      NumList [0.0 10.0 20.0 50.0 100.0 500.0]
+      Ident MET
+    Cut kw=select @69:3
+      Cmp op=>
+        Ident MET
+        Num 100
+    RegionRef name=jetHistos @70:3
+    Cut kw=select @71:3
+      Cmp op=>
+        Ident MET
+        Num 200
+    RegionRef name=jetHistos @72:3
+  Region kw=region name=singlelepton @74:1
+    RegionRef name=baseline @75:3
+    Cut kw=select @76:3
+      Cmp op===
+        Call name=Size
+          Ident leptons
+        Num 1
+    RegionRef name=leptonHistos @77:3
+---- diagnostics ----

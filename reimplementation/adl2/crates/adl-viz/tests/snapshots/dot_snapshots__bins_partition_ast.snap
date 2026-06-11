@@ -1,0 +1,27 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: ast
+---
+digraph ast {
+  node [shape=box, fontname="monospace"];
+  label="bins_partition.adl (AST)";
+  labelloc=t;
+  n0 [label="region SR_binned", style=filled, fillcolor="#f0fff0"];
+  n1 [label=">"];
+  n2 [label="MET.pt"];
+  n1 -> n2;
+  n3 [label="250"];
+  n1 -> n3;
+  n0 -> n1 [label="select"];
+  n4 [label="MET.pt"];
+  n0 -> n4 [label="bin"];
+  n5 [label="region SR_gap", style=filled, fillcolor="#f0fff0"];
+  n6 [label=">"];
+  n7 [label="MET.pt"];
+  n6 -> n7;
+  n8 [label="250"];
+  n6 -> n8;
+  n5 -> n6 [label="select"];
+  n9 [label="MET.pt"];
+  n5 -> n9 [label="bin"];
+}

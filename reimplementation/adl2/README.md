@@ -26,7 +26,7 @@ cargo build --release
 alias smash2=$PWD/target/release/smash2
 ```
 
-### The four subcommands
+### The five subcommands
 
 **`check` — parse + resolve, report diagnostics**
 
@@ -75,6 +75,16 @@ smash2 dot --ast analysis.adl  | dot -Tpdf -o ast.pdf
 
 Both diagrams are generated from the *resolved* representation (HIR), so
 they always show exactly what the verifier analyzed.
+
+**`objects` — object-attribute summary**
+
+```bash
+smash2 objects analysis.adl   # one aligned row per collection (also in `verify --explain`)
+```
+
+One row per declared collection: name, base chain (`bjets <- jets <- Jet`,
+pure renames collapsed with `=`), element cuts (`pt > 25, |eta| < 2.4`),
+fragment status, and derived size facts (subset of parent, union bounds).
 
 ### Reading verdicts
 

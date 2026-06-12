@@ -264,6 +264,32 @@ fn dot_bad_file_exits_one() {
     assert!(stdout(&out).is_empty());
 }
 
+// --- objects -------------------------------------------------------------
+
+#[test]
+fn objects_table_snapshot() {
+    let out = run(&[
+        "objects",
+        corpus("Examples/CMS-SUS-16-032.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0);
+    let body = stdout(&out);
+    // Piped stdout takes the plain (no-ANSI) path; diagnostics are stderr.
+    assert!(!body.contains('\u{1b}'), "piped output must be ANSI-free");
+    assert!(
+        body.starts_with("== objects =="),
+        "table must be the only thing on stdout"
+    );
+    insta::assert_snapshot!("objects_cms_sus_16_032", body);
+}
+
+#[test]
+fn objects_bad_file_exits_one() {
+    let out = run(&["objects", golden("bad_syntax.adl").to_str().unwrap()]);
+    assert_eq!(code(&out), 1);
+    assert!(stdout(&out).is_empty());
+}
+
 // --- determinism ---------------------------------------------------------
 
 #[test]

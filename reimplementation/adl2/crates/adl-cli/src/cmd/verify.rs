@@ -15,7 +15,7 @@
 use crate::cmd::{CliError, read_file, unit_name};
 use adl_analysis::report::FailOn;
 use adl_analysis::{AnalysisOptions, SolverChoice, analyze_source};
-use adl_sema::ExtDecls;
+use adl_sema::{ExtDecls, analyze_str, object_table};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -69,7 +69,15 @@ pub fn run(
     if json {
         println!("{}", report.to_json());
     } else if explain {
+        use std::io::IsTerminal as _;
+        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         print!("{}", report.human());
+        // The object-attribute summary is a pure function of the resolved
+        // HIR; re-resolve (deterministic, cheap) and append it as an
+        // `== objects ==` section. Default and JSON output are unchanged.
+        let hir = analyze_str(&src, &name, &ext);
+        println!();
+        print!("{}", object_table(&hir, color));
     } else {
         use std::io::IsTerminal as _;
         let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();

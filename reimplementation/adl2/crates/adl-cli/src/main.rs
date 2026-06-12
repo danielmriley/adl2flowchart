@@ -10,6 +10,8 @@
 //!   pass/fail and bin assignment.
 //! - `dot`    — Graphviz DOT: flowchart (default) or AST (`--ast`), from
 //!   the resolved HIR.
+//! - `objects` — aligned object-attribute summary (one row per declared
+//!   collection: base chain, element cuts, fragment, derived size facts).
 //!
 //! Output discipline: machine-clean stdout (the report / DOT / results),
 //! diagnostics and progress to stderr; `--verbose` adds detail to stderr.
@@ -24,7 +26,7 @@ use std::process::ExitCode;
 #[command(
     name = "smash2",
     version,
-    about = "ADL2 analysis toolchain: check, verify, run, dot",
+    about = "ADL2 analysis toolchain: check, verify, run, dot, objects",
     propagate_version = true
 )]
 struct Cli {
@@ -86,6 +88,11 @@ enum Command {
         #[arg(long)]
         ast: bool,
     },
+    /// Object-attribute summary: one aligned row per declared collection.
+    Objects {
+        /// The ADL file.
+        file: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -102,6 +109,7 @@ fn main() -> ExitCode {
         } => cmd::verify::run(&file, json, explain, no_solver, fail_on.as_deref(), verbose),
         Command::Run { file, events, json } => cmd::run::run(&file, &events, json, verbose),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
+        Command::Objects { file } => cmd::objects::run(&file, verbose),
     };
     match result {
         Ok(code) => code,

@@ -4,6 +4,7 @@
 
 pub mod check;
 pub mod dot;
+pub mod objects;
 pub mod run;
 pub mod verify;
 

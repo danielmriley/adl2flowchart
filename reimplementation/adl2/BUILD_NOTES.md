@@ -954,3 +954,49 @@ to the new layout and new `verify_explain_disjoint_pt` snapshot is
 byte-identical to the previous default snapshot; render unit tests for
 `-0` tokenization and name compression. Golden battery untouched and
 green (it pins `Report::human`, which did not change shape).
+
+## 2026-06-12 — `smash2 objects`: object-attribute summary from the HIR
+
+The modern successor of the legacy `printObjectAttributes`
+(`legacy_parser/adl/semantic_checks.cpp` `collectObjectAttributes`: object
+name → attributes referenced in its cuts, walked through textual take
+chains). Rebuilt from the resolved HIR's Collection identity model instead
+of string-keyed chain walking.
+
+- **New library fn** `adl_sema::object_table(&Hir, color: bool) -> String`
+  (`crates/adl-sema/src/objects.rs`). Pure function of the HIR; one aligned
+  row per declared collection in `CollectionId` (= declaration) order:
+  - **name**: the collection's bound name(s), pure renames collapsed with
+    `=` (a no-cut `object X take Y` adds `X` to `Y`'s name list — same
+    `CollectionId`, so renames are a single row, not a chain link).
+  - **base chain**: `Filtered.parent` walked up to the detector-level
+    `Base`, joined with `<-` (`bjets <- jets <- JET`); union/combination
+    render as a single node (parts in the derived-facts line).
+  - **element cuts**: the `ElemPred` node tree flattened to a flat human
+    predicate (`pt > 25, |eta| < 2.4`): `this.` dropped, `abs(x)` → `|x|`,
+    one conjunct per comma; capped at 64 chars with `…` (full text in the
+    HIR / quantity-table dumps). Out-of-fragment identifiers render `x?`;
+    the verbose `<unsupported: …>` opaque-arg text is collapsed to the same
+    `x?` form so an in-fragment opaque external (e.g. `dR(…, PFcand?)`)
+    does not leak a diagnostic string.
+  - **fragment**: `exact` when the cut tree is fully in-fragment and the
+    backing object block is in-fragment, else `partial: <reason>`.
+  - **derived facts** (identity model, by construction): `size(C) ≤
+    size(parent)` for filtered; `size(U) = Σ size(part)` (disjoint ⇒
+    exact, else ≤) for union; part list for combination.
+- **New subcommand** `smash2 objects <FILE>` (`crates/adl-cli/src/cmd/
+  objects.rs`): table to stdout (machine-clean), diagnostics to stderr,
+  exit 1 on resolve errors. Color via `IsTerminal && NO_COLOR` unset — same
+  rule as `verify`; piped/redirected output is plain.
+- **`verify --explain`** re-resolves the HIR (deterministic, cheap) and
+  appends the table as an `== objects ==` section. **DEFAULT verify output
+  and `--json` are byte-unchanged** (verified: the `verify_human_*` and
+  `verify_json_*` CLI snapshots did not move; only `verify_explain_*` gained
+  the appended section).
+- Tests: `objects__CMS-SUS-16-032` (jets/bjets/cjets filtered chains +
+  leptons union) and `objects__CMS-SUS-21-006` (lepton/DT unions, deep
+  chains, `=` renames) snapshots in adl-sema; CLI `objects_cms_sus_16_032`
+  snapshot + bad-file exit-1 assertion; determinism + ANSI-free assertions;
+  the corpus sweep now also pins object-table determinism. `cargo test
+  --workspace` 373 passed / 0 failed; `cargo clippy --workspace
+  --all-targets -D warnings` clean.

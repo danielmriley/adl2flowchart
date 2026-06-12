@@ -192,4 +192,9 @@ digraph ast {
   n80 -> n92 [label="select"];
   n95 [label="sqrt((((2 * leptons[0].pt) * MET.pt) * (1 - cos((MET.phi - leptons[0].phi)))))"];
   n80 -> n95 [label="bin"];
+  n0 -> n2 [style=invis, weight=100, minlen=2];
+  n2 -> n4 [style=invis, weight=100, minlen=2];
+  n4 -> n6 [style=invis, weight=100, minlen=2];
+  n6 -> n15 [style=invis, weight=100, minlen=5];
+  n15 -> n80 [style=invis, weight=100, minlen=4];
 }

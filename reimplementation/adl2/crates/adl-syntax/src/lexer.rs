@@ -26,6 +26,11 @@ struct Lexer<'s> {
     line: u32,
     tokens: Vec<Token>,
     diags: Vec<Diagnostic>,
+    /// `_<digit>` split occurrences: the note is emitted once per file
+    /// (idiomatic ADL like `METLV_0` would otherwise drown the output);
+    /// further splits are counted and summarized at end of lex.
+    underscore_splits: u32,
+    last_underscore_span: Span,
 }
 
 #[must_use]
@@ -37,6 +42,8 @@ pub fn lex(src: &str) -> LexOutput {
         line: 1,
         tokens: Vec::new(),
         diags: Vec::new(),
+        underscore_splits: 0,
+        last_underscore_span: Span::new(0, 0),
     };
     lx.run();
     LexOutput {
@@ -88,6 +95,16 @@ impl<'s> Lexer<'s> {
         }
         let start = self.pos;
         self.push(TokKind::Eof, start);
+        if self.underscore_splits > 1 {
+            self.diags.push(Diagnostic::note(
+                self.last_underscore_span,
+                format!(
+                    "({} more underscore-index split{} in this file)",
+                    self.underscore_splits - 1,
+                    if self.underscore_splits == 2 { "" } else { "s" }
+                ),
+            ));
+        }
     }
 
     fn lex_string(&mut self) {
@@ -200,14 +217,21 @@ impl<'s> Lexer<'s> {
         let word = &self.src[start..self.pos];
 
         // Visible note when an `_<digit>` split occurs (SPEC_LANGUAGE §2).
+        // Once per file: the first occurrence gets the full note + help,
+        // the rest are counted and summarized at end of lex (`run`).
         if self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
-            self.diags.push(
-                Diagnostic::note(
-                    Span::new(start as u32, self.pos as u32 + 1),
-                    format!("identifier `{word}` ends before `_`: `_<digit>` is the underscore-indexing operator"),
-                )
-                .with_help("write `name[i]` to make the indexing explicit"),
-            );
+            let span = Span::new(start as u32, self.pos as u32 + 1);
+            self.underscore_splits += 1;
+            self.last_underscore_span = span;
+            if self.underscore_splits == 1 {
+                self.diags.push(
+                    Diagnostic::note(
+                        span,
+                        format!("identifier `{word}` ends before `_`: `_<digit>` is the underscore-indexing operator"),
+                    )
+                    .with_help("write `name[i]` to make the indexing explicit"),
+                );
+            }
         }
 
         let kind = match Kw::from_word(word) {

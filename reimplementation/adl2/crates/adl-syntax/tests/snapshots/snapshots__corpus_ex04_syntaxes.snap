@@ -130,21 +130,8 @@ note: identifier `goodJets` ends before `_`: `_<digit>` is the underscore-indexi
 53 |   select pT(goodJets_1) > 100
    |             ^^^^^^^^^ 
    = help: write `name[i]` to make the indexing explicit
-note: identifier `goodJets` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/tutorials/ex04_syntaxes.adl:55:11
-   |
-55 |   select {goodJets_2}Pt > 50
-   |           ^^^^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `goodMuos` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/tutorials/ex04_syntaxes.adl:65:11
-   |
-65 |   select {goodMuos_0}m + {goodbJets_0}m > 100
-   |           ^^^^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `goodbJets` ends before `_`: `_<digit>` is the underscore-indexing operator
+note: (3 more underscore-index splits in this file)
   --> examples/tutorials/ex04_syntaxes.adl:65:27
    |
 65 |   select {goodMuos_0}m + {goodbJets_0}m > 100
-   |                           ^^^^^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
+   |                           ^^^^^^^^^^

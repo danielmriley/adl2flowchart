@@ -71,6 +71,22 @@ mod tests {
     }
 
     #[test]
+    fn select_region_form_draws_the_same_inherit_edge() {
+        // `select base` (region-as-predicate) inherits exactly like the
+        // bare-name form and must draw the same dashed region->region
+        // edge (CORPUS gap 2: SUS-21-006 lost its inheritance graph).
+        let src = "object jets\n  take Jet\nregion base\n  select size(jets) >= 2\nregion sr\n  select base\n  select size(jets) >= 4\n";
+        let h = hir(src);
+        let fc = flowchart_dot(&h);
+        assert!(
+            fc.contains("region0 -> region1 [label=\"inherit\", style=dashed]"),
+            "{fc}"
+        );
+        // One edge only, even though the parent is referenced once per form.
+        assert_eq!(fc.matches("style=dashed").count(), 1, "{fc}");
+    }
+
+    #[test]
     fn labels_are_escaped() {
         // A define whose body contains a quote-free but bracketed quantity;
         // verify no raw unescaped control chars leak into the label.

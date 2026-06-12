@@ -308,3 +308,43 @@ fn epred_guard_keeps_filtered_facts_vacuous_when_absent() {
     }
     let _ = ext;
 }
+
+#[test]
+fn opaque_pt_named_external_gets_nneg_but_bdt_stays_free() {
+    // CORPUS gap 1 (CMS-SUS-16-032): the opaque `pT(jets[0] jets[1])`
+    // scalar is the pT magnitude of SOME particle combination, hence
+    // >= 0 on every physical event; the NNEG emitter must cover
+    // exact-name pt/m/mass/e/energy/dr external calls. Unrelated opaque
+    // functions (bdt, aplanarity, ...) must stay free — the exact-name
+    // rule, same discipline as TAG. (No interpreter cross-check here:
+    // opaque calls have no reference interpretation by design.)
+    let src = "\
+object jets
+  take Jet
+
+region SR
+  select pT(jets[0] jets[1]) > 100
+  select bdt(jets[0] jets[1]) > 0.5
+  select aplanarity(jets) > 0.1
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+
+    let nneg: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::Nneg)
+        .map(|i| i.description.as_str())
+        .collect();
+    assert!(
+        nneg.iter().any(|d| d.starts_with("pT(...)")),
+        "opaque pt-named external must get an NNEG instance: {nneg:?}"
+    );
+    assert!(
+        !nneg
+            .iter()
+            .any(|d| d.to_lowercase().contains("bdt") || d.to_lowercase().contains("aplanarity")),
+        "bdt/aplanarity externals must get NO NNEG instance: {nneg:?}"
+    );
+}

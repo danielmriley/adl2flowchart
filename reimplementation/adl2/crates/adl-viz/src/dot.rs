@@ -108,12 +108,24 @@ pub fn flowchart_dot(hir: &Hir) -> String {
     }
     let _ = writeln!(s, "  }}");
 
-    // Inheritance edges between regions.
+    // Inheritance edges between regions. Both statement forms inherit:
+    // the bare-name form (`Inherit`) and the region-as-predicate form
+    // (`select presel`, `HKind::RegionPred`) chain the parent's cuts.
     for (ri, region) in hir.regions.iter().enumerate() {
+        let mut parents: Vec<usize> = Vec::new();
         for stmt in &region.stmts {
-            if let HirRegionStmt::Inherit { region: parent, .. } = stmt
-                && let Some(pi) = region_index_of(hir, *parent)
-            {
+            match stmt {
+                HirRegionStmt::Inherit { region: parent, .. } => parents.push(*parent),
+                // Select only: a region predicate under `reject` negates
+                // the parent's cuts and is not inheritance.
+                HirRegionStmt::Select(n) => collect_region_preds(n, &mut parents),
+                _ => {}
+            }
+        }
+        parents.sort_unstable();
+        parents.dedup();
+        for parent in parents {
+            if let Some(pi) = region_index_of(hir, parent) {
                 let _ = writeln!(
                     s,
                     "  region{pi} -> region{ri} [label=\"inherit\", style=dashed];"
@@ -238,6 +250,33 @@ fn collect_used_collections(hir: &Hir, node: &HNode, out: &mut Vec<usize>) {
     }
 }
 
+/// Prior-region order-indices referenced as predicates (`select presel`)
+/// anywhere inside an expression node.
+fn collect_region_preds(node: &HNode, out: &mut Vec<usize>) {
+    match &node.kind {
+        HKind::RegionPred(idx) => out.push(*idx),
+        HKind::Neg(a) | HKind::Not(a) | HKind::Abs(a) => collect_region_preds(a, out),
+        HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => {
+            collect_region_preds(lhs, out);
+            collect_region_preds(rhs, out);
+        }
+        HKind::And(v) | HKind::Or(v) => {
+            for n in v {
+                collect_region_preds(n, out);
+            }
+        }
+        HKind::Band { expr, .. } => collect_region_preds(expr, out),
+        HKind::Ternary { guard, then, els } => {
+            collect_region_preds(guard, out);
+            collect_region_preds(then, out);
+            if let Some(e) = els {
+                collect_region_preds(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Expression nodes a region statement contributes (for usage edges).
 fn stmt_nodes(stmt: &HirRegionStmt) -> Vec<&HNode> {
     match stmt {
@@ -286,6 +325,13 @@ fn render_stmt_short(lbl: &Labeler, stmt: &HirRegionStmt, hir: &Hir) -> String {
 /// AST DOT: the resolved expression trees. Each region cut, object element
 /// predicate and define body becomes a labeled subtree rooted at a header
 /// node; every subexpression is its own node with edges to its children.
+///
+/// The trees are a forest: without constraints dot lays the components
+/// side by side, and large files render as a 100k+ pt flat ribbon. The
+/// per-item roots are therefore chained with invisible edges whose
+/// `minlen` is the previous tree's depth, so each component starts below
+/// the deepest rank of the one before it — the diagram grows in height
+/// and its width is bounded by the widest single tree.
 #[must_use]
 pub fn ast_dot(hir: &Hir) -> String {
     let lbl = Labeler::new(hir);
@@ -296,6 +342,8 @@ pub fn ast_dot(hir: &Hir) -> String {
     let _ = writeln!(s, "  labelloc=t;");
 
     let mut ctr: usize = 0;
+    // (root id, subtree depth in ranks) per emitted component.
+    let mut roots: Vec<(String, usize)> = Vec::new();
 
     // Defines first.
     for def in &hir.defines {
@@ -307,8 +355,9 @@ pub fn ast_dot(hir: &Hir) -> String {
             esc(name),
             def.kind.as_str()
         );
-        let child = emit_node(&mut s, &lbl, &def.body, &mut ctr);
+        let (child, depth) = emit_node(&mut s, &lbl, &def.body, &mut ctr);
         let _ = writeln!(s, "  {root} -> {child};");
+        roots.push((root, depth + 1));
     }
 
     // Object element predicates.
@@ -324,8 +373,9 @@ pub fn ast_dot(hir: &Hir) -> String {
             esc(name)
         );
         let ep = hir.elem_pred(*pred);
-        let child = emit_node(&mut s, &lbl, &ep.node, &mut ctr);
+        let (child, depth) = emit_node(&mut s, &lbl, &ep.node, &mut ctr);
         let _ = writeln!(s, "  {root} -> {child} [label=\"predicate\"];");
+        roots.push((root, depth + 1));
     }
 
     // Region statements.
@@ -337,13 +387,27 @@ pub fn ast_dot(hir: &Hir) -> String {
             "  {root} [label=\"region {}\", style=filled, fillcolor=\"#f0fff0\"];",
             esc(name)
         );
+        let mut max_depth = 0usize;
         for stmt in &region.stmts {
             for node in stmt_nodes(stmt) {
                 let kw = stmt_keyword(stmt);
-                let child = emit_node(&mut s, &lbl, node, &mut ctr);
+                let (child, depth) = emit_node(&mut s, &lbl, node, &mut ctr);
                 let _ = writeln!(s, "  {root} -> {child} [label=\"{kw}\"];");
+                max_depth = max_depth.max(depth);
             }
         }
+        roots.push((root, max_depth + 1));
+    }
+
+    // Invisible vertical chain between component roots (layout only).
+    for w in roots.windows(2) {
+        let (prev, depth) = (&w[0].0, w[0].1);
+        let next = &w[1].0;
+        let _ = writeln!(
+            s,
+            "  {prev} -> {next} [style=invis, weight=100, minlen={}];",
+            depth.max(1)
+        );
     }
 
     let _ = writeln!(s, "}}");
@@ -366,9 +430,10 @@ fn next_id(ctr: &mut usize) -> String {
     id
 }
 
-/// Emit a node and its children, returning the node's DOT id. The label is
-/// the node's own operator/leaf; children are separate nodes with edges.
-fn emit_node(s: &mut String, lbl: &Labeler, n: &HNode, ctr: &mut usize) -> String {
+/// Emit a node and its children, returning the node's DOT id and the
+/// subtree depth in ranks (a leaf is depth 1). The label is the node's
+/// own operator/leaf; children are separate nodes with edges.
+fn emit_node(s: &mut String, lbl: &Labeler, n: &HNode, ctr: &mut usize) -> (String, usize) {
     let id = next_id(ctr);
     let (label, children) = node_label_and_children(lbl, n);
     let fill = if matches!(n.tag, Fragment::Unsupported(_)) {
@@ -377,11 +442,13 @@ fn emit_node(s: &mut String, lbl: &Labeler, n: &HNode, ctr: &mut usize) -> Strin
         ""
     };
     let _ = writeln!(s, "  {id} [label=\"{}\"{fill}];", esc(&label));
+    let mut depth = 0usize;
     for child in children {
-        let cid = emit_node(s, lbl, child, ctr);
+        let (cid, cdepth) = emit_node(s, lbl, child, ctr);
         let _ = writeln!(s, "  {id} -> {cid};");
+        depth = depth.max(cdepth);
     }
-    id
+    (id, depth + 1)
 }
 
 /// Operator/leaf label plus the children we recurse into. Leaves render

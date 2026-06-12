@@ -1,6 +1,6 @@
 //! Unit tests for every lexical rule in SPEC_LANGUAGE §2.
 
-use adl_syntax::diag::Severity;
+use adl_syntax::diag::{Diagnostic, Severity};
 use adl_syntax::lex;
 use adl_syntax::token::{Kw, TokKind};
 
@@ -61,6 +61,40 @@ fn underscore_split_emits_note() {
         "expected a split note, got {:?}",
         out.diags
     );
+}
+
+#[test]
+fn single_underscore_split_gets_one_note_no_summary() {
+    let out = lex("goodJets_1");
+    let notes: Vec<&str> = out
+        .diags
+        .iter()
+        .filter(|d| d.severity == Severity::Note)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(notes.len(), 1, "exactly one note, no summary: {notes:?}");
+    assert!(notes[0].contains("underscore-indexing"));
+}
+
+#[test]
+fn repeated_underscore_splits_collapse_to_one_note_plus_summary() {
+    // Idiomatic ADL (`METLV_0` everywhere) must not drown the output:
+    // first split keeps the full note + help, the other N are one
+    // trailing summary line.
+    let out = lex("METLV_0 jets_1 jets_2 bjets_0");
+    let notes: Vec<&Diagnostic> = out
+        .diags
+        .iter()
+        .filter(|d| d.severity == Severity::Note)
+        .collect();
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes[0].message.contains("identifier `METLV` ends before `_`"));
+    assert!(notes[0].help.is_some(), "first note keeps its help");
+    assert_eq!(
+        notes[1].message,
+        "(3 more underscore-index splits in this file)"
+    );
+    assert!(notes[1].help.is_none());
 }
 
 #[test]

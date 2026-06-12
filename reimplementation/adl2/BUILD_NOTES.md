@@ -832,3 +832,73 @@ element-existence guard atoms (SR_low 2→4, SR_high 1→2) and
 introduce that shared quantity). Worth revisiting at the Phase-6/7
 report review whether the coverage counter should count source-level
 comparisons instead of formula leaves.
+
+## 2026-06-12 — Corpus-sweep gap fixes 1–4 (NNEG opaques, inherit edges, AST layout, underscore-note collapse)
+
+### Fix 1 — NNEG extended to pt/m/mass/e/energy/dr-named opaque externals (adl-axioms)
+
+- `nneg` emitter now covers `Quantity::ExternalFn` whose symbol key
+  (lowercase) is exactly one of `pt|m|mass|e|energy|dr`: pT, mass and
+  energy of ANY particle combination are magnitudes (>= 0; m/E of a
+  summed four-vector by the timelike/lightlike physical-state
+  condition), and dR is a metric distance. Exact-name rule, same
+  discipline as TAG — `bdt`, `aplanarity`, `sum`, ... stay free opaques.
+  Catalog row updated (statement + justification + assumption "none").
+- Finding power restored: `verify` on CMS-SUS-16-032 now proves the
+  whole `compressed` family EMPTY (the known transcription bug legacy
+  caught): `(pT(jets[0] jets[1]) + MET)/MET < 0.5` with `MET > 250` is
+  UNSAT once the opaque pT is >= 0. Summary moved from
+  30 disjoint / 11 overlapping / 4 possibly to 41 / 0 / 4 — the 11
+  "overlapping" verdicts were candidate-witness artifacts of the solver
+  assigning `pT(...) = −126.5`.
+- Locked by: axiom unit test (`opaque_pt_named_external_gets_nneg_but_bdt_stays_free`),
+  new fixture `crates/adl-analysis/tests/fixtures/opaque_pt_ratio_empty.adl`
+  + integration test (`opaque_pt_in_impossible_ratio_proves_region_empty`,
+  asserts EMPTY rests on the NNEG pT(...) core item and a control region
+  stays live). Golden battery (37) unchanged — `or_unencodable_branch`
+  still PROVEN OVERLAPPING with candidate witness (aplanarity free).
+  CMS-SUS-16-033_Delphes verify output byte-identical before/after.
+  Witness downgrade policy in `adl-analysis/src/witness.rs` untouched
+  (ratified). Snapshot churn: `cli__verify_json_disjoint_pt` (catalog
+  statement string only).
+
+### Fix 2 — flowchart inherit edges for the `select <region>` form (adl-viz)
+
+- `HKind::RegionPred` references (region-as-predicate, `select presel`)
+  now draw the same dashed region->region `inherit` edge as the
+  bare-name `HirRegionStmt::Inherit` form; per-region parents are
+  deduped so a region referenced via both forms gets one edge.
+- CMS-SUS-21-006 flowchart: 0 -> 24 inherit edges. Bare-name dot
+  snapshots unchanged; new unit test
+  `select_region_form_draws_the_same_inherit_edge`.
+
+### Fix 3 — AST diagrams stack vertically (adl-viz)
+
+- The AST DOT is a forest; dot laid components side by side
+  (SUS-21-006: ~110k pt wide). Component roots are now chained with
+  invisible edges (`style=invis, weight=100, minlen=<prev tree depth>`)
+  so each tree starts below the deepest rank of the previous one.
+- Verified through `dot -Tsvg`: SUS-21-006 AST 110k+ pt -> 10190 pt wide
+  (height 14828 pt); ex06_bins 6862×373 -> 4552×1423 (readable).
+  Snapshot churn: the 5 `*_ast` dot snapshots + `cli__dot_ast_disjoint_pt`
+  (added invis chain lines only).
+
+### Fix 4 — underscore-indexing note once per file (adl-syntax)
+
+- The `identifier X ends before `_`` lexer note now fires once per
+  file (first occurrence keeps note + help); subsequent splits are
+  counted and emitted as a single trailing summary note
+  `(N more underscore-index splits in this file)` only when N > 0.
+- CMS-SUS-16-017 `check`: 25 notes -> 1 note + 1 summary. Token-level
+  split RULE untouched (lexer token tests unchanged). New tests:
+  `single_underscore_split_gets_one_note_no_summary`,
+  `repeated_underscore_splits_collapse_to_one_note_plus_summary`.
+  Snapshot churn: 3 syntax corpus snapshots (atlas_susy_jetmet,
+  ex04_syntaxes, ex10_tableweight).
+
+### Also
+
+- PARITY_DRAFT.md: added the ratified (2026-06-12) corpus-level note on
+  CMS-SUS-16-042-class opaque-witness overlap verdicts — smash2's
+  POSSIBLY is correct; legacy's PROVEN OVERLAPPING rests on free opaque
+  assignments (the negative-pT failure mode); not 'legacy-better'.

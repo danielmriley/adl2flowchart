@@ -24,4 +24,5 @@ digraph ast {
   n5 -> n6 [label="select"];
   n9 [label="MET.pt"];
   n5 -> n9 [label="bin"];
+  n0 -> n5 [style=invis, weight=100, minlen=3];
 }

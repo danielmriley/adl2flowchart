@@ -96,6 +96,57 @@ region SR_y
     assert!(!p.subset_a_in_b);
 }
 
+/// CMS-SUS-16-032 transcription-bug class (CORPUS gap 1): an opaque
+/// pt-named external call inside an impossible ratio must prove the
+/// region EMPTY — `(pT(...) + MET)/MET < 0.5` with `MET > 250` forces
+/// `pT(...) < -125`, contradicting the NNEG axiom on pt-named opaques.
+#[test]
+fn opaque_pt_in_impossible_ratio_proves_region_empty() {
+    use adl_analysis::EmptyStatus;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/opaque_pt_ratio_empty.adl");
+    let src = std::fs::read_to_string(&path).expect("fixture readable");
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(
+        &src,
+        "opaque_pt_ratio_empty.adl",
+        &ext,
+        &opts(SolverChoice::Auto),
+    )
+    .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let impossible = r
+        .regions
+        .iter()
+        .find(|reg| reg.name == "SR_impossible_ratio")
+        .expect("region present");
+    assert_eq!(
+        impossible.empty,
+        EmptyStatus::Proven,
+        "impossible ratio over a pt-named opaque must prove EMPTY"
+    );
+    assert!(
+        impossible
+            .empty_core
+            .iter()
+            .any(|c| {
+                let h = c.human();
+                h.contains("NNEG") && h.contains("pT(...)")
+            }),
+        "the emptiness core must rest on the NNEG opaque-pt instance: {:?}",
+        impossible.empty_core
+    );
+    let sane = r
+        .regions
+        .iter()
+        .find(|reg| reg.name == "SR_sane")
+        .expect("region present");
+    assert_ne!(sane.empty, EmptyStatus::Proven, "control region stays live");
+}
+
 #[test]
 fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");

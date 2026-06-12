@@ -243,63 +243,8 @@ note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing 
 43 | def Jsr0MEtFi : {JETsr_0,METLV_0}dPhi 
    |                  ^^^^^^ 
    = help: write `name[i]` to make the indexing explicit
-note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:43:26
-   |
-43 | def Jsr0MEtFi : {JETsr_0,METLV_0}dPhi 
-   |                          ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:44:18
-   |
-44 | def Jsr1MEtFi : {JETsr_1,METLV_0}dPhi 
-   |                  ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:44:26
-   |
-44 | def Jsr1MEtFi : {JETsr_1,METLV_0}dPhi 
-   |                          ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:45:18
-   |
-45 | def Jsr2MEtFi : {JETsr_2,METLV_0}dPhi 
-   |                  ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `METLV` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:45:26
-   |
-45 | def Jsr2MEtFi : {JETsr_2,METLV_0}dPhi 
-   |                          ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:22
-   |
-50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
-   |                      ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:38
-   |
-50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
-   |                                      ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:50:54
-   |
-50 | def Meff3j : MET + { JETsr_0 }Pt + { JETsr_1 }Pt + { JETsr_2 }Pt  
-   |                                                      ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:61:9
-   |
-61 | cmd   { JETsr_0 }Pt > 200 
-   |         ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JETsr` ends before `_`: `_<digit>` is the underscore-indexing operator
+note: (10 more underscore-index splits in this file)
   --> examples/Examples/ATLAS-SUSYJetMET-1605-03814.adl:70:9
    |
 70 | cmd   { JETsr_1 }Pt > 200 
-   |         ^^^^^^ 
-   = help: write `name[i]` to make the indexing explicit
+   |         ^^^^^^

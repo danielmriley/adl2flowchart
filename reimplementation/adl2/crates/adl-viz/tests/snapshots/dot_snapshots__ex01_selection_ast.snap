@@ -105,4 +105,10 @@ digraph ast {
   n52 [label="1"];
   n50 -> n52;
   n49 -> n50 [label="select"];
+  n0 -> n9 [style=invis, weight=100, minlen=5];
+  n9 -> n13 [style=invis, weight=100, minlen=3];
+  n13 -> n22 [style=invis, weight=100, minlen=5];
+  n22 -> n31 [style=invis, weight=100, minlen=5];
+  n31 -> n45 [style=invis, weight=100, minlen=3];
+  n45 -> n49 [style=invis, weight=100, minlen=3];
 }

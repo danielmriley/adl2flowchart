@@ -115,6 +115,27 @@ hedge collapses to an exact encoding, the interpreter gains the reading,
 and this pair returns to PROVEN OVERLAPPING. Flag for sign-off as a
 documented spec change.
 
+## Corpus-level note: opaque-witness overlap verdicts (CMS-SUS-16-042 class) — **ratified 2026-06-12**
+
+Beyond the golden suite, the corpus sweep flagged one open judgment call
+(CORPUS_SWEEP_REPORT "Conservatism difference vs legacy"): on
+CMS-SUS-16-042, legacy reports PROVEN OVERLAPPING from a witness whose
+satisfying assignment includes free opaque external-function values;
+smash2 downgrades to POSSIBLY because it refuses to certify witnesses
+that depend on opaque externals the interpreter cannot evaluate.
+
+**Ratified direction (2026-06-12): smash2's POSSIBLY is the correct
+conclusion; this class is NOT 'legacy-better'.** Legacy's PROVEN
+OVERLAPPING rests on free opaque assignments — the solver may pick any
+value for an uninterpreted `pt(...)`/`sum(...)` scalar, including
+physically impossible ones. That is the same failure mode as a
+negative-pT witness (and exactly what the NNEG extension to pt-named
+opaques caught on CMS-SUS-16-032, where the legacy-visible vacuous
+region hinged on the solver assigning `pT(jets[0] jets[1]) = −126.5`).
+A PROVEN verdict must never rest on unvalidatable opaque assignments;
+the opaque-witness downgrade policy in `adl-analysis/src/witness.rs`
+stands as ratified.
+
 ## Non-verdict (cosmetic) differences, acknowledged
 
 - **Leaf counts** include the new element-existence guard atoms

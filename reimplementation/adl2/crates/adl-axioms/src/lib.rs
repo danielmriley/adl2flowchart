@@ -139,9 +139,14 @@ pub fn catalog() -> &'static [CatalogEntry] {
         },
         CatalogEntry {
             id: AxiomId::Nneg,
-            statement: "pt, m, e, ht-family scalars, MET.pt, dR >= 0",
+            statement: "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external \
+                        calls named exactly pt/m/mass/e/energy/dr (case-insensitive)",
             justification: "true of every physical event because these are magnitudes by \
-                            definition",
+                            definition: pT, mass and energy of ANY particle combination are \
+                            >= 0 (m and E of a summed four-vector by the timelike/lightlike \
+                            physical-state condition), and dR is a metric distance. The \
+                            EXACT-NAME rule keeps unrelated opaque functions (bdt, \
+                            aplanarity, ...) free",
             assumption: "none",
         },
         CatalogEntry {
@@ -546,8 +551,12 @@ impl Emit<'_> {
         }
     }
 
-    // NNEG: pt/m/e element props, ht-family scalars, MET.pt, dR >= 0.
+    // NNEG: pt/m/e element props, ht-family scalars, MET.pt, dR >= 0;
+    // opaque external calls named exactly pt/m/mass/e/energy/dr
+    // (case-insensitive symbol key) are magnitudes of SOME particle
+    // combination, hence >= 0 regardless of the (opaque) arguments.
     fn nneg(&mut self, qs: &[QuantityId]) {
+        const NNEG_EXTFN_KEYS: [&str; 6] = ["pt", "m", "mass", "e", "energy", "dr"];
         for &q in qs {
             let nonneg = match self.hir.table.quantity(q) {
                 Quantity::ElemProp { prop, .. } => self
@@ -563,6 +572,9 @@ impl Emit<'_> {
                 Quantity::AngularSep {
                     kind: AngKind::DR, ..
                 } => true,
+                Quantity::ExternalFn { name, .. } => {
+                    NNEG_EXTFN_KEYS.contains(&self.hir.symbols.key(*name))
+                }
                 _ => false,
             };
             if nonneg {

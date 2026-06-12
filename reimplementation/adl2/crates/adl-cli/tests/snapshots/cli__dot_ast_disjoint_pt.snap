@@ -33,4 +33,6 @@ digraph ast {
   n14 [label="300"];
   n12 -> n14;
   n11 -> n12 [label="select"];
+  n0 -> n4 [style=invis, weight=100, minlen=3];
+  n4 -> n11 [style=invis, weight=100, minlen=3];
 }

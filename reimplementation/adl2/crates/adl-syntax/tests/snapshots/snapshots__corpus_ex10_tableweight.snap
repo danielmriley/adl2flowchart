@@ -66,15 +66,8 @@ note: identifier `mediumEle` ends before `_`: `_<digit>` is the underscore-index
 94 |   weight eleTrig1Weight eleTrigger1( {mediumEle_0}pT ) 
    |                                       ^^^^^^^^^^ 
    = help: write `name[i]` to make the indexing explicit
-note: identifier `JET` ends before `_`: `_<digit>` is the underscore-indexing operator
-  --> examples/tutorials/ex10_tableweight.adl:98:32
-   |
-98 |   select applyHM( btagMedium( {JET_0}pT , {JET_0}Eta ) == 0) # 0 to reject, 1 to accept.
-   |                                ^^^^ 
-   = help: write `name[i]` to make the indexing explicit
-note: identifier `JET` ends before `_`: `_<digit>` is the underscore-indexing operator
+note: (2 more underscore-index splits in this file)
   --> examples/tutorials/ex10_tableweight.adl:98:44
    |
 98 |   select applyHM( btagMedium( {JET_0}pT , {JET_0}Eta ) == 0) # 0 to reject, 1 to accept.
-   |                                            ^^^^ 
-   = help: write `name[i]` to make the indexing explicit
+   |                                            ^^^^

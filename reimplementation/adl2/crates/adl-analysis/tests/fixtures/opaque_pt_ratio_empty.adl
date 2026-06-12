@@ -1,0 +1,18 @@
+# Regression fixture for the CMS-SUS-16-032 transcription-bug class:
+# an opaque pt-named external call inside an impossible ratio cut.
+# (pT(jets[0] jets[1]) + MET) / MET < 0.5 with MET > 250 forces
+# pT(...) < -0.5 * MET < -125, contradicting NNEG (pT of any particle
+# combination is >= 0) — the region provably selects no events.
+
+object jets
+  take Jet
+  select pT > 30
+
+region SR_impossible_ratio
+  select size(jets) >= 2
+  select MET > 250
+  select (pT(jets[0] jets[1]) + MET) / MET < 0.5
+
+region SR_sane
+  select size(jets) >= 2
+  select MET > 250

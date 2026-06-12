@@ -1,10 +1,11 @@
-# Phase 0 resolutions (build-time defaults)
+# Phase 0 resolutions (standing project defaults)
 
-CutLang probing was not available for this build, so every OPEN item
-resolves to the spec's named fallback strategy (PLAN risk table:
-"convention-neutral, exactly as legacy ships today"). Each is revisitable
-without architectural change once probed; [VERIFY] markers stay in
-SPEC_LANGUAGE until then.
+No external probing is planned. These are the project's standing defaults
+for every OPEN item, pending ratification by collaborators (Daniel + ADL
+collaborators). Each resolves to the spec's named fallback strategy (PLAN
+risk table: "convention-neutral, exactly as legacy ships today") and is
+revisitable without architectural change once the project decides;
+[DECIDE] markers stay in SPEC_LANGUAGE until then.
 
 | Item | Resolution for this build |
 |---|---|

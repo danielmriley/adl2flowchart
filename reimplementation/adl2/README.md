@@ -248,9 +248,9 @@ cargo test -p adl-solver --no-default-features   # subprocess-backend job
 
 - Five semantic questions (quantifier reading of unindexed collection
   cuts, dPhi/dEta sign convention, negative indices, `~=`, size aliases)
-  are pinned to convention-neutral defaults pending CutLang probing —
-  see `../PHASE0_RESOLUTIONS.md`. Resolving them upgrades several
-  POSSIBLY verdicts to exact.
+  are pinned to convention-neutral defaults pending a project decision
+  (Daniel + collaborators) — see `../PHASE0_RESOLUTIONS.md`. Deciding them
+  upgrades several POSSIBLY verdicts to exact.
 - The per-event scalar model caveat applies to overlap witnesses
   (opaque external-function values are free variables).
 - Cross-file analysis (`--cross`) is designed (`../SPEC_ANALYSIS.md` §7)

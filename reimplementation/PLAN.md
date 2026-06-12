@@ -25,19 +25,20 @@ Work items:
   bare path tokens, fractional bin edges, identifier/underscore splits
   (`goodJets_1`-style — expected in ex04/ex10/SUS-16-033), scientific
   notation (expected: none).
-- **Resolve OPEN-1…OPEN-5 against CutLang** (probe ADL files + small
-  event samples; read CutLang source where probing is ambiguous):
+- **Resolve OPEN-1…OPEN-5 by collaborator decision** (Daniel + ADL
+  collaborators), informed by the corpus and the reference interpreter:
   quantifier reading of unindexed collection cuts, dPhi/dEta sign
   convention and range, index base + negative indices, `~=` semantics,
-  size/`Size`/`count` aliases. Each answer lands in the spec with a
-  citation; unresolved items get an explicit Dual/diagnostic strategy.
+  size/`Size`/`count` aliases. Each decision lands in the spec as the
+  recorded answer; until decided, items keep an explicit Dual/diagnostic
+  strategy.
 - **Collaborator decisions** (Daniel + ADL stakeholders): case
   sensitivity of resolution, `~=`, index base, and whether the
   CMS-SUS-16-032 vacuous-region finding should be fixed in the corpus
   (it is currently a *useful* acceptance test for vacuity detection).
 
 Exit: spec tagged v1.0; corpus parse report attached; zero unresolved
-[VERIFY] markers or each explicitly deferred with its named strategy.
+[DECIDE] markers or each explicitly deferred with its named strategy.
 
 ## Phase 1 — adl-syntax (≈ 1.5 weeks)
 
@@ -76,8 +77,8 @@ div-by-zero per the verified semantics, bin assignment), `smash2 run`.
 Toy event generator in adl-difftest.
 
 Exit: every SPEC §4 clause has a unit test; bin assignment tested
-against boundary edges; if CutLang is available, differential run on the
-Phase-0 probe suite with zero unexplained disagreements.
+against boundary edges; differential run on the Phase-0 decision suite
+against legacy `smash` with zero unexplained disagreements.
 
 ## Phase 4 — adl-formula + encoder (≈ 2 weeks, parallel with P3)
 
@@ -146,28 +147,61 @@ must-unify.
 Exit: 032 × 033 matrix reviewed with collaborators; identity report
 audited; cross-file goldens green.
 
+## Phase 9 — Histogram production (≈ 1.5 weeks; replaces external runtimes)
+
+The project produces histograms itself; design per the June-2026 research
+report (no Rust crate writes ROOT TH1 files today — oxyroot is TTree-only
+and dormant, root-io is dead — so we accumulate natively and emit bridges).
+
+- **Accumulator** (adl-interp): `ndhistogram 0.13` `Hist1D<Uniform,
+  WeightedSum>` — uniform bins, under/overflow, sum-of-weights and
+  sum-of-weights² (ROOT `Sumw2` semantics). ADL `histo h, "title", n, lo,
+  hi, expr` statements become fills during `smash2 run`, gated on region
+  membership, weighted by the region's `weight` product (event weights
+  multiply; table weights deferred). 2-D histo form if the corpus needs it.
+- **Canonical output**: `histos.json` — name/title/region path/edges/
+  contents/sumw2/under/overflow/entries. Single source of truth; every
+  other format is a renderer of it.
+- **ROOT bridges, both generated next to the JSON**:
+  `make_histos.C` (primary; collaborator runs `root -l -b -q
+  make_histos.C` → real `.root` with TH1Ds in per-region TDirectories,
+  Sumw2 + errors + entries intact; zero dependencies on our side or
+  theirs beyond ROOT itself) and `to_root.py` (secondary; uproot 5.x +
+  hist for Python-side collaborators; byte-equivalent histograms).
+- **No-ROOT path**: `--csv` per histogram and `--svg` quick-look step
+  plots (hand-rolled SVG, no plotting dependency).
+- CLI: `smash2 run file.adl events.jsonl --histos out/` writes all of the
+  above; `run --json` gains a histogram section.
+
+Exit: interpreter unit tests for fill/weight/under-overflow/Sumw2
+semantics; golden JSON for a corpus file with histos (ex02_histograms);
+generated `.C` macro validated by running it under ROOT where available
+(env-gated CI job), else by a checked-in expected-output fixture; uproot
+script validated the same way; determinism (byte-identical reruns).
+
 ---
 
-**Total ≈ 13 weeks calendar** (P3/P4 overlap saves ~1 week vs serial;
+**Total ≈ 14.5 weeks calendar** (Phase 9 added) (P3/P4 overlap saves ~1 week vs serial;
 the joint encoder-vs-interpreter week is the schedule pinch point).
 
 ## Standing decision points for Daniel
 
 | When | Decision |
 |---|---|
-| Phase 0 | case sensitivity; `~=`; index base; OPEN-1/2 acceptance if CutLang is ambiguous; fix 032's vacuous cut upstream? |
+| Phase 0 | case sensitivity; `~=`; index base; OPEN-1/2 acceptance (project decision); fix 032's vacuous cut upstream? |
 | Phase 5 | JSON schema review (downstream consumers; TACO-style matrix needs) |
 | Phase 7 | parity sign-off — every classified difference |
 | Phase 8 | same-events assumption wording; collaborator review of the 032×033 matrix |
+| Phase 9 | histogram output formats to standardize with collaborators (.C macro vs uproot vs both); weight-table semantics |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| CutLang unavailable/ambiguous for OPEN items | spec keeps the convention-neutral strategy (Dual / capped verdicts), exactly as the legacy tool ships today; revisit when pinned |
+| OPEN items undecided by collaborators | spec keeps the convention-neutral strategy (Dual / capped verdicts), exactly as the legacy tool ships today; revisit when the project decides |
 | and/or precedence alters a real file | Phase-0 lint enumerates affected files (corpus pre-scan found none — all mixed chains are parenthesized); decision recorded before code |
 | Underscore-split lexing surprises a file the pre-scan missed | corpus gate + the lexer's split-note diagnostic make every occurrence visible in the Phase-1 report |
 | z3 crate linking friction in HEP environments | subprocess backend is a hard requirement with its own CI job |
-| Scope creep toward full CutLang re-implementation | the fragment is declared; `Unsupported` + diagnostic is the designed answer |
+| Scope creep toward implementing the full ADL language | the fragment is declared; `Unsupported` + diagnostic is the designed answer |
 | Parity gate reveals semantic drift late | the differential harness exists from P3/P4; the gate is a formality if lower layers stayed green |
-| Interpreter itself wrong (oracle drift) | CutLang anchoring for [VERIFY] items; interpreter/verifier disagreement is release-blocking in *both* directions |
+| Interpreter itself wrong (oracle drift) | the interpreter is the authoritative spec; [DECIDE] items are settled by collaborator review and property tests pin encoder-vs-interpreter agreement; interpreter/verifier disagreement is release-blocking in *both* directions |

@@ -88,7 +88,7 @@ constants) and reported POSSIBLY with a 0% coverage warning. Legacy was
 honestly weaker; ADL2 is exact per the now-specified semantics (the
 constant-fold to `False` happens before atom construction, so the
 non-finite-atom prohibition is not violated). Spec citation:
-SPEC_LANGUAGE §4.4 [VERIFY accepted at PHASE0], BUILD_NOTES Phase-4
+SPEC_LANGUAGE §4.4 [DECIDE accepted at PHASE0], BUILD_NOTES Phase-4
 decision 2.
 
 ### 4. collection_quant (SR_allhard vs SR_unbounded) — **spec-change**
@@ -110,7 +110,7 @@ reason ("witness re-validation failed … OPEN-1 unresolved").
 This is the deliberate ADL2 contract change ("the verifier can never
 display a witness the interpreter rejects" — TESTING §3, ADR-005), not a
 regression: the legacy verdict relied precisely on the convention the
-spec declares open. When OPEN-1 is resolved against CutLang, the Dual
+spec declares open. When OPEN-1 is resolved by project decision, the Dual
 hedge collapses to an exact encoding, the interpreter gains the reading,
 and this pair returns to PROVEN OVERLAPPING. Flag for sign-off as a
 documented spec change.

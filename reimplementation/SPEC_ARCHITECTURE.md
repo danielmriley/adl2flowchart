@@ -18,7 +18,7 @@ adl2/                       (cargo workspace — created in Phase 1)
 │   ├── adl-solver      SolverBackend trait; z3-native + smtlib-subprocess impls
 │   ├── adl-analysis    pairwise verdicts, subset, vacuous, bins; reports/JSON
 │   ├── adl-viz         DOT output (consumes HIR, not raw AST)
-│   ├── adl-difftest    generators, sampling oracle, CutLang/legacy harnesses
+│   ├── adl-difftest    generators, sampling oracle, legacy-smash harness
 │   └── adl-cli         the `smash2` binary
 ```
 
@@ -182,8 +182,8 @@ Evaluates HIR over an `Event` (JSON event records; generator in
 adl-difftest). Semantics are exactly SPEC_LANGUAGE §4 — this crate is the
 executable spec. Used as: (1) a user tool (`smash2 run file.adl
 events.jsonl` → per-region pass/fail and bin assignment), (2) the oracle
-for property-based verification testing, (3) the CutLang differential
-anchor.
+for property-based verification testing, (3) the authoritative reference
+for resolving spec ambiguities (recorded as project decisions).
 
 ## 9. Determinism & reporting
 

@@ -1000,3 +1000,18 @@ of string-keyed chain walking.
   the corpus sweep now also pins object-table determinism. `cargo test
   --workspace` 373 passed / 0 failed; `cargo clippy --workspace
   --all-targets -D warnings` clean.
+
+## 2026-06-12 — Decision: CutLang dropped as dependency/authority
+
+Project decision (Daniel + collaborators): CutLang is no longer used by
+this project in any form. The ADL2 reference interpreter (adl-interp) is
+the authoritative semantics of the ADL fragment we support. Open semantic
+questions are settled by project decision and recorded in the spec — there
+is no external probing oracle. Documentation updated accordingly: the spec
+`[VERIFY]` markers became `[DECIDE]` (project decision; conservative
+convention-neutral defaults stand until decided); TESTING.md dropped the
+CutLang oracle tier (interpreter is sole reference, legacy `smash` remains
+the transitional oracle); DECISIONS ADR-005 mitigation now rests on the
+spec + property tests + collaborator review; PLAN Phase 0 / risk rows and
+PHASE0_RESOLUTIONS reframed as collaborator-decision / standing-default
+items. The conservative Phase-0 defaults are unchanged.

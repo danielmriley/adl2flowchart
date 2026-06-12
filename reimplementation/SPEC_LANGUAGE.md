@@ -4,8 +4,11 @@ Status: DRAFT v0.1 — to be frozen at the end of Phase 0 (see PLAN.md).
 ADL has no official formal spec; this document *is* the spec for ADL2's
 checked fragment, validated two ways in Phase 0: (a) the grammar must
 parse the full `examples/` corpus (68 files), (b) every semantic claim
-marked **[VERIFY]** must be confirmed against CutLang's observed behavior
-before freeze.
+marked **[DECIDE]** must be ratified as a project decision (Daniel +
+collaborators) and recorded here before freeze. The ADL2 reference
+interpreter (adl-interp) is the authoritative semantics of this fragment;
+where the spec is ambiguous, the project decides and records the choice
+rather than probing an external tool.
 
 ## 1. Design stance
 
@@ -33,7 +36,7 @@ level constructs, with explicit compatibility notes below.
   live in the corpus: ex04, ex10, CMS-SUS-16-033). `m_T2`, `HLT_iso_mu`
   remain single identifiers. The lexer emits a note when an identifier is
   split this way so ambiguous intent is visible. Case is preserved in
-  diagnostics; resolution is case-insensitive **[VERIFY]** (legacy corpus
+  diagnostics; resolution is case-insensitive **[DECIDE]** (legacy corpus
   mixes `Size`/`size`, `pT`/`pt`).
 - **Keywords** (reserved, case-insensitive): `define def object obj
   composite take using select cut cmd command reject region algo bin
@@ -172,8 +175,8 @@ An **event** is: for each base collection (Jet, Electron, Muon, Tau,
 Photon, Track, ...), a finite ordered list of objects with real-valued
 properties (`pt, eta, phi, m, e, charge, btag, ...`); plus event scalars
 (MET vector → `MET.pt`, `MET.phi`; scalar HT; trigger flags ∈ {0,1}).
-Collections are **pT-descending ordered** **[VERIFY]**; indices are
-0-based **[VERIFY: CutLang may be 1-based or `[-1]`-supporting]**.
+Collections are **pT-descending ordered** **[DECIDE]**; indices are
+0-based **[DECIDE: 1-based or `[-1]`-supporting is a possible reading]**.
 
 ### 4.2 Objects
 
@@ -181,7 +184,7 @@ Collections are **pT-descending ordered** **[VERIFY]**; indices are
 passing all cuts, **order preserved**. Cuts inside an object block are
 per-element predicates; the element is the implicit subject (`select
 pt > 30` means "this element's pt"). `take union(A,B)` concatenates
-**[VERIFY: dedup/ordering of union]**. An object block with a single
+**[DECIDE: dedup/ordering of union]**. An object block with a single
 take and no cuts is a pure rename (identity with its source — this is a
 *theorem in the semantics*, which is what licenses the analyzer's
 pure-alias unification).
@@ -195,7 +198,7 @@ a bare region name inlines that region's predicate (inheritance);
 contribute nothing to membership. `bin` statements partition the
 region's events and do not constrain membership; a boundary-list
 `bin v b0 b1 … bn` denotes bins `[b0,b1), …, [bn-1,bn), [bn,∞)`
-**[VERIFY: last-bin openness]**.
+**[DECIDE: last-bin openness]**.
 
 ### 4.4 Expressions
 
@@ -204,18 +207,18 @@ Ternary `g ? a : b` = `(g ∧ a) ∨ (¬g ∧ b)`; missing/`ALL` branch is
 Defines are textual-scope-free named expressions; boolean defines are
 predicates, numeric defines are event scalars; recursion is an error.
 Division by zero / non-finite arithmetic: the enclosing comparison is
-**false** (the event fails the cut) **[VERIFY]** — the verifier already
+**false** (the event fails the cut) **[DECIDE]** — the verifier already
 assumes this; the interpreter must implement the verified answer.
 
 ### 4.5 Open semantic questions (block spec freeze)
 
 | ID | Question | Resolution procedure |
 |---|---|---|
-| OPEN-1 | `select pt(jets) > 30` at *region* level: per-element ∀, ∃, or error? | Probe CutLang with crafted events; if error, ADL2 makes it a diagnostic; else encode exactly (no more Dual hedge) |
-| OPEN-2 | `dPhi`/`dEta` convention: signed or absolute? `dPhi` range? | Read CutLang source / probe; then either drop the convention-neutral disjunction axiom for the real one, or keep it if implementations vary |
-| OPEN-3 | Index base and negative indices (`jets[-1]`) | probe |
-| OPEN-4 | `~=` exact meaning (legacy lexes as `!=`) | probe; suspect "approximately equal" — if so it is NOT `!=` and legacy is wrong |
-| OPEN-5 | `Size`/`count`/`size` aliases and their domains | corpus + CutLang scan |
+| OPEN-1 | `select pt(jets) > 30` at *region* level: per-element ∀, ∃, or error? | DECIDE: project decision with collaborators; if the chosen reading is an error, ADL2 makes it a diagnostic; else encode exactly (no more Dual hedge). Until decided, the convention-neutral strategy stands |
+| OPEN-2 | `dPhi`/`dEta` convention: signed or absolute? `dPhi` range? | DECIDE: project decision with collaborators; then either drop the convention-neutral disjunction axiom for the chosen one, or keep it if conventions vary. Until decided, the convention-neutral strategy stands |
+| OPEN-3 | Index base and negative indices (`jets[-1]`) | DECIDE: project decision with collaborators. Until decided, the convention-neutral strategy stands |
+| OPEN-4 | `~=` exact meaning (legacy lexes as `!=`) | DECIDE: project decision with collaborators; suspect "approximately equal" — if so it is NOT `!=` and legacy is wrong. Until decided, the convention-neutral strategy stands |
+| OPEN-5 | `Size`/`count`/`size` aliases and their domains | DECIDE: project decision with collaborators, informed by a corpus scan. Until decided, the convention-neutral strategy stands |
 
 ## 5. The checked fragment
 

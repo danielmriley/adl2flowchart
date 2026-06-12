@@ -17,7 +17,7 @@ bindings.
 **Trade-offs.** HEP toolchains are C++-centric; mitigations: the CLI is a
 standalone binary with no runtime deps beyond optional z3; the subprocess
 solver backend avoids linking requirements; C FFI layer possible later if
-CutLang integration is ever wanted.
+integration with a C/C++ toolchain is ever wanted.
 **Rejected.** Modern C++ (would re-fight ownership and tooling for every
 crate-equivalent); keeping/extending the legacy codebase (it now works,
 but its parser and identity layers are load-bearing string heuristics).
@@ -67,9 +67,11 @@ and re-validates every witness through it at runtime.
 **Motivated by.** Legacy had no ground truth; all six audit bugs were
 found by hand-crafted attack files. Sampling against an interpreter finds
 the same class mechanically and continuously.
-**Trade-offs.** The interpreter itself can be wrong — hence CutLang
-differential anchoring for [VERIFY] items and the rule that
-interpreter/verifier disagreement is release-blocking either way.
+**Trade-offs.** The interpreter itself can be wrong — mitigated by it
+being the authoritative semantics defined in SPEC_LANGUAGE, the
+property-test battery that exercises it against the encoder, collaborator
+review of [DECIDE] items, and the rule that interpreter/verifier
+disagreement is release-blocking either way.
 
 ## ADR-006: libz3 native bindings primary, SMT-LIB subprocess secondary
 

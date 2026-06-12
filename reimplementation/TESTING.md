@@ -7,14 +7,13 @@ reference interpreter at the center.
 
 ## 1. Oracle hierarchy
 
-1. **Reference interpreter (adl-interp)** — the executable spec.
-   Ground truth for "event e passes region R" within the checked
-   fragment.
+1. **Reference interpreter (adl-interp)** — the executable spec and sole
+   reference. Ground truth for "event e passes region R" within the
+   checked fragment. Spec ambiguities are resolved by project decision
+   (Daniel + collaborators) recorded in the spec, not by probing an
+   external tool.
 2. **Legacy `smash`** — transitional oracle: verdict-level comparison on
    the corpus until the parity gate (PLAN Phase 7), then retired.
-3. **CutLang** (optional, env-gated) — external anchor for SPEC
-   **[VERIFY]** items and for interpreter differential runs where a
-   CutLang installation is available.
 
 ## 2. Test layers (all in CI from the phase that creates them)
 

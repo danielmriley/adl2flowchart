@@ -7,10 +7,12 @@ them as Graphviz diagrams. It is the from-scratch successor to the legacy
 tool in `../../legacy_parser/`, built so that the soundness properties the
 legacy tool earned through two audits hold here *by construction*.
 
-Status: all spec phases through the parity gate draft are built and green
-— 356 tests, 68/68 corpus files, the full legacy golden battery on both
-solver backends, and a verdict-parity comparison against the legacy tool
-with zero legacy-better differences (`../PARITY_DRAFT.md`).
+Status: all spec phases through the parity gate draft are built and green,
+plus Phase 9 histogram production (`run --histos`, including a native
+pure-Rust `out.root`) — 428 tests, 68/68 corpus files, the full legacy
+golden battery on both solver backends, and a verdict-parity comparison
+against the legacy tool with zero legacy-better differences
+(`../PARITY_DRAFT.md`).
 
 ---
 
@@ -58,13 +60,18 @@ witnesses. Output is deterministic — two runs are byte-identical.
 **`run` — interpret regions over events**
 
 ```bash
-smash2 run analysis.adl events.jsonl   # per-region pass/fail + bin assignment
+smash2 run analysis.adl events.jsonl              # per-region pass/fail + bin assignment
+smash2 run analysis.adl events.jsonl --histos out/  # + fill histograms (see below)
 ```
 
 Events are JSONL: per-collection ordered object lists with properties,
 plus event scalars and trigger flags. `run` is the *reference semantics* —
 the verifier is property-tested against it, and every overlap witness is
 re-validated through it before being shown.
+
+`--histos DIR` additionally accumulates the file's `histo` statements and
+writes four outputs into `DIR` — `histos.json`, a native `out.root`, and
+two ROOT bridge scripts — covered in [Histograms](#histograms) below.
 
 **`dot` — Graphviz diagrams**
 
@@ -101,6 +108,106 @@ with a reason you can read in the report — it can weaken a verdict to
 POSSIBLY, never flip it. PROVEN OVERLAPPING is always printed with its
 model caveat: the witness is a candidate in the per-event scalar
 fragment, not a simulated event.
+
+---
+
+## Histograms
+
+ADL `histo` statements declare per-region histograms; `smash2 run
+--histos DIR` fills them while it streams events and writes the results to
+`DIR`. Histograms are auxiliaries (not part of the analysis algorithm), so
+they only ever affect the `--histos` outputs — the per-event table and the
+verifier are untouched.
+
+**Fill semantics.** A histogram fills once per event, on **full
+acceptance** of the selection region that declares it. The fill value is
+the statement's expression (`histo hmet, "MET (GeV)", 40, 0, 1000, MET`)
+evaluated through the same reference interpreter `run` uses. Binning is
+ROOT's `TH1::Fill`: `x < lo` → underflow, `x >= hi` → overflow, the top
+edge is open. `entries` is the **raw fill count** (ROOT `fEntries`),
+including flow-bin fills. A `histoList` block is a template instantiated
+into each region that references it (filled once on that region's full
+acceptance); plain region inheritance does **not** import histograms. An
+event whose fill expression has no value (missing element/property,
+non-finite arithmetic) or hits a hard evaluation error is counted and
+summarized on stderr — no entry is recorded. 2-D histograms and
+variable-bin histograms are deferred in v1: each is skipped with a stderr
+diagnostic and is absent from the outputs (the rest of the file's
+histograms still fill).
+
+**Weights.** Each fill is weighted by the **product of the region's own
+numeric `weight` statements** (`weight lumi 2.0`). A non-numeric weight
+argument yields a diagnostic and a weight of 1.0; inherited regions'
+weights do not apply. The accumulator tracks ROOT `Sumw2` errors (per-bin
+Σw and Σw², including the flow bins) so `GetBinError` is `sqrt(Σw²)`, and
+it accumulates the four fill-time stats moments **at fill time, in-range
+fills only** (Σw, Σw², Σw·x, Σw·x² — ROOT's `GetStats` convention) so
+`GetMean`/`GetStdDev` and `hadd`-merged stats stay exact. Histogram names
+are flat and **region-prefixed** (`baseline_hmet`, `singlelepton_hlep1pt`)
+so they are stable across runs and `hadd`-mergeable; per-region
+`TDirectory`s are a v2 item.
+
+**The four outputs** (all written into `DIR`, all byte-deterministic
+across runs):
+
+| File | What it is |
+|---|---|
+| `histos.json` | the canonical record (name, title, region, edges, per-bin Σw/Σw², under/overflow, entries, the four moments). Single source of truth — every other format is a renderer of it. |
+| `out.root` | a native ROOT file with one `TH1D` per histogram, `Sumw2` errors and stats intact — written in pure Rust by the [`rootfile`](#the-rootfile-crate) crate, no ROOT or Python on your machine. Opt out with `--no-root`. |
+| `make_histos.C` | a self-contained ROOT macro (`root -l -b -q make_histos.C` → `histos.root`); zero dependencies beyond ROOT itself. |
+| `to_root.py` | an uproot 5 + numpy script (`python3 to_root.py` → `histos.root`) for Python-side collaborators. |
+
+`--csv` and `--svg` add a per-histogram CSV (`bin_lo,bin_hi,content,error`
+for the in-range bins) and a hand-rolled step-plot SVG quick-look (no
+plotting dependency). All four formats agree on the flat region-prefixed
+names, so a `.root` from any path is `hadd`-mergeable with the others.
+
+```bash
+# Fill ex02's histograms over the committed toy-event fixture, all formats
+# (paths relative to this directory, reimplementation/adl2):
+smash2 run ../../examples/tutorials/ex02_histograms.adl \
+  crates/adl-difftest/tests/fixtures/ex02_events.jsonl \
+  --histos out/ --csv --svg
+
+# Skip the native .root (keep histos.json + the two bridge scripts):
+smash2 run analysis.adl events.jsonl --histos out/ --no-root
+```
+
+**What a collaborator does with the output.** Four equivalent paths to the
+same histograms, pick whichever your environment has:
+
+- **ROOT, directly:** `root -l out/out.root` then `baseline_hmet->Draw()`
+  in the prompt (or `new TBrowser`) — the native file opens with no extra
+  step.
+- **ROOT, via the macro:** `cd out && root -l -b -q make_histos.C` builds
+  `histos.root` from scratch (useful when you want the build script in
+  version control rather than a binary, or to tweak titles/styling).
+- **Python/uproot:** `python3 out/to_root.py` writes a byte-equivalent
+  `histos.root`, or open the native file directly:
+  `uproot.open("out/out.root")["baseline_hmet"].values(flow=True)`.
+- **No ROOT at all:** the `--csv` tables drop straight into a spreadsheet
+  or pandas, and the `--svg` quick-looks open in any browser.
+
+### The `rootfile` crate
+
+`out.root` is produced by **`rootfile`** — to our knowledge the first
+pure-Rust writer of ROOT `TH1` histogram files (the existing Rust ROOT
+crates read/write `TTree`s only; none write `TH1`). It is a standalone,
+zero-dependency workspace member: small-format `TFile` container, `TKey`
+records, a single root `TDirectory`, uncompressed `TH1D` v3 objects with
+`Sumw2`, and a vendored uproot `TStreamerInfo` blob so the files are fully
+self-describing. Its API is independent of the rest of the toolchain —
+`RootFile::create().add_th1d(name, &H1Spec { … })?.finish(path)` — so it is
+usable on its own for any Rust program that needs to emit ROOT histograms.
+
+Validation is layered and runs in CI: the serialized `TH1D` payload is
+asserted **byte-identical** to one uproot writes for the same histogram
+(against a checked-in reference, plus an env-gated test that regenerates
+the reference with a pinned uproot at test time), a strict in-crate reader
+re-parses every file and checks the framing/key invariants, and an uproot
+read-back test confirms values, variances, axis edges, `fEntries`, and the
+stats array round-trip. The `out.root` `smash2` writes here is read back
+exactly by uproot in the wiring tests.
 
 ---
 
@@ -228,6 +335,7 @@ touching verdicts.
 | `adl-solver` | `Solver` trait; native-z3 and SMT-LIB subprocess backends |
 | `adl-analysis` | pairwise verdicts, vacuity, subset, bins, witnesses, reports/JSON |
 | `adl-viz` | flowchart + AST DOT from HIR |
+| `rootfile` | pure-Rust ROOT `TH1D` file writer (the `run --histos` native `out.root`); standalone, zero-dependency |
 | `adl-difftest` | event generator, property/metamorphic batteries, legacy harness |
 | `adl-cli` | the `smash2` binary |
 
@@ -239,7 +347,7 @@ questions), `../PARITY_DRAFT.md`. Build history: `BUILD_NOTES.md`,
 `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`.
 
 ```bash
-cargo test --workspace          # full battery (~356 tests)
+cargo test --workspace          # full battery (~428 tests)
 scripts/corpus_gate.sh          # all 68 example files parse + resolve
 cargo test -p adl-solver --no-default-features   # subprocess-backend job
 ```

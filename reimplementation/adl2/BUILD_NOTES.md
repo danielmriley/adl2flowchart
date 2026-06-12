@@ -1316,3 +1316,160 @@ output and the histos.json bytes are unchanged** (existing
   --workspace --all-targets -- -D warnings` clean; all five named
   determinism tests pass individually (verify report, histos.json,
   bridges, dot, rootfile pinned-build).
+
+## 2026-06-12 — Phase 9: wire `rootfile` into smash2 (`run --histos` → native out.root)
+
+Closed the integration gap the previous Phase-9 pass left open (ratified
+decision 6: smash2 depends on `rootfile`). `smash2 run --histos DIR` now
+ALSO writes a native `out.root` next to `histos.json` and the two bridge
+scripts; `--no-root` opts out of just the binary file (JSON + bridges still
+written). Crates touched: **adl-cli** (wiring + tests) and **rootfile** (a
+one-line `Clone` derive — deviation noted below).
+
+- **adl-cli `cmd/run.rs`**: new `write_root_file` builds a
+  `rootfile::RootFile` from the in-memory `HistoSet` (the same accumulator
+  that writes `histos.json`, so the native file cannot disagree with the
+  JSON or the bridges) and `finish`es it to `DIR/out.root`. `h1_spec`
+  maps `Hist1D` → `rootfile::H1Spec`: in-range bins stay, flow bins move to
+  `under`/`over`, raw `u64` entries become the f64 `fEntries`, the four
+  fill-time moments pass through. Object names are the flat region-prefixed
+  v1 names via the now-`pub(crate)` `bridges::root_name`, so out.root, the
+  `.C`/`.py` outputs, and the CSV/SVG stems all share names and stay
+  hadd-mergeable. A histogram the writer rejects (practically unreachable —
+  flat names of a valid HistoSet don't collide) is skipped with a stderr
+  diagnostic; the others still write. **Datime + UUIDs are pinned**
+  (`pack_datime(2026,6,12,0,0,0)` + zeroed UUIDs) so out.root is
+  byte-identical across runs — the same determinism the rest of
+  `run --histos` already gives, and what hadd/byte-diffs want.
+- **adl-cli `main.rs`**: new `--no-root` flag (clap `requires = "histos"`,
+  same gating as `--csv`/`--svg`). The four histogram output flags
+  (`histos`, `csv`, `svg`, `no_root`) are bundled into a new
+  `cmd::run::HistoOpts<'_>` struct passed to `run` — keeps the `run`
+  signature under the clippy `too_many_arguments` ceiling (an elegant fix,
+  not an `#[allow]`).
+- **DEVIATION (rootfile)**: added `#[derive(... Clone)]` to `RootFile`
+  (it already held only `Clone` fields; `Th1d` already derived `Clone`).
+  `add_th1d` is a consuming builder that returns the `Error` (not the
+  builder) on rejection, so recovering the accumulator on the skip path
+  needs a pre-add `clone()`. Minimal, additive, no behavior change; the
+  task names rootfile as a dependency of smash2 and this is the wiring it
+  requires. No other rootfile code touched.
+- **Adl-cli Cargo.toml**: `rootfile.workspace = true` as a normal dep, and
+  as a dev-dep (the CLI tests re-parse out.root with the writer's own
+  strict reader). The workspace `rootfile` path dep already existed.
+- **Tests** (adl-cli `tests/cli.rs`, +4 → 36 in-suite):
+  `run_histos_writes_native_root_file` (out.root lands next to
+  histos.json, re-parses via `rootfile::reader`, TH1D content matches the
+  accumulator: flat name, flow bins, weighted Σw², raw entries, fill-time
+  moments), `run_histos_native_root_is_byte_identical_across_runs` (the
+  **determinism test over out.root bytes** the brief requires — two runs,
+  pinned datime/UUIDs ⇒ identical bytes), `run_histos_no_root_suppresses_
+  out_root_only` (`--no-root` ⇒ no out.root, JSON + bridges still present),
+  `no_root_requires_histos_dir` (clap usage exit 2). Existing CLI
+  snapshots (`run_histos_json_file`, the bridge snapshots) and the JSON
+  bytes are **unchanged** — out.root is an additive file, not a change to
+  any existing output. `run --json` no-histo output unchanged.
+- **End-to-end oracle check (ran on this machine)**: `run --histos` on
+  `examples/tutorials/ex02_histograms.adl` over the committed 200-event
+  fixture wrote a 10-key out.root (2-D/varbin histos skipped with stderr
+  diagnostics, as designed); `.venv-uproot/bin/python` (uproot 5.7.4) read
+  it back exactly — 10 flat region-prefixed keys, `baseline_hnjets`
+  fEntries=32, flow-inclusive values `[0,0,0,0,10,7,…]`, axis [0,20)×20,
+  `fTsumw=32`/`fTsumwx=136`, streamers present. Full data-fidelity, not a
+  syntax check.
+
+### Verification (run before returning)
+
+- `cargo build --workspace` — green.
+- `cargo test --workspace` — green, **428 passed / 0 failed** (was 424;
+  +4 native-root CLI tests).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt -p adl-cli -p rootfile --check` — clean (my crates).
+- Determinism tests pass individually: `verify_report_is_byte_identical_
+  across_runs`, `run_histos_writes_canonical_json_deterministically`,
+  `run_histos_bridges_are_byte_identical_across_runs`,
+  `run_histos_native_root_is_byte_identical_across_runs` (new),
+  `dot_is_byte_identical_across_runs`, rootfile
+  `builds_are_byte_deterministic_when_pinned`.
+
+### Pre-existing gap (not mine, not touched)
+
+`cargo fmt --check` over the WHOLE workspace reports diffs in
+adl-difftest / adl-interp / adl-sema / adl-syntax test+src files —
+formatting drift from concurrent Phase-9 work that predates this task. My
+boundary is adl-cli + the rootfile wiring; both are `cargo fmt --check`
+clean. Left the others untouched (a separate fmt sweep should land them).
+
+## 2026-06-12 — Phase 9 integration-gate fix: README Histograms example path
+
+The independent integration gate found the README's headline Histograms
+command broken copy-paste: from the documented cwd (`reimplementation/adl2`,
+established by the Quick start), `examples/tutorials/ex02_histograms.adl`
+does not resolve (the examples tree lives two levels up), and `events.jsonl`
+was a placeholder that exists nowhere. Fixed `README.md` (Histograms code
+block) to use `../../examples/tutorials/ex02_histograms.adl` and the
+committed 200-event fixture
+`crates/adl-difftest/tests/fixtures/ex02_events.jsonl`, with a comment
+noting paths are relative to this directory — the command is now verbatim
+copy-paste runnable (verified: exit 0, all four outputs + CSV/SVG written;
+the expected 2-D/varbin skip diagnostics on stderr). Audited every other
+concrete path the README references from this cwd (`scripts/corpus_gate.sh`,
+`../SPEC_*.md`, `../../legacy_parser/`, …) — all resolve. Docs-only change;
+no crate code touched.
+
+## 2026-06-12 — Phase 9 final validation pass (full battery + oracle coverage summary)
+
+Validation-only pass; no crate code touched. New file:
+`HISTOGRAM_REPORT.md` (what shipped / validation evidence / gaps / demo
+commands). Results, all run from this directory on this machine:
+
+- `cargo build --workspace` green; `cargo clippy --workspace --all-targets
+  -- -D warnings` clean; `cargo fmt -p rootfile -p adl-cli --check` clean
+  (whole-workspace fmt drift in other crates is the pre-existing item
+  noted 2026-06-12, untouched).
+- `cargo test --workspace` (default, z3-native): **428 passed / 0
+  failed**. `cargo test --workspace --no-default-features` (SMT-LIB
+  subprocess backend, z3 4.8.12 binary): **428 passed / 0 failed**.
+- `cargo test --workspace --all-features` (deep property battery: 100k
+  encoder-vs-interp + 10k metamorphic cases): **428 passed / 0 failed**
+  (exit 0; `encoder_vs_interpreter` 100k cases in 1277 s, metamorphic
+  6/6 in 409 s).
+- `scripts/corpus_gate.sh`: all 68 corpus files parse + resolve clean.
+- Golden batteries: adl-analysis `golden_battery` 37/37; adl-difftest
+  `histo_golden` 2/2.
+- Determinism, each named test run individually with `--exact`, all pass:
+  `verify_report_is_byte_identical_across_runs`,
+  `run_histos_writes_canonical_json_deterministically`,
+  `run_histos_bridges_are_byte_identical_across_runs`,
+  `run_histos_native_root_is_byte_identical_across_runs`,
+  `dot_is_byte_identical_across_runs`, rootfile
+  `builds_are_byte_deterministic_when_pinned`. Plus a manual double-run
+  of the real binary on ex02: `verify` default, `verify --json`,
+  `histos.json`, `out.root`, `make_histos.C`, `to_root.py` all
+  byte-identical (`cmp`).
+
+### Oracle coverage (what actually executed vs skipped)
+
+- **uproot read-back, rootfile suite — RAN (forced)**:
+  `ROOTFILE_REQUIRE_UPROOT=1 cargo test -p rootfile --test uproot_oracle`
+  → 3/3 (`uproot_reads_back_our_file_exactly`,
+  `uproot_lists_and_reads_multi_histo_file`,
+  `vendored_fixtures_match_freshly_generated_uproot_reference`).
+  Interpreter: `.venv-uproot` uproot 5.7.4 / Python 3.12.3. Fixture
+  sha256s re-verified against `crates/rootfile/fixtures/PROVENANCE.md`.
+- **End-to-end ex02 oracle — RAN (ad hoc)**: `smash2 run
+  ex02_histograms.adl <200-event fixture> --histos` → uproot read
+  `out.root` back exactly: 10/10 histograms, flow-inclusive values, raw
+  `fSumw2`, axis edges, `fEntries`, all four `fTsumw*` moments, titles,
+  `fNcells`; 14 streamer classes present; zero mismatches.
+- **CLI uproot bridge oracle — RAN (forced)**:
+  `SMASH2_RUN_UPROOT_ORACLE=1` with `.venv-uproot/bin` on PATH →
+  `uproot_script_round_trips_when_available` executed (not skipped).
+  Ad hoc on top: `to_root.py`'s `histos.root` vs native `out.root` —
+  equivalent across all 10 histograms (values, fSumw2, entries, moments,
+  titles, fNcells).
+- **ROOT binary + hadd — SKIPPED (env-gated, no `root`/`hadd` on this
+  machine)**: `SMASH2_RUN_ROOT_ORACLE=1` run anyway → loud
+  "skipping: `root` not on PATH"; hadd smoke test likewise unexercised.
+  Standing instruction for the first ROOT-equipped machine recorded in
+  HISTOGRAM_REPORT.md.

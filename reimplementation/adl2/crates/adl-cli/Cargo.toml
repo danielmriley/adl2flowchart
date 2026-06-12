@@ -22,6 +22,7 @@ adl-syntax.workspace = true
 adl-sema.workspace = true
 adl-interp.workspace = true
 adl-viz.workspace = true
+rootfile.workspace = true
 # Direct path dep (not workspace-inherited): inheritance cannot override
 # default-features, and the CLI must forward the `native` backend feature.
 adl-analysis = { path = "../adl-analysis", default-features = false }
@@ -30,3 +31,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+# The CLI tests re-parse the native `out.root` with the writer's own strict
+# reader to assert content + framing.
+rootfile.workspace = true

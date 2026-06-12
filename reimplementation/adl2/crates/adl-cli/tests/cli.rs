@@ -486,6 +486,118 @@ fn bridges_carry_flow_bins_and_weighted_errors() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// --- native out.root (Phase 9: rootfile writer wired into `run`) ----------
+
+#[test]
+fn run_histos_writes_native_root_file() {
+    let adl = temp_adl("nativeroot", HISTO_ADL);
+    let events = temp_jsonl("nativeroot", HISTO_EVENTS);
+    let dir = std::env::temp_dir().join(format!("smash2_nativeroot_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--histos",
+        dir.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+
+    // out.root lands next to histos.json and re-parses with the writer's own
+    // strict reader; the TH1D content matches the accumulator (flat name,
+    // flow bins, weighted error², raw entries, fill-time moments).
+    let bytes = std::fs::read(dir.join("out.root")).expect("out.root written");
+    let parsed = rootfile::reader::parse(&bytes).expect("out.root re-parses");
+    assert_eq!(parsed.keys_list, vec!["SR_hmet".to_owned()]);
+    let h = &parsed.histos[0];
+    assert_eq!(h.name, "SR_hmet");
+    assert_eq!(h.nbins, 2);
+    assert_eq!((h.lo, h.hi), (0.0, 100.0));
+    // contents are [underflow, bin1, bin2, overflow]: 0, 2, 2, 2.
+    assert_eq!(h.contents, vec![0.0, 2.0, 2.0, 2.0]);
+    assert_eq!(h.sumw2, vec![0.0, 4.0, 4.0, 4.0]);
+    assert_eq!(h.entries, 3.0, "raw fill count incl. overflow");
+    assert_eq!(
+        (h.tsumw, h.tsumw2, h.tsumwx, h.tsumwx2),
+        (4.0, 8.0, 200.0, 12500.0),
+        "in-range fill-time moments"
+    );
+
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_native_root_is_byte_identical_across_runs() {
+    let adl = temp_adl("rootdet", HISTO_ADL);
+    let events = temp_jsonl("rootdet", HISTO_EVENTS);
+    let mut outputs = Vec::new();
+    for tag in ["rootdet_a", "rootdet_b"] {
+        let dir = std::env::temp_dir().join(format!("smash2_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = run(&[
+            "run",
+            adl.to_str().unwrap(),
+            events.to_str().unwrap(),
+            "--histos",
+            dir.to_str().unwrap(),
+        ]);
+        assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+        outputs.push(std::fs::read(dir.join("out.root")).expect("out.root"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert_eq!(
+        outputs[0], outputs[1],
+        "out.root must be byte-identical across runs (pinned datime/UUIDs)"
+    );
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+}
+
+#[test]
+fn run_histos_no_root_suppresses_out_root_only() {
+    let adl = temp_adl("noroot", HISTO_ADL);
+    let events = temp_jsonl("noroot", HISTO_EVENTS);
+    let dir = std::env::temp_dir().join(format!("smash2_noroot_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--histos",
+        dir.to_str().unwrap(),
+        "--no-root",
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    assert!(
+        !dir.join("out.root").exists(),
+        "--no-root must not write out.root"
+    );
+    // The JSON + bridges are still produced.
+    assert!(dir.join("histos.json").exists());
+    assert!(dir.join("make_histos.C").exists());
+    assert!(dir.join("to_root.py").exists());
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn no_root_requires_histos_dir() {
+    // clap enforces `--no-root` requires `--histos`: usage error, exit 2.
+    let adl = corpus("tutorials/ex02_histograms.adl");
+    let events = ex02_events_fixture();
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--no-root",
+    ]);
+    assert_eq!(code(&out), 2, "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("--histos"));
+}
+
 /// Env-gated oracle: if `root` is on PATH, run the generated macro and read
 /// the histograms back, asserting a known bin/entries/mean. Skipped (pass)
 /// when ROOT is unavailable — recorded in BUILD_NOTES.

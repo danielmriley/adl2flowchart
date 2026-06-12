@@ -149,6 +149,17 @@ audited; cross-file goldens green.
 
 ## Phase 9 — Histogram production (≈ 1.5 weeks; replaces external runtimes)
 
+> **Implemented (2026-06-12).** `smash2 run --histos DIR` accumulates `histo`
+> statements (fill-time `Sumw2` + the four stats moments, raw `fEntries`,
+> flat region-prefixed names) and writes four byte-deterministic outputs:
+> the canonical `histos.json`, a native pure-Rust `out.root` (the new
+> `rootfile` crate — first Rust ROOT `TH1` writer, uproot-validated
+> byte-for-byte; `--no-root` opts out), and the `make_histos.C` / `to_root.py`
+> bridges; `--csv`/`--svg` add no-dependency quick-looks. Deferred to v2 as
+> noted below: per-region `TDirectory`s, ZLIB compression, TH2D. See
+> `adl2/BUILD_NOTES.md` (2026-06-12 Phase-9 entries) and
+> `adl2/README.md` → Histograms.
+
 The project produces histograms itself; design per the June-2026 research
 report (no Rust crate writes ROOT TH1 files today — oxyroot is TTree-only
 and dormant, root-io is dead — so we accumulate natively and emit bridges).
@@ -205,3 +216,11 @@ the joint encoder-vs-interpreter week is the schedule pinch point).
 | Scope creep toward implementing the full ADL language | the fragment is declared; `Unsupported` + diagnostic is the designed answer |
 | Parity gate reveals semantic drift late | the differential harness exists from P3/P4; the gate is a formality if lower layers stayed green |
 | Interpreter itself wrong (oracle drift) | the interpreter is the authoritative spec; [DECIDE] items are settled by collaborator review and property tests pin encoder-vs-interpreter agreement; interpreter/verifier disagreement is release-blocking in *both* directions |
+
+## Next: event converter profiles (post-Phase 9)
+
+Experiment differences live in converter profiles, never in the core
+event model: `delphes` first (validates against our own corpus), then
+`cms-nanoaod` (validated against CERN Open Data; working-point and MET
+choices are explicit [DECIDE] items per profile), `atlas-physlite`
+future. Spec-first, like SPEC_ROOT_WRITER.md.

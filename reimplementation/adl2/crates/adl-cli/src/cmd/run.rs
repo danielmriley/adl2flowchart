@@ -4,8 +4,11 @@
 //! table; `--json` emits one JSON object per event line (JSONL out).
 //!
 //! Histograms (PLAN Phase 9): `histo` statements accumulate while events
-//! stream. `--histos DIR` writes the canonical `histos.json` there; with
-//! `--json`, files that declare histograms get one final
+//! stream. `--histos DIR` writes the canonical `histos.json` there, the two
+//! ROOT bridges (`make_histos.C`, `to_root.py`), and — via the `rootfile`
+//! crate — a native `out.root` with one TH1D per histogram under flat,
+//! region-prefixed names (`--no-root` opts out of just the binary file).
+//! With `--json`, files that declare histograms get one final
 //! `{"histograms": [...]}` line after the per-event lines (files without
 //! histograms emit exactly the pre-Phase-9 output). Histogram diagnostics
 //! (skipped forms, non-numeric weights, skipped fills) go to stderr.
@@ -15,20 +18,32 @@
 
 use crate::cmd::bridges;
 use crate::cmd::{CliError, read_file, unit_name};
-use adl_interp::{BinOutcome, HistoSet, Interp, RegionResult, read_jsonl};
+use adl_interp::{BinOutcome, Hist1D, HistoSet, Interp, RegionResult, read_jsonl};
 use adl_sema::{ExtDecls, analyze_str};
 use adl_syntax::diag::{has_errors, render};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::ExitCode;
 
+/// Histogram output options for `run --histos` (all inert unless `dir` is
+/// set; clap gates the flags on `--histos`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HistoOpts<'a> {
+    /// Output directory (`--histos DIR`); `None` disables all histogram output.
+    pub dir: Option<&'a Path>,
+    /// Also emit one CSV per histogram (`--csv`).
+    pub csv: bool,
+    /// Also emit one step-plot SVG per histogram (`--svg`).
+    pub svg: bool,
+    /// Skip the native `out.root` (`--no-root`).
+    pub no_root: bool,
+}
+
 pub fn run(
     file: &Path,
     events: &Path,
     json_out: bool,
-    histos_dir: Option<&Path>,
-    csv: bool,
-    svg: bool,
+    histos: HistoOpts<'_>,
     verbose: bool,
 ) -> Result<ExitCode, CliError> {
     let src = read_file(file)?;
@@ -96,10 +111,10 @@ pub fn run(
     if json_out && !hir.histos.is_empty() {
         println!("{}", histo_set.to_json(false));
     }
-    // `--csv`/`--svg` require `--histos` (enforced by clap), so they only
-    // ever fire with a directory present.
-    if let Some(dir) = histos_dir {
-        write_histo_outputs(dir, &histo_set, csv, svg, verbose)?;
+    // `--csv`/`--svg`/`--no-root` require `--histos` (enforced by clap), so
+    // they only ever fire with a directory present.
+    if let Some(dir) = histos.dir {
+        write_histo_outputs(dir, &histo_set, histos, verbose)?;
     }
 
     if verbose && !json_out {
@@ -115,15 +130,15 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Write `histos.json` and the bridge renderers next to it. The ROOT macro
-/// (`make_histos.C`) and uproot script (`to_root.py`) are always emitted;
-/// `--csv`/`--svg` add per-histogram files. Each write maps IO failure to
-/// [`CliError::Write`].
+/// Write `histos.json`, the native `out.root`, and the bridge renderers next
+/// to it. The canonical JSON, the ROOT macro (`make_histos.C`), the uproot
+/// script (`to_root.py`), and (unless `--no-root`) a native `out.root` are
+/// always emitted; `--csv`/`--svg` add per-histogram files. Each write maps
+/// IO failure to [`CliError::Write`].
 fn write_histo_outputs(
     dir: &Path,
     set: &HistoSet,
-    csv: bool,
-    svg: bool,
+    opts: HistoOpts<'_>,
     verbose: bool,
 ) -> Result<(), CliError> {
     std::fs::create_dir_all(dir).map_err(|source| CliError::Write {
@@ -146,17 +161,99 @@ fn write_histo_outputs(
     emit("histos.json", &set.to_json(true))?;
     emit("make_histos.C", &bridges::make_histos_c(set))?;
     emit("to_root.py", &bridges::to_root_py(set))?;
-    if csv {
+    if !opts.no_root {
+        write_root_file(&dir.join("out.root"), set, verbose)?;
+    }
+    if opts.csv {
         for (name, body) in bridges::csv_files(set) {
             emit(&name, &body)?;
         }
     }
-    if svg {
+    if opts.svg {
         for (name, body) in bridges::svg_files(set) {
             emit(&name, &body)?;
         }
     }
     Ok(())
+}
+
+/// Build and write the native `out.root` via the `rootfile` crate: one TH1D
+/// per accumulated histogram, keyed by the flat region-prefixed name
+/// (`baseline_hmet`) that the bridges also use, so `out.root` and the
+/// generated `.root` files share object names and stay `hadd`-mergeable.
+///
+/// A histogram the writer rejects (e.g. a name collision after the
+/// region-prefix flattening, or a name/title too long for a TKey) is skipped
+/// with a stderr diagnostic — the JSON and bridges still carry it, and the
+/// other histograms are written. A hard I/O failure on `finish` is fatal
+/// ([`CliError::Write`]).
+fn write_root_file(path: &Path, set: &HistoSet, verbose: bool) -> Result<(), CliError> {
+    // Pin datime + UUIDs so `out.root` is byte-identical across runs (the
+    // determinism guarantee the rest of `run --histos` already gives, and
+    // what `hadd`/byte-diffs want). The datime is the ratified Phase-9 epoch
+    // (2026-06-12 00:00:00 UTC); UUIDs are zeroed (ROOT treats them as
+    // informational).
+    let mut root = rootfile::RootFile::create()
+        .with_datime(rootfile::pack_datime(2026, 6, 12, 0, 0, 0))
+        .with_uuids([0; 16], [0; 16]);
+    for fill in &set.histos {
+        let h = &fill.hist;
+        let name = bridges::root_name(&fill.region, &fill.name);
+        let spec = h1_spec(&fill.title, h);
+        // `add_th1d` consumes the builder; on the (practically unreachable —
+        // flat names of a valid HistoSet don't collide) rejection path we
+        // restore the pre-add accumulator and skip just this histogram (the
+        // JSON/bridges still carry it).
+        let snapshot = root.clone();
+        root = match root.add_th1d(&name, &spec) {
+            Ok(next) => next,
+            Err(e) => {
+                eprintln!("histogram `{name}`: skipped in out.root — {e}");
+                snapshot
+            }
+        };
+    }
+    root.finish(path).map_err(|e| CliError::Write {
+        path: path.display().to_string(),
+        source: match e {
+            rootfile::Error::Io(io) => io,
+            other => std::io::Error::other(other.to_string()),
+        },
+    })?;
+    if verbose {
+        eprintln!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+/// Map an interpreter [`Hist1D`] to a `rootfile` [`H1Spec`]: in-range bins
+/// stay as-is, flow bins move into `under`/`over`, and `entries` (a raw `u64`
+/// fill count) becomes the `f64` ROOT `fEntries`. The four fill-time moments
+/// pass through unchanged.
+fn h1_spec<'a>(title: &'a str, h: &'a Hist1D) -> rootfile::H1Spec<'a> {
+    #[allow(clippy::cast_precision_loss)]
+    let entries = h.entries as f64;
+    rootfile::H1Spec {
+        title,
+        nbins: h.nbins,
+        lo: h.lo,
+        hi: h.hi,
+        sumw: &h.sumw,
+        sumw2: &h.sumw2,
+        under: rootfile::FlowBin {
+            w: h.underflow_w,
+            w2: h.underflow_w2,
+        },
+        over: rootfile::FlowBin {
+            w: h.overflow_w,
+            w2: h.overflow_w2,
+        },
+        entries,
+        tsumw: h.tsumw,
+        tsumw2: h.tsumw2,
+        tsumwx: h.tsumwx,
+        tsumwx2: h.tsumwx2,
+    }
 }
 
 fn region_text(r: &RegionResult) -> String {

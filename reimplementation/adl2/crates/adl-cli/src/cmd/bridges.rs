@@ -36,7 +36,11 @@ use std::fmt::Write as _;
 
 /// The flat, region-prefixed ROOT object name (`SR_hmet`). The region path
 /// separator `/` (none in v1, but future-proof) collapses to `_`.
-fn root_name(region: &str, name: &str) -> String {
+///
+/// Shared by every bridge renderer AND the native `rootfile` writer so all
+/// four outputs (`out.root`, `make_histos.C`, `to_root.py`, CSV/SVG stems)
+/// agree on object names and stay `hadd`-mergeable.
+pub(crate) fn root_name(region: &str, name: &str) -> String {
     format!("{}_{name}", region.replace('/', "_"))
 }
 

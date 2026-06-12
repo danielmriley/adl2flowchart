@@ -120,7 +120,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// In-memory builder for a write-once ROOT file.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[must_use = "RootFile does nothing until finish() or to_bytes()"]
 pub struct RootFile {
     histos: Vec<th1d::Th1d>,

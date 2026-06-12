@@ -92,6 +92,10 @@ enum Command {
         /// `histos.json` (requires `--histos`).
         #[arg(long, requires = "histos")]
         svg: bool,
+        /// Skip writing the native `out.root` (still writes `histos.json`
+        /// and the `make_histos.C`/`to_root.py` bridges; requires `--histos`).
+        #[arg(long, requires = "histos")]
+        no_root: bool,
     },
     /// Graphviz DOT from the resolved HIR (flowchart by default).
     Dot {
@@ -127,7 +131,19 @@ fn main() -> ExitCode {
             histos,
             csv,
             svg,
-        } => cmd::run::run(&file, &events, json, histos.as_deref(), csv, svg, verbose),
+            no_root,
+        } => cmd::run::run(
+            &file,
+            &events,
+            json,
+            cmd::run::HistoOpts {
+                dir: histos.as_deref(),
+                csv,
+                svg,
+                no_root,
+            },
+            verbose,
+        ),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
         Command::Objects { file } => cmd::objects::run(&file, verbose),
     };

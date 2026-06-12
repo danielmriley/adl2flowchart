@@ -42,6 +42,9 @@ enum Command {
         /// One or more ADL files.
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Print the canonical AST dump for each file to stdout.
+        #[arg(long)]
+        dump_ast: bool,
     },
     /// Full analysis: pairwise verdicts, vacuity, bins (legacy `smash -r`).
     Verify {
@@ -83,7 +86,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let verbose = cli.verbose;
     let result = match cli.command {
-        Command::Check { files } => cmd::check::run(&files, verbose),
+        Command::Check { files, dump_ast } => cmd::check::run(&files, verbose, dump_ast),
         Command::Verify {
             file,
             json,

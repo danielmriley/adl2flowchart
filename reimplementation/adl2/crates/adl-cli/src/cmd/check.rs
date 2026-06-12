@@ -9,13 +9,17 @@ use adl_syntax::diag::{has_errors, render};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-pub fn run(files: &[PathBuf], verbose: bool) -> Result<ExitCode, CliError> {
+pub fn run(files: &[PathBuf], verbose: bool, dump_ast: bool) -> Result<ExitCode, CliError> {
     let ext = ExtDecls::legacy();
     let mut any_errors = false;
 
     for path in files {
         let src = read_file(path)?;
         let name = unit_name(path);
+        if dump_ast {
+            let parsed = adl_syntax::parse(&src);
+            print!("{}", adl_syntax::dump_ast(&src, &parsed.file));
+        }
         // analyze_str merges parse diagnostics in front of sema's, so one
         // resolve pass surfaces both lexical/grammar and resolution issues.
         let hir = analyze_str(&src, &name, &ext);

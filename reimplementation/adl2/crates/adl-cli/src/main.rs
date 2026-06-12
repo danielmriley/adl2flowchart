@@ -2,9 +2,10 @@
 //!
 //! Subcommands:
 //! - `check`  — parse + resolve; report diagnostics. Exit 1 on errors.
-//! - `verify` — full pairwise/region/bin analysis; human report (default)
-//!   or `--json`; `--fail-on=...` gates CI on physics findings;
-//!   `--no-solver` caps verdicts at POSSIBLY. (The legacy `smash -r`.)
+//! - `verify` — full pairwise/region/bin analysis; grouped human report
+//!   (default), full per-pair proof chains (`--explain`), or `--json`;
+//!   `--fail-on=...` gates CI on physics findings; `--no-solver` caps
+//!   verdicts at POSSIBLY. (The legacy `smash -r`.)
 //! - `run`    — evaluate regions over a JSONL event file: per-region
 //!   pass/fail and bin assignment.
 //! - `dot`    — Graphviz DOT: flowchart (default) or AST (`--ast`), from
@@ -53,6 +54,11 @@ enum Command {
         /// Emit the versioned JSON report instead of the human report.
         #[arg(long)]
         json: bool,
+        /// Full per-pair detail: complete unsat cores, witness values,
+        /// per-axiom statements (the proof chains behind the default
+        /// report's findings).
+        #[arg(long, conflicts_with = "json")]
+        explain: bool,
         /// Disable the solver: interval fast path only, verdicts capped at
         /// POSSIBLY (same degradation as the legacy no-solver mode).
         #[arg(long)]
@@ -90,9 +96,10 @@ fn main() -> ExitCode {
         Command::Verify {
             file,
             json,
+            explain,
             no_solver,
             fail_on,
-        } => cmd::verify::run(&file, json, no_solver, fail_on.as_deref(), verbose),
+        } => cmd::verify::run(&file, json, explain, no_solver, fail_on.as_deref(), verbose),
         Command::Run { file, events, json } => cmd::run::run(&file, &events, json, verbose),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
     };

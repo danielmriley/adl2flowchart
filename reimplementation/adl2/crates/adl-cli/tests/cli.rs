@@ -101,7 +101,25 @@ fn verify_human_disjoint_pt() {
         golden("disjoint_pt.adl").to_str().unwrap(),
     ]);
     assert_eq!(code(&out), 0);
-    insta::assert_snapshot!("verify_human_disjoint_pt", stdout(&out));
+    let body = stdout(&out);
+    // Piped stdout must take the plain (no-ANSI) path — the colored
+    // rendering is tty-only and never snapshot-tested.
+    assert!(!body.contains('\u{1b}'), "piped output must be ANSI-free");
+    insta::assert_snapshot!("verify_human_disjoint_pt", body);
+}
+
+#[test]
+fn verify_explain_disjoint_pt() {
+    // --explain is the full per-pair detail (the pre-grouping format):
+    // complete reasons, unsat cores, per-axiom statements.
+    let out = run(&[
+        "verify",
+        "--explain",
+        "--no-solver",
+        golden("disjoint_pt.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0);
+    insta::assert_snapshot!("verify_explain_disjoint_pt", stdout(&out));
 }
 
 #[test]

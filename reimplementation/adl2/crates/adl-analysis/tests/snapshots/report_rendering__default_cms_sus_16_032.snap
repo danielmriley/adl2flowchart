@@ -1,0 +1,66 @@
+---
+source: crates/adl-analysis/tests/report_rendering.rs
+expression: "render(\"examples/Examples/CMS-SUS-16-032.adl\")"
+---
+ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
+
+== findings ==
+  EMPTY REGIONS (6): compressed, compressednb1, compressednb2, compressednc1, compressednc2, compressednbnc0
+    provably select no events — run --explain for the proof chains
+  BINS noncompressedHT1 [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]: coverage not proven; only 0/6 bin pairs proven disjoint
+    cause: comparison is not linear arithmetic: product of two event quantities (region drops line 79)
+  BINS noncompressedHT2 [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]: coverage not proven; only 0/10 bin pairs proven disjoint
+    cause: comparison is not linear arithmetic: product of two event quantities (region drops line 79)
+  BINS noncompressedHT3 [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]: coverage not proven; only 0/15 bin pairs proven disjoint
+    cause: comparison is not linear arithmetic: product of two event quantities (region drops line 79)
+  ENCODING GAP 4 regions below full encoding: noncompressed{,HT1,HT2,HT3}
+    dropped (line 79): comparison is not linear arithmetic: product of two event quantities
+
+== regions ==
+  region            leaves  exact  note
+  noncompressed     22/23   no     drops line 79
+  noncompressedHT1  25/26   no     drops line 79
+  noncompressedHT2  25/26   no     drops line 79
+  noncompressedHT3  24/25   no     drops line 79
+  compressed        27/27   yes    EMPTY — provably selects no events
+  compressednb1     29/29   yes    EMPTY — provably selects no events
+  compressednb2     28/28   yes    EMPTY — provably selects no events
+  compressednc1     29/29   yes    EMPTY — provably selects no events
+  compressednc2     28/28   yes    EMPTY — provably selects no events
+  compressednbnc0   28/28   yes    EMPTY — provably selects no events
+
+== verdict matrix ==
+  D disjoint   O overlapping   s subset (overlap)   ? possibly   U unknown   E empty region
+   1 noncompressed     ·
+   2 noncompressedHT1  ?  ·
+   3 noncompressedHT2  ?  ?  ·
+   4 noncompressedHT3  ?  D  D  ·
+   5 compressed        E  E  E  E  ·
+   6 compressednb1     E  E  E  E  E  ·
+   7 compressednb2     E  E  E  E  E  E  ·
+   8 compressednc1     E  E  E  E  E  E  E  ·
+   9 compressednc2     E  E  E  E  E  E  E  E  ·
+  10 compressednbnc0   E  E  E  E  E  E  E  E  E  ·
+                       1  2  3  4  5  6  7  8  9
+
+== pairwise (45 pairs, 4 groups) ==
+  39 pairs involving a provably-empty region — PROVEN DISJOINT (trivially: one side selects no events)
+  4 pairs POSSIBLY OVERLAPPING — an encoding gap blocks both a disjointness and an overlap proof
+    noncompressed–noncompressedHT1, noncompressed–noncompressedHT2, noncompressed–noncompressedHT3
+      noncompressedHT1–noncompressedHT2
+  noncompressedHT1 vs noncompressedHT3: PROVEN DISJOINT — core: noncompressedHT1 line 83 ∧ noncompressedHT3 line 93
+  noncompressedHT2 vs noncompressedHT3: PROVEN DISJOINT — core: noncompressedHT2 line 88 ∧ noncompressedHT3 line 93
+
+== bins ==
+  noncompressedHT1  [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]  4 bins  disjoint  0/6   coverage NOT PROVEN
+  noncompressedHT2  [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]  5 bins  disjoint  0/10  coverage NOT PROVEN
+  noncompressedHT3  [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]  6 bins  disjoint  0/15  coverage NOT PROVEN
+  compressednb1     [MET]                                       5 bins  disjoint 10/10  coverage proven
+  compressednc1     [MET]                                       5 bins  disjoint 10/10  coverage proven
+  compressednbnc0   [MET]                                       5 bins  disjoint 10/10  coverage proven
+
+== axioms used ==
+  ORD×12, SZ0×9, SUB×5, UNI×3, NNEG×10, TAG×4, EPRED×4, IDOM×4
+  assuming: collections pT-ordered (ORD); take = filter (SUB, EPRED); union = concat/dedup (UNI); tags boolean; discriminants excluded by exact-name rule (TAG); ORD + SUB (IDOM)
+
+summary: 45 pairs — 41 proven disjoint, 0 proven overlapping, 4 possibly overlapping, 0 unknown

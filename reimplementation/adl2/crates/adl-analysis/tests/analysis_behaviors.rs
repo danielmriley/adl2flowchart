@@ -103,8 +103,8 @@ region SR_y
 #[test]
 fn opaque_pt_in_impossible_ratio_proves_region_empty() {
     use adl_analysis::EmptyStatus;
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/opaque_pt_ratio_empty.adl");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opaque_pt_ratio_empty.adl");
     let src = std::fs::read_to_string(&path).expect("fixture readable");
     let ext = ExtDecls::legacy();
     let r = analyze_source(
@@ -129,13 +129,10 @@ fn opaque_pt_in_impossible_ratio_proves_region_empty() {
         "impossible ratio over a pt-named opaque must prove EMPTY"
     );
     assert!(
-        impossible
-            .empty_core
-            .iter()
-            .any(|c| {
-                let h = c.human();
-                h.contains("NNEG") && h.contains("pT(...)")
-            }),
+        impossible.empty_core.iter().any(|c| {
+            let h = c.human();
+            h.contains("NNEG") && h.contains("pT(...)")
+        }),
         "the emptiness core must rest on the NNEG opaque-pt instance: {:?}",
         impossible.empty_core
     );
@@ -166,6 +163,15 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         let b = run(&src);
         assert_eq!(a.to_json(), b.to_json(), "{name}: deterministic JSON");
         assert_eq!(a.human(), b.human(), "{name}: deterministic report");
+        assert_eq!(
+            a.human_default(false),
+            b.human_default(false),
+            "{name}: deterministic default report"
+        );
+        assert!(
+            !a.human_default(false).contains('\u{1b}'),
+            "{name}: plain default report must carry no ANSI escapes"
+        );
         // No-solver degradation: nothing stronger than interval proofs.
         for p in &a.pairwise {
             assert_ne!(

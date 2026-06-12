@@ -16,6 +16,7 @@
 pub mod encode;
 mod engine;
 pub mod interval;
+mod render;
 pub mod report;
 pub mod witness;
 

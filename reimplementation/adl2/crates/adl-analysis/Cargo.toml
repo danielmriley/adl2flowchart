@@ -28,3 +28,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 adl-difftest.workspace = true
+insta.workspace = true

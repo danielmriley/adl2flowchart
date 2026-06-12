@@ -1,7 +1,12 @@
 //! `smash2 verify` — the legacy `smash -r` equivalent: full analysis with
-//! a human report (default) or versioned JSON (`--json`). `--no-solver`
-//! caps verdicts at POSSIBLY; `--fail-on=overlap|gap|empty|non-exact` gates
-//! the exit code on physics findings.
+//! a human report (default), full per-pair proof chains (`--explain`),
+//! or versioned JSON (`--json`). `--no-solver` caps verdicts at POSSIBLY;
+//! `--fail-on=overlap|gap|empty|non-exact` gates the exit code on physics
+//! findings.
+//!
+//! The default report uses ANSI color only when stdout is a tty and
+//! `NO_COLOR` is unset, so piped/redirected output (and every
+//! determinism test) takes the plain path.
 //!
 //! Exit codes: 1 on parse/sema errors (the analysis did not run); 4 when a
 //! selected `--fail-on` finding fired (SPEC_ANALYSIS §6); else 0. The report
@@ -17,6 +22,7 @@ use std::process::ExitCode;
 pub fn run(
     file: &Path,
     json: bool,
+    explain: bool,
     no_solver: bool,
     fail_on: Option<&str>,
     verbose: bool,
@@ -62,8 +68,12 @@ pub fn run(
     // The report is the machine output: JSON or human, to stdout.
     if json {
         println!("{}", report.to_json());
-    } else {
+    } else if explain {
         print!("{}", report.human());
+    } else {
+        use std::io::IsTerminal as _;
+        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        print!("{}", report.human_default(color));
     }
 
     // Internal diagnostics (witness re-validation failures) are bugs, not

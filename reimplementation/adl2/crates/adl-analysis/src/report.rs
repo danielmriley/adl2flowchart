@@ -263,7 +263,20 @@ impl Report {
         serde_json::to_string_pretty(self).expect("report serializes")
     }
 
-    /// Deterministic human report.
+    /// The default human report: findings first, aligned region table,
+    /// verdict matrix (3–20 regions), pairwise verdicts grouped by
+    /// identical (verdict, reason-signature). Deterministic; `color`
+    /// adds ANSI styling (callers must pass `false` off-tty / under
+    /// `NO_COLOR`). Full per-pair detail stays in [`Report::human`]
+    /// (`--explain`).
+    #[must_use]
+    pub fn human_default(&self, color: bool) -> String {
+        crate::render::render_default(self, color)
+    }
+
+    /// Deterministic human report with full per-pair detail (complete
+    /// unsat cores, witnesses, per-axiom statements) — the `--explain`
+    /// rendering.
     #[must_use]
     pub fn human(&self) -> String {
         use std::fmt::Write as _;
@@ -397,7 +410,7 @@ impl Report {
             counts.2,
             counts.3
         );
-        s
+        crate::render::fix_negative_zero(&s)
     }
 }
 

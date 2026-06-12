@@ -902,3 +902,55 @@ comparisons instead of formula leaves.
   CMS-SUS-16-042-class opaque-witness overlap verdicts — smash2's
   POSSIBLY is correct; legacy's PROVEN OVERLAPPING rests on free opaque
   assignments (the negative-pT failure mode); not 'legacy-better'.
+
+## 2026-06-12 — `verify` default report redesign: findings-first, verdict matrix, grouped pairwise (`--explain` for detail)
+
+The default human report on a 10-region file was ~90 near-identical
+lines (CMS-SUS-16-032: 41 PROVEN DISJOINT lines, 24 of them the same
+b-tag interval reason). Redesigned `Report::human_default` (new
+`adl-analysis/src/render.rs`); the old full rendering is unchanged as
+`Report::human` and now sits behind `smash2 verify --explain`.
+
+- **findings first**: provably-empty regions (one line + 'run --explain
+  for the proof chains'), bin sets with unproven coverage/disjointness
+  with a derived cause (region's dropped-leaf reason / no solver),
+  regions below full encoding grouped by identical (line, reason).
+- **regions** as an aligned table: name | leaves | exact | note
+  (EMPTY / drops line N / dual-encoded leaves).
+- **verdict matrix** for 3..=20 regions: lower triangle, one letter per
+  pair (D/O/s/?/U, E when a side is provably empty), declaration order,
+  column-index footer; skipped outside that range (summary counts cover
+  it).
+- **pairwise grouped**: pairs merge on identical (verdict, subset
+  pattern, reason signature) where the signature replaces the pair's own
+  region names with placeholders (longest-name-first so prefix names
+  can't mangle). Trivially-disjoint pairs touching a provably-empty
+  region collapse into one bullet. Group membership renders as a clique
+  ('all pairs among …'), a cross product ('X{,a,b} vs Y{…}'), or the
+  full wrapped pair list — counts partition the pair total exactly
+  (debug_assert), nothing is dropped. Singletons print one line with the
+  short reason. First-occurrence group order ⇒ deterministic.
+- **axioms** one line (`ID×count`) + one deduped 'assuming:' line;
+  summary one line.
+- **[-0, -0] fix**: `fix_negative_zero` rewrites standalone `-0` tokens
+  to `0` in *both* human renderings (token-aware: `-0.5`, `10-0`,
+  `1e-05` untouched). JSON is byte-unchanged (verified: `--json` output
+  diffed against a HEAD build on 032 + collection_quant — identical),
+  so the engine's reason strings keep their `-0` there.
+- **color**: ANSI bold heads + colored verdict letters/words only when
+  stdout is a tty AND `NO_COLOR` is unset (`IsTerminal`); piped output
+  and all tests take the plain path (verified under `script(1)` both
+  ways).
+- CLI: `verify --explain` (conflicts with `--json`); `--verbose` stays
+  timing/backend stderr only.
+
+Result: 032 92 → 62 lines (and the 24-line b-tag wall is now inside the
+one empty-region bullet), 033 180 → 65, tiny files ±0. Tests: new
+solver-on snapshots `report_rendering__default_cms_sus_16_032/033/
+reject_or_band` (solver label normalized to `<backend>`; plain path
+asserted ANSI-free + deterministic in-test); corpus determinism test
+extended to `human_default`; CLI `verify_human_disjoint_pt` re-recorded
+to the new layout and new `verify_explain_disjoint_pt` snapshot is
+byte-identical to the previous default snapshot; render unit tests for
+`-0` tokenization and name compression. Golden battery untouched and
+green (it pins `Report::human`, which did not change shape).

@@ -13,8 +13,8 @@
 use crate::dump::RenderCtx;
 use crate::ext::ExtDecls;
 use crate::hir::{
-    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirObject, HirRegion,
-    HirRegionStmt,
+    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
+    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec,
 };
 use crate::intern::{Symbol, SymbolTable};
 use crate::quantity::{
@@ -22,8 +22,8 @@ use crate::quantity::{
     QuantityArg, QuantityId, QuantityTable, ScalarSource,
 };
 use adl_syntax::ast::{
-    self, Arg, BinBody, BinOp, CmpOp, Expr, IndexVal, ObjectKw, ObjectStmt, RegionStmt, Section,
-    TakeSource, UnaryOp,
+    self, Arg, BinBody, BinOp, CmpOp, Expr, HistoArg, IndexVal, ObjectKw, ObjectStmt, RegionKw,
+    RegionStmt, Section, TakeSource, UnaryOp,
 };
 use adl_syntax::diag::Diagnostic;
 use adl_syntax::span::Span;
@@ -101,6 +101,14 @@ struct Resolver<'a> {
     regions: Vec<HirRegion>,
     regions_by_key: HashMap<String, usize>,
     region_name_order: Vec<Symbol>,
+    histolist_regions: Vec<bool>,
+    /// Histo statements seen during region resolution; their fill
+    /// expressions resolve AFTER all regions so histogram-only
+    /// quantities intern at the end of the table (membership interning
+    /// order — and every report keyed on it — is unchanged by histos).
+    pending_histos: Vec<(usize, &'a RegionStmt)>,
+    histos: Vec<HirHisto>,
+    weights: Vec<HirWeight>,
 
     diags: Vec<Diagnostic>,
     warned_names: HashSet<String>,
@@ -153,6 +161,10 @@ impl<'a> Resolver<'a> {
             regions: Vec::new(),
             regions_by_key: HashMap::new(),
             region_name_order: Vec::new(),
+            histolist_regions: Vec::new(),
+            pending_histos: Vec::new(),
+            histos: Vec::new(),
+            weights: Vec::new(),
             diags: Vec::new(),
             warned_names: HashSet::new(),
         }
@@ -167,6 +179,32 @@ impl<'a> Resolver<'a> {
         }
         for i in 0..self.ast_regions.len() {
             self.resolve_region(i);
+        }
+        self.resolve_pending_histos();
+    }
+
+    /// Resolve histo fill expressions last (see `pending_histos`).
+    fn resolve_pending_histos(&mut self) {
+        let pending = std::mem::take(&mut self.pending_histos);
+        let ctx = Ctx::default();
+        for (region, stmt) in pending {
+            let RegionStmt::Histo {
+                name,
+                title,
+                args,
+                span,
+            } = stmt
+            else {
+                unreachable!("pending_histos holds only Histo statements");
+            };
+            let spec = self.resolve_histo_spec(args, &ctx);
+            self.histos.push(HirHisto {
+                region,
+                name: name.name.clone(),
+                title: title.value.clone(),
+                spec,
+                span: *span,
+            });
         }
     }
 
@@ -208,6 +246,9 @@ impl<'a> Resolver<'a> {
             defines,
             regions: self.regions,
             region_name_order: self.region_name_order,
+            histolist_regions: self.histolist_regions,
+            histos: self.histos,
+            weights: self.weights,
             diags: self.diags,
         }
     }
@@ -669,9 +710,26 @@ impl<'a> Resolver<'a> {
                     };
                     stmts.push(HirRegionStmt::Trigger(self.resolve_expr(cond, &tctx)));
                 }
-                RegionStmt::Histo { span, .. } => stmts.push(Self::non_membership("histo", *span)),
-                RegionStmt::Weight { span, .. } => {
+                RegionStmt::Histo { span, .. } => {
+                    stmts.push(Self::non_membership("histo", *span));
+                    self.pending_histos.push((idx, stmt));
+                }
+                RegionStmt::Weight { name, value, span } => {
                     stmts.push(Self::non_membership("weight", *span));
+                    let value = match value {
+                        ast::WeightValue::Num(n) => HirWeightValue::Num(n.canon()),
+                        ast::WeightValue::Expr(e) => HirWeightValue::Other(match e.as_ref() {
+                            Expr::Ident(id) => format!("identifier `{}`", id.name),
+                            Expr::Call { name, .. } => format!("function call `{}(…)`", name.name),
+                            _ => "expression argument".to_owned(),
+                        }),
+                    };
+                    self.weights.push(HirWeight {
+                        region: idx,
+                        name: name.name.clone(),
+                        value,
+                        span: *span,
+                    });
                 }
                 RegionStmt::Save { span, .. } => stmts.push(Self::non_membership("save", *span)),
                 RegionStmt::Print { span, .. } => stmts.push(Self::non_membership("print", *span)),
@@ -693,6 +751,8 @@ impl<'a> Resolver<'a> {
             span: region.span,
         });
         self.region_name_order.push(name);
+        self.histolist_regions
+            .push(region.keyword == RegionKw::HistoList);
         self.regions_by_key
             .entry(region.name.name.to_ascii_lowercase())
             .or_insert(idx);
@@ -704,6 +764,75 @@ impl<'a> Resolver<'a> {
             tag: Fragment::InFragment,
             span,
         }
+    }
+
+    /// Classify a `histo` argument list (PLAN Phase 9). Only the 1-D
+    /// uniform form `n, lo, hi, expr` is accumulated; 2-D and
+    /// variable-bin forms are recorded as deferred.
+    fn resolve_histo_spec(&mut self, args: &[HistoArg], ctx: &Ctx) -> HistoSpec {
+        match args {
+            [
+                HistoArg::Num(n),
+                HistoArg::Num(lo),
+                HistoArg::Num(hi),
+                HistoArg::Expr(e),
+            ] => {
+                let Some(nbins) = Self::bin_count(n) else {
+                    return HistoSpec::Unsupported(format!(
+                        "bin count `{}` is not a positive integer (max 1000000)",
+                        n.canon()
+                    ));
+                };
+                HistoSpec::Uniform1D {
+                    nbins,
+                    lo: lo.canon(),
+                    hi: hi.canon(),
+                    expr: self.resolve_expr_quiet(e, ctx),
+                }
+            }
+            [HistoArg::NumList(_), HistoArg::Expr(_)] => {
+                HistoSpec::Unsupported("variable-bin histogram (deferred)".to_owned())
+            }
+            [
+                HistoArg::Num(_),
+                HistoArg::Num(_),
+                HistoArg::Num(_),
+                HistoArg::Num(_),
+                HistoArg::Num(_),
+                HistoArg::Num(_),
+                HistoArg::Expr(_),
+                HistoArg::Expr(_),
+            ] => HistoSpec::Unsupported("2-D histogram (deferred)".to_owned()),
+            _ => HistoSpec::Unsupported("unrecognized `histo` argument shape".to_owned()),
+        }
+    }
+
+    /// Bin count: a positive integer literal, capped so the accumulator
+    /// never allocates absurdly (1e6 bins is far beyond any real use).
+    fn bin_count(n: &ast::NumLit) -> Option<u32> {
+        if n.neg || n.is_real {
+            return None;
+        }
+        n.raw
+            .parse::<u32>()
+            .ok()
+            .filter(|v| (1..=1_000_000).contains(v))
+    }
+
+    /// Resolve a histogram fill expression without contributing sema
+    /// diagnostics: histograms have no membership effect, so their
+    /// problems are reported (once) by the accumulator at run time via
+    /// the node's `Unsupported` tags. Defines and objects are already
+    /// resolved before regions, so no legitimate diagnostic can be
+    /// swallowed here; the warn-once name set is restored so a later
+    /// membership statement still warns.
+    fn resolve_expr_quiet(&mut self, e: &Expr, ctx: &Ctx) -> HNode {
+        let n_diags = self.diags.len();
+        let warned = self.warned_names.clone();
+        let node = self.resolve_expr(e, ctx);
+        self.diags.truncate(n_diags);
+        self.warned_names = warned;
+        node
     }
 
     // ---- expressions -------------------------------------------------------

@@ -32,8 +32,8 @@ pub use dump::{hir_dump, quantity_table_dump};
 pub use objects::object_table;
 pub use ext::ExtDecls;
 pub use hir::{
-    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirObject, HirRegion,
-    HirRegionStmt,
+    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
+    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec,
 };
 pub use intern::{Symbol, SymbolTable};
 pub use quantity::{

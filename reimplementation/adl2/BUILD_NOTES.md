@@ -1015,3 +1015,304 @@ the transitional oracle); DECISIONS ADR-005 mitigation now rests on the
 spec + property tests + collaborator review; PLAN Phase 0 / risk rows and
 PHASE0_RESOLUTIONS reframed as collaborator-decision / standing-default
 items. The conservative Phase-0 defaults are unchanged.
+
+## 2026-06-12 — Phase 9: histogram accumulation (`smash2 run --histos`)
+
+Ratified decisions implemented as specified: (1) weighted moments
+fTsumw/fTsumw2/fTsumwx/fTsumwx2 accumulate AT FILL TIME, in-range fills
+only (ROOT `GetStats` convention); (3) `entries` is the raw fill count;
+naming/file decisions (2)(4)(5)(6) land with the `rootfile` crate —
+`histos.json` carries separate `name` + `region` fields so the writer can
+emit the flat `REGION_histo` names.
+
+- **adl-sema** (DEVIATION: task named adl-interp/adl-difftest/adl-cli,
+  but histo/weight payloads must resolve where the HIR is built; minimal
+  additive extension): `HirHisto`/`HistoSpec` (`Uniform1D` |
+  `Unsupported(reason)` for 2-D, variable-bin, malformed shapes, bin
+  counts outside 1..=1e6), `HirWeight`/`HirWeightValue` (`Num` canonical
+  text | `Other(description)`), and `Hir.histos`/`Hir.weights`/
+  `Hir.histolist_regions`. `histo`/`weight` region statements keep their
+  `NonMembership` markers — every existing consumer (formula, analysis,
+  viz, dumps) is untouched. Two output-protecting choices, both verified
+  byte-identical against a HEAD build (`verify` default + `--json` on
+  ex02_histograms, ex10_tableweight, CMS-SUS-21-006_TreeMaker2result,
+  CMS-SUS-16-032): histo fill expressions resolve AFTER all regions, so
+  histogram-only quantities intern at the end of the table (a histoList
+  before a region had shifted `shared_dimensions` order otherwise); and
+  histo-expression resolution is diagnostic-quiet (`resolve_expr_quiet`
+  drops new diags, restores the warn-once set — `Unsupported` node tags
+  carry the reasons; the run-time accumulator reports them honestly, and
+  the corpus no-error gate stays meaningful). adl-formula's hand-built
+  `Hir` test literal gained the three fields (test-only touch).
+- **adl-interp** `src/histo.rs`: `Hist1D` (per-bin sumw/sumw2,
+  under/overflow with own w2, raw entries, fill-time moments; `x < lo`
+  underflows, `x >= hi` overflows, x == lo lands in bin 0, fp guard at
+  the top edge) + `HistoSet` (instantiation, region-gated fills via
+  `Interp::eval_num`, weight products, deterministic diagnostics,
+  canonical JSON). **ndhistogram 0.13 NOT used** (decision left to
+  implementer): it tracks neither fill-time moments nor raw entry counts
+  nor flow-bin sumw2 in accessible form, so we would have wrapped every
+  part of it; the hand-rolled accumulator is ~60 lines and is itself the
+  spec. `histos.json` field order is fixed (name, title, region, nbins,
+  lo, hi, sumw, sumw2, underflow{w,w2}, overflow{w,w2}, entries, tsumw,
+  tsumw2, tsumwx, tsumwx2) via a small ordered-field writer (serde_json's
+  map reorders keys); floats print as serde_json/ryu shortest-roundtrip.
+  Top level is `{"histograms": [...]}` for v2 extensibility.
+- **Semantics** (documented choices): fills happen on FULL region
+  acceptance; weight = product of the region's own numeric `weight`
+  statements (non-numeric arg → diagnostic, 1.0; inherited regions'
+  weights do NOT apply); histoList blocks are templates instantiated
+  into each referencing selection region — a repeated reference fills
+  once with a diagnostic (mid-selection fill points deferred, matches
+  the ratified per-statement scope); plain region inheritance does not
+  import histograms; out-of-fragment/2-D/variable-bin → one diagnostic,
+  histogram absent from output; per-event soft non-values and eval
+  errors are counted and summarized (no entry recorded — no value seen).
+- **adl-cli**: `run --histos DIR` writes `DIR/histos.json` (pretty form,
+  trailing newline); `run --json` appends one compact
+  `{"histograms":[...]}` line ONLY when the file declares histograms —
+  no-histo files keep byte-exact pre-Phase-9 output (existing
+  `run_json_bins_partition` snapshot unchanged). Histogram diagnostics
+  go to stderr; stdout stays machine-clean. New `CliError::Write`.
+- **Tests** (392 passed / 0 failed; clippy -D warnings clean):
+  adl-interp `histo_semantics` — hand-computed fill/flow/moments incl.
+  weighted-mean check, weight product/zero-weight/non-numeric-weight,
+  rejected events, honesty skips, histoList instantiation + dedup,
+  inheritance non-import, canonical JSON exact-string + zero-event edge,
+  pretty/compact agreement + determinism; adl-difftest `histo_golden` —
+  ex02_histograms over the committed seeded fixture
+  (`tests/fixtures/ex02_events.jsonl`, 200 events, regenerate
+  byte-identically with `scripts/gen_ex02_events.py`, hand-rolled LCG
+  seed 20260612): histos.json + diagnostics snapshots, rerun
+  byte-determinism, entries==pass-count and Σw/tsumw consistency
+  cross-checks (baseline 32/200, singlelepton 11/200); adl-cli —
+  `--histos` file snapshot + cross-run byte-identity, `--json` trailing
+  line snapshot, diagnostics-to-stderr split.
+
+## 2026-06-12 — Phase 9: `rootfile` crate (pure-Rust ROOT TH1D writer, v1)
+
+New standalone workspace member `crates/rootfile` (library only, zero
+dependencies; smash2 wiring is a later task). Implements SPEC_ROOT_WRITER.md
+v1 exactly: small-format TFile header (fVersion 62400, fBEGIN 100,
+fUnits 4, fCompress 100 — uproot's `ZLIB(0).code` byte, copied), TKey v4
+records with cycle 1, name record + root TDirectory header (class_version
+5, 12 B small-format padding), uncompressed records only
+(`fObjlen == fNbytes - fKeylen`), TDatime packing (UTC; ROOT uses local
+time — cosmetic, injectable via `with_datime`), vendored uproot
+TStreamerInfo blob, flat region-prefixed names (decision 2), terminal
+free-list segment `[fEND, kStartBigFile)`. Public API per the ratified
+sketch: `RootFile::create().add_th1d(name, &H1Spec { title, nbins, lo,
+hi, sumw, sumw2, under, over, entries, tsumw, tsumw2, tsumwx, tsumwx2
+})?.finish(path)`; plus `to_bytes` (in-memory), `with_datime`/`with_uuids`
+(byte-stable output), and a strict verification reader (`rootfile::reader`)
+that re-parses our own bytes and checks every framing/key invariant.
+
+- **Root Cargo.toml**: added the member AND the
+  `rootfile = { path = ... }` workspace dependency line (the file's own
+  comment says path deps are wired at the root so later phases never edit
+  it; one line beyond the strict "member list only" instruction).
+  `.gitignore` gained `/.venv-uproot`. No other crate touched.
+- **uproot venv (decision 4, network probe outcome)**: network was
+  available; created `.venv-uproot` (gitignored) at the workspace root
+  with pinned **uproot 5.7.4 + hist 2.10.1** on Python 3.12.3. The oracle
+  ran for real in this build — not the fallback path.
+- **Vendored fixtures** (`crates/rootfile/fixtures/`, see PROVENANCE.md
+  there for sha256s + regeneration commands): `streamerinfo_th1d.bin`
+  (StreamerInfo record data bytes from an uproot-written reference file,
+  `include_bytes!`-ed into the crate — uproot itself hardcodes these
+  blobs, no checksum algorithm implemented, per spec §2),
+  `reference_th1d_payload.bin` (uproot's TH1D record payload for the
+  pinned `h_met` histogram), `reference.root` (whole reference file, for
+  `tools/dissect.py` archaeology). Generators checked in under
+  `crates/rootfile/tools/` (`make_reference.py`,
+  `extract_streamerinfo.py`, `dissect.py`, `check_with_uproot.py`).
+- **Byte-diff result**: our TH1D record payload is **byte-identical** to
+  uproot's for the identical histogram (offline unit test
+  `payload_matches_uproot_reference_bytes` pins serializer == fixture;
+  env-gated oracle test regenerates the reference with uproot at test
+  time and pins fixture == fresh uproot output — the chain closes).
+  Decoded-and-matched quirks: TH1's TNamed TObject fBits `0x03000008`
+  (kMustCleanup on direct bases), axes `0x03000000`, fFunctions TList
+  fBits `0x03010000` (the `|(1<<16)` quirk) and **no class tag** (plain
+  byte-count + version framing, not object-any), 1-byte speed bump after
+  fBufferSize, dummy 1-bin y/z axes on [0,1].
+- **Intentional whole-file divergences from uproot** (readers use
+  pointers, not physical order; all verified readable by uproot):
+  (a) no dead 1024 B initial-allocation StreamerInfo record, hence
+  **nfree=1** with a single terminal free segment (uproot fresh files
+  carry a freed region + nfree=2); (b) keys-list record exactly sized
+  (uproot over-allocates 256 B and zero-pads); (c) record order is
+  name → TH1Ds → StreamerInfo → keys list → free list (uproot's cascade
+  interleaves differently). Plus UUIDs/datime differ by nature
+  (injectable for determinism).
+- **Tests** (all green; `cargo test --workspace` 0 failed, clippy
+  `--workspace --all-targets -D warnings` clean): unit — pascal-string
+  short/long/255-boundary, frame byte-count arithmetic, TArrayD layout,
+  TDatime against the reference file's `0x7d9902ed` (2026-06-12
+  16:11:45) + civil-date epoch/leap vectors, keylen and full TKey bytes
+  vs uproot's `h_met` key hex, payload-vs-fixture gold test, spec
+  validation rejections, flow-bin placement; integration
+  (`tests/structure.rs`, offline) — full container re-parse with header
+  pins (62400/100/100/nfree 1/fNbytesName 64), per-key
+  uncompressed-record arithmetic, StreamerInfo/free-list header pointer
+  agreement, keys-list contents (histos only, no StreamerInfo entry),
+  TH1D member round-trip, byte-determinism with pinned datime/UUIDs,
+  empty + multi-histo files, `finish` basename-as-TFile-name, >255-char
+  names; oracle (`tests/uproot_oracle.rs`, probes `$ROOTFILE_PYTHON` →
+  `.venv-uproot` → `python3`, loud SKIP if absent,
+  `ROOTFILE_REQUIRE_UPROOT=1` makes absence fatal for CI) — fixture
+  drift vs freshly generated uproot reference, full member read-back of
+  our file via `check_with_uproot.py` (values/variances/errors/edges/
+  fEntries/stats array/fNcells/axis members/`to_hist` round-trip,
+  exact comparisons), multi-histogram key listing + per-key read-back.
+- **Deferred per spec**: ZLIB compression, per-region TDirectories,
+  TH2D, env-gated `root`/`hadd` binary smoke tests (no ROOT binary on
+  this machine; the spec lists them as env-gated extras — first run will
+  need `command -v root` wiring when a ROOT install is available).
+
+## 2026-06-12 — Phase 9: `histos.json` bridge renderers (`run --histos` → .C/.py/CSV/SVG)
+
+New module `crates/adl-cli/src/cmd/bridges.rs` — pure, byte-deterministic
+renderers of the in-memory `HistoSet` (the same accumulator that writes
+`histos.json`, so the bridges and the canonical JSON cannot disagree). All
+four formats land next to `histos.json` when `smash2 run --histos DIR`
+runs. Touched only adl-cli + its tests (the `rootfile` binary writer is the
+separate sibling task above; these renderers are the no-binary-dependency
+collaborator path).
+
+- **make_histos.C** (always emitted) — self-contained ROOT macro
+  (`root -l -b -q make_histos.C` → `histos.root`). Per histogram: `new
+  TH1D(flat_name, title, n, lo, hi)`, `Sumw2()` first, then
+  `SetBinContent`/`SetBinError` over bins **0 (underflow) … N+1
+  (overflow)** with `error = sqrt(sumw2)`, `SetEntries(raw_count)`, and
+  `Double_t stats[4] = {tsumw, tsumw2, tsumwx, tsumwx2}; PutStats(stats)`
+  (the SPEC_ROOT_WRITER §4 in-range fill-time moments — `GetMean`/`hadd`
+  stay exact). Titles C-escaped (quotes/backslashes/controls).
+- **to_root.py** (always emitted) — uproot 5 + numpy script
+  (`python3 to_root.py`). Builds each TH1D via
+  `uproot.writing.identify.to_TH1x(fName, fTitle, data, fEntries, fTsumw,
+  fTsumw2, fTsumwx, fTsumwx2, fSumw2, fXaxis=to_TAxis(...))` with
+  `data`/`fSumw2` length `nbins+2` in TArrayD flow order
+  `[underflow, bin1.., overflow]`, so entries + the four stats moments are
+  set exactly (the high-level `hist` path drops raw entry counts /
+  fill-time moments). Signatures verified against current uproot5
+  `identify.py`. Titles Python-escaped.
+- **--csv** — one `<flat-name>.csv` per histogram,
+  `bin_lo,bin_hi,content,error` rows for the **in-range** bins (flow lives
+  in the JSON; CSV is the visible-axis quick table); header line included.
+- **--svg** — one hand-rolled 640×400 step-plot per histogram (no plotting
+  dep): filled bin-top polygon, y scaled to the tallest in-range bin, axis
+  lines + ymax label, caption `flat_name [lo, hi) xN entries=E` and an
+  `underflow=…/overflow=…` note when flow is nonzero. Coordinates trimmed
+  to ≤3 decimals, `-0` normalized.
+- **Naming**: flat region-prefixed v1 names (`<region '/'→'_'>_<histo>`,
+  e.g. `baseline_hmet`, ratified decision 2) — identical to what the
+  `rootfile` writer uses, so a future native `.root` and these bridges
+  agree on object names and all three are hadd-mergeable. File stems sanitize
+  to `[A-Za-z0-9._-]`.
+
+CLI: `run --histos DIR` now writes histos.json **+ make_histos.C +
+to_root.py** unconditionally; `--csv`/`--svg` are additive flags that clap
+`requires`-gates to `--histos` (bare `--csv` → usage exit 2). All histogram
+diagnostics stay on stderr; stdout machine-clean. **`run --json` no-histo
+output and the histos.json bytes are unchanged** (existing
+`run_json_bins_partition` / `run_histos_json_file` snapshots did not move);
+`verify` default + `--json` untouched.
+
+- **Oracles run on this machine** (probed; recorded per the brief):
+  - `python3 + uproot`: **RAN.** `root` not on PATH → ROOT oracle SKIPPED.
+  - The repo carries a gitignored `.venv-uproot` (uproot **5.7.4**, numpy,
+    hist — created by the sibling rootfile task). Pointed the env-gated
+    uproot test's PATH at it: the generated `to_root.py` executed,
+    produced a valid `histos.root`, and uproot read it back with
+    `fEntries=32`, `baseline_hnjets` bin4=10, errors=sqrt(sumw2),
+    `fTsumwx=136`/`fTsumwx2=610`, axis [0,20) ×20, streamers present —
+    full data-fidelity confirmation of the bridge, not just a syntax check.
+- **Env-gated tests** (`crates/adl-cli/tests/cli.rs`): `--csv`/`--svg` are
+  opt-in via `SMASH2_RUN_ROOT_ORACLE=1` / `SMASH2_RUN_UPROOT_ORACLE=1`
+  (loud SKIP otherwise, so default CI does not need ROOT/uproot installed);
+  each builds the bridge under its tool and reads a known
+  bin/entries/value back. A tiny dependency-free `which()` does PATH
+  lookup.
+- **Snapshot tests** on the ex02 golden (`make_histos.C`, `to_root.py`,
+  `baseline_hnjets.csv` + negative-lo `baseline_hjet1eta.csv`,
+  `baseline_hnjets.svg`), a cross-run byte-identity test over .C/.py/CSV/SVG,
+  the `--csv`-without-`--histos` usage-error, and a flow-bin assertion
+  battery (overflow bin N+1, weighted `sqrt(4)=2` errors, raw entries,
+  PutStats moments, SVG overflow caption) using the tiny weighted fixture.
+  The ex02 events come from the sibling `adl-difftest` fixture
+  (`tests/fixtures/ex02_events.jsonl`) via a relative-path helper.
+
+### Verification (run before returning)
+
+- `cargo build --workspace` — green.
+- `cargo test --workspace` — green, **424 passed / 0 failed** (includes the
+  sibling rootfile + adl-sema/adl-interp Phase-9 work that landed
+  concurrently; the adl-cli bridge suite is 32 tests).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt -p adl-cli --check` — clean.
+- uproot oracle (PATH → `.venv-uproot`) — ran, read-back exact.
+
+### Notes / boundary
+
+- Brief said "adl-cli or adl-viz — your call": chose **adl-cli**, where
+  `run --histos` already lives and adl-interp's `HistoSet` is in scope; no
+  reason to route bridge bytes through adl-viz.
+- Mid-session race: the sibling `rootfile` crate was being written
+  (incomplete `Cargo.toml`/missing `lib.rs`) and briefly made the whole
+  workspace manifest unloadable; did **not** touch it (boundary held — a
+  stub write was correctly blocked). It landed its `lib.rs` shortly after
+  and the full-workspace gate then passed. No deviation on my side.
+
+## 2026-06-12 — Phase 9 integration pass (cross-crate check, oracle audit)
+
+- **No cross-crate breaks found.** The two parallel Phase-9 tasks (rootfile
+  crate; adl-cli bridge renderers) compose cleanly: `cargo build
+  --workspace`, `cargo test --workspace` (424 passed / 0 failed),
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo fmt -p rootfile -p adl-cli --check` all green from a fresh pass.
+  Determinism tests re-run individually and green:
+  `verify_report_is_byte_identical_across_runs`,
+  `run_histos_writes_canonical_json_deterministically`,
+  `run_histos_bridges_are_byte_identical_across_runs`,
+  `dot_is_byte_identical_across_runs`,
+  rootfile `builds_are_byte_deterministic_when_pinned`.
+- **Oracle audit (honest status).** The rootfile uproot oracle did
+  genuinely execute, not skip: re-run with `ROOTFILE_REQUIRE_UPROOT=1`
+  (which turns the loud SKIP into a panic) — all 3 tests pass
+  (`uproot_reads_back_our_file_exactly`,
+  `uproot_lists_and_reads_multi_histo_file`,
+  `vendored_fixtures_match_freshly_generated_uproot_reference`); the
+  probed interpreter `<workspace>/.venv-uproot/bin/python` imports
+  uproot 5.7.4. ROOT binary still absent on this machine → root/hadd
+  smoke tests remain unexercised (env-gated, as designed).
+- **Housekeeping:** deleted a stray untracked
+  `crates/adl-sema/crates/adl-sema/tests/snapshots/` tree (5 insta
+  `.snap.new` files written by a builder running tests with cwd inside
+  the crate). Verified each body byte-identical to the accepted
+  snapshot before deleting — no hidden drift.
+- **Open integration gap (deliberate, not done here):** ratified decision
+  6 says smash2 depends on `rootfile`. The crate is a workspace member
+  and in `[workspace.dependencies]`, but adl-cli has no `rootfile` dep
+  yet — `run --histos` emits histos.json + bridges, not a native
+  `histos.root`. Wiring it is a follow-up task (new output file, new
+  snapshots), out of scope for this integration pass.
+
+## 2026-06-12 — Phase 9 gate fix: deliverables committed to git
+
+- Independent gate flagged that all Phase-9 work (the `rootfile` crate
+  incl. `fixtures/streamerinfo_th1d.bin` + `fixtures/PROVENANCE.md`,
+  adl-cli `bridges.rs` + 8 snapshots, adl-interp `histo.rs` +
+  `histo_semantics.rs`, adl-difftest `histo_golden.rs` + fixtures +
+  snapshots, `scripts/gen_ex02_events.py`, and the supporting tracked-file
+  edits) existed only as uncommitted working-tree files — never staged.
+  Content/quality were not in question; "checked in" was.
+- Fix: staged and committed the full Phase-9 set in one commit. Verified
+  beforehand the streamer fixture sha256 matches PROVENANCE.md
+  (`eaa2bb51…`) and that no build artifacts ride along (`.venv-uproot`
+  gitignored; `target/`, `Cargo.lock` already ignored).
+- Re-verified before committing: `cargo build --workspace` green;
+  `cargo test --workspace` 424 passed / 0 failed; `cargo clippy
+  --workspace --all-targets -- -D warnings` clean; all five named
+  determinism tests pass individually (verify report, histos.json,
+  bridges, dot, rootfile pinned-build).

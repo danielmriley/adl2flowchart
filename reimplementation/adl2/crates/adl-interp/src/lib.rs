@@ -11,11 +11,13 @@
 
 pub mod eval;
 pub mod event;
+pub mod histo;
 
 pub use eval::{
     BinOutcome, EvalError, Interp, NonValue, NumOutcome, RegionResult, assign_bin, wrap_dphi,
 };
 pub use event::{Event, EventError, EventObject, parse_event, read_jsonl};
+pub use histo::{Hist1D, HistoFill, HistoSet};
 
 /// Crate identity marker used by the bootstrap smoke test.
 pub const CRATE_NAME: &str = "adl-interp";

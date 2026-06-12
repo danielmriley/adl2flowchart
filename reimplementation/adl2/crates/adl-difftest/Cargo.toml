@@ -21,3 +21,4 @@ proptest.workspace = true
 
 [dev-dependencies]
 adl-formula.workspace = true
+insta.workspace = true

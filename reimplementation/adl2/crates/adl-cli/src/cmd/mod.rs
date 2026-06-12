@@ -2,6 +2,7 @@
 //! the dispatcher prints `CliError` to stderr and exits 2 (usage/IO),
 //! while the subcommands choose their own success/diagnostic exit codes.
 
+pub mod bridges;
 pub mod check;
 pub mod dot;
 pub mod objects;
@@ -19,6 +20,10 @@ pub enum CliError {
         path: String,
         source: std::io::Error,
     },
+    Write {
+        path: String,
+        source: std::io::Error,
+    },
     Usage(String),
 }
 
@@ -26,6 +31,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CliError::Io { path, source } => write!(f, "cannot read {path}: {source}"),
+            CliError::Write { path, source } => write!(f, "cannot write {path}: {source}"),
             CliError::Usage(m) => f.write_str(m),
         }
     }

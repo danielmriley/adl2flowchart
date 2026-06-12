@@ -1,0 +1,5 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: "lines[4]"
+---
+{"histograms":[{"name":"hmet","title":"met","region":"SR","nbins":2,"lo":0.0,"hi":100.0,"sumw":[2.0,2.0],"sumw2":[4.0,4.0],"underflow":{"w":0.0,"w2":0.0},"overflow":{"w":2.0,"w2":4.0},"entries":3,"tsumw":4.0,"tsumw2":8.0,"tsumwx":200.0,"tsumwx2":12500.0}]}

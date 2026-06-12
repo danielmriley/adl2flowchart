@@ -11,6 +11,7 @@ members = [
     "crates/adl-viz",
     "crates/adl-difftest",
     "crates/adl-cli",
+    "crates/rootfile",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ adl-solver = { path = "crates/adl-solver" }
 adl-analysis = { path = "crates/adl-analysis" }
 adl-viz = { path = "crates/adl-viz" }
 adl-difftest = { path = "crates/adl-difftest" }
+rootfile = { path = "crates/rootfile" }
 
 # Third-party (probed available against crates.io on 2026-06-11; see BUILD_NOTES.md).
 serde = { version = "1", features = ["derive"] }

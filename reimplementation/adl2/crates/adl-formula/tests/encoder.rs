@@ -154,6 +154,9 @@ fn inheritance_cycle_is_unknown() {
         defines: Vec::new(),
         regions: vec![region(a, 1), region(b, 0)],
         region_name_order: vec![a, b],
+        histolist_regions: vec![false, false],
+        histos: Vec::new(),
+        weights: Vec::new(),
         diags: Vec::new(),
     };
     let enc = encode_region(&mut hir, 0);

@@ -1,0 +1,13 @@
+[package]
+name = "rootfile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal pure-Rust writer for ROOT files containing TH1D histograms (SPEC_ROOT_WRITER.md v1: small-format, uncompressed, flat names)."
+
+# Zero dependencies by design: this crate is byte-level serialization only.
+[dependencies]
+
+[dev-dependencies]

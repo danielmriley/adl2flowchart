@@ -1,0 +1,8 @@
+---
+source: crates/adl-difftest/tests/histo_golden.rs
+expression: "diags.join(\"\\n\")"
+---
+region `baseline`: histoList `jetHistos` referenced more than once; mid-selection fill points are not supported — its histograms fill once on full region acceptance
+histo `hj1ptMET` in region `baseline`: 2-D histogram (deferred); histogram skipped
+histo `hmetvarbin` in region `baseline`: variable-bin histogram (deferred); histogram skipped
+histo `hlep1ptMET` in region `singlelepton`: 2-D histogram (deferred); histogram skipped

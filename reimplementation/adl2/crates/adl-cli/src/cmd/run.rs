@@ -3,11 +3,19 @@
 //! plus bin assignment for passing events. Default output is a compact text
 //! table; `--json` emits one JSON object per event line (JSONL out).
 //!
+//! Histograms (PLAN Phase 9): `histo` statements accumulate while events
+//! stream. `--histos DIR` writes the canonical `histos.json` there; with
+//! `--json`, files that declare histograms get one final
+//! `{"histograms": [...]}` line after the per-event lines (files without
+//! histograms emit exactly the pre-Phase-9 output). Histogram diagnostics
+//! (skipped forms, non-numeric weights, skipped fills) go to stderr.
+//!
 //! Exit 1 if the ADL file does not resolve or the event file is malformed;
 //! otherwise 0 (an event failing a region is data, not a tool error).
 
+use crate::cmd::bridges;
 use crate::cmd::{CliError, read_file, unit_name};
-use adl_interp::{BinOutcome, Interp, RegionResult, read_jsonl};
+use adl_interp::{BinOutcome, HistoSet, Interp, RegionResult, read_jsonl};
 use adl_sema::{ExtDecls, analyze_str};
 use adl_syntax::diag::{has_errors, render};
 use serde_json::{Value, json};
@@ -18,6 +26,9 @@ pub fn run(
     file: &Path,
     events: &Path,
     json_out: bool,
+    histos_dir: Option<&Path>,
+    csv: bool,
+    svg: bool,
     verbose: bool,
 ) -> Result<ExitCode, CliError> {
     let src = read_file(file)?;
@@ -43,6 +54,7 @@ pub fn run(
     };
 
     let interp = Interp::new(&hir, &ext);
+    let mut histo_set = HistoSet::new(&hir);
     // Pass counts accumulate in first-seen region order for the summary.
     let mut pass_counts: Vec<(String, usize)> = Vec::new();
     let bump = |name: &str, passed: bool, counts: &mut Vec<(String, usize)>| {
@@ -57,6 +69,7 @@ pub fn run(
 
     for (i, event) in evs.iter().enumerate() {
         let results = interp.run_event(event);
+        histo_set.fill_event(&interp, event, &results);
         if json_out {
             let regions: Vec<Value> = results
                 .iter()
@@ -74,6 +87,21 @@ pub fn run(
         }
     }
 
+    // Histogram output: diagnostics to stderr; the `histograms` JSON line
+    // only when the file declares histograms (no-histo files keep their
+    // exact pre-Phase-9 output).
+    for d in histo_set.diagnostics() {
+        eprintln!("{name}: {d}");
+    }
+    if json_out && !hir.histos.is_empty() {
+        println!("{}", histo_set.to_json(false));
+    }
+    // `--csv`/`--svg` require `--histos` (enforced by clap), so they only
+    // ever fire with a directory present.
+    if let Some(dir) = histos_dir {
+        write_histo_outputs(dir, &histo_set, csv, svg, verbose)?;
+    }
+
     if verbose && !json_out {
         eprintln!(
             "--- {} events, {} regions ---",
@@ -85,6 +113,50 @@ pub fn run(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Write `histos.json` and the bridge renderers next to it. The ROOT macro
+/// (`make_histos.C`) and uproot script (`to_root.py`) are always emitted;
+/// `--csv`/`--svg` add per-histogram files. Each write maps IO failure to
+/// [`CliError::Write`].
+fn write_histo_outputs(
+    dir: &Path,
+    set: &HistoSet,
+    csv: bool,
+    svg: bool,
+    verbose: bool,
+) -> Result<(), CliError> {
+    std::fs::create_dir_all(dir).map_err(|source| CliError::Write {
+        path: dir.display().to_string(),
+        source,
+    })?;
+
+    let emit = |rel: &str, contents: &str| -> Result<(), CliError> {
+        let path = dir.join(rel);
+        std::fs::write(&path, contents).map_err(|source| CliError::Write {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if verbose {
+            eprintln!("wrote {}", path.display());
+        }
+        Ok(())
+    };
+
+    emit("histos.json", &set.to_json(true))?;
+    emit("make_histos.C", &bridges::make_histos_c(set))?;
+    emit("to_root.py", &bridges::to_root_py(set))?;
+    if csv {
+        for (name, body) in bridges::csv_files(set) {
+            emit(&name, &body)?;
+        }
+    }
+    if svg {
+        for (name, body) in bridges::svg_files(set) {
+            emit(&name, &body)?;
+        }
+    }
+    Ok(())
 }
 
 fn region_text(r: &RegionResult) -> String {

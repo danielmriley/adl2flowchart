@@ -250,6 +250,56 @@ pub struct HirRegion {
     pub span: Span,
 }
 
+/// Binning/fill spec of a `histo` statement (PLAN Phase 9).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistoSpec {
+    /// `histo h, "title", n, lo, hi, expr` — 1-D uniform binning.
+    /// `lo`/`hi` are canonical numeral text (same convention as bin edges).
+    Uniform1D {
+        nbins: u32,
+        lo: String,
+        hi: String,
+        expr: HNode,
+    },
+    /// Recognized but deferred forms (2-D, variable-bin) or a malformed
+    /// argument list; the reason is reported when accumulation is attempted.
+    Unsupported(String),
+}
+
+/// A resolved `histo` statement. Histograms are execution auxiliaries
+/// (no membership effect); the region keeps its `NonMembership` marker
+/// and the payload lives here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirHisto {
+    /// Index into [`Hir::regions`] of the block that declares it (a
+    /// selection region or a `histoList` block).
+    pub region: usize,
+    pub name: String,
+    pub title: String,
+    pub spec: HistoSpec,
+    pub span: Span,
+}
+
+/// Value of a `weight` statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirWeightValue {
+    /// Numeric literal (canonical text).
+    Num(String),
+    /// Non-numeric argument (identifier / function call / table ref);
+    /// carries a short description for diagnostics.
+    Other(String),
+}
+
+/// A resolved `weight` statement (no membership effect; payload only).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirWeight {
+    /// Index into [`Hir::regions`] of the declaring block.
+    pub region: usize,
+    pub name: String,
+    pub value: HirWeightValue,
+    pub span: Span,
+}
+
 /// The resolved analysis unit: HIR + symbol/quantity tables + diagnostics.
 #[derive(Debug)]
 pub struct Hir {
@@ -267,6 +317,15 @@ pub struct Hir {
     /// Region names in declaration order (`RegionPred`/`Inherit` indices
     /// point into this).
     pub region_name_order: Vec<Symbol>,
+    /// `true` at index `i` iff `regions[i]` was declared with the
+    /// `histoList` keyword (a histogram template block, not a selection
+    /// region). May be shorter than `regions` for synthetic regions;
+    /// index with `.get(i)`.
+    pub histolist_regions: Vec<bool>,
+    /// All `histo` statements, in declaration order.
+    pub histos: Vec<HirHisto>,
+    /// All `weight` statements, in declaration order.
+    pub weights: Vec<HirWeight>,
     /// Sema diagnostics (parse diagnostics are the caller's, unless
     /// `analyze_str` merged them).
     pub diags: Vec<Diagnostic>,

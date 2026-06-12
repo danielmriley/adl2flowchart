@@ -229,6 +229,373 @@ fn run_bad_file_exits_one() {
     let _ = std::fs::remove_file(events);
 }
 
+// --- run histograms (Phase 9) ----------------------------------------------
+
+/// Tiny histogram analysis + events for the `--histos` tests: one weighted
+/// region; fills at MET = 25 (bin 0) and 75 (bin 1), one rejected event,
+/// one overflow at MET = 250.
+const HISTO_ADL: &str =
+    "region SR\n  select MET > 10\n  weight lumi 2.0\n  histo hmet, \"met\", 2, 0, 100, MET\n";
+const HISTO_EVENTS: &str = "{\"MET\": {\"pt\": 25, \"phi\": 0.0}}\n\
+                            {\"MET\": {\"pt\": 75, \"phi\": 0.0}}\n\
+                            {\"MET\": {\"pt\": 5, \"phi\": 0.0}}\n\
+                            {\"MET\": {\"pt\": 250, \"phi\": 0.0}}\n";
+
+fn temp_adl(tag: &str, contents: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("smash2_{tag}_{}.adl", std::process::id()));
+    std::fs::write(&path, contents).expect("write temp adl");
+    path
+}
+
+#[test]
+fn run_histos_writes_canonical_json_deterministically() {
+    let adl = temp_adl("histosfile", HISTO_ADL);
+    let events = temp_jsonl("histosfile", HISTO_EVENTS);
+    let dir_a = std::env::temp_dir().join(format!("smash2_histos_a_{}", std::process::id()));
+    let dir_b = std::env::temp_dir().join(format!("smash2_histos_b_{}", std::process::id()));
+    let mut outputs = Vec::new();
+    for dir in [&dir_a, &dir_b] {
+        let out = run(&[
+            "run",
+            adl.to_str().unwrap(),
+            events.to_str().unwrap(),
+            "--histos",
+            dir.to_str().unwrap(),
+        ]);
+        assert_eq!(code(&out), 0);
+        assert!(
+            stderr(&out).is_empty(),
+            "clean file must produce no histo diagnostics: {}",
+            stderr(&out)
+        );
+        outputs.push(std::fs::read_to_string(dir.join("histos.json")).expect("histos.json"));
+    }
+    assert_eq!(outputs[0], outputs[1], "histos.json must be byte-identical");
+    insta::assert_snapshot!("run_histos_json_file", outputs[0]);
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+    let _ = std::fs::remove_dir_all(dir_a);
+    let _ = std::fs::remove_dir_all(dir_b);
+}
+
+#[test]
+fn run_json_gains_trailing_histograms_line() {
+    let adl = temp_adl("histojson", HISTO_ADL);
+    let events = temp_jsonl("histojson", HISTO_EVENTS);
+    let out = run(&[
+        "run",
+        "--json",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0);
+    let so = stdout(&out);
+    let lines: Vec<&str> = so.lines().collect();
+    assert_eq!(lines.len(), 5, "4 event lines + 1 histograms line: {so}");
+    insta::assert_snapshot!("run_json_histograms_line", lines[4]);
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+}
+
+#[test]
+fn run_histo_diagnostics_go_to_stderr() {
+    let adl = temp_adl(
+        "histodiag",
+        "region SR\n  select MET > 10\n  histo h2, \"2d\", 2, 0, 1, 2, 0, 1, MET, MET\n",
+    );
+    let events = temp_jsonl("histodiag", "{\"MET\": {\"pt\": 25, \"phi\": 0.0}}\n");
+    let out = run(&["run", adl.to_str().unwrap(), events.to_str().unwrap()]);
+    assert_eq!(code(&out), 0, "a skipped histogram is not a tool error");
+    assert!(
+        stderr(&out).contains("2-D histogram (deferred); histogram skipped"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stdout(&out).contains("histogram"),
+        "stdout stays machine-clean: {}",
+        stdout(&out)
+    );
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+}
+
+// --- run histogram bridges (Phase 9: .C / .py / CSV / SVG) -----------------
+
+/// The committed ex02 toy-event fixture lives next to the adl-difftest
+/// golden (regenerate byte-identically with `scripts/gen_ex02_events.py`).
+fn ex02_events_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../adl-difftest/tests/fixtures/ex02_events.jsonl")
+        .canonicalize()
+        .expect("resolve ex02 events fixture")
+}
+
+/// Run `smash2 run --histos DIR --csv --svg` on the ex02 golden, returning
+/// the output directory (the caller cleans it up).
+fn run_ex02_bridges(tag: &str) -> PathBuf {
+    let adl = corpus("tutorials/ex02_histograms.adl");
+    let events = ex02_events_fixture();
+    let dir = std::env::temp_dir().join(format!("smash2_bridge_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--histos",
+        dir.to_str().unwrap(),
+        "--csv",
+        "--svg",
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    dir
+}
+
+fn read_bridge(dir: &std::path::Path, rel: &str) -> String {
+    std::fs::read_to_string(dir.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+}
+
+#[test]
+fn run_histos_emits_root_macro() {
+    let dir = run_ex02_bridges("macro");
+    insta::assert_snapshot!(
+        "bridges_ex02_make_histos_c",
+        read_bridge(&dir, "make_histos.C")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_emits_uproot_script() {
+    let dir = run_ex02_bridges("uproot");
+    insta::assert_snapshot!("bridges_ex02_to_root_py", read_bridge(&dir, "to_root.py"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_emits_per_histogram_csv() {
+    let dir = run_ex02_bridges("csv");
+    // hnjets has integer bin centers and a clear in-range distribution;
+    // hjet1eta exercises a negative-lo axis.
+    insta::assert_snapshot!(
+        "bridges_ex02_csv_hnjets",
+        read_bridge(&dir, "baseline_hnjets.csv")
+    );
+    insta::assert_snapshot!(
+        "bridges_ex02_csv_hjet1eta",
+        read_bridge(&dir, "baseline_hjet1eta.csv")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_emits_per_histogram_svg() {
+    let dir = run_ex02_bridges("svg");
+    insta::assert_snapshot!(
+        "bridges_ex02_svg_hnjets",
+        read_bridge(&dir, "baseline_hnjets.svg")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_bridges_are_byte_identical_across_runs() {
+    let a = run_ex02_bridges("det_a");
+    let b = run_ex02_bridges("det_b");
+    for rel in [
+        "make_histos.C",
+        "to_root.py",
+        "baseline_hmet.csv",
+        "baseline_hmet.svg",
+        "singlelepton_hlep1pt.svg",
+    ] {
+        assert_eq!(
+            read_bridge(&a, rel),
+            read_bridge(&b, rel),
+            "{rel} must be deterministic"
+        );
+    }
+    let _ = std::fs::remove_dir_all(a);
+    let _ = std::fs::remove_dir_all(b);
+}
+
+#[test]
+fn csv_and_svg_require_histos_dir() {
+    // clap enforces `--csv`/`--svg` require `--histos`: usage error, exit 2.
+    let adl = corpus("tutorials/ex02_histograms.adl");
+    let events = ex02_events_fixture();
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--csv",
+    ]);
+    assert_eq!(code(&out), 2, "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("--histos"));
+}
+
+#[test]
+fn bridges_carry_flow_bins_and_weighted_errors() {
+    // HISTO_ADL fills bins 0,1 (weight 2.0 each) plus one MET=250 overflow;
+    // the .C must set the overflow bin (N+1=3) and weighted errors
+    // (sqrt(sumw2)=sqrt(4)=2), and the SVG caption must note the overflow.
+    let adl = temp_adl("flowbridge", HISTO_ADL);
+    let events = temp_jsonl("flowbridge", HISTO_EVENTS);
+    let dir = std::env::temp_dir().join(format!("smash2_flowbridge_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--histos",
+        dir.to_str().unwrap(),
+        "--svg",
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+
+    let c = read_bridge(&dir, "make_histos.C");
+    assert!(
+        c.contains("new TH1D(\"SR_hmet\""),
+        "flat region-prefixed name"
+    );
+    assert!(
+        c.contains("h->SetBinContent(3, 2.0);"),
+        "overflow bin N+1: {c}"
+    );
+    assert!(
+        c.contains("h->SetBinError(1, 2.0);"),
+        "weighted error sqrt(4)=2: {c}"
+    );
+    assert!(
+        c.contains("h->SetEntries(3);"),
+        "raw fill count incl. overflow"
+    );
+    assert!(
+        c.contains("Double_t stats[4] = {4.0, 8.0, 200.0, 12500.0};"),
+        "PutStats moments: {c}"
+    );
+
+    let svg = read_bridge(&dir, "SR_hmet.svg");
+    assert!(
+        svg.contains("overflow=2"),
+        "SVG caption notes overflow: {svg}"
+    );
+
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Env-gated oracle: if `root` is on PATH, run the generated macro and read
+/// the histograms back, asserting a known bin/entries/mean. Skipped (pass)
+/// when ROOT is unavailable — recorded in BUILD_NOTES.
+#[test]
+fn root_macro_round_trips_when_root_available() {
+    if std::env::var_os("SMASH2_RUN_ROOT_ORACLE").is_none() {
+        eprintln!("skipping ROOT oracle (set SMASH2_RUN_ROOT_ORACLE=1 to enable)");
+        return;
+    }
+    if which("root").is_none() {
+        eprintln!("skipping: `root` not on PATH");
+        return;
+    }
+    let dir = run_ex02_bridges("rootoracle");
+    // A tiny reader macro: open histos.root, print one hist's entries/bin.
+    let reader = dir.join("read_back.C");
+    std::fs::write(
+        &reader,
+        "void read_back() {\n\
+         \x20 TFile* f = TFile::Open(\"histos.root\");\n\
+         \x20 TH1D* h = (TH1D*)f->Get(\"baseline_hnjets\");\n\
+         \x20 printf(\"ENTRIES=%g BIN4=%g OVF=%g\\n\", h->GetEntries(),\n\
+         \x20        h->GetBinContent(4), h->GetBinContent(h->GetNbinsX()+1));\n\
+         }\n",
+    )
+    .expect("write reader macro");
+    // Build then read in the same working dir so histos.root resolves.
+    let build = Command::new("root")
+        .args(["-l", "-b", "-q", "make_histos.C"])
+        .current_dir(&dir)
+        .output()
+        .expect("run root build");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let read = Command::new("root")
+        .args(["-l", "-b", "-q", "read_back.C"])
+        .current_dir(&dir)
+        .output()
+        .expect("run root read");
+    let so = String::from_utf8_lossy(&read.stdout);
+    assert!(
+        so.contains("ENTRIES=32") && so.contains("BIN4=10"),
+        "root read-back: {so}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Env-gated oracle: if python3 with uproot is available, run the generated
+/// script and read the histograms back with uproot. Skipped when absent.
+#[test]
+fn uproot_script_round_trips_when_available() {
+    if std::env::var_os("SMASH2_RUN_UPROOT_ORACLE").is_none() {
+        eprintln!("skipping uproot oracle (set SMASH2_RUN_UPROOT_ORACLE=1 to enable)");
+        return;
+    }
+    let py = which("python3");
+    let Some(py) = py else {
+        eprintln!("skipping: python3 not on PATH");
+        return;
+    };
+    let probe = Command::new(&py)
+        .args(["-c", "import uproot, numpy"])
+        .output()
+        .expect("probe uproot");
+    if !probe.status.success() {
+        eprintln!("skipping: python3 lacks uproot/numpy");
+        return;
+    }
+    let dir = run_ex02_bridges("uprootoracle");
+    let build = Command::new(&py)
+        .arg("to_root.py")
+        .current_dir(&dir)
+        .output()
+        .expect("run to_root.py");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let reader = "import uproot\n\
+                  f = uproot.open('histos.root')\n\
+                  h = f['baseline_hnjets']\n\
+                  v = h.values(flow=True)\n\
+                  print('ENTRIES', h.member('fEntries'), 'BIN4', v[4])\n";
+    let read = Command::new(&py)
+        .args(["-c", reader])
+        .current_dir(&dir)
+        .output()
+        .expect("read back uproot");
+    let so = String::from_utf8_lossy(&read.stdout);
+    assert!(
+        so.contains("ENTRIES 32") && so.contains("BIN4 10"),
+        "uproot read-back: {so}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Minimal PATH lookup (no extra deps): the first existing `name` under a
+/// PATH entry.
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|p| p.join(name))
+            .find(|p| p.is_file())
+    })
+}
+
 // --- dot -----------------------------------------------------------------
 
 #[test]

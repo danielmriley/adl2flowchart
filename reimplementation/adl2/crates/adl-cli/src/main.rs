@@ -79,6 +79,19 @@ enum Command {
         /// Emit per-event results as JSON instead of the text table.
         #[arg(long)]
         json: bool,
+        /// Accumulate `histo` statements and write `histos.json` plus the
+        /// ROOT bridges (`make_histos.C`, `to_root.py`) into this directory
+        /// (created if missing).
+        #[arg(long, value_name = "DIR")]
+        histos: Option<PathBuf>,
+        /// Also emit one CSV per histogram (`bin_lo,bin_hi,content,error`)
+        /// next to `histos.json` (requires `--histos`).
+        #[arg(long, requires = "histos")]
+        csv: bool,
+        /// Also emit one hand-rolled step-plot SVG per histogram next to
+        /// `histos.json` (requires `--histos`).
+        #[arg(long, requires = "histos")]
+        svg: bool,
     },
     /// Graphviz DOT from the resolved HIR (flowchart by default).
     Dot {
@@ -107,7 +120,14 @@ fn main() -> ExitCode {
             no_solver,
             fail_on,
         } => cmd::verify::run(&file, json, explain, no_solver, fail_on.as_deref(), verbose),
-        Command::Run { file, events, json } => cmd::run::run(&file, &events, json, verbose),
+        Command::Run {
+            file,
+            events,
+            json,
+            histos,
+            csv,
+            svg,
+        } => cmd::run::run(&file, &events, json, histos.as_deref(), csv, svg, verbose),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
         Command::Objects { file } => cmd::objects::run(&file, verbose),
     };

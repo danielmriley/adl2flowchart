@@ -261,8 +261,25 @@ pub enum HistoSpec {
         hi: String,
         expr: HNode,
     },
-    /// Recognized but deferred forms (2-D, variable-bin) or a malformed
-    /// argument list; the reason is reported when accumulation is attempted.
+    /// `histo h, "title", e0 e1 … en, expr` — 1-D variable binning.
+    /// `edges` are canonical numeral text, strictly increasing (validated
+    /// at resolve time; a non-increasing list is `Unsupported` instead).
+    Var1D { edges: Vec<String>, expr: HNode },
+    /// `histo h, "title", nx, xlo, xhi, ny, ylo, yhi, xexpr, yexpr` — 2-D
+    /// uniform binning. Bound texts are canonical numerals (same
+    /// convention as [`Self::Uniform1D`]).
+    Uniform2D {
+        nx: u32,
+        xlo: String,
+        xhi: String,
+        ny: u32,
+        ylo: String,
+        yhi: String,
+        xexpr: HNode,
+        yexpr: HNode,
+    },
+    /// A malformed argument list, or a form not yet accumulable; the reason
+    /// is reported when accumulation is attempted.
     Unsupported(String),
 }
 

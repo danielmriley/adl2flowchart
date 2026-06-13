@@ -28,14 +28,27 @@
 //! Exit 1 if the ADL file does not resolve or the event file is malformed;
 //! otherwise 0 (an event failing a region is data, not a tool error).
 
-use crate::cmd::bridges;
-use crate::cmd::{CliError, read_file, unit_name};
-use adl_interp::{BinOutcome, CutflowSet, Hist1D, HistoSet, Interp, RegionResult, read_jsonl};
+use crate::cmd::parallel::{self, FormatEvent};
+use crate::cmd::{CliError, bridges};
+use crate::cmd::{read_file, unit_name};
+use adl_interp::{
+    BinOutcome, CutflowSet, Event, Hist1D, HistoSet, InputIdentity, Interp, Provenance,
+    RegionResult, Sha256,
+};
 use adl_sema::{ExtDecls, analyze_str};
 use adl_syntax::diag::{has_errors, render};
 use serde_json::{Value, json};
+use std::fmt::Write as FmtWrite;
+use std::io::{self, BufReader, Cursor, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
+
+/// The §6 provenance `tool` string: `smash2 <crate version>`. No git hash
+/// (no build-time capture wired) — deterministic per build, which the
+/// determinism guarantee needs.
+fn tool_id() -> String {
+    format!("smash2 {}", env!("CARGO_PKG_VERSION"))
+}
 
 /// Histogram output options for `run --histos` (all inert unless `dir` is
 /// set; clap gates the flags on `--histos`).
@@ -54,12 +67,25 @@ pub struct HistoOpts<'a> {
     pub flat_names: bool,
 }
 
+/// Where the streamed events come from, paired with their §6 content hash.
+/// The JSONL path streams the file line-by-line (bounded memory); the
+/// profile path materializes the ingest's JSONL in memory (the ingest
+/// crate's existing behavior) and hashes the *original* ROOT bytes.
+enum EventSource {
+    /// Stream the JSONL file directly; hash it in a separate O(1)-memory
+    /// pass (input order, so deterministic).
+    File,
+    /// Profile-ingested JSONL already in memory, plus the ROOT file's hash.
+    Ingested { jsonl: String, sha: String },
+}
+
 pub fn run(
     file: &Path,
     events: &Path,
     profile: Option<&str>,
     json_out: bool,
     histos: HistoOpts<'_>,
+    jobs: usize,
     verbose: bool,
 ) -> Result<ExitCode, CliError> {
     let src = read_file(file)?;
@@ -77,9 +103,13 @@ pub fn run(
 
     // With `--profile`, ingest the ROOT file natively into canonical JSONL
     // lines (in memory, SPEC_EVENT_PIPELINE §1.1) and feed them to the one
-    // JSONL loader — the native path and the file path share every
-    // event-model validation.
-    let events_text = if let Some(pname) = profile {
+    // streaming loader — the native path and the file path share every
+    // event-model validation. The §6 input identity hashes the *original*
+    // input bytes (the ROOT file under a profile, the JSONL otherwise),
+    // never the materialized intermediate.
+    let mut profile_id: Option<String> = None;
+    let mut decides: Vec<(String, String)> = Vec::new();
+    let source = if let Some(pname) = profile {
         let Some(prof) = adl_ingest::by_name(pname) else {
             return Err(CliError::Usage(format!(
                 "unknown profile `{pname}` (known: {})",
@@ -89,7 +119,14 @@ pub fn run(
         if verbose {
             super::ingest::print_profile_choices(&prof);
         }
-        match adl_ingest::read_root(events, &prof) {
+        let raw = std::fs::read(events).map_err(|source| CliError::Io {
+            path: events.display().to_string(),
+            source,
+        })?;
+        let sha = Provenance::input_sha256(&raw);
+        profile_id = Some(prof.id());
+        decides = prof.decides();
+        let jsonl = match adl_ingest::read_root(events, &prof) {
             Ok(ingested) => {
                 super::ingest::print_diags(&ingested.diags, &ingested.profile_id, verbose);
                 ingested.jsonl()
@@ -98,53 +135,118 @@ pub fn run(
                 eprintln!("{}: {e}", events.display());
                 return Ok(ExitCode::from(1));
             }
-        }
+        };
+        EventSource::Ingested { jsonl, sha }
     } else {
-        read_file(events)?
+        EventSource::File
     };
-    let evs = match read_jsonl(&events_text, &ext) {
-        Ok(evs) => evs,
+
+    // The §6 input content hash. For the JSONL path it is computed in a
+    // separate streaming pass (O(1) memory, input order ⇒ deterministic);
+    // the profile path already hashed the original ROOT bytes above.
+    let input_sha = match &source {
+        EventSource::Ingested { sha, .. } => sha.clone(),
+        EventSource::File => match hash_file_streaming(events) {
+            Ok(sha) => sha,
+            Err(e) => {
+                eprintln!("{}: {e}", events.display());
+                return Ok(ExitCode::from(1));
+            }
+        },
+    };
+
+    let interp = Interp::new(&hir, &ext);
+    // Per-event stdout line. `--json`: one object per event (input order);
+    // text: one `event N: region -> ...` line per region. The streaming
+    // fold writes these in ascending chunk order, i.e. input order.
+    let format: Box<FormatEvent<'_>> = if json_out {
+        Box::new(|ord: usize, _ev: &Event, results: &[RegionResult]| {
+            let regions: Vec<Value> = results.iter().map(region_json).collect();
+            json!({ "event": ord, "regions": regions }).to_string()
+        })
+    } else {
+        Box::new(|ord: usize, _ev: &Event, results: &[RegionResult]| {
+            let mut s = String::new();
+            for (i, r) in results.iter().enumerate() {
+                if i > 0 {
+                    s.push('\n');
+                }
+                let _ = FmtWrite::write_fmt(
+                    &mut s,
+                    format_args!("event {ord}: {} -> {}", r.name, region_text(r)),
+                );
+            }
+            s
+        })
+    };
+
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+
+    let make_histos = || HistoSet::new(&hir);
+    let make_cutflow = || CutflowSet::new(&hir, &src);
+
+    let run_result = match &source {
+        EventSource::File => {
+            let file = match std::fs::File::open(events) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{}: {e}", events.display());
+                    return Ok(ExitCode::from(1));
+                }
+            };
+            parallel::run_streaming(
+                BufReader::new(file),
+                &interp,
+                make_histos,
+                make_cutflow,
+                &format,
+                jobs,
+                &mut out,
+            )
+        }
+        EventSource::Ingested { jsonl, .. } => parallel::run_streaming(
+            Cursor::new(jsonl.as_bytes()),
+            &interp,
+            make_histos,
+            make_cutflow,
+            &format,
+            jobs,
+            &mut out,
+        ),
+    };
+
+    let parallel::RunOutput {
+        histos: histo_set,
+        cutflow,
+        pass_counts,
+        n_events,
+    } = match run_result {
+        Ok(o) => o,
         Err(e) => {
+            // Flush whatever per-event output already streamed before the
+            // bad line, then report the malformed input.
+            let _ = out.flush();
             eprintln!("{}: {e}", events.display());
             return Ok(ExitCode::from(1));
         }
     };
 
-    let interp = Interp::new(&hir, &ext);
-    let mut histo_set = HistoSet::new(&hir);
-    let mut cutflow = CutflowSet::new(&hir, &src);
-    // Pass counts accumulate in first-seen region order for the summary.
-    let mut pass_counts: Vec<(String, usize)> = Vec::new();
-    let bump = |name: &str, passed: bool, counts: &mut Vec<(String, usize)>| {
-        if let Some(c) = counts.iter_mut().find(|(n, _)| n == name) {
-            if passed {
-                c.1 += 1;
-            }
-        } else {
-            counts.push((name.to_owned(), usize::from(passed)));
-        }
+    // The single §6 provenance object, embedded byte-identically in
+    // histos.json, cutflow.json, out.root (TNamed), and the `--json` lines.
+    let provenance = Provenance {
+        tool: tool_id(),
+        adl_file: name.clone(),
+        adl_sha256: Provenance::adl_sha256(src.as_bytes()),
+        input: Some(InputIdentity {
+            file: unit_name(events),
+            sha256: input_sha,
+            events: n_events,
+            profile: profile_id,
+        }),
+        seed: None,
+        decides,
     };
-
-    for (i, event) in evs.iter().enumerate() {
-        let (results, traces) = interp.run_event_traced(event);
-        cutflow.record_event(event, &results, &traces);
-        histo_set.fill_event(&interp, event, &results);
-        if json_out {
-            let regions: Vec<Value> = results
-                .iter()
-                .map(|r| {
-                    bump(&r.name, matches!(r.pass, Ok(true)), &mut pass_counts);
-                    region_json(r)
-                })
-                .collect();
-            println!("{}", json!({ "event": i, "regions": regions }));
-        } else {
-            for r in &results {
-                bump(&r.name, matches!(r.pass, Ok(true)), &mut pass_counts);
-                println!("event {i}: {} -> {}", r.name, region_text(r));
-            }
-        }
-    }
 
     // Histogram output: diagnostics to stderr; the `histograms` JSON line
     // only when the file declares histograms (no-histo files keep their
@@ -156,35 +258,36 @@ pub fn run(
         eprintln!("{name}: {d}");
     }
     if json_out && !hir.histos.is_empty() {
-        println!("{}", histo_set.to_json(false));
+        let _ = writeln!(out, "{}", histo_set.to_json_with(false, Some(&provenance)));
     }
     // Cutflow emission (SPEC_EVENT_PIPELINE §2): the per-region table on
     // stdout in text mode, one `{"cutflow": ...}` line under `--json`;
     // files with no evaluable region emit neither.
     if !cutflow.is_empty() {
         if json_out {
-            println!("{{\"cutflow\":{}}}", cutflow.to_json(false));
+            let _ = writeln!(
+                out,
+                "{{\"cutflow\":{}}}",
+                cutflow.to_json_with(false, Some(&provenance))
+            );
         } else {
-            if !evs.is_empty() {
-                println!();
+            if n_events > 0 {
+                let _ = writeln!(out);
             }
-            print!("{}", cutflow.text_table());
+            let _ = write!(out, "{}", cutflow.text_table());
         }
     }
+    let _ = out.flush();
     // `--csv`/`--svg`/`--no-root` require `--histos` (enforced by clap), so
     // they only ever fire with a directory present.
     if let Some(dir) = histos.dir {
-        write_histo_outputs(dir, &histo_set, &cutflow, histos, verbose)?;
+        write_histo_outputs(dir, &histo_set, &cutflow, &provenance, histos, verbose)?;
     }
 
     if verbose && !json_out {
-        eprintln!(
-            "--- {} events, {} regions ---",
-            evs.len(),
-            pass_counts.len()
-        );
+        eprintln!("--- {n_events} events, {} regions ---", pass_counts.len());
         for (region, count) in &pass_counts {
-            eprintln!("{region}: {count}/{} passed", evs.len());
+            eprintln!("{region}: {count}/{n_events} passed");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -200,6 +303,7 @@ fn write_histo_outputs(
     dir: &Path,
     set: &HistoSet,
     cutflow: &CutflowSet,
+    provenance: &Provenance,
     opts: HistoOpts<'_>,
     verbose: bool,
 ) -> Result<(), CliError> {
@@ -220,9 +324,12 @@ fn write_histo_outputs(
         Ok(())
     };
 
-    emit("histos.json", &set.to_json(true))?;
+    emit("histos.json", &set.to_json_with(true, Some(provenance)))?;
     if !cutflow.is_empty() {
-        emit("cutflow.json", &cutflow.to_json(true))?;
+        emit(
+            "cutflow.json",
+            &cutflow.to_json_with(true, Some(provenance)),
+        )?;
     }
     emit(
         "make_histos.C",
@@ -234,6 +341,7 @@ fn write_histo_outputs(
             &dir.join("out.root"),
             set,
             cutflow,
+            provenance,
             opts.flat_names,
             verbose,
         )?;
@@ -266,6 +374,7 @@ fn write_root_file(
     path: &Path,
     set: &HistoSet,
     cutflow: &CutflowSet,
+    provenance: &Provenance,
     flat: bool,
     verbose: bool,
 ) -> Result<(), CliError> {
@@ -381,6 +490,15 @@ fn write_root_file(
         });
     }
 
+    // The §6 provenance carrier: a single TNamed in the root directory,
+    // title = the compact canonical JSON (the same bytes embedded in
+    // histos.json / cutflow.json). `rfile.Get("smash2_provenance")
+    // ->GetTitle()` parses as JSON.
+    let prov_json = provenance.to_json(false);
+    add(&mut root, "smash2_provenance", &|r| {
+        r.add_tnamed_at(&[], "smash2_provenance", &prov_json)
+    });
+
     root.finish(path).map_err(|e| CliError::Write {
         path: path.display().to_string(),
         source: match e {
@@ -422,6 +540,24 @@ fn h1_spec<'a>(title: &'a str, h: &'a Hist1D) -> rootfile::H1Spec<'a> {
         tsumwx: h.tsumwx,
         tsumwx2: h.tsumwx2,
     }
+}
+
+/// The §6 input content hash for the JSONL path, computed in one streaming
+/// pass through a fixed 64 KiB buffer — O(1) memory even on a 1M-event
+/// file. Bytes are hashed in file order, so the digest is deterministic and
+/// matches a one-shot `input_sha256` of the same file.
+fn hash_file_streaming(path: &Path) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize_hex())
 }
 
 fn region_text(r: &RegionResult) -> String {

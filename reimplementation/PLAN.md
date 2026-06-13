@@ -192,6 +192,24 @@ script validated the same way; determinism (byte-identical reruns).
 
 ## Phase 10 — Event pipeline: ingestion, cutflows, histogram completion, scale (≈ 3 weeks)
 
+> **Implemented (2026-06-13).** All four sub-phases shipped and wired into
+> `smash2 run`/`ingest`, end-to-end validated on the real 20k-event T2tt
+> Delphes sample against independent uproot/numpy oracles (see
+> `adl2/PIPELINE_REPORT.md`). 10a cutflows (`cutflow.json` + stdout table +
+> labeled TH1D pair), 10b TH2D + variable-bin TH1D + per-region
+> `TDirectory`s (rootfile v2), 10c native Delphes ingestion (oxyroot
+> `=0.1.25`, profile data table, uproot oracle script, provenance in every
+> output), 10d streaming reader + chunked parallel loop (C=4096,
+> ascending-index fold, byte-deterministic at any `--jobs`). Exit criteria
+> met: the env-gated `SMASH2_RUN_DELPHES_E2E=1` ingestion-fidelity test is
+> green on the sample; cutflow raw counts match an independent uproot+numpy
+> recompute; out.root round-trips through uproot (labels, TH2D flow values,
+> variable edges, provenance TNamed); `--jobs 1`≡`--jobs 8` byte-identical;
+> the cutflow/histo goldens and full corpus gate stay green. Remaining
+> [DECIDE]: I4 (weight branch) needs a *weighted* sample to ratify — this
+> sample is all-weights-1.0; NanoAOD/PHYSLITE profiles spec'd, not built.
+> See `adl2/BUILD_NOTES.md` (Phase-10 entries) and `adl2/PIPELINE_REPORT.md`.
+
 Spec: `reimplementation/SPEC_EVENT_PIPELINE.md` (probed 2026-06-12: oxyroot
 0.1.25 reads Delphes TClonesArray leaf branches natively, byte-exact vs
 uproot 5.7.4 on the 20k-event T2tt_700_50 sample at ~685k events/s).

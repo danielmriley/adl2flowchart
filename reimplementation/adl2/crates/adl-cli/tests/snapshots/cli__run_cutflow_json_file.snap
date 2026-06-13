@@ -1,9 +1,21 @@
 ---
 source: crates/adl-cli/tests/cli.rs
-expression: "outputs[1]"
+expression: "redact_provenance_files(&outputs[1])"
 ---
 {
   "version": 1,
+  "provenance": {
+    "tool": "smash2 0.1.0",
+    "adl": {
+      "file": "[temp]",
+      "sha256": "3ae8109e48808a623bd39e2a00600da0295d483dfb7865c989dd61debc3e0876"
+    },
+    "input": {
+      "file": "[temp]",
+      "sha256": "f6a796d4da52ed7032ef7f7affd3de97157246e791effa021ecce9808512560b",
+      "events": 4
+    }
+  },
   "total": {
     "raw": 4,
     "sumw": 4.0,

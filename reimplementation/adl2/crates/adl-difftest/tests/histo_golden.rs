@@ -52,8 +52,10 @@ fn ex02_histos_json_golden() {
     assert_eq!(events.len(), 200, "committed fixture is 200 events");
     let set = accumulate(&hir, &ext, &events);
 
-    // The 1-D uniform histograms instantiate; deferred forms are skipped
-    // with one diagnostic each, plus the repeated-histoList note.
+    // All three histogram forms instantiate now (SPEC_EVENT_PIPELINE §3):
+    // the 2-D `hj1ptMET`/`hlep1ptMET` and the variable-bin `hmetvarbin`
+    // fill alongside the 1-D uniform histograms — no more deferral. The
+    // only setup diagnostic left is the repeated-histoList note.
     let names: Vec<(&str, &str)> = set
         .histos
         .iter()
@@ -63,6 +65,8 @@ fn ex02_histos_json_golden() {
         names,
         [
             ("hmet", "baseline"),
+            ("hj1ptMET", "baseline"),
+            ("hmetvarbin", "baseline"),
             ("hnjets", "baseline"),
             ("hjet1pt", "baseline"),
             ("hjet2pt", "baseline"),
@@ -72,6 +76,7 @@ fn ex02_histos_json_golden() {
             ("hjet3eta", "baseline"),
             ("hlep1pt", "singlelepton"),
             ("hlep1eta", "singlelepton"),
+            ("hlep1ptMET", "singlelepton"),
         ]
     );
     let diags = set.diagnostics();

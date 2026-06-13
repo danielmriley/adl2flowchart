@@ -191,6 +191,14 @@ impl<'h> Interp<'h> {
         self.hir
     }
 
+    /// The external declarations this interpreter resolves against — the
+    /// same `ExtDecls` the streaming event reader needs (event parsing
+    /// uses its canonicalization maps).
+    #[must_use]
+    pub fn ext(&self) -> &'h ExtDecls {
+        self.ext
+    }
+
     /// Evaluate region membership by (case-insensitive) name.
     ///
     /// # Errors

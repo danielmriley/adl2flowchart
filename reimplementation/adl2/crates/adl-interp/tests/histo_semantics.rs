@@ -210,28 +210,42 @@ region SR\n\
 }
 
 #[test]
-fn deferred_forms_are_skipped_with_reasons() {
+fn all_forms_instantiate_and_malformed_args_are_skipped_with_reasons() {
+    // The 2-D and variable-bin forms now accumulate (SPEC_EVENT_PIPELINE
+    // §3); only genuinely malformed argument lists are skipped, each with
+    // an honest reason.
     let adl = "\
 region SR\n\
   select MET >= 0\n\
-  histo h2d, \"2d\", 4, 0, 100, 4, 0, 100, MET, HT\n\
+  histo h2d, \"2d\", 4, 0, 100, 4, 0, 100, MET, MET / 2\n\
   histo hvar, \"var\", 0.0 10.0 50.0, MET\n\
   histo hzero, \"zero bins\", 0, 0, 100, MET\n\
   histo hhuge, \"huge bins\", 4294967295, 0, 100, MET\n\
-  histo hrange, \"bad range\", 4, 100, 100, MET\n";
+  histo hrange, \"bad range\", 4, 100, 100, MET\n\
+  histo hvarbad, \"non-increasing edges\", 10.0 5.0 20.0, MET\n";
     let h = hir(adl);
     let set = run(&h, &events(&[&met_event(25.0)]));
-    assert!(set.histos.is_empty());
+    let names: Vec<&str> = set.histos.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["h2d", "hvar"], "valid forms instantiate");
+
     let diags = set.diagnostics();
-    assert_eq!(diags.len(), 5, "{diags:?}");
-    assert!(diags[0].contains("2-D histogram (deferred)"), "{diags:?}");
+    assert_eq!(diags.len(), 4, "one per malformed histo: {diags:?}");
     assert!(
-        diags[1].contains("variable-bin histogram (deferred)"),
+        diags[0].contains("hzero") && diags[0].contains("not a positive integer"),
         "{diags:?}"
     );
-    assert!(diags[2].contains("not a positive integer"), "{diags:?}");
-    assert!(diags[3].contains("not a positive integer"), "{diags:?}");
-    assert!(diags[4].contains("empty axis range"), "{diags:?}");
+    assert!(
+        diags[1].contains("hhuge") && diags[1].contains("not a positive integer"),
+        "{diags:?}"
+    );
+    assert!(
+        diags[2].contains("hrange") && diags[2].contains("empty axis range"),
+        "{diags:?}"
+    );
+    assert!(
+        diags[3].contains("hvarbad") && diags[3].contains("strictly increasing"),
+        "{diags:?}"
+    );
 }
 
 #[test]

@@ -1712,3 +1712,299 @@ must be raw-source-exact before the TH1D `fLabels` work consumes them.
   flag for ratification if cross-region weighting is wanted).
 - `--fail-on errors>0` gating mentioned in §2 not yet added to `run` (only
   `verify` has `--fail-on` today); errors are surfaced in table + JSON.
+
+## 2026-06-12 — Phase 10b wire-up + §6 provenance: 2-D / variable-bin histos fill end-to-end; provenance embedded everywhere
+
+Scope: close the SPEC_EVENT_PIPELINE §3 sema/accumulator gap and the §6
+provenance gap. The `rootfile` crate already had TH2D + variable-bin TH1D +
+TNamed writers passing the uproot oracle in isolation, and the adl-interp
+accumulator already had `Hist2D`/`Hist1DVar` + histos.json v2; the missing
+links were (a) sema still resolved the 2-D/var-bin `histo` syntax to
+`HistoSpec::Unsupported`, so those fills never instantiated, and (b) no run
+emitted a provenance object. Touched adl-sema, adl-interp, adl-cli, plus the
+ex02 difftest/CLI goldens. No new dependencies.
+
+### Built
+
+- **Sema (adl-sema)**: `HistoSpec` gains `Var1D { edges, expr }` and
+  `Uniform2D { nx, xlo, xhi, ny, ylo, yhi, xexpr, yexpr }`;
+  `resolve_histo_spec` recognizes the variable-bin (`e0 e1 … en, expr`) and
+  2-D (`nx, xlo, xhi, ny, ylo, yhi, xexpr, yexpr`) shapes. Edge lists are
+  validated strictly increasing with ≥ 2 edges at resolve time (else
+  `Unsupported` with the honest reason). Only genuinely malformed argument
+  lists remain `Unsupported`.
+- **Accumulator (adl-interp/histo.rs)**: `HistoSet::instantiate` now maps the
+  two new specs into the existing `HistAcc::H1Var`/`HistAcc::H2` arms (which
+  already had fills, the seven 2-D moments, and v2 JSON). A defensive
+  re-check of edge monotonicity at instantiation guards a future caller.
+  Everything downstream (histos.json v2, bridges, out.root) already rendered
+  these forms — no change there.
+- **Provenance (SPEC_EVENT_PIPELINE §6)**: new `adl_interp::Provenance` +
+  `InputIdentity`, rendered with the shared ordered `JsonWriter`
+  (`tool, adl{file,sha256}, input{file,sha256,events,profile?}, seed?,
+  decides?` — fixed order, no wall-clock). `HistoSet::to_json_with` /
+  `CutflowSet::to_json_with` embed it as a top-level `provenance` key
+  (the bare `to_json` stays for the content goldens). The CLI builds **one**
+  object per run and embeds the identical bytes in histos.json, cutflow.json,
+  the `--json` lines, and an `out.root` `TNamed` named `smash2_provenance`
+  (title = compact canonical JSON). Input identity hashes the *original*
+  bytes — the ROOT file under `--profile`, the JSONL otherwise — and carries
+  the profile id + `decides()` choices.
+- **SHA-256 (adl-interp/sha256.rs)**: a self-contained FIPS 180-4
+  implementation, vendored rather than a new dependency (same discipline as
+  rootfile's streamer blobs; zero external surface, byte-deterministic).
+  Verified against the empty/`abc`/56-byte and 1,000,000-byte FIPS vectors.
+
+### Verification (run before returning)
+
+- `cargo build --workspace` green; `cargo test --workspace` **503 passed /
+  0 failed** (was 457; +46: 2 sha256, 2 provenance, rewritten/added histo +
+  CLI tests, the env-gated ex02 uproot e2e). `cargo test -p adl-interp
+  -p adl-cli --no-default-features` green.
+- `cargo clippy --workspace --all-targets -- -D warnings` clean; `rustfmt
+  --check` clean on every file touched this pass (the pre-existing
+  whole-workspace fmt drift in other crates, noted 2026-06-12, remains
+  untouched).
+- **ex02 now fills all three forms**: `hj1ptMET` (h2, 40×40, 32 entries),
+  `hlep1ptMET` (h2, 11 entries), `hmetvarbin` (h1var, exact edges
+  `[0,10,20,50,100,500]`, 32 entries) appear in histos.json and out.root —
+  the histo_golden diagnostics snapshot drops the two "deferred; skipped"
+  lines (only the repeated-histoList note remains). Content pinned in the
+  committed golden snapshot.
+- **Provenance round-trips through every output**: a permanent CLI test
+  (`run_histos_writes_native_root_file`) re-reads the `smash2_provenance`
+  TNamed with the writer's own reader and asserts its title bytes equal the
+  object embedded in histos.json; histos.json == cutflow.json provenance.
+- **Independent uproot oracle** (env-gated `SMASH2_RUN_UPROOT_ORACLE=1`,
+  forced on this machine via `.venv-uproot` uproot 5.7.4):
+  `ex02_out_root_read_back_by_uproot` runs the full `run --histos` path and
+  asserts via uproot: `hj1ptMET.values(flow=True)` is (42,42) summing 32,
+  `hmetvarbin` edges are the exact ex02 edges with 32 entries, and the
+  provenance TNamed title parses as JSON with the matching ADL sha256.
+
+### Decisions / deviations (flagged)
+
+- **Provenance `tool` = `smash2 <CARGO_PKG_VERSION>`** (no git short hash):
+  no build-time git capture is wired, and a hash would not survive the
+  byte-determinism guarantee across commits without an injection seam. The
+  §6 `+<git>` suffix is left for a later build.rs that pins/injects it like
+  `out.root`'s fDatime. Deterministic per build today.
+- **Snapshot redaction**: the four provenance-bearing CLI snapshots redact
+  only the `provenance.file` basenames (they carry the test pid); both
+  sha256s, the tool string, and the event count stay pinned. insta's
+  `filters` feature is not enabled in the workspace, so redaction is a plain
+  string pass in the test, not an insta filter (no Cargo feature churn).
+
+### Gaps / deferred (named)
+
+- `seed` is wired in the `Provenance` struct but always `None` from `run`
+  (synthetic-event seeding is 10d scale work); `decides` is populated only
+  under `--profile`.
+- `ingest -o` still does not write the sibling `events.provenance.json`
+  (§6, the 10c ingest path) — `run` is fully covered; the ingest sibling
+  remains the named 10c gap.
+- [DECIDE-P1] is implemented as always-full-sha256 (recommended); no
+  size-threshold fingerprint scheme.
+
+## 2026-06-13 — Phase 10d: streaming input + deterministic parallel event loop (SPEC_EVENT_PIPELINE §5)
+
+Scope: replace the whole-file `read_jsonl` buffering + serial event loop of
+`smash2 run` with a streaming reader and a chunked, parallel loop whose
+merge is byte-deterministic regardless of `--jobs`. No experiment specifics
+touched (the loop is profile-agnostic); the cutflow/histogram accumulators,
+out.root, and provenance from 10a–10c are reused unchanged. No new runtime
+dependencies (std threads + channels; criterion is bench-only, gated off the
+default graph). Touched adl-interp (streaming reader, accumulator merges,
+incremental sha256), adl-cli (parallel driver, `--jobs`, streaming hash),
+adl-difftest (bench).
+
+### Built
+
+- **Streaming reader (adl-interp/event.rs)**: `RawChunkReader` yields fixed
+  `C = CHUNK_EVENTS = 4096` chunks of *unparsed* lines pulled from any
+  `BufRead`, never buffering the file; `RawChunk::parse` turns one into an
+  `EventChunk` of `StreamedEvent { ordinal, line, event }`. The parse runs
+  **off** the shared reader lock — only line I/O is serialized — so JSON
+  parsing + pT validation parallelize across workers (this is the single
+  biggest throughput lever, below). `ChunkReader` keeps the inline-parse
+  convenience path. Blank lines are skipped but counted (line numbers match
+  the file); `ordinal` is the 0-based dense event index the per-event output
+  numbers by, stable across `--jobs`.
+- **Accumulator merges (adl-interp)**: `Counts::merge`, `Hist1D/Hist1DVar/
+  Hist2D::merge`, `HistAcc/HistoFill/HistoSet::merge`, `BinFlow/RegionFlow/
+  CutflowSet::merge` — field-wise additive merges in fixed structural order
+  (both sides come from the same HIR, so indices align; debug-asserted).
+  `0.0 + v == v` means merging one partial into a fresh master reproduces it
+  bit-for-bit, which is what makes a single-chunk run byte-identical to the
+  old serial pass.
+- **Parallel driver (adl-cli/cmd/parallel.rs)**: `N = --jobs` scoped std
+  threads pull `RawChunk`s under a mutex, parse + evaluate into **private**
+  `HistoSet`/`CutflowSet` partials (no atomics, no shared mutation), and
+  send them tagged with the ascending chunk index. The main thread runs a
+  single fold with a reorder buffer that merges strictly in ascending index
+  and flushes the per-event stdout lines in that same order — so text/JSON
+  event output stays in input order and every f64 addition sequence is
+  fixed. A malformed line records the earliest-by-line error (deterministic)
+  and the run exits 1.
+- **`--jobs N` (adl-cli)**: `0` (default) = all cores
+  (`available_parallelism`). Documented as never changing outputs.
+- **Incremental SHA-256 (adl-interp/sha256.rs)**: refactored the one-shot
+  hasher into a streaming `Sha256` (8-word state + one 64-byte block buffer,
+  O(1) memory); `run` hashes the §6 input identity in a separate 64 KiB-
+  buffered pass so a 1M-event file is hashed without buffering it. The old
+  `sha256_hex` is now a thin wrapper; FIPS vectors + a new chunked-vs-one-
+  shot test (1-byte … 1000-byte chunkings, incl. the 1M vector) pin it.
+
+### Verification (run before returning)
+
+- **`--jobs 1` == `--jobs 8` byte-identical**, the §5 gate: new CLI test
+  `parallel_run_is_byte_identical_to_serial` runs a 10,000-event (3-chunk)
+  synthetic stream with float weights through 1-D/var-bin/2-D histos + a
+  multi-step cutflow and byte-compares **histos.json, cutflow.json,
+  out.root, make_histos.C, to_root.py, and the CSVs** across `--jobs 1`,
+  `--jobs 8`, and a second `--jobs 8` run (scheduling independence).
+  `parallel_stdout_stays_in_input_order` pins the 9000-event `--json` stream
+  to ascending event order at `--jobs 8`.
+- **Merge correctness, independent of the CLI**: `adl-interp/tests/
+  merge_determinism.rs` — single-chunk merge == naive serial byte-for-byte
+  (floats and all); fold at C=4096 reproducible; integer-weight cutflow ==
+  serial for *any* chunk size (a transposed merge would corrupt these).
+- **Existing determinism tests byte-identical with parallelism ON by
+  default**: the whole prior CLI snapshot/golden suite passes unchanged —
+  every fixture is ≤ 300 events (< C = 4096), so each run is one chunk and
+  the merge-into-empty identity holds exactly. `cargo test --workspace`
+  **509 passed / 0 failed** (was 503; +6: 2 parallel CLI, 3 merge, 1
+  incremental-sha256). `-p adl-interp -p adl-cli --no-default-features`
+  green.
+- `cargo build --workspace` green; `cargo clippy --all-targets -- -D
+  warnings` clean; rustfmt clean on every file touched this pass (the
+  pre-existing whole-workspace fmt drift in untouched crates remains).
+
+### Throughput (committed criterion bench, non-gating)
+
+`cargo bench -p adl-difftest --features bench` (`benches/event_loop.rs`,
+behind the off-by-default `bench` feature so criterion never enters the
+normal build graph). Synthetic seeded events (the adl-difftest toy
+generator) through the real loop primitives over ex02_histograms (2
+selection regions, 9 histograms incl. a TH2D — the heavy end of the corpus).
+Measured on this machine (12 logical cores, release):
+
+- serial (`--jobs 1`):    ~55k events/s
+- parallel (`--jobs 12`): ~306k events/s  (~5.6× scaling; **> 100k target**)
+
+End-to-end measured separately via the release binary on a lighter ADL
+(1 region, 3 histos), 1M synthetic events: **685k events/s** at default
+jobs (1.46 s), 180k events/s at `--jobs 1`. The parse-off-lock change lifted
+the ex02 parallel number from ~103k to ~306k (the JSON parse had been
+serialized inside the reader mutex).
+
+### Bounded memory (1M-event synthetic stream, documented measurement)
+
+`/usr/bin/time -v ./target/release/smash2 run scale.adl events_1m.jsonl
+--histos out --no-root` on a 172 MB / 1,000,000-event JSONL:
+
+- `--jobs 1`:      peak RSS **19 MB**  (proves the reader never buffers the
+                   172 MB file — O(one chunk))
+- default (12):    peak RSS **147 MB** (O(jobs × chunk + reorder buffer +
+                   accumulators), **not** O(file); under the §5 1 GiB bound)
+- histos.json / cutflow.json **byte-identical** between `--jobs 1` and
+  default jobs on the full 1M-event run.
+
+(`--no-root` isolates the loop; out.root is buffered in memory before
+finish by design — a separate, bounded cost.)
+
+### Decisions / deviations (flagged)
+
+- **std threads + mpsc, not rayon**: the loop is a bespoke producer/reorder-
+  consumer with a fixed fold order; rayon's work-stealing would not improve
+  on the cheap-lock design and adds a dependency. Kept zero-dep.
+- **Parse off the reader lock**: required to scale (above). Determinism is
+  unaffected — parsing is pure and the ordinal/line/chunk-index are assigned
+  by the sequential raw reader before any parallelism.
+- **Malformed-input on the parallel path** records the earliest-by-line
+  error and exits 1; good chunks already folded/streamed before the error
+  are discarded on the error return (the streamed partial stdout may vary by
+  scheduling, but the exit-1 diagnostic — the only surviving output — is
+  deterministic). Matches the old "first error wins, exit 1" behavior.
+- **Per-event output numbering** uses the dense event ordinal (unchanged for
+  the blank-line-free canonical fixtures; now also correct when blank lines
+  are present, where the old `evs.iter().enumerate()` index already was).
+
+## 2026-06-13 — Phase 10 real-sample end-to-end validation (SPEC_EVENT_PIPELINE §7)
+
+Scope: no code changes — verification + documentation. Confirmed the wired
+Phase-10 pipeline (cutflows, TH2D, variable-bin TH1D, per-region
+`TDirectory`s, provenance, native Delphes ingestion, parallel loop) is fully
+reachable from `smash2 run … --profile delphes --histos`, and ran the SPEC
+§7 e2e on the real pinned Delphes sample. Produced `PIPELINE_REPORT.md`;
+refreshed `README.md` (histograms section now documents varbin/TH2D +
+TDirectories + cutflows + provenance + a real-data quickstart; status line
+and test count updated to 510) and `PLAN.md` Phase 10 (Implemented callout).
+
+### Real-sample e2e (genuine Delphes file, not a synthetic fallback)
+
+Sample `/tmp/delphes_T2tt_700_50.root` was present with the exact pinned
+sha256 `04fae8b1…` (71,452,474 bytes, tree `Delphes`, 20,000 events) — no
+download needed; the run used the real CutLang tutorial file. All five SPEC
+§7 assertions pass, each via an **independent oracle** (uproot 5.7.4 from
+`.venv-uproot`; throwaway scripts in `/tmp/e2e/`):
+
+1. **Ingestion fidelity**: native oxyroot JSONL == generated `to_jsonl.py`
+   (uproot) JSONL, byte-identical, sha256 `e1a5499b…`, all 20,000 events;
+   entry-0 probe values pinned (`Jet[0].pt=719.5091552734375`,
+   `MET.pt=653.098876953125`). The committed env-gated test
+   `delphes_sample_ingestion_fidelity_end_to_end` (SMASH2_RUN_DELPHES_E2E=1,
+   SMASH2_DELPHES_SAMPLE) is green (83 s incl. the oracle subprocess).
+2. **Cutflow correctness**: an independent uproot+numpy recompute of both
+   regions matches `cutflow.json` raw counts exactly, all 10 steps
+   (baseline 20000→16879→14194→10835→10309→8930; singlelepton inherit
+   8930→1336; b-tag bit-0 mask, union lepton count, inherit-as-one-step all
+   reproduced). errors=0.
+3. **Distribution sanity**: hmet mean 424.9 GeV ∈[200,800], hnjets mode 4.5
+   ∈[2,8], hjet1eta mean 0.0175 (|·|<0.2 symmetry), 0<flow<entries, pt axes
+   non-negative, weighted==raw (all weights 1.0).
+4. **Round-trip**: uproot read-back of `out.root` — cutflow TH1D bin labels
+   are the verbatim statement texts, TH2D `hj1ptMET` flow-values total
+   matches histos.json, `hmetvarbin` edges `[0,10,20,50,100,500]` preserved,
+   `smash2_provenance` TNamed title parses as JSON with the matching
+   ADL+input sha256s; `to_root.py` bridge histos byte-agree with native
+   out.root (13/13, 0 mismatches).
+5. **Determinism at scale**: `--jobs 1` ≡ `--jobs 8` ≡ rerun byte-identical
+   across histos.json/cutflow.json/out.root/make_histos.C/to_root.py on the
+   full sample.
+
+`out.root` TDirectory layout confirmed: `baseline/` + `singlelepton/` each
+holding their histos by bare name and the `__cutflow_raw`/`__cutflow_wt`
+pair, `smash2_provenance` TNamed at the root.
+
+### Throughput / memory (real-sample run, this machine)
+
+`run --profile delphes --histos --json` (native 71 MB read + ingest-to-JSONL
++ eval over 2 regions/13 histos + 5 outputs): ~0.55 s / 187 MB at default
+jobs (12), ~0.99 s / 135 MB at `--jobs 1` — read-bound (raw branch read
+alone was ~685k ev/s in the §1.1 probe). The §5 ≥100k ev/s loop target is
+met on the committed criterion bench (ex02 ~306k parallel; light ADL 685k on
+1M synthetic). The native `ingest` of all 20k events ran in 0.13 s / 64 MB.
+
+### Gates (run before returning)
+
+- `cargo build --workspace` green; `cargo clippy --all-targets -- -D
+  warnings` clean; `cargo test --workspace` **510 passed / 0 failed**;
+  `corpus_gate.sh` 68/68; subprocess solver backend 8/0;
+  `-p adl-interp -p adl-cli --no-default-features` 153/0; CLI insta
+  snapshots current (no `.snap.new`). Env-gated oracles with `.venv-uproot`
+  on PATH: `rootfile` uproot_oracle (ROOTFILE_REQUIRE_UPROOT=1) 9/0; cli
+  root oracle (SMASH2_RUN_ROOT_ORACLE=1) incl. `ex02_out_root_read_back_by_
+  uproot` green; ingest uproot oracle + delphes e2e green.
+
+### Known gaps (carried, faithful)
+
+- **[DECIDE-I4] unverifiable on this sample**: `Event.Weight` is 1.0 for all
+  20,000 events, so weighted==raw and the branch choice cannot be
+  distinguished — needs a weighted Delphes sample to ratify. The 20,000 LHE
+  multiweights are reported-and-dropped (v1).
+- Provenance `tool` carries no git hash (deterministic per build; injection
+  seam deferred); `ingest -o` still writes no sibling
+  `events.provenance.json`; NanoAOD/PHYSLITE spec'd, not built; mid-selection
+  histoList fill points are honestly diagnosed (filled once on full region
+  acceptance), not guessed.

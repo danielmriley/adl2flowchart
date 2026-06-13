@@ -131,6 +131,20 @@ impl fmt::Display for EventError {
     }
 }
 
+impl EventError {
+    /// The 1-based source line the error refers to (the deterministic key
+    /// the parallel loop uses to surface the earliest bad line).
+    #[must_use]
+    pub fn line(&self) -> usize {
+        match self {
+            EventError::Json { line, .. }
+            | EventError::Shape { line, .. }
+            | EventError::NotPtDescending { line, .. }
+            | EventError::BadTriggerFlag { line, .. } => *line,
+        }
+    }
+}
+
 impl std::error::Error for EventError {}
 
 /// Parse a single JSONL line into an [`Event`].
@@ -152,6 +166,192 @@ pub fn read_jsonl(text: &str, ext: &ExtDecls) -> Result<Vec<Event>, EventError> 
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(i, l)| event_from_line(i + 1, l, ext))
         .collect()
+}
+
+/// The fixed event-chunk size for the streaming/parallel loop
+/// (SPEC_EVENT_PIPELINE §5): `C` consecutive events per chunk, **constant**
+/// and independent of thread count, so the §5 ascending-chunk-index fold
+/// produces byte-identical sums for any `--jobs`.
+pub const CHUNK_EVENTS: usize = 4096;
+
+/// One streamed event with its bookkeeping: the 0-based dense **ordinal**
+/// over processed (non-blank) events — what the per-event output indexes by
+/// — and the 1-based source **line** (for error context). Both come from
+/// the sequential reader, so they are stable regardless of `--jobs`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamedEvent {
+    pub ordinal: usize,
+    pub line: usize,
+    pub event: Event,
+}
+
+/// One streamed chunk: up to [`CHUNK_EVENTS`] consecutive events, tagged
+/// with a monotonically increasing `index`. The index pins the reduction
+/// order (§5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventChunk {
+    /// Ascending chunk index (0, 1, 2, …) — the deterministic fold key.
+    pub index: usize,
+    /// Events in input order.
+    pub events: Vec<StreamedEvent>,
+}
+
+/// A streaming JSONL reader (SPEC_EVENT_PIPELINE §5): pulls lines from a
+/// [`BufRead`](std::io::BufRead) and yields fixed-size [`EventChunk`]s of
+/// **parsed** events without ever buffering the whole input. Blank lines
+/// are skipped but counted, so reported line numbers match the file. A
+/// parse error stops iteration with the offending line.
+///
+/// This reader parses inline; for the parallel loop use [`RawChunkReader`],
+/// which hands out *unparsed* line chunks so the (heavier) JSON parse runs
+/// off the shared lock, on the worker thread.
+pub struct ChunkReader<'e, R> {
+    raw: RawChunkReader<R>,
+    ext: &'e ExtDecls,
+}
+
+impl<'e, R: std::io::BufRead> ChunkReader<'e, R> {
+    /// Wrap a buffered reader. Nothing is read until the first chunk is
+    /// pulled.
+    pub fn new(reader: R, ext: &'e ExtDecls) -> Self {
+        Self {
+            raw: RawChunkReader::new(reader),
+            ext,
+        }
+    }
+}
+
+/// One streamed line awaiting parse: its 0-based dense `ordinal` over
+/// non-blank lines and its 1-based source `line`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawLine {
+    pub ordinal: usize,
+    pub line: usize,
+    pub text: String,
+}
+
+/// A chunk of unparsed lines tagged with its ascending `index` (§5 fold
+/// key). Parsing each [`RawLine`] into a [`StreamedEvent`] is the worker's
+/// job — see [`RawChunk::parse`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawChunk {
+    pub index: usize,
+    pub lines: Vec<RawLine>,
+}
+
+impl RawChunk {
+    /// Parse every line into a [`StreamedEvent`] (off the reader lock).
+    ///
+    /// # Errors
+    /// Returns the first [`EventError`] in the chunk, with its 1-based line
+    /// — the line numbers are global, so the earliest-line error across all
+    /// chunks is well defined.
+    pub fn parse(&self, ext: &ExtDecls) -> Result<EventChunk, EventError> {
+        let mut events = Vec::with_capacity(self.lines.len());
+        for rl in &self.lines {
+            let event = event_from_line(rl.line, &rl.text, ext)?;
+            events.push(StreamedEvent {
+                ordinal: rl.ordinal,
+                line: rl.line,
+                event,
+            });
+        }
+        Ok(EventChunk {
+            index: self.index,
+            events,
+        })
+    }
+}
+
+/// The lock-cheap half of the streaming reader: yields chunks of raw,
+/// unparsed lines. Only line I/O happens here, so when several workers
+/// share one of these under a mutex they serialize on nothing but reading —
+/// the JSON parse and event validation run in parallel on the workers.
+pub struct RawChunkReader<R> {
+    lines: std::iter::Enumerate<std::io::Lines<R>>,
+    next_index: usize,
+    next_ordinal: usize,
+    done: bool,
+}
+
+impl<R: std::io::BufRead> RawChunkReader<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            lines: reader.lines().enumerate(),
+            next_index: 0,
+            next_ordinal: 0,
+            done: false,
+        }
+    }
+}
+
+/// A streaming error: either an I/O failure pulling a line, or a malformed
+/// event ([`EventError`], which carries the 1-based line).
+#[derive(Debug)]
+pub enum StreamError {
+    Io(std::io::Error),
+    Event(EventError),
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StreamError::Io(e) => write!(f, "read error: {e}"),
+            StreamError::Event(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for StreamError {}
+
+impl<R: std::io::BufRead> Iterator for RawChunkReader<R> {
+    type Item = Result<RawChunk, std::io::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let mut lines = Vec::new();
+        for (i, line) in self.lines.by_ref() {
+            let text = match line {
+                Ok(t) => t,
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            lines.push(RawLine {
+                ordinal: self.next_ordinal,
+                line: i + 1,
+                text,
+            });
+            self.next_ordinal += 1;
+            if lines.len() >= CHUNK_EVENTS {
+                break;
+            }
+        }
+        if lines.is_empty() {
+            self.done = true;
+            return None;
+        }
+        let index = self.next_index;
+        self.next_index += 1;
+        Some(Ok(RawChunk { index, lines }))
+    }
+}
+
+impl<R: std::io::BufRead> Iterator for ChunkReader<'_, R> {
+    type Item = Result<EventChunk, StreamError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.raw.next()? {
+            Ok(chunk) => Some(chunk.parse(self.ext).map_err(StreamError::Event)),
+            Err(e) => Some(Err(StreamError::Io(e))),
+        }
+    }
 }
 
 fn shape(line: usize, message: impl Into<String>) -> EventError {

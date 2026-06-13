@@ -8,12 +8,17 @@ tool in `../../legacy_parser/`, built so that the soundness properties the
 legacy tool earned through two audits hold here *by construction*.
 
 Status: all spec phases through the parity gate draft are built and green,
-plus Phase 9 histogram production (`run --histos`, including a native
-pure-Rust `out.root`) and Phase 10 Delphes ingestion (`ingest` /
-`run --profile delphes`, native ROOT reading with an independent uproot
-oracle) — 457 tests, 68/68 corpus files, the full legacy golden battery
-on both solver backends, and a verdict-parity comparison against the
-legacy tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
+plus Phase 9 histogram production (`run --histos`, native pure-Rust
+`out.root`) and the full Phase 10 event pipeline: Delphes ingestion
+(`ingest` / `run --profile delphes`), per-region cutflows, TH2D +
+variable-bin histograms in per-region `TDirectory`s, embedded provenance,
+and a streaming chunked-parallel run loop that is byte-deterministic at any
+`--jobs`. End-to-end validated on the real 20k-event T2tt Delphes sample
+against independent uproot/numpy oracles (see
+[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md)) — 510 tests, 68/68 corpus
+files, the full legacy golden battery on both solver backends, and a
+verdict-parity comparison against the legacy tool with zero legacy-better
+differences (`../PARITY_DRAFT.md`).
 
 ---
 
@@ -132,10 +137,11 @@ into each region that references it (filled once on that region's full
 acceptance); plain region inheritance does **not** import histograms. An
 event whose fill expression has no value (missing element/property,
 non-finite arithmetic) or hits a hard evaluation error is counted and
-summarized on stderr — no entry is recorded. 2-D histograms and
-variable-bin histograms are deferred in v1: each is skipped with a stderr
-diagnostic and is absent from the outputs (the rest of the file's
-histograms still fill).
+summarized on stderr — no entry is recorded. 1-D, **variable-bin 1-D**, and
+**2-D** histograms are all supported (`histo h, "t", nx, xlo, xhi, ny, ylo,
+yhi, xexpr, yexpr` for 2-D; `histo h, "t", e0 e1 … en, expr` for variable
+bins); each carries the matching ROOT fill-time stats moments (four for 1-D,
+seven for 2-D).
 
 **Weights.** Each fill is weighted by the **product of the region's own
 numeric `weight` statements** (`weight lumi 2.0`). A non-numeric weight
@@ -144,18 +150,37 @@ weights do not apply. The accumulator tracks ROOT `Sumw2` errors (per-bin
 Σw and Σw², including the flow bins) so `GetBinError` is `sqrt(Σw²)`, and
 it accumulates the four fill-time stats moments **at fill time, in-range
 fills only** (Σw, Σw², Σw·x, Σw·x² — ROOT's `GetStats` convention) so
-`GetMean`/`GetStdDev` and `hadd`-merged stats stay exact. Histogram names
-are flat and **region-prefixed** (`baseline_hmet`, `singlelepton_hlep1pt`)
-so they are stable across runs and `hadd`-mergeable; per-region
-`TDirectory`s are a v2 item.
+`GetMean`/`GetStdDev` and `hadd`-merged stats stay exact. In `out.root`
+histograms live in **per-region `TDirectory`s** keyed by bare name
+(`baseline/hmet`, `singlelepton/hlep1pt`); `--flat-names` keeps the v1 flat
+region-prefixed layout (`baseline_hmet`) that the bridges use and that some
+`hadd` workflows prefer. Both layouts are `hadd`-mergeable.
 
-**The four outputs** (all written into `DIR`, all byte-deterministic
-across runs):
+**Cutflows.** Every `run --histos` also writes a per-region **cutflow**: an
+ordered list of steps (step 0 `all`, then one step per membership-affecting
+statement — `select`/`reject`/`trigger`, and parent inheritance as a single
+step), each with `raw`/`sumw`/`sumw2`/`errors`. A hard evaluation error at a
+step counts the event as *failing* that step and increments `errors` (a
+faithful diagnostic, never a guessed pass). Cutflows emit three ways from
+one accumulator: the canonical `cutflow.json`, a stdout table, and a TH1D
+pair per region in `out.root` (`<region>__cutflow_raw` Poisson + `__cutflow_wt`
+Sumw2) whose bins are **labeled with the verbatim statement text**, sitting
+in the region's `TDirectory`.
+
+**Provenance.** Every output carries one canonical `provenance` object,
+byte-identical across them: tool version, ADL file + sha256, input file +
+sha256 + event count + profile, and the per-run `[DECIDE]` choices. In
+`out.root` it is a `smash2_provenance` TNamed (read it with
+`rfile.Get("smash2_provenance")->GetTitle()`); the JSON outputs embed it
+verbatim.
+
+**The outputs** (all written into `DIR`, all byte-deterministic across runs):
 
 | File | What it is |
 |---|---|
-| `histos.json` | the canonical record (name, title, region, edges, per-bin Σw/Σw², under/overflow, entries, the four moments). Single source of truth — every other format is a renderer of it. |
-| `out.root` | a native ROOT file with one `TH1D` per histogram, `Sumw2` errors and stats intact — written in pure Rust by the [`rootfile`](#the-rootfile-crate) crate, no ROOT or Python on your machine. Opt out with `--no-root`. |
+| `histos.json` | the canonical record (name, title, region, `type` h1/h1var/h2, edges/axes, per-bin Σw/Σw², under/overflow, entries, the stats moments) + `provenance`. Single source of truth — every other format is a renderer of it. |
+| `cutflow.json` | the canonical per-region cutflow (steps with raw/sumw/sumw2/errors, bin appendix) + `provenance`. |
+| `out.root` | a native ROOT file — one `TH1D`/`TH1D`(varbin)/`TH2D` per histogram and the cutflow TH1D pair, in per-region `TDirectory`s, plus the provenance TNamed — written in pure Rust by the [`rootfile`](#the-rootfile-crate) crate, no ROOT or Python on your machine. Opt out with `--no-root`. |
 | `make_histos.C` | a self-contained ROOT macro (`root -l -b -q make_histos.C` → `histos.root`); zero dependencies beyond ROOT itself. |
 | `to_root.py` | an uproot 5 + numpy script (`python3 to_root.py` → `histos.root`) for Python-side collaborators. |
 
@@ -178,15 +203,15 @@ smash2 run analysis.adl events.jsonl --histos out/ --no-root
 **What a collaborator does with the output.** Four equivalent paths to the
 same histograms, pick whichever your environment has:
 
-- **ROOT, directly:** `root -l out/out.root` then `baseline_hmet->Draw()`
-  in the prompt (or `new TBrowser`) — the native file opens with no extra
-  step.
+- **ROOT, directly:** `root -l out/out.root`, then `baseline->cd();
+  hmet->Draw()` (or `new TBrowser` and click into the region directories) —
+  the native file opens with no extra step.
 - **ROOT, via the macro:** `cd out && root -l -b -q make_histos.C` builds
   `histos.root` from scratch (useful when you want the build script in
   version control rather than a binary, or to tweak titles/styling).
 - **Python/uproot:** `python3 out/to_root.py` writes a byte-equivalent
   `histos.root`, or open the native file directly:
-  `uproot.open("out/out.root")["baseline_hmet"].values(flow=True)`.
+  `uproot.open("out/out.root")["baseline/hmet"].values(flow=True)`.
 - **No ROOT at all:** the `--csv` tables drop straight into a spreadsheet
   or pandas, and the `--svg` quick-looks open in any browser.
 
@@ -255,6 +280,30 @@ for byte: continuously on the committed fixtures
 and on the full 20 000-event T2tt tutorial sample (env-gated
 `SMASH2_RUN_DELPHES_E2E=1`; fetch it with
 `scripts/fetch_delphes_sample.sh`).
+
+### Real-data quickstart
+
+CutLang's own tutorial sample is the blessed reference (their notebook runs
+`exHistos` ≡ our `ex02_histograms.adl` over it):
+
+```bash
+# 1. fetch the pinned 20k-event Delphes sample (sha256-checked, ~71 MB)
+scripts/fetch_delphes_sample.sh        # -> ~/.cache/smash2/delphes_T2tt_700_50.root
+
+# 2. run the full pipeline straight off the ROOT file
+./target/release/smash2 run examples/tutorials/ex02_histograms.adl \
+  ~/.cache/smash2/delphes_T2tt_700_50.root --profile delphes --histos out/ --json
+
+# out/ now holds histos.json, cutflow.json, out.root (per-region TDirectories
+# with TH1D/TH1D-varbin/TH2D + the labeled cutflow pair + provenance TNamed),
+# and the make_histos.C / to_root.py bridges. Determinism is byte-exact for
+# any --jobs.
+```
+
+This run is validated end-to-end against independent oracles (uproot
+ingestion fidelity, uproot+numpy cutflow recompute, distribution sanity,
+out.root round-trip, `--jobs 1`≡`--jobs 8` byte identity) — see
+[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md).
 
 ---
 
@@ -383,7 +432,7 @@ touching verdicts.
 | `adl-solver` | `Solver` trait; native-z3 and SMT-LIB subprocess backends |
 | `adl-analysis` | pairwise verdicts, vacuity, subset, bins, witnesses, reports/JSON |
 | `adl-viz` | flowchart + AST DOT from HIR |
-| `rootfile` | pure-Rust ROOT `TH1D` file writer (the `run --histos` native `out.root`); standalone, zero-dependency |
+| `rootfile` | pure-Rust ROOT file writer (`TH1D`, variable-bin `TH1D`, `TH2D`, labeled cutflow pairs, per-region `TDirectory`s, `TNamed` provenance — the `run --histos` native `out.root`); standalone, zero-dependency |
 | `adl-difftest` | event generator, property/metamorphic batteries, legacy harness |
 | `adl-cli` | the `smash2` binary |
 
@@ -391,13 +440,18 @@ Specs and design records live one directory up: `../SPEC_LANGUAGE.md`,
 `../SPEC_ARCHITECTURE.md`, `../SPEC_ANALYSIS.md`, `../TESTING.md`,
 `../DECISIONS.md` (ADRs tied to the legacy bugs that motivated them),
 `../PHASE0_RESOLUTIONS.md` (current answers to the open semantic
-questions), `../PARITY_DRAFT.md`. Build history: `BUILD_NOTES.md`,
-`BUILD_REPORT.md`, `COUNTEREXAMPLES.md`.
+questions), `../PARITY_DRAFT.md`, `../SPEC_EVENT_PIPELINE.md` (Phase 10).
+Build history: `BUILD_NOTES.md`, `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`,
+`PIPELINE_REPORT.md` (Phase 10 real-sample e2e).
 
 ```bash
-cargo test --workspace          # full battery (~457 tests)
+cargo test --workspace          # full battery (510 tests)
 scripts/corpus_gate.sh          # all 68 example files parse + resolve
 cargo test -p adl-solver --no-default-features   # subprocess-backend job
+
+# env-gated oracles (need .venv-uproot on PATH; see BUILD_NOTES.md):
+ROOTFILE_REQUIRE_UPROOT=1 cargo test -p rootfile --test uproot_oracle
+SMASH2_RUN_DELPHES_E2E=1 cargo test -p adl-cli --test ingest
 ```
 
 ## Known limits / open items

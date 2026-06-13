@@ -1,5 +1,5 @@
 ---
 source: crates/adl-cli/tests/cli.rs
-expression: "lines[5]"
+expression: "redact_provenance_files(lines[5])"
 ---
-{"cutflow":{"version":1,"total":{"raw":4,"sumw":4.0,"sumw2":4.0},"regions":[{"name":"SR","steps":[{"kind":"all","label":"all","raw":4,"sumw":4.0,"sumw2":4.0,"errors":0},{"kind":"select","label":"select MET > 10","raw":3,"sumw":3.0,"sumw2":3.0,"errors":0}],"bins":[]}]}}
+{"cutflow":{"version":1,"provenance":{"tool":"smash2 0.1.0","adl":{"file":"[temp]","sha256":"3ae8109e48808a623bd39e2a00600da0295d483dfb7865c989dd61debc3e0876"},"input":{"file":"[temp]","sha256":"f6a796d4da52ed7032ef7f7affd3de97157246e791effa021ecce9808512560b","events":4}},"total":{"raw":4,"sumw":4.0,"sumw2":4.0},"regions":[{"name":"SR","steps":[{"kind":"all","label":"all","raw":4,"sumw":4.0,"sumw2":4.0,"errors":0},{"kind":"select","label":"select MET > 10","raw":3,"sumw":3.0,"sumw2":3.0,"errors":0}],"bins":[]}]}}

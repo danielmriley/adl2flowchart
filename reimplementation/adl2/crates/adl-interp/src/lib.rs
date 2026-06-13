@@ -14,6 +14,8 @@ pub mod eval;
 pub mod event;
 pub mod histo;
 mod json;
+pub mod provenance;
+pub mod sha256;
 mod weights;
 
 pub use cutflow::{BinFlow, Counts, CutStep, CutflowSet, RegionFlow};
@@ -21,8 +23,13 @@ pub use eval::{
     BinOutcome, EvalError, Interp, NonValue, NumOutcome, RegionResult, StepEval, assign_bin,
     wrap_dphi,
 };
-pub use event::{Event, EventError, EventObject, parse_event, read_jsonl};
+pub use event::{
+    CHUNK_EVENTS, ChunkReader, Event, EventChunk, EventError, EventObject, RawChunk,
+    RawChunkReader, RawLine, StreamError, StreamedEvent, parse_event, read_jsonl,
+};
 pub use histo::{Hist1D, Hist1DVar, Hist2D, HistAcc, HistoFill, HistoSet};
+pub use provenance::{InputIdentity, Provenance};
+pub use sha256::{Sha256, sha256_hex};
 
 /// Crate identity marker used by the bootstrap smoke test.
 pub const CRATE_NAME: &str = "adl-interp";

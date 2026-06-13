@@ -47,6 +47,9 @@ z3 = "0.20"
 oxyroot = "=0.1.25"
 insta = "1"
 proptest = "1"
+# Throughput benchmark only (SPEC_EVENT_PIPELINE §5); kept out of the
+# default build graph behind adl-difftest's `bench` feature.
+criterion = "0.5"
 
 [profile.dev]
 # z3-sys is slow to compile; keep deps optimized while iterating on our code.

@@ -7,6 +7,7 @@ pub mod check;
 pub mod dot;
 pub mod ingest;
 pub mod objects;
+pub mod parallel;
 pub mod run;
 pub mod verify;
 

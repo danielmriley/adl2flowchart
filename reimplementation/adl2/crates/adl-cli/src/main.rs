@@ -109,6 +109,11 @@ enum Command {
         /// `--histos`).
         #[arg(long, requires = "histos")]
         flat_names: bool,
+        /// Worker threads for the event loop (SPEC_EVENT_PIPELINE §5).
+        /// `0` (default) uses all available cores. Outputs are
+        /// byte-identical for any value — parallelism never changes results.
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        jobs: usize,
     },
     /// Graphviz DOT from the resolved HIR (flowchart by default).
     Dot {
@@ -163,6 +168,7 @@ fn main() -> ExitCode {
             svg,
             no_root,
             flat_names,
+            jobs,
         } => cmd::run::run(
             &file,
             &events,
@@ -175,6 +181,7 @@ fn main() -> ExitCode {
                 no_root,
                 flat_names,
             },
+            resolve_jobs(jobs),
             verbose,
         ),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
@@ -198,6 +205,17 @@ fn main() -> ExitCode {
             eprintln!("smash2: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Resolve `--jobs`: `0` means all available cores (falling back to 1 when
+/// the platform cannot report parallelism). The result never changes
+/// outputs — only throughput (SPEC_EVENT_PIPELINE §5).
+fn resolve_jobs(jobs: usize) -> usize {
+    if jobs == 0 {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    } else {
+        jobs
     }
 }
 

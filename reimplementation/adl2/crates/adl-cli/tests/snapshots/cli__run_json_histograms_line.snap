@@ -1,6 +1,6 @@
 ---
 source: crates/adl-cli/tests/cli.rs
-assertion_line: 301
-expression: "lines[4]"
+assertion_line: 321
+expression: "redact_provenance_files(lines[4])"
 ---
-{"version":2,"histograms":[{"name":"hmet","title":"met","region":"SR","type":"h1","nbins":2,"lo":0.0,"hi":100.0,"sumw":[2.0,2.0],"sumw2":[4.0,4.0],"underflow":{"w":0.0,"w2":0.0},"overflow":{"w":2.0,"w2":4.0},"entries":3,"tsumw":4.0,"tsumw2":8.0,"tsumwx":200.0,"tsumwx2":12500.0}]}
+{"version":2,"provenance":{"tool":"smash2 0.1.0","adl":{"file":"[temp]","sha256":"3ae8109e48808a623bd39e2a00600da0295d483dfb7865c989dd61debc3e0876"},"input":{"file":"[temp]","sha256":"f6a796d4da52ed7032ef7f7affd3de97157246e791effa021ecce9808512560b","events":4}},"histograms":[{"name":"hmet","title":"met","region":"SR","type":"h1","nbins":2,"lo":0.0,"hi":100.0,"sumw":[2.0,2.0],"sumw2":[4.0,4.0],"underflow":{"w":0.0,"w2":0.0},"overflow":{"w":2.0,"w2":4.0},"entries":3,"tsumw":4.0,"tsumw2":8.0,"tsumwx":200.0,"tsumwx2":12500.0}]}

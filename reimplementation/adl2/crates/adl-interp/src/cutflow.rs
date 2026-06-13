@@ -45,6 +45,7 @@
 use crate::eval::{BinOutcome, RegionResult, StepEval};
 use crate::event::Event;
 use crate::json::JsonWriter;
+use crate::provenance::Provenance;
 use crate::weights::stmt_weights;
 use adl_sema::{Fragment, Hir, HirRegionStmt};
 use adl_syntax::span::Span;
@@ -65,6 +66,15 @@ impl Counts {
         self.raw += 1;
         self.sumw += w;
         self.sumw2 += w * w;
+    }
+
+    /// Field-wise merge (SPEC_EVENT_PIPELINE §5 deterministic reduction).
+    /// `0.0 + v == v`, so merging a single partial into a fresh `Counts`
+    /// reproduces it bit-for-bit.
+    fn merge(&mut self, other: &Counts) {
+        self.raw += other.raw;
+        self.sumw += other.sumw;
+        self.sumw2 += other.sumw2;
     }
 }
 
@@ -114,6 +124,50 @@ pub enum BinFlow {
     },
 }
 
+impl BinFlow {
+    /// Merge a same-shape partial (SPEC_EVENT_PIPELINE §5). Both sides come
+    /// from the same `bin` statement, so the variant and bucket count
+    /// match (debug-asserted); the merge adds counts field-wise.
+    fn merge(&mut self, other: &BinFlow) {
+        match (self, other) {
+            (
+                BinFlow::Boundary {
+                    bins, out, failed, ..
+                },
+                BinFlow::Boundary {
+                    bins: ob,
+                    out: oo,
+                    failed: of,
+                    ..
+                },
+            ) => {
+                debug_assert_eq!(bins.len(), ob.len(), "BinFlow::merge bin count mismatch");
+                for (a, b) in bins.iter_mut().zip(ob) {
+                    a.merge(b);
+                }
+                out.merge(oo);
+                *failed += of;
+            }
+            (
+                BinFlow::Cond {
+                    yes, no, failed, ..
+                },
+                BinFlow::Cond {
+                    yes: oy,
+                    no: ono,
+                    failed: of,
+                    ..
+                },
+            ) => {
+                yes.merge(oy);
+                no.merge(ono);
+                *failed += of;
+            }
+            _ => debug_assert!(false, "BinFlow::merge variant mismatch"),
+        }
+    }
+}
+
 /// The cutflow of one selection region.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionFlow {
@@ -125,6 +179,35 @@ pub struct RegionFlow {
     /// Statement index → step index (membership statements only).
     step_of_stmt: HashMap<usize, usize>,
     pub bins: Vec<BinFlow>,
+}
+
+impl RegionFlow {
+    /// Merge a same-shape partial (SPEC_EVENT_PIPELINE §5). Both sides come
+    /// from the same HIR region, so steps and bins align by index
+    /// (debug-asserted); counts/errors add field-wise.
+    fn merge(&mut self, other: &RegionFlow) {
+        debug_assert_eq!(
+            self.region_idx, other.region_idx,
+            "RegionFlow::merge region mismatch"
+        );
+        debug_assert_eq!(
+            self.steps.len(),
+            other.steps.len(),
+            "RegionFlow::merge step count mismatch"
+        );
+        for (a, b) in self.steps.iter_mut().zip(&other.steps) {
+            a.counts.merge(&b.counts);
+            a.errors += b.errors;
+        }
+        debug_assert_eq!(
+            self.bins.len(),
+            other.bins.len(),
+            "RegionFlow::merge bin count mismatch"
+        );
+        for (a, b) in self.bins.iter_mut().zip(&other.bins) {
+            a.merge(b);
+        }
+    }
 }
 
 /// All region cutflows of one resolved analysis unit (single source of
@@ -293,6 +376,24 @@ impl CutflowSet {
         }
     }
 
+    /// Merge a partial [`CutflowSet`] of the same analysis unit into this
+    /// one (SPEC_EVENT_PIPELINE §5). Both sets come from the same HIR, so
+    /// `regions[i]` aligns by index; `setup_diags` is HIR-derived and
+    /// identical, so the master's copy is kept. Folding partials in
+    /// ascending chunk order makes the result byte-identical to a serial
+    /// run that processes those same chunks in order.
+    pub fn merge(&mut self, other: &CutflowSet) {
+        self.total.merge(&other.total);
+        debug_assert_eq!(
+            self.regions.len(),
+            other.regions.len(),
+            "CutflowSet::merge region count mismatch"
+        );
+        for (a, b) in self.regions.iter_mut().zip(&other.regions) {
+            a.merge(b);
+        }
+    }
+
     /// Setup diagnostics (skipped regions), deterministic order.
     #[must_use]
     pub fn diagnostics(&self) -> Vec<String> {
@@ -316,15 +417,27 @@ impl CutflowSet {
     }
 
     /// Canonical `cutflow.json` content (schema `version: 1`,
-    /// SPEC_EVENT_PIPELINE §2; the §6 `provenance` object is a named
-    /// Phase-10c gap). `pretty` selects the file form; both forms are
-    /// byte-deterministic.
+    /// SPEC_EVENT_PIPELINE §2). `pretty` selects the file form; both forms
+    /// are byte-deterministic.
     #[must_use]
     pub fn to_json(&self, pretty: bool) -> String {
+        self.to_json_with(pretty, None)
+    }
+
+    /// `cutflow.json` with the SPEC_EVENT_PIPELINE §6 `provenance` object
+    /// embedded as a top-level key (after `version`, before `total`) when
+    /// supplied — the same canonical bytes carried by
+    /// `histos.json`/`out.root`.
+    #[must_use]
+    pub fn to_json_with(&self, pretty: bool, provenance: Option<&Provenance>) -> String {
         let mut w = JsonWriter::new(pretty);
         w.open('{');
         w.key("version");
         w.raw("1");
+        if let Some(p) = provenance {
+            w.key("provenance");
+            p.write(&mut w);
+        }
         w.key("total");
         counts_json(&mut w, self.total);
         w.key("regions");

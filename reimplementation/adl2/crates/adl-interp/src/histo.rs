@@ -22,12 +22,10 @@
 //! variable-bin 1-D ([`Hist1DVar`], binary-search binning, ROOT histogram
 //! semantics — by design different from the `bin` statement's open last
 //! bin), and uniform 2-D ([`Hist2D`], flow-inclusive cells in ROOT
-//! global-bin order with the seven fill-time moments). Sema still maps
-//! the 2-D / variable-bin `histo` syntax to `HistoSpec::Unsupported`
-//! (10b sema wiring point) — when it grows `Uniform2D`/`Var1D` variants,
-//! [`HistoSet::new`] instantiates them into the matching [`HistAcc`]
-//! arm and everything downstream (JSON v2, bridges, out.root) already
-//! renders them.
+//! global-bin order with the seven fill-time moments). Sema resolves all
+//! three `histo` forms (`HistoSpec::Uniform1D`/`Var1D`/`Uniform2D`);
+//! [`HistoSet::new`] instantiates each into the matching [`HistAcc`] arm
+//! and everything downstream (JSON v2, bridges, out.root) renders it.
 //!
 //! Honesty rules: a histogram whose expression is out of fragment (or
 //! whose form sema does not resolve yet) produces **one**
@@ -53,6 +51,7 @@
 use crate::eval::{Interp, NumOutcome, RegionResult};
 use crate::event::Event;
 use crate::json::JsonWriter;
+use crate::provenance::Provenance;
 use crate::weights::stmt_weights;
 use adl_sema::{HNode, Hir, HirRegionStmt, HirWeightValue, HistoSpec};
 
@@ -101,6 +100,35 @@ impl Hist1D {
             tsumwx: 0.0,
             tsumwx2: 0.0,
         }
+    }
+
+    /// Merge a partial accumulator of the **same shape** into this one
+    /// (SPEC_EVENT_PIPELINE §5 deterministic reduction). Field-wise
+    /// addition in fixed order; with `self` starting from a fresh zero
+    /// accumulator, `merge` of a single partial reproduces it bit-for-bit
+    /// (`0.0 + v == v`). `nbins`/`lo`/`hi` come from the same HIR and must
+    /// match (debug-asserted).
+    pub fn merge(&mut self, other: &Hist1D) {
+        debug_assert_eq!(
+            (self.nbins, self.lo, self.hi),
+            (other.nbins, other.lo, other.hi),
+            "Hist1D::merge shape mismatch"
+        );
+        for (a, b) in self.sumw.iter_mut().zip(&other.sumw) {
+            *a += *b;
+        }
+        for (a, b) in self.sumw2.iter_mut().zip(&other.sumw2) {
+            *a += *b;
+        }
+        self.underflow_w += other.underflow_w;
+        self.underflow_w2 += other.underflow_w2;
+        self.overflow_w += other.overflow_w;
+        self.overflow_w2 += other.overflow_w2;
+        self.entries += other.entries;
+        self.tsumw += other.tsumw;
+        self.tsumw2 += other.tsumw2;
+        self.tsumwx += other.tsumwx;
+        self.tsumwx2 += other.tsumwx2;
     }
 
     /// One fill: ROOT `TH1::Fill(x, w)` semantics (see module docs).
@@ -181,6 +209,27 @@ impl Hist1DVar {
             tsumwx: 0.0,
             tsumwx2: 0.0,
         }
+    }
+
+    /// Merge a same-shape partial (SPEC_EVENT_PIPELINE §5); see
+    /// [`Hist1D::merge`].
+    pub fn merge(&mut self, other: &Hist1DVar) {
+        debug_assert_eq!(self.edges, other.edges, "Hist1DVar::merge edge mismatch");
+        for (a, b) in self.sumw.iter_mut().zip(&other.sumw) {
+            *a += *b;
+        }
+        for (a, b) in self.sumw2.iter_mut().zip(&other.sumw2) {
+            *a += *b;
+        }
+        self.underflow_w += other.underflow_w;
+        self.underflow_w2 += other.underflow_w2;
+        self.overflow_w += other.overflow_w;
+        self.overflow_w2 += other.overflow_w2;
+        self.entries += other.entries;
+        self.tsumw += other.tsumw;
+        self.tsumw2 += other.tsumw2;
+        self.tsumwx += other.tsumwx;
+        self.tsumwx2 += other.tsumwx2;
     }
 
     /// One fill: ROOT `TH1::Fill(x, w)` semantics over variable edges.
@@ -278,6 +327,32 @@ impl Hist2D {
         1 + idx.min(n as usize - 1)
     }
 
+    /// Merge a same-shape partial (SPEC_EVENT_PIPELINE §5); see
+    /// [`Hist1D::merge`]. All seven moments add field-wise.
+    pub fn merge(&mut self, other: &Hist2D) {
+        debug_assert_eq!(
+            (self.nx, self.xlo, self.xhi, self.ny, self.ylo, self.yhi),
+            (
+                other.nx, other.xlo, other.xhi, other.ny, other.ylo, other.yhi
+            ),
+            "Hist2D::merge shape mismatch"
+        );
+        for (a, b) in self.sumw.iter_mut().zip(&other.sumw) {
+            *a += *b;
+        }
+        for (a, b) in self.sumw2.iter_mut().zip(&other.sumw2) {
+            *a += *b;
+        }
+        self.entries += other.entries;
+        self.tsumw += other.tsumw;
+        self.tsumw2 += other.tsumw2;
+        self.tsumwx += other.tsumwx;
+        self.tsumwx2 += other.tsumwx2;
+        self.tsumwy += other.tsumwy;
+        self.tsumwy2 += other.tsumwy2;
+        self.tsumwxy += other.tsumwxy;
+    }
+
     /// One fill: ROOT `TH2::Fill(x, y, w)` semantics. Stats accumulate
     /// only when **both** coordinates are in range (ROOT `GetStats`
     /// excludes flow cells).
@@ -317,6 +392,19 @@ impl HistAcc {
             HistAcc::H1(h) => h.entries,
             HistAcc::H1Var(h) => h.entries,
             HistAcc::H2(h) => h.entries,
+        }
+    }
+
+    /// Merge a same-form partial (SPEC_EVENT_PIPELINE §5). A form mismatch
+    /// cannot occur — both sides instantiate from the same HIR — and is a
+    /// debug-assert; release builds skip the mismatched merge rather than
+    /// corrupt either accumulator.
+    fn merge(&mut self, other: &HistAcc) {
+        match (self, other) {
+            (HistAcc::H1(a), HistAcc::H1(b)) => a.merge(b),
+            (HistAcc::H1Var(a), HistAcc::H1Var(b)) => a.merge(b),
+            (HistAcc::H2(a), HistAcc::H2(b)) => a.merge(b),
+            _ => debug_assert!(false, "HistAcc::merge form mismatch"),
         }
     }
 }
@@ -407,6 +495,24 @@ impl<'h> HistoFill<'h> {
                     self.first_error = Some("internal: 2-D fill without y expression".into());
                 }
             }
+        }
+    }
+
+    /// Merge a partial of the **same fill point** (same HIR ⇒ same name,
+    /// region, accumulator form). The skip counters add; the first error
+    /// message follows chunk order (the §5 fold visits chunks ascending,
+    /// so `first_error` is the earliest-chunk first error — input order).
+    fn merge(&mut self, other: &HistoFill<'h>) {
+        debug_assert_eq!(self.name, other.name, "HistoFill::merge name mismatch");
+        debug_assert_eq!(
+            self.region_idx, other.region_idx,
+            "HistoFill::merge region mismatch"
+        );
+        self.hist.merge(&other.hist);
+        self.nonvalue_skips += other.nonvalue_skips;
+        self.error_skips += other.error_skips;
+        if self.first_error.is_none() {
+            self.first_error.clone_from(&other.first_error);
         }
     }
 }
@@ -543,6 +649,22 @@ impl<'h> HistoSet<'h> {
             ));
             None
         };
+        let mk = |expr: &'h HNode, expr_y, hist| {
+            Some(HistoFill {
+                name: h.name.clone(),
+                title: h.title.clone(),
+                region: region_name.to_owned(),
+                region_idx,
+                expr,
+                expr_y,
+                factor,
+                weighted_incomplete,
+                hist,
+                nonvalue_skips: 0,
+                error_skips: 0,
+                first_error: None,
+            })
+        };
         match &h.spec {
             HistoSpec::Unsupported(reason) => skip(diags, reason),
             HistoSpec::Uniform1D {
@@ -560,20 +682,58 @@ impl<'h> HistoSet<'h> {
                 if lo >= hi {
                     return skip(diags, &format!("empty axis range [{lo}, {hi})"));
                 }
-                Some(HistoFill {
-                    name: h.name.clone(),
-                    title: h.title.clone(),
-                    region: region_name.to_owned(),
-                    region_idx,
-                    expr,
-                    expr_y: None,
-                    factor,
-                    weighted_incomplete,
-                    hist: HistAcc::H1(Hist1D::new(*nbins, lo, hi)),
-                    nonvalue_skips: 0,
-                    error_skips: 0,
-                    first_error: None,
-                })
+                mk(expr, None, HistAcc::H1(Hist1D::new(*nbins, lo, hi)))
+            }
+            HistoSpec::Var1D { edges, expr } => {
+                if expr.has_unsupported() {
+                    return skip(diags, "fill expression is outside the checked fragment");
+                }
+                let mut parsed = Vec::with_capacity(edges.len());
+                for e in edges {
+                    let Ok(v) = e.parse::<f64>() else {
+                        return skip(diags, &format!("malformed bin edge `{e}`"));
+                    };
+                    parsed.push(v);
+                }
+                // Sema guarantees ≥ 2 strictly increasing edges; re-check so
+                // a future caller cannot smuggle a degenerate axis past us.
+                if parsed.len() < 2 || parsed.windows(2).any(|w| w[0] >= w[1]) {
+                    return skip(diags, "bin edges must be strictly increasing");
+                }
+                mk(expr, None, HistAcc::H1Var(Hist1DVar::new(parsed)))
+            }
+            HistoSpec::Uniform2D {
+                nx,
+                xlo,
+                xhi,
+                ny,
+                ylo,
+                yhi,
+                xexpr,
+                yexpr,
+            } => {
+                if xexpr.has_unsupported() || yexpr.has_unsupported() {
+                    return skip(diags, "fill expression is outside the checked fragment");
+                }
+                let (Ok(xlo), Ok(xhi), Ok(ylo), Ok(yhi)) = (
+                    xlo.parse::<f64>(),
+                    xhi.parse::<f64>(),
+                    ylo.parse::<f64>(),
+                    yhi.parse::<f64>(),
+                ) else {
+                    return skip(diags, "malformed axis bound");
+                };
+                if xlo >= xhi {
+                    return skip(diags, &format!("empty x axis range [{xlo}, {xhi})"));
+                }
+                if ylo >= yhi {
+                    return skip(diags, &format!("empty y axis range [{ylo}, {yhi})"));
+                }
+                mk(
+                    xexpr,
+                    Some(yexpr),
+                    HistAcc::H2(Hist2D::new(*nx, xlo, xhi, *ny, ylo, yhi)),
+                )
             }
         }
     }
@@ -623,6 +783,23 @@ impl<'h> HistoSet<'h> {
         }
     }
 
+    /// Merge a partial [`HistoSet`] of the same analysis unit into this one
+    /// (SPEC_EVENT_PIPELINE §5). Both sets come from the same HIR, so
+    /// `histos[i]` aligns by index; `setup_diags` is HIR-derived and
+    /// identical, so the master's copy is kept. Folding partials in
+    /// ascending chunk order makes the result byte-identical to a serial
+    /// run that processes those same chunks in order.
+    pub fn merge(&mut self, other: &HistoSet<'h>) {
+        debug_assert_eq!(
+            self.histos.len(),
+            other.histos.len(),
+            "HistoSet::merge length mismatch"
+        );
+        for (a, b) in self.histos.iter_mut().zip(&other.histos) {
+            a.merge(b);
+        }
+    }
+
     /// All diagnostics, deterministic: setup lines first, then per-
     /// histogram skipped-fill summaries (declaration order).
     #[must_use]
@@ -651,10 +828,23 @@ impl<'h> HistoSet<'h> {
     /// single line (the `run --json` form). Both are byte-deterministic.
     #[must_use]
     pub fn to_json(&self, pretty: bool) -> String {
+        self.to_json_with(pretty, None)
+    }
+
+    /// `histos.json` with the SPEC_EVENT_PIPELINE §6 `provenance` object
+    /// embedded as a top-level key (after `version`, before
+    /// `histograms`) when supplied. The embedded object is the same
+    /// canonical bytes carried by `cutflow.json`/`out.root`.
+    #[must_use]
+    pub fn to_json_with(&self, pretty: bool, provenance: Option<&Provenance>) -> String {
         let mut w = JsonWriter::new(pretty);
         w.open('{');
         w.key("version");
         w.raw("2");
+        if let Some(p) = provenance {
+            w.key("provenance");
+            p.write(&mut w);
+        }
         w.key("histograms");
         w.open('[');
         for f in &self.histos {

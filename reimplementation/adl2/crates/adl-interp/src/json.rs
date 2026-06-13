@@ -138,4 +138,11 @@ impl JsonWriter {
         }
         self.out
     }
+
+    /// Finish without the trailing newline `finish` adds in pretty mode —
+    /// for a fragment embedded inside another document (the provenance
+    /// object), where the enclosing writer owns the surrounding layout.
+    pub(crate) fn finish_no_newline(self) -> String {
+        self.out
+    }
 }

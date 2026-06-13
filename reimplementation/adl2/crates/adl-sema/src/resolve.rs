@@ -766,9 +766,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Classify a `histo` argument list (PLAN Phase 9). Only the 1-D
-    /// uniform form `n, lo, hi, expr` is accumulated; 2-D and
-    /// variable-bin forms are recorded as deferred.
+    /// Classify a `histo` argument list (PLAN Phase 9 / SPEC_EVENT_PIPELINE
+    /// §3). Accumulable forms: 1-D uniform `n, lo, hi, expr`, 1-D
+    /// variable-bin `e0 e1 … en, expr`, and 2-D uniform
+    /// `nx, xlo, xhi, ny, ylo, yhi, xexpr, yexpr`. A malformed argument
+    /// list (or a non-increasing edge list) is recorded as `Unsupported`
+    /// with the reason surfaced when accumulation is attempted.
     fn resolve_histo_spec(&mut self, args: &[HistoArg], ctx: &Ctx) -> HistoSpec {
         match args {
             [
@@ -790,19 +793,51 @@ impl<'a> Resolver<'a> {
                     expr: self.resolve_expr_quiet(e, ctx),
                 }
             }
-            [HistoArg::NumList(_), HistoArg::Expr(_)] => {
-                HistoSpec::Unsupported("variable-bin histogram (deferred)".to_owned())
+            [HistoArg::NumList(edges), HistoArg::Expr(e)] => {
+                if edges.len() < 2 {
+                    return HistoSpec::Unsupported(format!(
+                        "variable-bin histogram needs at least 2 edges (got {})",
+                        edges.len()
+                    ));
+                }
+                if edges.windows(2).any(|w| w[0].value >= w[1].value) {
+                    return HistoSpec::Unsupported(
+                        "variable-bin edges must be strictly increasing".to_owned(),
+                    );
+                }
+                HistoSpec::Var1D {
+                    edges: edges.iter().map(ast::NumLit::canon).collect(),
+                    expr: self.resolve_expr_quiet(e, ctx),
+                }
             }
             [
-                HistoArg::Num(_),
-                HistoArg::Num(_),
-                HistoArg::Num(_),
-                HistoArg::Num(_),
-                HistoArg::Num(_),
-                HistoArg::Num(_),
-                HistoArg::Expr(_),
-                HistoArg::Expr(_),
-            ] => HistoSpec::Unsupported("2-D histogram (deferred)".to_owned()),
+                HistoArg::Num(nx),
+                HistoArg::Num(xlo),
+                HistoArg::Num(xhi),
+                HistoArg::Num(ny),
+                HistoArg::Num(ylo),
+                HistoArg::Num(yhi),
+                HistoArg::Expr(ex),
+                HistoArg::Expr(ey),
+            ] => {
+                let (Some(nx), Some(ny)) = (Self::bin_count(nx), Self::bin_count(ny)) else {
+                    return HistoSpec::Unsupported(format!(
+                        "2-D bin counts `{}`/`{}` must be positive integers (max 1000000)",
+                        nx.canon(),
+                        ny.canon()
+                    ));
+                };
+                HistoSpec::Uniform2D {
+                    nx,
+                    xlo: xlo.canon(),
+                    xhi: xhi.canon(),
+                    ny,
+                    ylo: ylo.canon(),
+                    yhi: yhi.canon(),
+                    xexpr: self.resolve_expr_quiet(ex, ctx),
+                    yexpr: self.resolve_expr_quiet(ey, ctx),
+                }
+            }
             _ => HistoSpec::Unsupported("unrecognized `histo` argument shape".to_owned()),
         }
     }

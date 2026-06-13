@@ -1,0 +1,4 @@
+{"Jet":[{"pt":100.0,"eta":0.5,"phi":1.0,"m":10.0,"btag":1,"tautag":0},{"pt":50.0,"eta":-1.25,"phi":-3.0,"m":5.5,"btag":0,"tautag":1}],"Electron":[{"pt":30.0,"eta":1.5,"phi":0.0,"q":-1,"m":0.000511}],"Muon":[{"pt":45.0,"eta":-0.5,"phi":1.75,"q":1,"m":0.105658}],"Photon":[{"pt":25.0,"eta":0.25,"phi":-2.0,"e":26.0}],"MET":{"pt":55.5,"phi":-1.25},"HT":222.0,"weight":0.5}
+{"Jet":[],"Electron":[],"Muon":[],"Photon":[],"MET":{"pt":120.0,"phi":0.5},"HT":0.0,"weight":-1.5}
+{"Jet":[{"pt":100.0,"eta":2.0,"phi":0.25,"m":12.0,"btag":1,"tautag":0},{"pt":100.0,"eta":-2.0,"phi":0.5,"m":8.0,"btag":0,"tautag":0}],"Electron":[],"Muon":[],"Photon":[],"MET":{"pt":80.0,"phi":1.0},"HT":150.0,"weight":1.0}
+{"Jet":[{"pt":75.5,"eta":0.0,"phi":-0.125,"m":9.0,"btag":0,"tautag":1}],"Electron":[{"pt":20.0,"eta":-0.75,"phi":2.5,"q":1,"m":0.000511}],"Muon":[],"Photon":[],"HT":75.5,"weight":2.0}

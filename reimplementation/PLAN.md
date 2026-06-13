@@ -190,10 +190,61 @@ generated `.C` macro validated by running it under ROOT where available
 (env-gated CI job), else by a checked-in expected-output fixture; uproot
 script validated the same way; determinism (byte-identical reruns).
 
+## Phase 10 — Event pipeline: ingestion, cutflows, histogram completion, scale (≈ 3 weeks)
+
+Spec: `reimplementation/SPEC_EVENT_PIPELINE.md` (probed 2026-06-12: oxyroot
+0.1.25 reads Delphes TClonesArray leaf branches natively, byte-exact vs
+uproot 5.7.4 on the 20k-event T2tt_700_50 sample at ~685k events/s).
+Sub-phases are gated like everything else; 10b/10c can run in parallel
+after 10a's event-model change lands.
+
+- **10a — Weights + cutflows (≈ 4 days).** `Event.weight` from input
+  (JSONL `"weight"` key); positional weight composition per [DECIDE-W1]
+  + the corpus lint that proves it non-breaking; cutflow accumulator
+  (per-region ordered steps: select/reject/inherit-as-one-step/trigger;
+  raw + sumw + sumw2 + errors; bin appendix); emissions: canonical
+  `cutflow.json`, stdout table, TH1D raw/weighted pair (needs the
+  rootfile TAxis `fLabels` THashList extension). Table weights stay
+  deferred with `weighted_incomplete` flagging.
+  *Exit:* unit tests for every step kind incl. error-counting and
+  inheritance; cutflow.json byte-determinism; uproot reads back labeled
+  cutflow TH1Ds; raw counts on ex01/ex02 fixtures match hand-computed
+  values; `--jobs` not yet involved.
+- **10b — Histogram completion (≈ 4 days).** Sema `Uniform2D`/`Var1D`
+  HistoSpec; `Hist2D`/`Hist1DVar` accumulators (7 fill-time moments,
+  ROOT global-bin order); histos.json v2; rootfile TH2D v4/TH2 v5 +
+  TAxis fXbins + regenerated streamer blob; per-region TDirectories
+  (rootfile v2); bridges updated to render all forms.
+  *Exit:* ex02's `hj1ptMET`/`hmetvarbin` no longer skip; uproot
+  read-back of 2-D flow-inclusive values + stats; byte-diff vs uproot
+  `to_TH2x`; TDirectory layout hadd-smoke (env-gated); zero changes to
+  existing h1 goldens except the additive schema version.
+- **10c — Delphes ingestion (≈ 5 days).** `adl-ingest` crate with the
+  profile contract (pure data table); native oxyroot reader (pinned
+  0.1.25) streaming into `Event`; `smash2 ingest` + `--profile delphes`
+  on `run`; generated `to_jsonl.py` oracle script; [DECIDE-I1..I4]
+  ratified or defaulted-with-diagnostic; provenance object embedded in
+  all outputs (TNamed in out.root, JSON elsewhere, sibling file for
+  JSONL).
+  *Exit:* native vs script JSONL byte-identical on the pinned sample
+  (env-gated, sha256-cached download); first-3-event value snapshot;
+  provenance round-trips through every output; NanoAOD profile spec'd
+  (not built).
+- **10d — Scale + e2e validation (≈ 4 days).** Streaming JSONL reader;
+  chunked parallel loop (C=4096, ascending-chunk-index fold — see spec
+  §5 for why this is byte-deterministic at any `--jobs`); synthetic
+  benchmark ≥ 100k events/s (report, non-gating); the SPEC §7 e2e
+  battery: ingestion fidelity, independent uproot/numpy cutflow
+  recomputation, distribution sanity criteria, round-trip, `--jobs 1`
+  vs `--jobs 8` byte identity, RSS bound.
+  *Exit:* `SMASH2_RUN_DELPHES_E2E=1` job green on a machine with the
+  cached sample; determinism gates green in default CI; bench number
+  recorded in BUILD_NOTES.
+
 ---
 
-**Total ≈ 14.5 weeks calendar** (Phase 9 added) (P3/P4 overlap saves ~1 week vs serial;
-the joint encoder-vs-interpreter week is the schedule pinch point).
+**Total ≈ 17.5 weeks calendar** (Phases 9–10 added; P3/P4 overlap saves ~1 week vs
+serial; the joint encoder-vs-interpreter week is the schedule pinch point).
 
 ## Standing decision points for Daniel
 
@@ -204,6 +255,7 @@ the joint encoder-vs-interpreter week is the schedule pinch point).
 | Phase 7 | parity sign-off — every classified difference |
 | Phase 8 | same-events assumption wording; collaborator review of the 032×033 matrix |
 | Phase 9 | histogram output formats to standardize with collaborators (.C macro vs uproot vs both); weight-table semantics |
+| Phase 10 | SPEC_EVENT_PIPELINE [DECIDE] register: Delphes btag bit / lepton masses / weight branch (I1–I4), positional weight composition (W1), input-hash policy (P1); NanoAOD WPs (N1–N3) at v2 |
 
 ## Risks
 
@@ -218,6 +270,8 @@ the joint encoder-vs-interpreter week is the schedule pinch point).
 | Interpreter itself wrong (oracle drift) | the interpreter is the authoritative spec; [DECIDE] items are settled by collaborator review and property tests pin encoder-vs-interpreter agreement; interpreter/verifier disagreement is release-blocking in *both* directions |
 
 ## Next: event converter profiles (post-Phase 9)
+
+> Spec'd 2026-06-12 as Phase 10 — see `SPEC_EVENT_PIPELINE.md` §1.
 
 Experiment differences live in converter profiles, never in the core
 event model: `delphes` first (validates against our own corpus), then

@@ -1,0 +1,5 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: "lines[5]"
+---
+{"cutflow":{"version":1,"total":{"raw":4,"sumw":4.0,"sumw2":4.0},"regions":[{"name":"SR","steps":[{"kind":"all","label":"all","raw":4,"sumw":4.0,"sumw2":4.0,"errors":0},{"kind":"select","label":"select MET > 10","raw":3,"sumw":3.0,"sumw2":3.0,"errors":0}],"bins":[]}]}}

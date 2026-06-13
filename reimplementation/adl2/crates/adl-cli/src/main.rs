@@ -6,8 +6,10 @@
 //!   (default), full per-pair proof chains (`--explain`), or `--json`;
 //!   `--fail-on=...` gates CI on physics findings; `--no-solver` caps
 //!   verdicts at POSSIBLY. (The legacy `smash -r`.)
-//! - `run`    — evaluate regions over a JSONL event file: per-region
-//!   pass/fail and bin assignment.
+//! - `run`    — evaluate regions over a JSONL event file (or a ROOT file
+//!   via `--profile`): per-region pass/fail and bin assignment.
+//! - `ingest` — converter-profile ingestion (SPEC_EVENT_PIPELINE §1):
+//!   ROOT → canonical JSONL, plus the generated `to_jsonl.py` oracle.
 //! - `dot`    — Graphviz DOT: flowchart (default) or AST (`--ast`), from
 //!   the resolved HIR.
 //! - `objects` — aligned object-attribute summary (one row per declared
@@ -26,7 +28,7 @@ use std::process::ExitCode;
 #[command(
     name = "smash2",
     version,
-    about = "ADL2 analysis toolchain: check, verify, run, dot, objects",
+    about = "ADL2 analysis toolchain: check, verify, run, dot, objects, ingest",
     propagate_version = true
 )]
 struct Cli {
@@ -74,8 +76,13 @@ enum Command {
     Run {
         /// The ADL file.
         file: PathBuf,
-        /// The JSONL event file (one event per line).
+        /// The JSONL event file (one event per line) — or, with
+        /// `--profile`, a ROOT event file ingested natively.
         events: PathBuf,
+        /// Ingest `events` as a ROOT file under this converter profile
+        /// (e.g. `delphes`) instead of reading JSONL.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
         /// Emit per-event results as JSON instead of the text table.
         #[arg(long)]
         json: bool,
@@ -96,6 +103,12 @@ enum Command {
         /// and the `make_histos.C`/`to_root.py` bridges; requires `--histos`).
         #[arg(long, requires = "histos")]
         no_root: bool,
+        /// Use the v1 flat object names (`SR_hmet`) in `out.root` and the
+        /// bridges instead of per-region TDirectories (`SR/hmet`); kept
+        /// for one release for existing `hadd` pipelines (requires
+        /// `--histos`).
+        #[arg(long, requires = "histos")]
+        flat_names: bool,
     },
     /// Graphviz DOT from the resolved HIR (flowchart by default).
     Dot {
@@ -109,6 +122,22 @@ enum Command {
     Objects {
         /// The ADL file.
         file: PathBuf,
+    },
+    /// Ingest a ROOT event file under a converter profile: write canonical
+    /// JSONL and/or the independent uproot oracle script (`to_jsonl.py`).
+    Ingest {
+        /// The ROOT event file (required with `-o`).
+        input: Option<PathBuf>,
+        /// The converter profile (e.g. `delphes`).
+        #[arg(long, value_name = "NAME", required = true)]
+        profile: String,
+        /// Write the canonical JSONL event stream here.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Write the generated `to_jsonl.py` oracle script into this
+        /// directory (created if missing).
+        #[arg(long, value_name = "DIR")]
+        emit_script: Option<PathBuf>,
     },
 }
 
@@ -127,25 +156,41 @@ fn main() -> ExitCode {
         Command::Run {
             file,
             events,
+            profile,
             json,
             histos,
             csv,
             svg,
             no_root,
+            flat_names,
         } => cmd::run::run(
             &file,
             &events,
+            profile.as_deref(),
             json,
             cmd::run::HistoOpts {
                 dir: histos.as_deref(),
                 csv,
                 svg,
                 no_root,
+                flat_names,
             },
             verbose,
         ),
         Command::Dot { file, ast } => cmd::dot::run(&file, ast, verbose),
         Command::Objects { file } => cmd::objects::run(&file, verbose),
+        Command::Ingest {
+            input,
+            profile,
+            output,
+            emit_script,
+        } => cmd::ingest::run(
+            input.as_deref(),
+            &profile,
+            output.as_deref(),
+            emit_script.as_deref(),
+            verbose,
+        ),
     };
     match result {
         Ok(code) => code,

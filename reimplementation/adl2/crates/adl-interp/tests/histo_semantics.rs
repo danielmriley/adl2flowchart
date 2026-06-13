@@ -55,15 +55,18 @@ fn fill_bins_flow_and_moments_hand_computed() {
     }
     assert_eq!(h.entries, 7, "entries is the raw fill count incl. flow");
     assert_eq!((h.underflow_w, h.underflow_w2), (2.0, 4.0));
-    assert_eq!((h.overflow_w, h.overflow_w2), (4.0, 8.0), "x == hi overflows");
+    assert_eq!(
+        (h.overflow_w, h.overflow_w2),
+        (4.0, 8.0),
+        "x == hi overflows"
+    );
     assert_eq!(h.sumw, vec![4.0, 2.0, 0.0, 2.0], "x == lo lands in bin 0");
     assert_eq!(h.sumw2, vec![8.0, 4.0, 0.0, 4.0]);
     // Stats accumulate at fill time, in-range fills only (10, 19.999, 25, 49.9).
     assert_eq!(h.tsumw, 8.0);
     assert_eq!(h.tsumw2, 16.0);
     let exp_wx = 2.0 * 10.0 + 2.0 * 19.999 + 2.0 * 25.0 + 2.0 * 49.9;
-    let exp_wx2 = 2.0 * 10.0 * 10.0 + 2.0 * 19.999 * 19.999 + 2.0 * 25.0 * 25.0
-        + 2.0 * 49.9 * 49.9;
+    let exp_wx2 = 2.0 * 10.0 * 10.0 + 2.0 * 19.999 * 19.999 + 2.0 * 25.0 * 25.0 + 2.0 * 49.9 * 49.9;
     assert_eq!(h.tsumwx, exp_wx);
     assert_eq!(h.tsumwx2, exp_wx2);
     // Weighted mean: Σwx / Σw = (10 + 19.999 + 25 + 49.9) / 4 (weights cancel).
@@ -104,13 +107,13 @@ fn region_fill_applies_numeric_weight_product() {
     assert_eq!(set.histos.len(), 1);
     let f = &set.histos[0];
     assert_eq!((f.name.as_str(), f.region.as_str()), ("hmet", "SR"));
-    assert_eq!(f.hist.entries, 4);
-    assert_eq!(f.hist.sumw, vec![2.0, 2.0, 0.0, 0.0]);
-    assert_eq!(f.hist.sumw2, vec![4.0, 4.0, 0.0, 0.0]);
-    assert_eq!(f.hist.underflow_w, 2.0);
-    assert_eq!(f.hist.overflow_w, 2.0);
-    assert_eq!(f.hist.tsumw, 4.0);
-    assert_eq!(f.hist.tsumwx, 2.0 * 10.0 + 2.0 * 25.0);
+    assert_eq!(f.h1().expect("h1 form").entries, 4);
+    assert_eq!(f.h1().expect("h1 form").sumw, vec![2.0, 2.0, 0.0, 0.0]);
+    assert_eq!(f.h1().expect("h1 form").sumw2, vec![4.0, 4.0, 0.0, 0.0]);
+    assert_eq!(f.h1().expect("h1 form").underflow_w, 2.0);
+    assert_eq!(f.h1().expect("h1 form").overflow_w, 2.0);
+    assert_eq!(f.h1().expect("h1 form").tsumw, 4.0);
+    assert_eq!(f.h1().expect("h1 form").tsumwx, 2.0 * 10.0 + 2.0 * 25.0);
     assert!(set.diagnostics().is_empty(), "{:?}", set.diagnostics());
 }
 
@@ -122,8 +125,15 @@ region SR\n\
   histo hmet, \"met\", 4, 0, 400, MET\n";
     let h = hir(adl);
     let set = run(&h, &events(&[&met_event(50.0), &met_event(150.0)]));
-    assert_eq!(set.histos[0].hist.entries, 1, "only the accepted event fills");
-    assert_eq!(set.histos[0].hist.sumw, vec![0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(
+        set.histos[0].h1().expect("h1 form").entries,
+        1,
+        "only the accepted event fills"
+    );
+    assert_eq!(
+        set.histos[0].h1().expect("h1 form").sumw,
+        vec![0.0, 1.0, 0.0, 0.0]
+    );
 }
 
 #[test]
@@ -136,8 +146,8 @@ region SR\n\
   histo hmet, \"met\", 2, 0, 100, MET\n";
     let h = hir(adl);
     let set = run(&h, &events(&[&met_event(25.0)]));
-    assert_eq!(set.histos[0].hist.sumw, vec![1.5, 0.0]);
-    assert_eq!(set.histos[0].hist.sumw2, vec![2.25, 0.0]);
+    assert_eq!(set.histos[0].h1().expect("h1 form").sumw, vec![1.5, 0.0]);
+    assert_eq!(set.histos[0].h1().expect("h1 form").sumw2, vec![2.25, 0.0]);
 }
 
 #[test]
@@ -149,7 +159,11 @@ region SR\n\
   histo hmet, \"met\", 2, 0, 100, MET\n";
     let h = hir(adl);
     let set = run(&h, &events(&[&met_event(25.0)]));
-    assert_eq!(set.histos[0].hist.sumw, vec![1.0, 0.0], "weight falls back to 1.0");
+    assert_eq!(
+        set.histos[0].h1().expect("h1 form").sumw,
+        vec![1.0, 0.0],
+        "weight falls back to 1.0"
+    );
     let diags = set.diagnostics();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(
@@ -168,10 +182,10 @@ region SR\n\
     let h = hir(adl);
     let set = run(&h, &events(&[&met_event(25.0), &met_event(75.0)]));
     let f = &set.histos[0];
-    assert_eq!(f.hist.entries, 2);
-    assert_eq!(f.hist.sumw, vec![0.0, 0.0]);
-    assert_eq!(f.hist.tsumw, 0.0);
-    assert_eq!(f.hist.tsumwx, 0.0);
+    assert_eq!(f.h1().expect("h1 form").entries, 2);
+    assert_eq!(f.h1().expect("h1 form").sumw, vec![0.0, 0.0]);
+    assert_eq!(f.h1().expect("h1 form").tsumw, 0.0);
+    assert_eq!(f.h1().expect("h1 form").tsumwx, 0.0);
 }
 
 // ---- honesty: skipped histograms and fills ---------------------------------
@@ -211,7 +225,10 @@ region SR\n\
     let diags = set.diagnostics();
     assert_eq!(diags.len(), 5, "{diags:?}");
     assert!(diags[0].contains("2-D histogram (deferred)"), "{diags:?}");
-    assert!(diags[1].contains("variable-bin histogram (deferred)"), "{diags:?}");
+    assert!(
+        diags[1].contains("variable-bin histogram (deferred)"),
+        "{diags:?}"
+    );
     assert!(diags[2].contains("not a positive integer"), "{diags:?}");
     assert!(diags[3].contains("not a positive integer"), "{diags:?}");
     assert!(diags[4].contains("empty axis range"), "{diags:?}");
@@ -229,7 +246,7 @@ region SR\n\
     let ev = r#"{"Jet": [{"pt": 100.0, "eta": 0.0, "phi": 0.0}]}"#;
     let set = run(&h, &events(&[ev]));
     let f = &set.histos[0];
-    assert_eq!(f.hist.entries, 0, "no value, no entry");
+    assert_eq!(f.h1().expect("h1 form").entries, 0, "no value, no entry");
     let diags = set.diagnostics();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(
@@ -257,8 +274,8 @@ region SR\n\
     let f = &set.histos[0];
     assert_eq!((f.name.as_str(), f.region.as_str()), ("hmet", "SR"));
     // MET=15 fails the full SR conjunction (MET > 20): one fill only.
-    assert_eq!(f.hist.entries, 1);
-    assert_eq!(f.hist.sumw, vec![1.0, 0.0]);
+    assert_eq!(f.h1().expect("h1 form").entries, 1);
+    assert_eq!(f.h1().expect("h1 form").sumw, vec![1.0, 0.0]);
     let diags = set.diagnostics();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].contains("referenced more than once"), "{diags:?}");
@@ -286,10 +303,12 @@ fn json_field_order_and_zero_event_edge() {
     let h = hir(WEIGHTED);
     let set = run(&h, &[]); // zero events
     let json = set.to_json(false);
+    // Schema v2 (SPEC_EVENT_PIPELINE §3): additive on h1 entries — the
+    // top-level `version` and the per-entry `type` key only.
     assert_eq!(
         json,
-        "{\"histograms\":[{\"name\":\"hmet\",\"title\":\"met\",\"region\":\"SR\",\
-         \"nbins\":4,\"lo\":10.0,\"hi\":50.0,\
+        "{\"version\":2,\"histograms\":[{\"name\":\"hmet\",\"title\":\"met\",\"region\":\"SR\",\
+         \"type\":\"h1\",\"nbins\":4,\"lo\":10.0,\"hi\":50.0,\
          \"sumw\":[0.0,0.0,0.0,0.0],\"sumw2\":[0.0,0.0,0.0,0.0],\
          \"underflow\":{\"w\":0.0,\"w2\":0.0},\"overflow\":{\"w\":0.0,\"w2\":0.0},\
          \"entries\":0,\"tsumw\":0.0,\"tsumw2\":0.0,\"tsumwx\":0.0,\"tsumwx2\":0.0}]}"
@@ -316,4 +335,70 @@ fn json_pretty_and_compact_agree_and_are_deterministic() {
     let v: serde_json::Value = serde_json::from_str(&set.to_json(true)).expect("valid JSON");
     assert_eq!(v["histograms"][0]["entries"], 2);
     assert_eq!(v["histograms"][0]["tsumw"], 2.0);
+}
+
+// ---- Hist1DVar / Hist2D mechanics (SPEC_EVENT_PIPELINE §3) -----------------
+
+#[test]
+fn var_bin_fill_binary_search_flow_and_moments() {
+    use adl_interp::Hist1DVar;
+    let mut h = Hist1DVar::new(vec![0.0, 30.0, 70.0, 150.0, 400.0]);
+    h.fill(-1.0, 1.0); // underflow (x < e0)
+    h.fill(0.0, 2.0); // first bin, left edge inclusive
+    h.fill(29.999, 0.5); // still first bin
+    h.fill(30.0, 1.0); // second bin, edge belongs right
+    h.fill(149.999, 1.0); // third bin upper edge exclusive
+    h.fill(150.0, 1.0); // fourth bin
+    h.fill(400.0, 3.0); // overflow (x >= en)
+    assert_eq!(h.entries, 7);
+    assert_eq!(h.sumw, vec![2.5, 1.0, 1.0, 1.0]);
+    assert_eq!(h.underflow_w, 1.0);
+    assert_eq!(h.underflow_w2, 1.0);
+    assert_eq!(h.overflow_w, 3.0);
+    assert_eq!(h.overflow_w2, 9.0);
+    // Moments: in-range fills only.
+    assert_eq!(h.tsumw, 2.5 + 1.0 + 1.0 + 1.0);
+    assert_eq!(h.tsumw2, 4.0 + 0.25 + 1.0 + 1.0 + 1.0);
+    let tsumwx = 2.0 * 0.0 + 0.5 * 29.999 + 1.0 * 30.0 + 1.0 * 149.999 + 1.0 * 150.0;
+    assert_eq!(h.tsumwx, tsumwx);
+}
+
+#[test]
+fn hist2d_global_bin_order_flow_cells_and_seven_moments() {
+    use adl_interp::Hist2D;
+    let mut h = Hist2D::new(3, 0.0, 300.0, 2, 0.0, 4.0);
+    assert_eq!(h.sumw.len(), 20, "(nx+2)*(ny+2) cells");
+    // In-range: x bin 2 (100 <= x < 200), y bin 1 (0 <= y < 2).
+    h.fill(150.0, 1.0, 2.0);
+    assert_eq!(h.sumw[2 + 5], 2.0, "gbin = bx + (nx+2)*by = 2 + 5*1");
+    // x underflow, y overflow → corner cell gbin = 0 + 5*3 = 15.
+    h.fill(-1.0, 9.0, 1.0);
+    assert_eq!(h.sumw[15], 1.0);
+    // x overflow only → gbin = 4 + 5*1 = 9.
+    h.fill(1000.0, 1.0, 0.5);
+    assert_eq!(h.sumw[9], 0.5);
+    // Top edges overflow (ROOT FindBin: x >= hi).
+    h.fill(300.0, 4.0, 0.25);
+    assert_eq!(h.sumw[4 + 5 * 3], 0.25);
+    assert_eq!(h.entries, 4);
+    // Only the first fill was in range on both axes.
+    assert_eq!(h.tsumw, 2.0);
+    assert_eq!(h.tsumw2, 4.0);
+    assert_eq!(h.tsumwx, 2.0 * 150.0);
+    assert_eq!(h.tsumwx2, 2.0 * 150.0 * 150.0);
+    assert_eq!(h.tsumwy, 2.0 * 1.0);
+    assert_eq!(h.tsumwy2, 2.0 * 1.0);
+    assert_eq!(h.tsumwxy, 2.0 * 150.0 * 1.0);
+    assert_eq!(h.sumw2[7], 4.0);
+}
+
+#[test]
+fn hist2d_upper_edge_rounding_guard() {
+    use adl_interp::Hist2D;
+    // x just below hi must land in the last in-range bin, not overflow.
+    let mut h = Hist2D::new(10, 0.0, 1.0, 1, 0.0, 1.0);
+    let just_below = 1.0 - f64::EPSILON;
+    h.fill(just_below, 0.5, 1.0);
+    assert_eq!(h.sumw[10 + 12], 1.0, "last x bin (bx = 10), y bin 1");
+    assert_eq!(h.tsumw, 1.0);
 }

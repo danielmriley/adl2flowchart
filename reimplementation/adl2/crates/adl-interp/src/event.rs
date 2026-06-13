@@ -18,6 +18,8 @@
 //!   base-collection spelling map, case-insensitively);
 //! - a MET-family key (`MET`, `MissingET`, ...) with an object value is
 //!   the event MET vector; a bare number is its `pt` magnitude;
+//! - the `weight` key (SPEC_EVENT_PIPELINE §4) is the event's input
+//!   weight, a number; absent means 1.0;
 //! - other numeric values are event scalars (`HT`, ...);
 //! - the `triggers` key holds the trigger flags, each of which must be
 //!   0 or 1.
@@ -52,7 +54,7 @@ impl EventObject {
 }
 
 /// A deserialized event record (SPEC_LANGUAGE §4.1).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// Ordered object lists, keyed by lowercase canonical base name
     /// (`"jet"`, `"electron"`, ...). Absent collection = empty.
@@ -64,6 +66,23 @@ pub struct Event {
     pub scalars: BTreeMap<String, f64>,
     /// Trigger flags ∈ {0, 1}, keyed by lowercase name.
     pub triggers: BTreeMap<String, f64>,
+    /// The input event weight (SPEC_EVENT_PIPELINE §4): the JSONL
+    /// top-level `weight` key, or what an ingestion profile mapped there
+    /// (Delphes `Event.Weight`, NanoAOD `genWeight`). Absent input = 1.0.
+    /// Negative weights are legitimate (NLO generators).
+    pub weight: f64,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        Event {
+            collections: BTreeMap::new(),
+            met: BTreeMap::new(),
+            scalars: BTreeMap::new(),
+            triggers: BTreeMap::new(),
+            weight: 1.0,
+        }
+    }
 }
 
 /// Event-deserialization error. `line` is 1-based within the JSONL input.
@@ -152,10 +171,20 @@ fn event_from_line(line: usize, text: &str, ext: &ExtDecls) -> Result<Event, Eve
     };
 
     let mut ev = Event::default();
+    let mut saw_weight = false;
     for (key, val) in &map {
         let lk = key.to_ascii_lowercase();
         if lk == "triggers" {
             load_triggers(line, &mut ev, val)?;
+        } else if lk == "weight" {
+            let Some(w) = val.as_f64() else {
+                return Err(shape(line, "`weight` must be a number"));
+            };
+            if saw_weight {
+                return Err(shape(line, "duplicate `weight` key after case folding"));
+            }
+            saw_weight = true;
+            ev.weight = w;
         } else if ext.is_met_family(key) {
             load_met(line, &mut ev, key, val, ext)?;
         } else if let Value::Array(items) = val {
@@ -322,4 +351,40 @@ fn validate_pt_descending(line: usize, ev: &Event, ext: &ExtDecls) -> Result<(),
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adl_sema::ExtDecls;
+
+    fn parse(text: &str) -> Result<Event, EventError> {
+        parse_event(text, &ExtDecls::legacy())
+    }
+
+    #[test]
+    fn weight_defaults_to_one() {
+        let ev = parse(r#"{"Jet": []}"#).unwrap();
+        assert_eq!(ev.weight, 1.0);
+    }
+
+    #[test]
+    fn weight_key_is_read_case_insensitively_and_not_a_scalar() {
+        let ev = parse(r#"{"Weight": -1.5, "HT": 10.0}"#).unwrap();
+        assert_eq!(ev.weight, -1.5);
+        assert!(!ev.scalars.contains_key("weight"));
+        assert_eq!(ev.scalars.get("ht"), Some(&10.0));
+    }
+
+    #[test]
+    fn non_numeric_weight_is_a_shape_error() {
+        let err = parse(r#"{"weight": "heavy"}"#).unwrap_err();
+        assert!(matches!(err, EventError::Shape { .. }), "{err}");
+    }
+
+    #[test]
+    fn duplicate_weight_after_case_folding_errors() {
+        let err = parse(r#"{"weight": 1.0, "Weight": 2.0}"#).unwrap_err();
+        assert!(matches!(err, EventError::Shape { .. }), "{err}");
+    }
 }

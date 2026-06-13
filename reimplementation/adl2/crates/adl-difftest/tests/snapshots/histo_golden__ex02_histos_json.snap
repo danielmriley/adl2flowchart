@@ -1,13 +1,16 @@
 ---
 source: crates/adl-difftest/tests/histo_golden.rs
+assertion_line: 79
 expression: set.to_json(true)
 ---
 {
+  "version": 2,
   "histograms": [
     {
       "name": "hmet",
       "title": "MET (GeV)",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": 0.0,
       "hi": 1000.0,
@@ -25,6 +28,7 @@ expression: set.to_json(true)
       "name": "hnjets",
       "title": "number of jets",
       "region": "baseline",
+      "type": "h1",
       "nbins": 20,
       "lo": 0.0,
       "hi": 20.0,
@@ -42,6 +46,7 @@ expression: set.to_json(true)
       "name": "hjet1pt",
       "title": "jet1 pT (GeV)",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": 0.0,
       "hi": 1000.0,
@@ -59,6 +64,7 @@ expression: set.to_json(true)
       "name": "hjet2pt",
       "title": "jet2 pT (GeV)",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": 0.0,
       "hi": 1000.0,
@@ -76,6 +82,7 @@ expression: set.to_json(true)
       "name": "hjet3pt",
       "title": "jet3 pT (GeV)",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": 0.0,
       "hi": 1000.0,
@@ -93,6 +100,7 @@ expression: set.to_json(true)
       "name": "hjet1eta",
       "title": "jet1 eta",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": -3.0,
       "hi": 3.0,
@@ -110,6 +118,7 @@ expression: set.to_json(true)
       "name": "hjet2eta",
       "title": "jet2 eta",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": -3.0,
       "hi": 3.0,
@@ -127,6 +136,7 @@ expression: set.to_json(true)
       "name": "hjet3eta",
       "title": "jet3 eta",
       "region": "baseline",
+      "type": "h1",
       "nbins": 40,
       "lo": -3.0,
       "hi": 3.0,
@@ -144,6 +154,7 @@ expression: set.to_json(true)
       "name": "hlep1pt",
       "title": "lepton1 pT (GeV)",
       "region": "singlelepton",
+      "type": "h1",
       "nbins": 40,
       "lo": 0.0,
       "hi": 1000.0,
@@ -161,6 +172,7 @@ expression: set.to_json(true)
       "name": "hlep1eta",
       "title": "lepton1 eta",
       "region": "singlelepton",
+      "type": "h1",
       "nbins": 40,
       "lo": -3.0,
       "hi": 3.0,

@@ -1,9 +1,13 @@
-//! Histogram accumulation (PLAN Phase 9).
+//! Histogram accumulation (PLAN Phase 9; weights per SPEC_EVENT_PIPELINE §4).
 //!
 //! ADL `histo h, "title", n, lo, hi, expr` statements fill during
 //! `smash2 run` when the declaring region accepts the event, weighted by
-//! the product of the region's *numeric* `weight` statements. Semantics
-//! follow ROOT's `TH1` with `Sumw2` (SPEC_ROOT_WRITER §4):
+//! `Event::weight × Π` of the region's *numeric* `weight` statements
+//! declared **before the fill point** ([DECIDE-W1] positional
+//! composition — equivalent to the former whole-region product whenever
+//! all `weight` statements precede all fill points; a file where the two
+//! differ gets a diagnostic). Semantics follow ROOT's `TH1` with `Sumw2`
+//! (SPEC_ROOT_WRITER §4):
 //!
 //! - per-bin `sumw`/`sumw2`, plus underflow/overflow with their own
 //!   `sumw2`; `x < lo` underflows, `x >= hi` overflows (ROOT
@@ -14,23 +18,43 @@
 //!   fill time, in-range fills only** (ROOT `GetStats` excludes flow
 //!   bins) — `GetMean` and merged stats under `hadd` stay exact.
 //!
+//! Accumulator forms (SPEC_EVENT_PIPELINE §3): uniform 1-D ([`Hist1D`]),
+//! variable-bin 1-D ([`Hist1DVar`], binary-search binning, ROOT histogram
+//! semantics — by design different from the `bin` statement's open last
+//! bin), and uniform 2-D ([`Hist2D`], flow-inclusive cells in ROOT
+//! global-bin order with the seven fill-time moments). Sema still maps
+//! the 2-D / variable-bin `histo` syntax to `HistoSpec::Unsupported`
+//! (10b sema wiring point) — when it grows `Uniform2D`/`Var1D` variants,
+//! [`HistoSet::new`] instantiates them into the matching [`HistAcc`]
+//! arm and everything downstream (JSON v2, bridges, out.root) already
+//! renders them.
+//!
 //! Honesty rules: a histogram whose expression is out of fragment (or
-//! whose form is 2-D / variable-bin, both deferred) produces **one**
+//! whose form sema does not resolve yet) produces **one**
 //! diagnostic and is skipped — it never appears in the output. A
-//! non-numeric `weight` argument produces a diagnostic and contributes
-//! 1.0. Histograms declared in `histoList` blocks are templates,
+//! non-numeric `weight` argument produces a diagnostic, contributes 1.0,
+//! and flags every later fill point `weighted_incomplete` ([DECIDE-W2]
+//! deferred — unfaithful values are flagged, never guessed). Histograms
+//! declared in `histoList` blocks are templates,
 //! instantiated into each selection region that references the list;
 //! repeated references from one region fill once on full region
 //! acceptance (mid-selection fill points are deferred).
 //!
-//! The canonical output is `histos.json` ([`HistoSet::to_json`]):
-//! deterministic field order `name, title, region, nbins, lo, hi, sumw,
-//! sumw2, underflow, overflow, entries, tsumw, tsumw2, tsumwx, tsumwx2`.
+//! The canonical output is `histos.json` v2 ([`HistoSet::to_json`]):
+//! top-level `version: 2`, each entry typed `"h1" | "h1var" | "h2"` with
+//! deterministic field order — `h1`: `name, title, region, type, nbins,
+//! lo, hi, sumw, sumw2, underflow, overflow, entries, tsumw, tsumw2,
+//! tsumwx, tsumwx2`; `h1var` replaces `lo, hi` with `edges`; `h2`
+//! carries both axes (`nx, xlo, xhi, ny, ylo, yhi`), flat flow-inclusive
+//! `contents`/`sumw2` in ROOT global-bin order, and the seven moments —
+//! plus `weighted_incomplete` (emitted only when `true`). The v1 → v2
+//! bump is additive on `h1` entries (`type` key only).
 
 use crate::eval::{Interp, NumOutcome, RegionResult};
 use crate::event::Event;
-use adl_sema::{HNode, Hir, HirWeightValue, HistoSpec};
-use std::fmt::Write as _;
+use crate::json::JsonWriter;
+use crate::weights::stmt_weights;
+use adl_sema::{HNode, Hir, HirRegionStmt, HirWeightValue, HistoSpec};
 
 /// A 1-D uniform-binning weighted histogram with ROOT `TH1`/`Sumw2`
 /// accumulation semantics.
@@ -109,6 +133,194 @@ impl Hist1D {
     }
 }
 
+/// A 1-D variable-bin weighted histogram (SPEC_EVENT_PIPELINE §3):
+/// `edges` holds the `n + 1` strictly increasing bin edges; binning is by
+/// binary search with ROOT histogram semantics (`x < edges[0]`
+/// underflows, `x >= edges[n]` overflows — deliberately different from
+/// the `bin` statement's open last bin, SPEC_LANGUAGE §4.3). Everything
+/// else matches [`Hist1D`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hist1DVar {
+    /// `nbins + 1` strictly increasing edges.
+    pub edges: Vec<f64>,
+    /// Per-bin Σw, length `nbins`.
+    pub sumw: Vec<f64>,
+    /// Per-bin Σw², length `nbins`.
+    pub sumw2: Vec<f64>,
+    pub underflow_w: f64,
+    pub underflow_w2: f64,
+    pub overflow_w: f64,
+    pub overflow_w2: f64,
+    /// Raw fill count (ROOT `fEntries`), including flow-bin fills.
+    pub entries: u64,
+    /// Fill-time stats, in-range fills only (ROOT `GetStats` semantics).
+    pub tsumw: f64,
+    pub tsumw2: f64,
+    pub tsumwx: f64,
+    pub tsumwx2: f64,
+}
+
+impl Hist1DVar {
+    /// New empty histogram. At least 2 finite, strictly increasing edges
+    /// are the caller's contract ([`HistoSet::new`] validates and skips
+    /// violators).
+    #[must_use]
+    pub fn new(edges: Vec<f64>) -> Self {
+        let n = edges.len().saturating_sub(1);
+        Self {
+            edges,
+            sumw: vec![0.0; n],
+            sumw2: vec![0.0; n],
+            underflow_w: 0.0,
+            underflow_w2: 0.0,
+            overflow_w: 0.0,
+            overflow_w2: 0.0,
+            entries: 0,
+            tsumw: 0.0,
+            tsumw2: 0.0,
+            tsumwx: 0.0,
+            tsumwx2: 0.0,
+        }
+    }
+
+    /// One fill: ROOT `TH1::Fill(x, w)` semantics over variable edges.
+    pub fn fill(&mut self, x: f64, w: f64) {
+        self.entries += 1;
+        if x < self.edges[0] {
+            self.underflow_w += w;
+            self.underflow_w2 += w * w;
+            return;
+        }
+        if x >= self.edges[self.edges.len() - 1] {
+            self.overflow_w += w;
+            self.overflow_w2 += w * w;
+            return;
+        }
+        // x ∈ [edges[idx], edges[idx + 1]) ⇔ idx = #edges <= x, minus one.
+        let idx = self.edges.partition_point(|e| *e <= x) - 1;
+        self.sumw[idx] += w;
+        self.sumw2[idx] += w * w;
+        self.tsumw += w;
+        self.tsumw2 += w * w;
+        self.tsumwx += w * x;
+        self.tsumwx2 += w * x * x;
+    }
+}
+
+/// A uniform 2-D weighted histogram (SPEC_EVENT_PIPELINE §3): flat
+/// flow-inclusive `(nx+2)·(ny+2)` cells in ROOT global-bin order
+/// (`gbin = bx + (nx+2)·by`, x fastest), plus the seven fill-time
+/// moments (`Σw, Σw², Σwx, Σwx², Σwy, Σwy², Σwxy` — in-range fills only,
+/// both axes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hist2D {
+    pub nx: u32,
+    pub xlo: f64,
+    pub xhi: f64,
+    pub ny: u32,
+    pub ylo: f64,
+    pub yhi: f64,
+    /// Flow-inclusive Σw cells, ROOT global-bin order.
+    pub sumw: Vec<f64>,
+    /// Flow-inclusive Σw² cells, same order.
+    pub sumw2: Vec<f64>,
+    /// Raw fill count (ROOT `fEntries`), including flow-cell fills.
+    pub entries: u64,
+    pub tsumw: f64,
+    pub tsumw2: f64,
+    pub tsumwx: f64,
+    pub tsumwx2: f64,
+    pub tsumwy: f64,
+    pub tsumwy2: f64,
+    pub tsumwxy: f64,
+}
+
+impl Hist2D {
+    /// New empty histogram. `nx, ny >= 1` and ordered finite axis ranges
+    /// are the caller's contract.
+    #[must_use]
+    pub fn new(nx: u32, xlo: f64, xhi: f64, ny: u32, ylo: f64, yhi: f64) -> Self {
+        let cells = (nx as usize + 2) * (ny as usize + 2);
+        Self {
+            nx,
+            xlo,
+            xhi,
+            ny,
+            ylo,
+            yhi,
+            sumw: vec![0.0; cells],
+            sumw2: vec![0.0; cells],
+            entries: 0,
+            tsumw: 0.0,
+            tsumw2: 0.0,
+            tsumwx: 0.0,
+            tsumwx2: 0.0,
+            tsumwy: 0.0,
+            tsumwy2: 0.0,
+            tsumwxy: 0.0,
+        }
+    }
+
+    /// Per-axis cell index in `0 ..= n + 1` (0 = underflow, n + 1 =
+    /// overflow), ROOT `TAxis::FindBin` convention.
+    fn axis_cell(x: f64, lo: f64, hi: f64, n: u32) -> usize {
+        if x < lo {
+            return 0;
+        }
+        if x >= hi {
+            return n as usize + 1;
+        }
+        let frac = (x - lo) / (hi - lo);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        // frac ∈ [0, 1) here, so the product is a small non-negative index.
+        let idx = (frac * f64::from(n)) as usize;
+        // Floating-point guard: x just below `hi` can round up to `n`.
+        1 + idx.min(n as usize - 1)
+    }
+
+    /// One fill: ROOT `TH2::Fill(x, y, w)` semantics. Stats accumulate
+    /// only when **both** coordinates are in range (ROOT `GetStats`
+    /// excludes flow cells).
+    pub fn fill(&mut self, x: f64, y: f64, w: f64) {
+        self.entries += 1;
+        let bx = Self::axis_cell(x, self.xlo, self.xhi, self.nx);
+        let by = Self::axis_cell(y, self.ylo, self.yhi, self.ny);
+        let gbin = bx + (self.nx as usize + 2) * by;
+        self.sumw[gbin] += w;
+        self.sumw2[gbin] += w * w;
+        if bx >= 1 && bx <= self.nx as usize && by >= 1 && by <= self.ny as usize {
+            self.tsumw += w;
+            self.tsumw2 += w * w;
+            self.tsumwx += w * x;
+            self.tsumwx2 += w * x * x;
+            self.tsumwy += w * y;
+            self.tsumwy2 += w * y * y;
+            self.tsumwxy += w * x * y;
+        }
+    }
+}
+
+/// The accumulator behind one fill point — one variant per
+/// SPEC_EVENT_PIPELINE §3 histogram form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistAcc {
+    H1(Hist1D),
+    H1Var(Hist1DVar),
+    H2(Hist2D),
+}
+
+impl HistAcc {
+    /// Raw fill count (ROOT `fEntries`), whatever the form.
+    #[must_use]
+    pub fn entries(&self) -> u64 {
+        match self {
+            HistAcc::H1(h) => h.entries,
+            HistAcc::H1Var(h) => h.entries,
+            HistAcc::H2(h) => h.entries,
+        }
+    }
+}
+
 /// One instantiated histogram: accumulator + fill expression + the
 /// selection region that gates it.
 pub struct HistoFill<'h> {
@@ -117,15 +329,86 @@ pub struct HistoFill<'h> {
     /// Selection region the histogram fills under (first-seen spelling).
     pub region: String,
     region_idx: usize,
+    /// Fill expression(s): x, plus y for the 2-D form.
     expr: &'h HNode,
-    weight: f64,
-    pub hist: Hist1D,
+    expr_y: Option<&'h HNode>,
+    /// ADL weight product in effect at the fill point ([DECIDE-W1]
+    /// positional); the input event weight multiplies at fill time.
+    factor: f64,
+    /// A non-numeric/malformed `weight` precedes the fill point: the
+    /// weighted contents are incomplete ([DECIDE-W2] — flagged, never
+    /// guessed).
+    pub weighted_incomplete: bool,
+    pub hist: HistAcc,
     /// Fills skipped because the expression had no value (soft
     /// non-value: missing element/property, non-finite arithmetic).
     nonvalue_skips: u64,
     /// Fills skipped on a hard evaluation error (missing event-level data).
     error_skips: u64,
     first_error: Option<String>,
+}
+
+impl<'h> HistoFill<'h> {
+    /// The uniform 1-D accumulator, when this fill point is that form.
+    #[must_use]
+    pub fn h1(&self) -> Option<&Hist1D> {
+        match &self.hist {
+            HistAcc::H1(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// One accepted-event fill: evaluate the expression(s) and route to
+    /// the accumulator. A 2-D fill needs **both** coordinates: a
+    /// non-value or error on either skips the whole fill (counted once).
+    fn fill_from(&mut self, interp: &Interp<'h>, event: &Event) {
+        let w = self.factor * event.weight;
+        let x = match interp.eval_num(self.expr, event) {
+            Ok(NumOutcome::Value(x)) => x,
+            Ok(NumOutcome::NonValue(_)) => {
+                self.nonvalue_skips += 1;
+                return;
+            }
+            Err(e) => {
+                self.error_skips += 1;
+                if self.first_error.is_none() {
+                    self.first_error = Some(e.reason);
+                }
+                return;
+            }
+        };
+        let y = match self.expr_y {
+            None => None,
+            Some(ey) => match interp.eval_num(ey, event) {
+                Ok(NumOutcome::Value(y)) => Some(y),
+                Ok(NumOutcome::NonValue(_)) => {
+                    self.nonvalue_skips += 1;
+                    return;
+                }
+                Err(e) => {
+                    self.error_skips += 1;
+                    if self.first_error.is_none() {
+                        self.first_error = Some(e.reason);
+                    }
+                    return;
+                }
+            },
+        };
+        match (&mut self.hist, y) {
+            (HistAcc::H1(h), _) => h.fill(x, w),
+            (HistAcc::H1Var(h), _) => h.fill(x, w),
+            (HistAcc::H2(h), Some(y)) => h.fill(x, y, w),
+            // Unreachable by construction: instantiation pairs every H2
+            // accumulator with a y expression. Counted, never silent.
+            (HistAcc::H2(_), None) => {
+                debug_assert!(false, "2-D accumulator without a y expression");
+                self.error_skips += 1;
+                if self.first_error.is_none() {
+                    self.first_error = Some("internal: 2-D fill without y expression".into());
+                }
+            }
+        }
+    }
 }
 
 /// All histograms of one resolved analysis unit, ready to fill.
@@ -140,7 +423,7 @@ impl<'h> HistoSet<'h> {
     #[must_use]
     pub fn new(hir: &'h Hir) -> Self {
         let mut diags = Vec::new();
-        let region_weights = Self::region_weights(hir, &mut diags);
+        Self::weight_diags(hir, &mut diags);
         let mut histos: Vec<HistoFill<'h>> = Vec::new();
 
         for (ridx, region) in hir.regions.iter().enumerate() {
@@ -148,18 +431,45 @@ impl<'h> HistoSet<'h> {
                 continue; // template block, instantiated at reference sites
             }
             let region_name = hir.symbols.display(region.name).to_owned();
+            let weights = stmt_weights(hir, ridx);
+            // Fill-point position of each own `histo` statement, by span.
+            let own_pos: std::collections::HashMap<(u32, u32), usize> = region
+                .stmts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| match s {
+                    HirRegionStmt::NonMembership {
+                        kind: "histo",
+                        span,
+                        ..
+                    } => Some(((span.start, span.end), i)),
+                    _ => None,
+                })
+                .collect();
             let mut seen_lists: Vec<usize> = Vec::new();
             // Own histos first (declaration order), then each referenced
-            // histoList's histos at its (first) reference site.
-            let mut candidates: Vec<&'h adl_sema::HirHisto> =
-                hir.histos.iter().filter(|h| h.region == ridx).collect();
-            for stmt in &region.stmts {
-                let adl_sema::HirRegionStmt::Inherit { region: target, .. } = stmt else {
+            // histoList's histos at its (first) reference site — each
+            // candidate carries the weight state at its fill point.
+            let mut candidates: Vec<(&'h adl_sema::HirHisto, (f64, bool))> = hir
+                .histos
+                .iter()
+                .filter(|h| h.region == ridx)
+                .map(|h| {
+                    let eff = own_pos
+                        .get(&(h.span.start, h.span.end))
+                        .map_or((1.0, false), |&i| weights.at(i));
+                    (h, eff)
+                })
+                .collect();
+            let mut first_fill_stmt: Option<usize> = own_pos.values().copied().min();
+            for (i, stmt) in region.stmts.iter().enumerate() {
+                let HirRegionStmt::Inherit { region: target, .. } = stmt else {
                     continue;
                 };
                 if !hir.histolist_regions.get(*target).copied().unwrap_or(false) {
                     continue; // ordinary region inheritance, not a histoList
                 }
+                first_fill_stmt = Some(first_fill_stmt.map_or(i, |f| f.min(i)));
                 if seen_lists.contains(target) {
                     let list = hir
                         .region_name_order
@@ -173,10 +483,29 @@ impl<'h> HistoSet<'h> {
                     continue;
                 }
                 seen_lists.push(*target);
-                candidates.extend(hir.histos.iter().filter(|h| h.region == *target));
+                candidates.extend(
+                    hir.histos
+                        .iter()
+                        .filter(|h| h.region == *target)
+                        .map(|h| (h, weights.at(i))),
+                );
             }
 
-            for h in candidates {
+            // [DECIDE-W1] lint: a `weight` after a fill point makes the
+            // positional product differ from the former whole-region one.
+            if let Some(first) = first_fill_stmt
+                && region.stmts.iter().enumerate().any(|(i, s)| {
+                    i > first && matches!(s, HirRegionStmt::NonMembership { kind: "weight", .. })
+                })
+            {
+                diags.push(format!(
+                    "region `{region_name}`: a `weight` statement follows a histogram fill \
+                     point; weights compose positionally ([DECIDE-W1]) — earlier fill points \
+                     exclude the later weight"
+                ));
+            }
+
+            for (h, eff) in candidates {
                 if histos
                     .iter()
                     .any(|f| f.region_idx == ridx && f.name.eq_ignore_ascii_case(&h.name))
@@ -188,9 +517,7 @@ impl<'h> HistoSet<'h> {
                     ));
                     continue;
                 }
-                if let Some(fill) =
-                    Self::instantiate(h, ridx, &region_name, region_weights[ridx], &mut diags)
-                {
+                if let Some(fill) = Self::instantiate(h, ridx, &region_name, eff, &mut diags) {
                     histos.push(fill);
                 }
             }
@@ -206,7 +533,7 @@ impl<'h> HistoSet<'h> {
         h: &'h adl_sema::HirHisto,
         region_idx: usize,
         region_name: &str,
-        weight: f64,
+        (factor, weighted_incomplete): (f64, bool),
         diags: &mut Vec<String>,
     ) -> Option<HistoFill<'h>> {
         let skip = |diags: &mut Vec<String>, reason: &str| {
@@ -239,8 +566,10 @@ impl<'h> HistoSet<'h> {
                     region: region_name.to_owned(),
                     region_idx,
                     expr,
-                    weight,
-                    hist: Hist1D::new(*nbins, lo, hi),
+                    expr_y: None,
+                    factor,
+                    weighted_incomplete,
+                    hist: HistAcc::H1(Hist1D::new(*nbins, lo, hi)),
                     nonvalue_skips: 0,
                     error_skips: 0,
                     first_error: None,
@@ -249,25 +578,25 @@ impl<'h> HistoSet<'h> {
         }
     }
 
-    /// Per-region fill weight: the product of the region's numeric
-    /// `weight` statements; non-numeric arguments contribute 1.0 with a
-    /// diagnostic.
-    fn region_weights(hir: &Hir, diags: &mut Vec<String>) -> Vec<f64> {
-        let mut weights = vec![1.0; hir.regions.len()];
+    /// One diagnostic per bad `weight` value (declaration order); the
+    /// 1.0 fallback and the `weighted_incomplete` flagging live in
+    /// `weights.rs` (shared with the cutflow accumulator).
+    fn weight_diags(hir: &Hir, diags: &mut Vec<String>) {
         for w in &hir.weights {
             let region_name = hir
                 .region_name_order
                 .get(w.region)
                 .map_or("?", |&s| hir.symbols.display(s));
             match &w.value {
-                HirWeightValue::Num(text) => match text.parse::<f64>() {
-                    Ok(v) => weights[w.region] *= v,
-                    Err(_) => diags.push(format!(
-                        "weight `{}` in region `{region_name}`: malformed numeric literal \
-                         `{text}`; treated as 1.0",
-                        w.name
-                    )),
-                },
+                HirWeightValue::Num(text) => {
+                    if text.parse::<f64>().is_err() {
+                        diags.push(format!(
+                            "weight `{}` in region `{region_name}`: malformed numeric literal \
+                             `{text}`; treated as 1.0",
+                            w.name
+                        ));
+                    }
+                }
                 HirWeightValue::Other(desc) => diags.push(format!(
                     "weight `{}` in region `{region_name}`: non-numeric argument ({desc}); \
                      treated as 1.0",
@@ -275,12 +604,13 @@ impl<'h> HistoSet<'h> {
                 )),
             }
         }
-        weights
     }
 
-    /// Fill every histogram whose region accepted `event`. `results`
-    /// must be the [`Interp::run_event`] output for the same event (one
-    /// entry per HIR region, in declaration order).
+    /// Fill every histogram whose region accepted `event`, weighted by
+    /// `event.weight ×` the fill point's ADL weight product
+    /// (SPEC_EVENT_PIPELINE §4). `results` must be the
+    /// [`Interp::run_event`] output for the same event (one entry per
+    /// HIR region, in declaration order).
     pub fn fill_event(&mut self, interp: &Interp<'h>, event: &Event, results: &[RegionResult]) {
         for f in &mut self.histos {
             let accepted = results
@@ -289,16 +619,7 @@ impl<'h> HistoSet<'h> {
             if !accepted {
                 continue;
             }
-            match interp.eval_num(f.expr, event) {
-                Ok(NumOutcome::Value(x)) => f.hist.fill(x, f.weight),
-                Ok(NumOutcome::NonValue(_)) => f.nonvalue_skips += 1,
-                Err(e) => {
-                    f.error_skips += 1;
-                    if f.first_error.is_none() {
-                        f.first_error = Some(e.reason);
-                    }
-                }
-            }
+            f.fill_from(interp, event);
         }
     }
 
@@ -332,6 +653,8 @@ impl<'h> HistoSet<'h> {
     pub fn to_json(&self, pretty: bool) -> String {
         let mut w = JsonWriter::new(pretty);
         w.open('{');
+        w.key("version");
+        w.raw("2");
         w.key("histograms");
         w.open('[');
         for f in &self.histos {
@@ -342,30 +665,92 @@ impl<'h> HistoSet<'h> {
             w.str_val(&f.title);
             w.key("region");
             w.str_val(&f.region);
-            w.key("nbins");
-            w.raw(&f.hist.nbins.to_string());
-            w.key("lo");
-            w.num(f.hist.lo);
-            w.key("hi");
-            w.num(f.hist.hi);
-            w.key("sumw");
-            w.num_array(&f.hist.sumw);
-            w.key("sumw2");
-            w.num_array(&f.hist.sumw2);
-            w.key("underflow");
-            w.flow(f.hist.underflow_w, f.hist.underflow_w2);
-            w.key("overflow");
-            w.flow(f.hist.overflow_w, f.hist.overflow_w2);
-            w.key("entries");
-            w.raw(&f.hist.entries.to_string());
-            w.key("tsumw");
-            w.num(f.hist.tsumw);
-            w.key("tsumw2");
-            w.num(f.hist.tsumw2);
-            w.key("tsumwx");
-            w.num(f.hist.tsumwx);
-            w.key("tsumwx2");
-            w.num(f.hist.tsumwx2);
+            w.key("type");
+            match &f.hist {
+                HistAcc::H1(h) => {
+                    w.str_val("h1");
+                    w.key("nbins");
+                    w.raw(&h.nbins.to_string());
+                    w.key("lo");
+                    w.num(h.lo);
+                    w.key("hi");
+                    w.num(h.hi);
+                    h1_tail_json(
+                        &mut w,
+                        &h.sumw,
+                        &h.sumw2,
+                        h.underflow_w,
+                        h.underflow_w2,
+                        h.overflow_w,
+                        h.overflow_w2,
+                        h.entries,
+                        h.tsumw,
+                        h.tsumw2,
+                        h.tsumwx,
+                        h.tsumwx2,
+                    );
+                }
+                HistAcc::H1Var(h) => {
+                    w.str_val("h1var");
+                    w.key("nbins");
+                    w.raw(&h.sumw.len().to_string());
+                    w.key("edges");
+                    w.num_array(&h.edges);
+                    h1_tail_json(
+                        &mut w,
+                        &h.sumw,
+                        &h.sumw2,
+                        h.underflow_w,
+                        h.underflow_w2,
+                        h.overflow_w,
+                        h.overflow_w2,
+                        h.entries,
+                        h.tsumw,
+                        h.tsumw2,
+                        h.tsumwx,
+                        h.tsumwx2,
+                    );
+                }
+                HistAcc::H2(h) => {
+                    w.str_val("h2");
+                    w.key("nx");
+                    w.raw(&h.nx.to_string());
+                    w.key("xlo");
+                    w.num(h.xlo);
+                    w.key("xhi");
+                    w.num(h.xhi);
+                    w.key("ny");
+                    w.raw(&h.ny.to_string());
+                    w.key("ylo");
+                    w.num(h.ylo);
+                    w.key("yhi");
+                    w.num(h.yhi);
+                    w.key("contents");
+                    w.num_array(&h.sumw);
+                    w.key("sumw2");
+                    w.num_array(&h.sumw2);
+                    w.key("entries");
+                    w.raw(&h.entries.to_string());
+                    w.key("tsumw");
+                    w.num(h.tsumw);
+                    w.key("tsumw2");
+                    w.num(h.tsumw2);
+                    w.key("tsumwx");
+                    w.num(h.tsumwx);
+                    w.key("tsumwx2");
+                    w.num(h.tsumwx2);
+                    w.key("tsumwy");
+                    w.num(h.tsumwy);
+                    w.key("tsumwy2");
+                    w.num(h.tsumwy2);
+                    w.key("tsumwxy");
+                    w.num(h.tsumwxy);
+                }
+            }
+            if f.weighted_incomplete {
+                w.key("weighted_incomplete");
+                w.raw("true");
+            }
             w.close('}');
         }
         w.close(']');
@@ -374,135 +759,208 @@ impl<'h> HistoSet<'h> {
     }
 }
 
-/// Minimal ordered-field JSON emitter. `serde_json`'s object model
-/// reorders keys (BTreeMap) and the canonical schema fixes field order,
-/// so the few forms needed here are written directly.
-struct JsonWriter {
-    out: String,
-    pretty: bool,
-    depth: usize,
-    /// Does the current container already have an item?
-    has_item: Vec<bool>,
-    /// A key was just written; the next emit is its value (no separator).
-    pending_value: bool,
+/// The shared 1-D entry tail: `sumw, sumw2, underflow, overflow,
+/// entries, tsumw, tsumw2, tsumwx, tsumwx2`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the fixed canonical field order"
+)]
+fn h1_tail_json(
+    w: &mut JsonWriter,
+    sumw: &[f64],
+    sumw2: &[f64],
+    under_w: f64,
+    under_w2: f64,
+    over_w: f64,
+    over_w2: f64,
+    entries: u64,
+    tsumw: f64,
+    tsumw2: f64,
+    tsumwx: f64,
+    tsumwx2: f64,
+) {
+    w.key("sumw");
+    w.num_array(sumw);
+    w.key("sumw2");
+    w.num_array(sumw2);
+    w.key("underflow");
+    w.flow(under_w, under_w2);
+    w.key("overflow");
+    w.flow(over_w, over_w2);
+    w.key("entries");
+    w.raw(&entries.to_string());
+    w.key("tsumw");
+    w.num(tsumw);
+    w.key("tsumw2");
+    w.num(tsumw2);
+    w.key("tsumwx");
+    w.num(tsumwx);
+    w.key("tsumwx2");
+    w.num(tsumwx2);
 }
 
-impl JsonWriter {
-    fn new(pretty: bool) -> Self {
-        Self {
-            out: String::new(),
-            pretty,
-            depth: 0,
-            has_item: Vec::new(),
-            pending_value: false,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adl_sema::ExtDecls;
+
+    fn ext() -> ExtDecls {
+        ExtDecls::legacy()
+    }
+
+    /// Two 1-D histos give us two independent fill expressions (`MET`,
+    /// `MET / 10`) to assemble the not-yet-sema-reachable forms directly —
+    /// the wiring point coverage for `fill_from` and the v2 JSON arms.
+    const TWO_EXPR_ADL: &str = "region SR\n  select MET > 10\n  \
+                                histo hx, \"x\", 2, 0, 100, MET\n  \
+                                histo hy, \"y\", 2, 0, 10, MET / 10\n";
+
+    fn met_event(ext: &ExtDecls, met: f64) -> Event {
+        crate::parse_event(
+            &format!("{{\"MET\": {{\"pt\": {met}, \"phi\": 0.0}}}}"),
+            ext,
+        )
+        .expect("event parses")
+    }
+
+    /// Rebuild the set with the H1 fills replaced by one H2 (x = MET,
+    /// y = MET / 10) and one H1Var fill sharing the x expression.
+    fn synthetic_set<'h>(hir: &'h Hir) -> HistoSet<'h> {
+        let base = HistoSet::new(hir);
+        assert_eq!(base.histos.len(), 2, "fixture declares two 1-D histos");
+        let [hx, hy] = match &base.histos[..] {
+            [a, b] => [a.expr, b.expr],
+            _ => unreachable!(),
+        };
+        let mk = |name: &str, expr_y, hist| HistoFill {
+            name: name.to_owned(),
+            title: name.to_owned(),
+            region: "SR".to_owned(),
+            region_idx: base.histos[0].region_idx,
+            expr: hx,
+            expr_y,
+            factor: 2.0,
+            weighted_incomplete: false,
+            hist,
+            nonvalue_skips: 0,
+            error_skips: 0,
+            first_error: None,
+        };
+        HistoSet {
+            histos: vec![
+                mk(
+                    "h2d",
+                    Some(hy),
+                    HistAcc::H2(Hist2D::new(2, 0.0, 100.0, 2, 0.0, 10.0)),
+                ),
+                mk(
+                    "hvar",
+                    None,
+                    HistAcc::H1Var(Hist1DVar::new(vec![0.0, 30.0, 70.0, 150.0])),
+                ),
+            ],
+            setup_diags: Vec::new(),
         }
     }
 
-    fn newline_indent(&mut self) {
-        if self.pretty {
-            self.out.push('\n');
-            for _ in 0..self.depth {
-                self.out.push_str("  ");
-            }
+    #[test]
+    fn h2_and_h1var_fill_through_the_set_and_render_v2_json() {
+        let ext = ext();
+        let hir = adl_sema::analyze_str(TWO_EXPR_ADL, "t.adl", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags), "{:?}", hir.diags);
+        let interp = Interp::new(&hir, &ext);
+        let mut set = synthetic_set(&hir);
+        // MET = 25 → x bin 1, y = 2.5 → y bin 1; MET = 75 → x bin 2, y bin 2;
+        // MET = 250 → both overflow; MET = 5 fails the region (no fill).
+        for met in [25.0, 75.0, 250.0, 5.0] {
+            let ev = met_event(&ext, met);
+            let results = interp.run_event(&ev);
+            set.fill_event(&interp, &ev, &results);
         }
+
+        let HistAcc::H2(h2) = &set.histos[0].hist else {
+            panic!("h2 form")
+        };
+        assert_eq!(h2.entries, 3);
+        // gbin = bx + (nx+2)*by with nx = 2: (1,1) → 5, (2,2) → 10,
+        // overflow (3,3) → 15; weight factor 2.0 each.
+        assert_eq!(h2.sumw[5], 2.0);
+        assert_eq!(h2.sumw[10], 2.0);
+        assert_eq!(h2.sumw[15], 2.0);
+        assert_eq!(h2.sumw.iter().sum::<f64>(), 6.0);
+        assert_eq!(h2.sumw2[5], 4.0);
+        // In-range moments exclude the overflow fill.
+        assert_eq!(h2.tsumw, 4.0);
+        assert_eq!(h2.tsumwx, 2.0 * 25.0 + 2.0 * 75.0);
+        assert_eq!(h2.tsumwy, 2.0 * 2.5 + 2.0 * 7.5);
+        assert_eq!(h2.tsumwxy, 2.0 * 25.0 * 2.5 + 2.0 * 75.0 * 7.5);
+
+        let HistAcc::H1Var(hv) = &set.histos[1].hist else {
+            panic!("h1var form")
+        };
+        assert_eq!(hv.entries, 3);
+        assert_eq!(hv.sumw, vec![2.0, 0.0, 2.0]); // 25 → [0,30), 75 → [70,150)
+        assert_eq!(hv.overflow_w, 2.0); // 250 ≥ 150
+        assert_eq!(hv.tsumw, 4.0);
+
+        let json = set.to_json(false);
+        assert!(json.starts_with("{\"version\":2,"));
+        assert!(json.contains(
+            "\"type\":\"h2\",\"nx\":2,\"xlo\":0.0,\"xhi\":100.0,\"ny\":2,\"ylo\":0.0,\"yhi\":10.0,\
+             \"contents\":["
+        ));
+        assert!(json.contains("\"tsumwxy\":"));
+        assert!(json.contains(
+            "\"type\":\"h1var\",\"nbins\":3,\"edges\":[0.0,30.0,70.0,150.0],\"sumw\":[2.0,0.0,2.0]"
+        ));
+        // Determinism of the new arms.
+        assert_eq!(json, set.to_json(false));
     }
 
-    /// Separator before the next item; a no-op in value position.
-    fn item(&mut self) {
-        if self.pending_value {
-            self.pending_value = false;
-            return;
-        }
-        if let Some(has) = self.has_item.last_mut() {
-            if *has {
-                self.out.push(',');
-            }
-            *has = true;
-            self.newline_indent();
-        }
-    }
-
-    fn open(&mut self, c: char) {
-        self.item();
-        self.out.push(c);
-        self.depth += 1;
-        self.has_item.push(false);
-    }
-
-    fn close(&mut self, c: char) {
-        self.depth -= 1;
-        let had_items = self.has_item.pop() == Some(true);
-        if had_items {
-            self.newline_indent();
-        }
-        self.out.push(c);
-    }
-
-    fn key(&mut self, k: &str) {
-        self.item();
-        let _ = write!(self.out, "\"{k}\":");
-        if self.pretty {
-            self.out.push(' ');
-        }
-        self.pending_value = true;
-    }
-
-    fn raw(&mut self, v: &str) {
-        self.item();
-        self.out.push_str(v);
-    }
-
-    fn str_val(&mut self, s: &str) {
-        self.item();
-        let quoted = serde_json::to_string(s).expect("string serializes");
-        self.out.push_str(&quoted);
-    }
-
-    fn num(&mut self, v: f64) {
-        self.item();
-        self.push_num(v);
-    }
-
-    /// serde_json/ryu shortest round-trip text; finite by construction.
-    fn push_num(&mut self, v: f64) {
-        let text = serde_json::to_string(&v).expect("finite f64 serializes");
-        self.out.push_str(&text);
-    }
-
-    fn num_array(&mut self, vs: &[f64]) {
-        self.item();
-        self.out.push('[');
-        for (i, &v) in vs.iter().enumerate() {
-            if i > 0 {
-                self.out.push(',');
-                if self.pretty {
-                    self.out.push(' ');
-                }
-            }
-            self.push_num(v);
-        }
-        self.out.push(']');
-    }
-
-    /// `{"w": ..., "w2": ...}` — flow-bin pair, always inline.
-    fn flow(&mut self, w: f64, w2: f64) {
-        self.item();
-        let sp = if self.pretty { " " } else { "" };
-        self.out.push_str("{\"w\":");
-        self.out.push_str(sp);
-        self.push_num(w);
-        self.out.push(',');
-        self.out.push_str(sp);
-        self.out.push_str("\"w2\":");
-        self.out.push_str(sp);
-        self.push_num(w2);
-        self.out.push('}');
-    }
-
-    fn finish(mut self) -> String {
-        if self.pretty {
-            self.out.push('\n');
-        }
-        self.out
+    #[test]
+    fn h2_skips_fill_when_either_coordinate_is_unavailable() {
+        let ext = ext();
+        // y expression indexes a collection that can be empty.
+        let adl = "object goodJets\n  take Jet\n  select pt > 30\n\
+                   region SR\n  select MET > 10\n  \
+                   histo hx, \"x\", 2, 0, 100, MET\n  \
+                   histo hy, \"y\", 2, 0, 1000, goodJets[0].pt\n";
+        let hir = adl_sema::analyze_str(adl, "t.adl", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags), "{:?}", hir.diags);
+        let interp = Interp::new(&hir, &ext);
+        let base = HistoSet::new(&hir);
+        let mut set = HistoSet {
+            histos: vec![HistoFill {
+                name: "h2d".to_owned(),
+                title: "t".to_owned(),
+                region: "SR".to_owned(),
+                region_idx: base.histos[0].region_idx,
+                expr: base.histos[0].expr,
+                expr_y: Some(base.histos[1].expr),
+                factor: 1.0,
+                weighted_incomplete: false,
+                hist: HistAcc::H2(Hist2D::new(2, 0.0, 100.0, 2, 0.0, 1000.0)),
+                nonvalue_skips: 0,
+                error_skips: 0,
+                first_error: None,
+            }],
+            setup_diags: Vec::new(),
+        };
+        // No jets: y has no value → the whole fill is skipped, counted once.
+        let ev = crate::parse_event("{\"MET\": {\"pt\": 50, \"phi\": 0.0}, \"Jet\": []}", &ext)
+            .expect("event parses");
+        let results = interp.run_event(&ev);
+        set.fill_event(&interp, &ev, &results);
+        let HistAcc::H2(h2) = &set.histos[0].hist else {
+            panic!("h2 form")
+        };
+        assert_eq!(h2.entries, 0, "no partial fill from x alone");
+        assert_eq!(set.histos[0].nonvalue_skips, 1);
+        assert_eq!(
+            set.diagnostics(),
+            vec![
+                "histo `h2d` (region `SR`): 1 fill(s) skipped: expression had no value".to_owned()
+            ]
+        );
     }
 }

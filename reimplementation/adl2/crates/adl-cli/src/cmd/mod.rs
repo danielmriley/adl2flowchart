@@ -5,6 +5,7 @@
 pub mod bridges;
 pub mod check;
 pub mod dot;
+pub mod ingest;
 pub mod objects;
 pub mod run;
 pub mod verify;

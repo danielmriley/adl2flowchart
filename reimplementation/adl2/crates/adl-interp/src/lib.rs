@@ -9,15 +9,20 @@
 //! Entry points: [`read_jsonl`] / [`parse_event`] (events in),
 //! [`Interp`] (evaluator), [`assign_bin`] (boundary-bin rule).
 
+pub mod cutflow;
 pub mod eval;
 pub mod event;
 pub mod histo;
+mod json;
+mod weights;
 
+pub use cutflow::{BinFlow, Counts, CutStep, CutflowSet, RegionFlow};
 pub use eval::{
-    BinOutcome, EvalError, Interp, NonValue, NumOutcome, RegionResult, assign_bin, wrap_dphi,
+    BinOutcome, EvalError, Interp, NonValue, NumOutcome, RegionResult, StepEval, assign_bin,
+    wrap_dphi,
 };
 pub use event::{Event, EventError, EventObject, parse_event, read_jsonl};
-pub use histo::{Hist1D, HistoFill, HistoSet};
+pub use histo::{Hist1D, Hist1DVar, Hist2D, HistAcc, HistoFill, HistoSet};
 
 /// Crate identity marker used by the bootstrap smoke test.
 pub const CRATE_NAME: &str = "adl-interp";

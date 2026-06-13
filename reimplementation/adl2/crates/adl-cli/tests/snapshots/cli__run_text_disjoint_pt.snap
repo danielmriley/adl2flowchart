@@ -8,3 +8,14 @@ event 1: SR_low -> PASS
 event 1: SR_high -> fail
 event 2: SR_low -> fail
 event 2: SR_high -> fail
+
+cutflow: SR_low
+  step                      raw      abs%      rel%  errors  sumw +- err
+  all                         3   100.00%         -       0  3.0 +- 1.7320508075688772
+  select pT(jets[0]) > 100    2    66.67%    66.67%       0  2.0 +- 1.4142135623730951
+  select pT(jets[0]) < 200    1    33.33%    50.00%       0  1.0 +- 1.0
+
+cutflow: SR_high
+  step                      raw      abs%      rel%  errors  sumw +- err
+  all                         3   100.00%         -       0  3.0 +- 1.7320508075688772
+  select pT(jets[0]) > 300    1    33.33%    33.33%       0  1.0 +- 1.0

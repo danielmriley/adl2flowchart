@@ -269,9 +269,15 @@ fn run_histos_writes_canonical_json_deterministically() {
             stderr(&out)
         );
         outputs.push(std::fs::read_to_string(dir.join("histos.json")).expect("histos.json"));
+        outputs.push(std::fs::read_to_string(dir.join("cutflow.json")).expect("cutflow.json"));
     }
-    assert_eq!(outputs[0], outputs[1], "histos.json must be byte-identical");
+    assert_eq!(outputs[0], outputs[2], "histos.json must be byte-identical");
+    assert_eq!(
+        outputs[1], outputs[3],
+        "cutflow.json must be byte-identical"
+    );
     insta::assert_snapshot!("run_histos_json_file", outputs[0]);
+    insta::assert_snapshot!("run_cutflow_json_file", outputs[1]);
     let _ = std::fs::remove_file(adl);
     let _ = std::fs::remove_file(events);
     let _ = std::fs::remove_dir_all(dir_a);
@@ -279,7 +285,7 @@ fn run_histos_writes_canonical_json_deterministically() {
 }
 
 #[test]
-fn run_json_gains_trailing_histograms_line() {
+fn run_json_gains_trailing_histograms_and_cutflow_lines() {
     let adl = temp_adl("histojson", HISTO_ADL);
     let events = temp_jsonl("histojson", HISTO_EVENTS);
     let out = run(&[
@@ -291,8 +297,60 @@ fn run_json_gains_trailing_histograms_line() {
     assert_eq!(code(&out), 0);
     let so = stdout(&out);
     let lines: Vec<&str> = so.lines().collect();
-    assert_eq!(lines.len(), 5, "4 event lines + 1 histograms line: {so}");
+    assert_eq!(lines.len(), 6, "4 event lines + histograms + cutflow: {so}");
     insta::assert_snapshot!("run_json_histograms_line", lines[4]);
+    insta::assert_snapshot!("run_json_cutflow_line", lines[5]);
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+}
+
+/// SPEC_EVENT_PIPELINE §4: the input event weight (JSONL `weight` key,
+/// 0-weight included) composes with the positional ADL `weight` product.
+/// Hand-computed: all = {4 raw, Σw 0+3+1+2 = 6, Σw² 14}; `select MET >
+/// 100` (before the weight, factor 1) = {3, 4, 10}; `reject MET > 300`
+/// (after `weight lumi 2.0`) = {2, 0×2 + 3×2 = 6, 36}.
+#[test]
+fn run_json_cutflow_composes_input_weights() {
+    let adl = temp_adl(
+        "wcutflow",
+        "region SR\n  select MET > 100\n  weight lumi 2.0\n  reject MET > 300\n",
+    );
+    let events = temp_jsonl(
+        "wcutflow",
+        "{\"MET\": {\"pt\": 150, \"phi\": 0.0}, \"weight\": 0.0}\n\
+         {\"MET\": {\"pt\": 250, \"phi\": 0.0}, \"weight\": 3.0}\n\
+         {\"MET\": {\"pt\": 350, \"phi\": 0.0}}\n\
+         {\"MET\": {\"pt\": 50, \"phi\": 0.0}, \"weight\": 2.0}\n",
+    );
+    let out = run(&[
+        "run",
+        "--json",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+    let so = stdout(&out);
+    let last = so.lines().last().expect("cutflow line");
+    let v: serde_json::Value = serde_json::from_str(last).expect("valid JSON");
+    let cf = &v["cutflow"];
+    assert_eq!(cf["version"], 1);
+    assert_eq!(
+        cf["total"],
+        serde_json::json!({"raw": 4, "sumw": 6.0, "sumw2": 14.0})
+    );
+    let steps = cf["regions"][0]["steps"].as_array().expect("steps");
+    assert_eq!(steps.len(), 3);
+    assert_eq!(steps[0]["raw"], 4);
+    assert_eq!(steps[0]["sumw"], 6.0);
+    assert_eq!(steps[1]["label"], "select MET > 100");
+    assert_eq!(steps[1]["raw"], 3);
+    assert_eq!(steps[1]["sumw"], 4.0);
+    assert_eq!(steps[1]["sumw2"], 10.0);
+    assert_eq!(steps[2]["label"], "reject MET > 300");
+    assert_eq!(steps[2]["raw"], 2, "0-weight event still counts raw");
+    assert_eq!(steps[2]["sumw"], 6.0);
+    assert_eq!(steps[2]["sumw2"], 36.0);
+    assert_eq!(steps[2]["errors"], 0);
     let _ = std::fs::remove_file(adl);
     let _ = std::fs::remove_file(events);
 }
@@ -405,6 +463,7 @@ fn run_histos_bridges_are_byte_identical_across_runs() {
     for rel in [
         "make_histos.C",
         "to_root.py",
+        "cutflow.json",
         "baseline_hmet.csv",
         "baseline_hmet.svg",
         "singlelepton_hlep1pt.svg",
@@ -455,8 +514,12 @@ fn bridges_carry_flow_bins_and_weighted_errors() {
 
     let c = read_bridge(&dir, "make_histos.C");
     assert!(
-        c.contains("new TH1D(\"SR_hmet\""),
-        "flat region-prefixed name"
+        c.contains("f->mkdir(\"SR\");") && c.contains("f->cd(\"SR\");"),
+        "per-region TDirectory layout (rootfile v2 default): {c}"
+    );
+    assert!(
+        c.contains("new TH1D(\"hmet\""),
+        "bare object name inside the region directory: {c}"
     );
     assert!(
         c.contains("h->SetBinContent(3, 2.0);"),
@@ -504,13 +567,18 @@ fn run_histos_writes_native_root_file() {
     assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
 
     // out.root lands next to histos.json and re-parses with the writer's own
-    // strict reader; the TH1D content matches the accumulator (flat name,
-    // flow bins, weighted error², raw entries, fill-time moments).
+    // strict reader; the TH1D content matches the accumulator (per-region
+    // TDirectory layout, flow bins, weighted error², raw entries,
+    // fill-time moments), and the region directory carries the §2 cutflow
+    // pair with verbatim step labels.
     let bytes = std::fs::read(dir.join("out.root")).expect("out.root written");
     let parsed = rootfile::reader::parse(&bytes).expect("out.root re-parses");
-    assert_eq!(parsed.keys_list, vec!["SR_hmet".to_owned()]);
+    assert_eq!(parsed.keys_list, vec!["SR".to_owned()]);
+    assert_eq!(parsed.dirs, vec![vec!["SR".to_owned()]]);
+    assert_eq!(parsed.histos.len(), 3, "histogram + cutflow pair");
     let h = &parsed.histos[0];
-    assert_eq!(h.name, "SR_hmet");
+    assert_eq!(h.path, vec!["SR".to_owned()]);
+    assert_eq!(h.name, "hmet");
     assert_eq!(h.nbins, 2);
     assert_eq!((h.lo, h.hi), (0.0, 100.0));
     // contents are [underflow, bin1, bin2, overflow]: 0, 2, 2, 2.
@@ -522,6 +590,64 @@ fn run_histos_writes_native_root_file() {
         (4.0, 8.0, 200.0, 12500.0),
         "in-range fill-time moments"
     );
+
+    // Cutflow pair (SPEC_EVENT_PIPELINE §2): step labels are the verbatim
+    // statement text; raw errors are Poisson (fSumw2 = raw), weighted
+    // carries Σw/Σw² — the lumi weight sits *after* the select, so the
+    // positional product at both steps is 1.0 ([DECIDE-W1]).
+    let raw = &parsed.histos[1];
+    assert_eq!(raw.name, "SR__cutflow_raw");
+    assert_eq!(raw.path, vec!["SR".to_owned()]);
+    assert_eq!(
+        raw.labels.as_deref(),
+        Some(&["all".to_owned(), "select MET > 10".to_owned()][..])
+    );
+    assert_eq!(raw.contents, vec![0.0, 4.0, 3.0, 0.0]);
+    assert_eq!(raw.sumw2, raw.contents, "Poisson");
+    assert_eq!(raw.entries, 4.0, "events processed");
+    let wt = &parsed.histos[2];
+    assert_eq!(wt.name, "SR__cutflow_wt");
+    assert_eq!(wt.contents, vec![0.0, 4.0, 3.0, 0.0]);
+
+    let _ = std::fs::remove_file(adl);
+    let _ = std::fs::remove_file(events);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_histos_flat_names_keeps_v1_layout() {
+    let adl = temp_adl("flatroot", HISTO_ADL);
+    let events = temp_jsonl("flatroot", HISTO_EVENTS);
+    let dir = std::env::temp_dir().join(format!("smash2_flatroot_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&[
+        "run",
+        adl.to_str().unwrap(),
+        events.to_str().unwrap(),
+        "--histos",
+        dir.to_str().unwrap(),
+        "--flat-names",
+    ]);
+    assert_eq!(code(&out), 0, "stderr: {}", stderr(&out));
+
+    let bytes = std::fs::read(dir.join("out.root")).expect("out.root written");
+    let parsed = rootfile::reader::parse(&bytes).expect("out.root re-parses");
+    assert!(parsed.dirs.is_empty(), "no TDirectories under --flat-names");
+    assert_eq!(
+        parsed.keys_list,
+        vec![
+            "SR_hmet".to_owned(),
+            "SR__cutflow_raw".to_owned(),
+            "SR__cutflow_wt".to_owned()
+        ]
+    );
+    assert_eq!(parsed.histos[0].name, "SR_hmet");
+    assert_eq!(parsed.histos[0].contents, vec![0.0, 2.0, 2.0, 2.0]);
+    // Bridges follow the same flat naming.
+    let c = std::fs::read_to_string(dir.join("make_histos.C")).expect("macro");
+    assert!(c.contains("new TH1D(\"SR_hmet\"") && !c.contains("mkdir"));
+    let py = std::fs::read_to_string(dir.join("to_root.py")).expect("script");
+    assert!(py.contains("f[\"SR_hmet\"]"));
 
     let _ = std::fs::remove_file(adl);
     let _ = std::fs::remove_file(events);
@@ -618,7 +744,7 @@ fn root_macro_round_trips_when_root_available() {
         &reader,
         "void read_back() {\n\
          \x20 TFile* f = TFile::Open(\"histos.root\");\n\
-         \x20 TH1D* h = (TH1D*)f->Get(\"baseline_hnjets\");\n\
+         \x20 TH1D* h = (TH1D*)f->Get(\"baseline/hnjets\");\n\
          \x20 printf(\"ENTRIES=%g BIN4=%g OVF=%g\\n\", h->GetEntries(),\n\
          \x20        h->GetBinContent(4), h->GetBinContent(h->GetNbinsX()+1));\n\
          }\n",
@@ -682,7 +808,7 @@ fn uproot_script_round_trips_when_available() {
     );
     let reader = "import uproot\n\
                   f = uproot.open('histos.root')\n\
-                  h = f['baseline_hnjets']\n\
+                  h = f['baseline/hnjets']\n\
                   v = h.values(flow=True)\n\
                   print('ENTRIES', h.member('fEntries'), 'BIN4', v[4])\n";
     let read = Command::new(&py)

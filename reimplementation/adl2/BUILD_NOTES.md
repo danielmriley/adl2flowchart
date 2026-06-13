@@ -1473,3 +1473,242 @@ commands). Results, all run from this directory on this machine:
   "skipping: `root` not on PATH"; hadd smoke test likewise unexercised.
   Standing instruction for the first ROOT-equipped machine recorded in
   HISTOGRAM_REPORT.md.
+
+## 2026-06-12 — Phase 10c (SPEC_EVENT_PIPELINE §1): Delphes ingestion — adl-ingest crate, `smash2 ingest`, `run --profile delphes`
+
+Implemented §1 exactly as the spec decided — **(c) both paths**: native
+oxyroot reader primary, generated uproot script as the independent
+oracle. New crate `crates/adl-ingest` (workspace member; oxyroot pinned
+`=0.1.25` in the root manifest with the why-pinned comment).
+
+### What shipped
+
+- **Profile contract** (`profile.rs`): a pure data table — collections
+  (branch prefix → emission key, leaves with `F32 | I32 | TagBit(bit)`
+  kinds, constant props), MET spec, scalar specs, weight source, LHE
+  branch, known-drop branches. Core `Event`/`Interp` never see experiment
+  names. `delphes()` encodes the §1.2 table with the spec's recommended
+  defaults for every [DECIDE]: I1 bit 0 (`TagBit(0)` on BTag/TauTag; the
+  `btag_bit = N` option is the same field with a different bit — covered
+  by a unit test using bit 1), I2 PDG masses as profile constants
+  (e 0.000511, μ 0.105658), I3 canonical `fatjet`, I4 `Event.Weight`.
+  `Profile::decides()` derives the per-run choices *from the table* (no
+  second copy) and `--verbose` prints them on both `ingest` and `run
+  --profile` (§6 provenance will reuse it).
+- **Native reader** (`reader.rs`): columnar oxyroot read → canonical
+  JSONL lines (serde_json/ryu shortest floats, fixed profile key order,
+  ints for tags/charges). The `run --profile` path feeds the lines *in
+  memory* to `adl_interp::read_jsonl` — one loader, one set of
+  event-model validations for both input paths, and `ingest -o` JSONL ==
+  what `run` evaluates by construction. Diagnostics are a typed enum
+  (`IngestDiag`), deterministic order: LHE multiweight count, unmapped
+  leaves of mapped collections (count always, full list under
+  `--verbose`), ignored tag bits, MET/scalar/weight multiplicity
+  anomalies (first taken / value omitted — per the spec's "first (only)
+  element"), unknown branch families, absent mapped collections
+  (verbose-only). Hard refusals (`IngestError`, exit 1, no output
+  written): missing/mistyped mapped branches, counter/leaf length
+  disagreement, negative counts, **non-finite values**, and
+  **pT-ordering violations** (named entry + index; never a re-sort).
+  Tag domain is {0,1} by construction of the bit extraction, with other
+  set bits *diagnosed* — never folded in.
+- **Counter-authoritative re-chunking** (the one design judgment beyond
+  the spec text, documented in the module header): leaves are flattened
+  and re-chunked by `<collection>_size` with a hard totals check, because
+  oxyroot's per-entry slice boundaries are correct on real Delphes splits
+  but wrong on uproot-written trees (uniform-length baskets omit entry
+  offsets — found empirically; the mini fixture would silently mis-slice
+  one-element branches otherwise). Delphes defines `_size` as the
+  collection length, so the counter is the honest authority; any
+  disagreement is a refusal, and the script oracle (uproot asserts
+  per-event lengths against the same counters) would catch residual
+  infidelity.
+- **oxyroot 0.1.25 gotcha**: `Branch::item_type_name()` panics (`todo!`)
+  on exotic split members (TRefArray/TLorentzVector leaves —
+  `Jet.Constituents`, `GenJet.SoftDroppedJet`) on real Delphes files.
+  The reader therefore enumerates branch *names* only and queries types
+  solely on branches the mapping actually loads (all simple leaf types).
+- **Oracle script generator** (`script.rs`): `to_jsonl.py` rendered from
+  the same profile table (one mapping source, two independent readers).
+  Python `jnum` converts CPython repr (shortest round-trip, same digits)
+  to ryu notation — exact rules pinned by experiment: ryu plain-decimal
+  region is e10 ∈ [−5, 15] (CPython switches at < −4), CPython zero-pads
+  negative exponents, positive exponents already agree (`1e+16`). An
+  env-gated cross-language battery asserts agreement on 26 adversarial
+  values (5e-324, f32 subnormals, 1e21, −0.0, …).
+- **Core-model change (the only one, per §4)**: `Event` gains
+  `pub weight: f64` (Default = 1.0; negative allowed — NLO), JSONL gains
+  the optional top-level `"weight"` key (case-folded, duplicate-checked,
+  no longer a scalar). Composition/cutflow use is 10a scope, untouched.
+- **CLI**: new `smash2 ingest [ROOT] --profile NAME [-o FILE]
+  [--emit-script DIR]` (usage-errors when there is nothing to do or `-o`
+  lacks an input; unknown profile lists the known set) and `run … --profile
+  NAME` (ROOT in, same evaluation as JSONL in). Stdout stays
+  machine-clean; all diagnostics on stderr.
+- **[DECIDE-I3] follow-through**: `legacy_parser/adl/object_aliases.txt`
+  gains the `FATJET FatJet FJet AK8jet` spelling family (its header
+  comment explains why `AK8jets` plural is excluded — it is a *derived*
+  object name in CMS-SUS-21-009). Without this, ADL `FJet` cuts would
+  silently see an empty collection on profile-ingested events. Full
+  workspace battery green after the change — no golden churn.
+- **Fixtures** (`crates/adl-ingest/fixtures/`, ~150 KB committed, all
+  Delphes-shaped trees written by `make_fixtures.py`, sha256s +
+  freeze evidence in `PROVENANCE.md`): `delphes_mini.root` (13 real
+  T2tt events chosen for collection coverage), `delphes_synth.root`
+  (multi-bit tags, negative/odd weights, MET multiplicities 1/1/2/0,
+  unknown `Track`, empty event), `delphes_badorder.root`,
+  `delphes_nan.root`, plus the two frozen `.expected.jsonl` goldens.
+- `scripts/fetch_delphes_sample.sh` — sha256-verified cached download of
+  the pinned 20k-event sample for the e2e gate. README: new "Event
+  ingestion (Delphes)" section; status/crate-table/test-count updates.
+
+### Verification (run before returning)
+
+- `cargo build --workspace` green; `cargo test --workspace` **457
+  passed / 0 failed** (was 428; +29: 13 adl-ingest, +12 CLI ingest suite,
+  +4 interp weight-key tests). `cargo test -p adl-ingest -p adl-cli
+  --no-default-features` green.
+- `cargo clippy --workspace --all-targets -- -D warnings` clean;
+  `cargo fmt -p adl-ingest -p adl-cli -p adl-interp --check` clean (the
+  pre-existing whole-workspace fmt drift in other crates noted 2026-06-12
+  remains untouched).
+- **Forced oracle runs on this machine** (not skipped):
+  `SMASH2_RUN_UPROOT_ORACLE=1` with `.venv-uproot/bin` (uproot 5.7.4) on
+  PATH → `native_jsonl_matches_the_uproot_script_byte_for_byte` (mini +
+  synth fixtures) and `script_jnum_matches_serde_json_on_edge_values`
+  both executed and passed. `SMASH2_RUN_DELPHES_E2E=1
+  SMASH2_DELPHES_SAMPLE=/tmp/delphes_T2tt_700_50.root` (sha256 verified
+  in-test) → `delphes_sample_ingestion_fidelity_end_to_end` passed in
+  136 s: native vs script **byte-identical across all 20,000 events**
+  (21,003,410 bytes), 20000 LHE-weight diagnostic, §1.1 probe values
+  pinned on entry 0 (Jet.PT 719.5091552734375, MET 653.098876953125,
+  weight 1.0).
+- Ad hoc end-to-end: `smash2 run ex02_histograms.adl delphes_mini.root
+  --profile delphes` stdout is byte-identical to `run` over the
+  materialized JSONL (also asserted by a permanent test).
+
+### Gaps / deferred (by design, named)
+
+- §6 provenance object (input sha256, decides, TNamed carrier) not yet
+  emitted — 10c exit item still open; `Profile::decides()` is ready
+  for it. `ingest -o` does not yet write the sibling
+  `events.provenance.json`.
+- No CLI syntax for per-run profile options (`btag_bit = N` exists as a
+  profile-table field, exercised in tests); needs a [DECIDE] on flag
+  shape when a non-default card shows up.
+- Native path materializes columns in memory and re-parses canonical
+  JSON lines (~20k events: trivial; full-sample ingest ≈ 1.4 s release).
+  Constant-memory streaming + direct `Event` construction is 10d scale
+  work, per plan.
+- NanoAOD profile: spec'd (§1.3), not built — as planned for v2.
+- [DECIDE-I4] cannot be distinguished on this sample (both weight
+  branches ≡ 1.0); needs a weighted sample or collaborator sign-off, as
+  the spec records.
+
+## 2026-06-12 — Phase 10a (SPEC_EVENT_PIPELINE §2 + §4): cutflows + event-weight composition
+
+Scope: per-region ordered cutflows and the input-weight × positional-ADL-weight
+composition, in adl-interp/adl-cli/adl-difftest. Builds on the §4 core-model
+change already landed (Event.weight, JSONL `weight` key — see the 10c entry).
+
+### Built
+
+- **Traced membership walk** (`eval.rs`): `region_uncached` is replaced by one
+  `region_walk(idx, &mut Vec<StepEval>)` — the single source of truth for §4.3
+  membership AND the §2 cutflow. `Interp::run_event_traced` returns
+  `(Vec<RegionResult>, Vec<Vec<StepEval>>)`; `run_event` delegates to it, so
+  the evaluation sequence (short-circuiting, memoized collections, cached
+  region verdicts) is byte-identical to Phase 9. A `StepEval` records
+  `{stmt index, Ok(true)/Ok(false)/Err}` per membership-affecting statement
+  actually reached.
+- **`weights.rs` (new, crate-private)**: the positional weight walker shared
+  by histograms and cutflows — `(factor, weighted_incomplete)` in effect
+  *before* each statement of a region. **[DECIDE-W1] resolved positional**,
+  per the spec recommendation: a step/fill uses the product of the numeric
+  `weight` statements declared at earlier positions. Non-numeric ([DECIDE-W2]
+  deferred) and malformed weights contribute 1.0 and poison later positions
+  with `weighted_incomplete` — flagged in JSON, never folded into the sums.
+  The corpus lint (`cutflow_golden.rs::corpus_has_no_weight_after_fill_point`,
+  67 files) proves no corpus file has a `weight` after a fill point, so the
+  switch from Phase 9's whole-region product is **non-breaking** (and any
+  future file where it differs raises a `[DECIDE-W1]` runtime diagnostic).
+- **`cutflow.rs` (new)**: `CutflowSet` — per selection region, step 0 `all`
+  then one step per `select`/`reject`/`trigger`/inheritance (one step carrying
+  the parent's whole predicate; the parent's own table holds its breakdown);
+  histoList references and `weight`/`histo`/`bin`/`save`/… contribute no step.
+  Per step `raw`/`sumw`/`sumw2`/`errors`; w_eff = `Event.weight ×` positional
+  factor; a hard `EvalError` at step i counts the event as failing step i and
+  increments `errors`. `bin` appendix per spec: boundary bins
+  `[b0,b1)…[bn,∞)` + `out` bucket (below-b0 / non-value) + `failed`;
+  boolean bins get true/false buckets; filled only from whole-region passes.
+  Regions containing out-of-fragment statements (`sort`, unresolved refs) are
+  skipped with a diagnostic — the histogram honesty rule.
+- **Emissions** (one accumulator, three renderings): canonical `cutflow.json`
+  (`version: 1`, `total {raw,sumw,sumw2}`, `regions[].steps[] {kind,label,
+  raw,sumw,sumw2,errors[,weighted_incomplete]}`, `bins[]`; shared `JsonWriter`
+  moved to `json.rs`, ryu shortest floats, byte-deterministic); fixed-width
+  stdout table (`step | raw | abs% | rel% | errors | sumw +- err`) appended
+  after the per-event lines in text mode; `{"cutflow": {...}}` as one final
+  line under `run --json`; `cutflow.json` written next to `histos.json` under
+  `--histos DIR`. Files with no evaluable region emit none of these.
+- **Histogram fills now compose the input weight** (§4 "raw vs weighted
+  everywhere"): fill weight = `Event.weight × positional factor` (was: static
+  whole-region product, implicitly w_input ≡ 1). `entries` stays raw.
+  histos.json gains `weighted_incomplete` (emitted only when true — no churn
+  for clean files; ex02/HISTO goldens byte-unchanged since all fixtures carry
+  unit input weights and weights precede fills).
+
+### Step labels (deviation, flagged for ratification)
+
+Spec §2 says "verbatim source text of the statement". HIR carries expression
+spans, not statement spans, so labels are `keyword + verbatim expression
+slice` with the keyword canonicalized (`cut` renders as `select`), and an
+inheritance step is the verbatim reference text. Two consequences, documented
+in the module header: a `select` naming a boolean define shows the *inlined
+define body* (resolution replaced the reference), and a statement whose span
+cannot be sliced falls back to `select <statement N>`. Exact statement spans
+would need an additive HIR change across 5 crates — deferred; flag if labels
+must be raw-source-exact before the TH1D `fLabels` work consumes them.
+
+### Verification (run before returning)
+
+- Hand-computed unit battery `adl-interp/tests/cutflow_semantics.rs` (12
+  tests): every step kind, inheritance-as-one-step, error counting (missing
+  scalar → `errors`, later steps untouched), skipped out-of-fragment region,
+  weighted case **incl. a 0-weight event** (raw counts it, sums add zero;
+  positional: `select` before `weight lumi 2.0` carries factor 1, after it
+  factor 2 — totals 6/14, step sums 5/13 and 6/36 hand-checked),
+  `weighted_incomplete` flagging, boundary + boolean bin appendices, an exact
+  hand-written canonical JSON string, table/JSON byte-determinism.
+- **ex02 golden extended** (`adl-difftest/tests/cutflow_golden.rs`): cutflow
+  JSON + stdout table snapshots over the committed 200-event fixture
+  (baseline 200 → 200 → 75 → 62 → 60 → 47 → 32; singlelepton inherits
+  baseline as one 32-raw step → 11). **Independent oracle**: every step's
+  raw count recomputed by a test-local prefix-conjunction walk
+  (`eval_bool`/`eval_region_by_name`, not the traced walk) — exact match;
+  sumw == raw under unit weights; monotonicity; byte-determinism (two
+  accumulations). Toy-event battery (seeds 1/7/42 × 300 events): final step
+  raw == untraced `run_event` membership count.
+- CLI: `run_json_cutflow_composes_input_weights` (4 weighted events incl.
+  w=0, hand-computed step counts asserted through the `--json` line),
+  cutflow.json byte-identity + snapshot under `--histos`, `--json` line
+  count/snapshots updated, cutflow.json added to the bridges determinism
+  list. Snapshots `run_text_disjoint_pt` / `run_json_bins_partition`
+  regenerated (cutflow table/line appended — reviewed, counts hand-checked).
+- `cargo test -p adl-interp -p adl-difftest` green; `cargo clippy
+  -p adl-interp -p adl-difftest --all-targets -- -D warnings` clean; `cargo
+  fmt` clean on touched crates. Full-workspace battery: see note below.
+
+### Gaps / deferred (named)
+
+- §2 emission 2 (TH1D pair `__cutflow_raw`/`__cutflow_wt` in out.root) needs
+  the rootfile TAxis `fLabels` THashList extension — in flight as Phase 10b
+  (concurrent rootfile work observed in-tree during this pass); wire-up is a
+  follow-on once that lands.
+- `cutflow.json` carries no §6 `provenance` object yet — same 10c exit gap
+  as histos.json/out.root.
+- Region-local weights only: a parent's `weight` statements do not propagate
+  through inheritance (matches Phase-9 histogram semantics; spec is silent —
+  flag for ratification if cross-region weighting is wanted).
+- `--fail-on errors>0` gating mentioned in §2 not yet added to `run` (only
+  `verify` has `--fail-on` today); errors are surfaced in table + JSON.

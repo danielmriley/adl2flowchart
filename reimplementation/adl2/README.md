@@ -9,10 +9,11 @@ legacy tool earned through two audits hold here *by construction*.
 
 Status: all spec phases through the parity gate draft are built and green,
 plus Phase 9 histogram production (`run --histos`, including a native
-pure-Rust `out.root`) — 428 tests, 68/68 corpus files, the full legacy
-golden battery on both solver backends, and a verdict-parity comparison
-against the legacy tool with zero legacy-better differences
-(`../PARITY_DRAFT.md`).
+pure-Rust `out.root`) and Phase 10 Delphes ingestion (`ingest` /
+`run --profile delphes`, native ROOT reading with an independent uproot
+oracle) — 457 tests, 68/68 corpus files, the full legacy golden battery
+on both solver backends, and a verdict-parity comparison against the
+legacy tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
 
 ---
 
@@ -28,7 +29,7 @@ cargo build --release
 alias smash2=$PWD/target/release/smash2
 ```
 
-### The five subcommands
+### The subcommands
 
 **`check` — parse + resolve, report diagnostics**
 
@@ -62,6 +63,7 @@ witnesses. Output is deterministic — two runs are byte-identical.
 ```bash
 smash2 run analysis.adl events.jsonl              # per-region pass/fail + bin assignment
 smash2 run analysis.adl events.jsonl --histos out/  # + fill histograms (see below)
+smash2 run analysis.adl events.root --profile delphes  # straight off a Delphes file
 ```
 
 Events are JSONL: per-collection ordered object lists with properties,
@@ -211,6 +213,51 @@ exactly by uproot in the wiring tests.
 
 ---
 
+## Event ingestion (Delphes)
+
+`smash2` reads Delphes ROOT files directly — no external converter
+(SPEC_EVENT_PIPELINE §1). Experiment specifics live in **converter
+profiles** (a pure data table in `adl-ingest`: branch names → canonical
+keys, tag-derivation rules, weight source); the core event model never
+sees experiment names. `delphes` is the first profile; `cms-nanoaod` is
+spec'd for v2.
+
+```bash
+# Run an analysis straight off a Delphes file (native read, no temp files):
+smash2 run analysis.adl events.root --profile delphes
+
+# Materialize canonical JSONL (byte-deterministic) for debugging/fixtures:
+smash2 ingest events.root --profile delphes -o events.jsonl
+
+# Generate the independent uproot oracle script (also the no-Rust path):
+smash2 ingest --profile delphes --emit-script out/
+python3 out/to_jsonl.py events.root events.jsonl   # byte-identical output
+```
+
+The mapping (branch → canonical): `Jet`/`FatJet` pt/eta/phi/m + `btag`/
+`tautag` flags from the Delphes bitmasks (bit 0 = the card's default
+working point; other set bits are *diagnosed*, never folded in),
+`Electron`/`Muon` pt/eta/phi/q with PDG masses as profile constants,
+`Photon` pt/eta/phi/e, `MissingET` → `MET.pt`/`MET.phi`, `ScalarHT.HT` →
+`HT`, `Event.Weight` → the event weight (JSONL top-level `"weight"`,
+absent = 1.0). Anything the profile cannot map faithfully is a stderr
+**diagnostic** — LHE multiweights, unmapped leaves, unknown branches,
+MET multiplicity anomalies — and `--verbose` adds the profile's
+per-`[DECIDE]` choices and full dropped-leaf lists. Invariants are
+enforced at ingest with hard refusals, never silent fixes: collections
+must arrive pT-descending (no re-sort) and non-finite values are
+rejected.
+
+The native reader (oxyroot, pinned `=0.1.25`) is validated against the
+generated uproot script — an independent reader implementation — byte
+for byte: continuously on the committed fixtures
+(`crates/adl-ingest/fixtures/`, env-gated `SMASH2_RUN_UPROOT_ORACLE=1`)
+and on the full 20 000-event T2tt tutorial sample (env-gated
+`SMASH2_RUN_DELPHES_E2E=1`; fetch it with
+`scripts/fetch_delphes_sample.sh`).
+
+---
+
 ## How it works
 
 ```
@@ -330,6 +377,7 @@ touching verdicts.
 | `adl-syntax` | lexer, recursive-descent parser, AST, spans, diagnostics, canonical dump |
 | `adl-sema` | name resolution, Quantity/Collection identity model, fragment tagging, HIR |
 | `adl-interp` | reference interpreter (the executable spec) |
+| `adl-ingest` | converter-profile event ingestion (Delphes ROOT → canonical events; native oxyroot reader + generated uproot oracle) |
 | `adl-formula` | polarity-typed formula IR + projections; HIR→formula encoder |
 | `adl-axioms` | audited axiom catalog (+ prohibited-axiom regressions) |
 | `adl-solver` | `Solver` trait; native-z3 and SMT-LIB subprocess backends |
@@ -347,7 +395,7 @@ questions), `../PARITY_DRAFT.md`. Build history: `BUILD_NOTES.md`,
 `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`.
 
 ```bash
-cargo test --workspace          # full battery (~428 tests)
+cargo test --workspace          # full battery (~457 tests)
 scripts/corpus_gate.sh          # all 68 example files parse + resolve
 cargo test -p adl-solver --no-default-features   # subprocess-backend job
 ```

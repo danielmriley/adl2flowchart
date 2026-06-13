@@ -88,7 +88,11 @@ fn ex02_histos_deterministic_and_consistent() {
     let events = fixture_events(&ext);
     let a = accumulate(&hir, &ext, &events);
     let b = accumulate(&hir, &ext, &events);
-    assert_eq!(a.to_json(true), b.to_json(true), "rerun must be byte-identical");
+    assert_eq!(
+        a.to_json(true),
+        b.to_json(true),
+        "rerun must be byte-identical"
+    );
     assert_eq!(a.to_json(false), b.to_json(false));
     assert_eq!(a.diagnostics(), b.diagnostics());
 
@@ -107,14 +111,17 @@ fn ex02_histos_deterministic_and_consistent() {
         .count() as u64;
     assert!(baseline_passes > 0, "fixture must populate baseline");
     for f in a.histos.iter().filter(|f| f.region == "baseline") {
-        assert_eq!(f.hist.entries, baseline_passes, "histo {}", f.name);
+        assert_eq!(f.hist.entries(), baseline_passes, "histo {}", f.name);
+        let Some(h) = f.h1() else {
+            continue; // 2-D / variable-bin accumulators have their own goldens
+        };
         // Unit weights: Σw over all bins incl. flow equals entries.
-        let total: f64 = f.hist.sumw.iter().sum::<f64>() + f.hist.underflow_w + f.hist.overflow_w;
+        let total: f64 = h.sumw.iter().sum::<f64>() + h.underflow_w + h.overflow_w;
         #[allow(clippy::cast_precision_loss)]
-        let entries_f = f.hist.entries as f64;
+        let entries_f = f.hist.entries() as f64;
         assert!((total - entries_f).abs() < 1e-9, "histo {}", f.name);
         // tsumw counts in-range fills only.
-        let in_range: f64 = f.hist.sumw.iter().sum();
-        assert!((f.hist.tsumw - in_range).abs() < 1e-9, "histo {}", f.name);
+        let in_range: f64 = h.sumw.iter().sum();
+        assert!((h.tsumw - in_range).abs() < 1e-9, "histo {}", f.name);
     }
 }

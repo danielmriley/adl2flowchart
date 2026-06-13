@@ -1,13 +1,16 @@
 ---
 source: crates/adl-cli/tests/cli.rs
+assertion_line: 279
 expression: "outputs[0]"
 ---
 {
+  "version": 2,
   "histograms": [
     {
       "name": "hmet",
       "title": "met",
       "region": "SR",
+      "type": "h1",
       "nbins": 2,
       "lo": 0.0,
       "hi": 100.0,

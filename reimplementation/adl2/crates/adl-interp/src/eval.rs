@@ -119,6 +119,19 @@ pub struct RegionResult {
     pub bins: Vec<BinOutcome>,
 }
 
+/// Outcome of one membership-affecting statement during a traced region
+/// walk (SPEC_EVENT_PIPELINE §2 cutflows). The walk short-circuits, so a
+/// trace covers exactly the statements the event reached.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepEval {
+    /// Index into the region's `stmts`.
+    pub stmt: usize,
+    /// `Ok(true)`: survived; `Ok(false)`: failed (walk stops);
+    /// `Err`: hard evaluation error — the event counts as failing here
+    /// (a faithful diagnostic, never a guessed pass; walk stops).
+    pub outcome: Result<bool, EvalError>,
+}
+
 /// Boundary-list bin assignment: edges `b0 … bn` denote bins
 /// `[b0,b1), …, [bn-1,bn), [bn,∞)` (SPEC_LANGUAGE §4.3; open last bin).
 /// Returns `None` for `v < b0` or non-finite `v`.
@@ -194,25 +207,34 @@ impl<'h> Interp<'h> {
     /// Evaluate every region (in declaration order) plus bin assignments.
     #[must_use]
     pub fn run_event(&self, event: &Event) -> Vec<RegionResult> {
+        self.run_event_traced(event).0
+    }
+
+    /// [`Self::run_event`] plus, per region, the per-statement trace of
+    /// the membership walk (one [`StepEval`] per membership-affecting
+    /// statement reached, in declaration order) — the cutflow input
+    /// (SPEC_EVENT_PIPELINE §2). The evaluation sequence is identical to
+    /// the untraced path: same short-circuiting, same memoization.
+    #[must_use]
+    pub fn run_event_traced(&self, event: &Event) -> (Vec<RegionResult>, Vec<Vec<StepEval>>) {
         let mut ev = Ev::new(self, event);
-        self.hir
-            .regions
-            .iter()
-            .enumerate()
-            .map(|(idx, region)| {
-                let pass = ev.region(idx);
-                let bins = if pass == Ok(true) {
-                    self.region_bins(&mut ev, idx)
-                } else {
-                    Vec::new()
-                };
-                RegionResult {
-                    name: self.hir.symbols.display(region.name).to_owned(),
-                    pass,
-                    bins,
-                }
-            })
-            .collect()
+        let mut results = Vec::with_capacity(self.hir.regions.len());
+        let mut traces = Vec::with_capacity(self.hir.regions.len());
+        for (idx, region) in self.hir.regions.iter().enumerate() {
+            let (pass, steps) = ev.region_traced(idx);
+            let bins = if pass == Ok(true) {
+                self.region_bins(&mut ev, idx)
+            } else {
+                Vec::new()
+            };
+            results.push(RegionResult {
+                name: self.hir.symbols.display(region.name).to_owned(),
+                pass,
+                bins,
+            });
+            traces.push(steps);
+        }
+        (results, traces)
     }
 
     /// Evaluate a resolved expression as a predicate.
@@ -395,37 +417,51 @@ impl<'h, 'e> Ev<'h, 'e> {
         if let Some(cached) = self.regions.get(&idx) {
             return cached.clone();
         }
-        let result = self.region_uncached(idx);
+        let mut trace = Vec::new();
+        let result = self.region_walk(idx, &mut trace);
         self.regions.insert(idx, result.clone());
         result
     }
 
-    fn region_uncached(&mut self, idx: usize) -> EvalResult<bool> {
+    /// [`Self::region`] with the per-statement trace exposed (the cutflow
+    /// input). Always re-walks — callers invoke it once per region per
+    /// event, before any cross-region reference can have cached it; the
+    /// final verdict lands in the cache either way.
+    fn region_traced(&mut self, idx: usize) -> (EvalResult<bool>, Vec<StepEval>) {
+        let mut trace = Vec::new();
+        let result = self.region_walk(idx, &mut trace);
+        self.regions.insert(idx, result.clone());
+        (result, trace)
+    }
+
+    /// The one membership walk (single source of truth for §4.3 and the
+    /// §2 cutflow): evaluates statements in order, records one
+    /// [`StepEval`] per membership-affecting statement reached, and
+    /// short-circuits on the first failure or hard error.
+    fn region_walk(&mut self, idx: usize, trace: &mut Vec<StepEval>) -> EvalResult<bool> {
         let region = &self.it.hir.regions[idx];
-        for stmt in &region.stmts {
-            match stmt {
-                HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => {
-                    if !self.truth(n, None)? {
-                        return Ok(false);
-                    }
-                }
-                HirRegionStmt::Reject(n) => {
-                    if self.truth(n, None)? {
-                        return Ok(false);
-                    }
-                }
-                HirRegionStmt::Inherit { region, .. } => {
-                    if !self.region(*region)? {
-                        return Ok(false);
-                    }
-                }
+        for (i, stmt) in region.stmts.iter().enumerate() {
+            let outcome = match stmt {
+                HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => self.truth(n, None),
+                HirRegionStmt::Reject(n) => self.truth(n, None).map(|c| !c),
+                HirRegionStmt::Inherit { region, .. } => self.region(*region),
                 // Bins partition; they never constrain membership (§4.3).
-                HirRegionStmt::Bin { .. } | HirRegionStmt::BinCond { .. } => {}
+                HirRegionStmt::Bin { .. } | HirRegionStmt::BinCond { .. } => continue,
                 HirRegionStmt::NonMembership { tag, span, .. } => {
                     if let Fragment::Unsupported(reason) = tag {
                         return self.err(*span, format!("cannot evaluate region: {reason}"));
                     }
+                    continue;
                 }
+            };
+            trace.push(StepEval {
+                stmt: i,
+                outcome: outcome.clone(),
+            });
+            match outcome {
+                Ok(true) => {}
+                Ok(false) => return Ok(false),
+                Err(e) => return Err(e),
             }
         }
         Ok(true)

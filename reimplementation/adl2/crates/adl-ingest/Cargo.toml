@@ -1,0 +1,14 @@
+[package]
+name = "adl-ingest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Native TTree reader (SPEC_EVENT_PIPELINE §1.1, pinned exactly).
+oxyroot.workspace = true
+# Canonical JSON number text (same ryu shortest-round-trip discipline as
+# adl-interp's histos.json writer).
+serde_json.workspace = true

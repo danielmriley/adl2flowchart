@@ -85,6 +85,22 @@ impl WBuf {
             self.f64(v);
         }
     }
+
+    /// Object-any pointer, first-occurrence form (SPEC_ROOT_WRITER §2;
+    /// uproot `_serialize_object_any`): byte count, `kNewClassTag`,
+    /// NUL-terminated class name, then the object body. uproot always
+    /// writes the new-class-tag form (never a back-reference), and so do
+    /// we. The byte count covers the tag, the class name, and the body.
+    pub fn obj_any(&mut self, class: &str, body: impl FnOnce(&mut Self)) {
+        let at = self.0.len();
+        self.u32(0);
+        self.u32(0xFFFF_FFFF); // kNewClassTag
+        self.bytes(class.as_bytes());
+        self.u8(0);
+        body(self);
+        let n = (self.0.len() - at - 4) as u32;
+        self.0[at..at + 4].copy_from_slice(&(n | K_BYTE_COUNT_MASK).to_be_bytes());
+    }
 }
 
 #[cfg(test)]

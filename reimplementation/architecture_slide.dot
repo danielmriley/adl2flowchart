@@ -1,0 +1,90 @@
+digraph adl2 {
+  rankdir=TB;
+  bgcolor="white";
+  labelloc="t";
+  fontname="Helvetica-Bold"; fontsize=22;
+  label="ADL2  /  smash2 — architecture\l12 crates · ~26,600 lines of Rust · 510 tests · pure Rust (optional z3)\l";
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", margin="0.12,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="gray40"];
+  nodesep=0.35; ranksep=0.55;
+
+  // ---------- inputs ----------
+  subgraph cluster_in {
+    label="INPUTS"; style="rounded,filled"; fillcolor="#eef3fb"; fontname="Helvetica-Bold"; color="#9db8e0";
+    adl   [label="analysis.adl\n(selection logic)", fillcolor="#dce8fa"];
+    rootin[label="event data .root\n(Delphes)", fillcolor="#dce8fa"];
+    jsonl [label="events.jsonl", fillcolor="#dce8fa"];
+  }
+
+  // ---------- front end ----------
+  subgraph cluster_front {
+    label="FRONT END  (one resolved truth)"; style="rounded,filled"; fillcolor="#f3eefb"; fontname="Helvetica-Bold"; color="#bfa6e0";
+    syntax [label="adl-syntax (3.1k)\nlexer → recursive-descent\nparser → spanned AST", fillcolor="#e7dcfa"];
+    ingest [label="adl-ingest (1.5k)\nDelphes .root → events\n(oxyroot, native Rust)", fillcolor="#e7dcfa"];
+    sema   [label="adl-sema (3.2k)\nresolve → HIR + QuantityTable\ntyped identity · fragment tags", fillcolor="#d8c4f5", penwidth=2];
+  }
+
+  // ---------- consumers ----------
+  subgraph cluster_analysis {
+    label="VERIFY  (proofs)"; style="rounded,filled"; fillcolor="#eaf7ee"; fontname="Helvetica-Bold"; color="#8fcea8";
+    formula  [label="adl-formula (1.5k)\nOver/Under encoder", fillcolor="#d6f0de"];
+    axioms   [label="adl-axioms (0.9k)\nphysics axiom catalog", fillcolor="#d6f0de"];
+    solver   [label="adl-solver (1.0k)\nz3 native + subprocess", fillcolor="#d6f0de"];
+    analysis [label="adl-analysis (3.7k)\ndisjoint · overlap · subset\nvacuity · bins · explanations", fillcolor="#c2e8cf", penwidth=2];
+  }
+
+  subgraph cluster_interp {
+    label="RUN  (semantics)"; style="rounded,filled"; fillcolor="#fdf4e3"; fontname="Helvetica-Bold"; color="#e8c98f";
+    interp [label="adl-interp (4.1k)\nreference interpreter\nstreaming + parallel\nfill histos & cutflows", fillcolor="#fae9c8", penwidth=2];
+    rootfile [label="rootfile (3.3k)\nPURE-RUST .root WRITER\nTH1D/TH2D + cutflows", fillcolor="#f7dca0", penwidth=2];
+  }
+
+  subgraph cluster_viz {
+    label="VISUALIZE"; style="rounded,filled"; fillcolor="#fdeef0"; fontname="Helvetica-Bold"; color="#e0a6b0";
+    viz [label="adl-viz (0.8k)\nflowchart + AST → DOT", fillcolor="#f7d6dc"];
+  }
+
+  // ---------- harness / cli ----------
+  cli  [label="adl-cli (2.3k) — smash2:  check | verify | run | dot | objects | ingest", fillcolor="#e8e8e8", shape=box, style="rounded,filled"];
+  diff [label="adl-difftest (1.1k)\nproperty + metamorphic batteries · oracles", fillcolor="#e8e8e8"];
+
+  // ---------- outputs ----------
+  subgraph cluster_out {
+    label="OUTPUTS"; style="rounded,filled"; fillcolor="#eef3fb"; fontname="Helvetica-Bold"; color="#9db8e0";
+    verdicts [label="verdict report\n(text · --json · --explain)", fillcolor="#dce8fa"];
+    rootout  [label="histograms .root\n+ cutflow + provenance", fillcolor="#dce8fa"];
+    bridges  [label="histos.json · .C · .py\nCSV · SVG", fillcolor="#dce8fa"];
+    dot      [label="flowchart.pdf\nast.pdf", fillcolor="#dce8fa"];
+    objtbl   [label="objects table", fillcolor="#dce8fa"];
+  }
+
+  // ---------- edges: pipeline ----------
+  adl    -> syntax;
+  rootin -> ingest;
+  ingest -> interp [label="canonical events", style=dashed];
+  jsonl  -> interp [label="events", style=dashed];
+  syntax -> sema   [label="AST"];
+
+  sema -> formula  [label="HIR"];
+  sema -> interp   [label="HIR"];
+  sema -> viz      [label="HIR"];
+  sema -> analysis [style=invis];
+
+  formula -> analysis;
+  axioms  -> analysis;
+  solver  -> analysis;
+
+  interp  -> rootfile [label="accumulators"];
+  analysis -> interp [label="witness\nre-validation", style=dotted, constraint=false, color="#3a7d4d"];
+
+  // ---------- edges: outputs ----------
+  analysis -> verdicts;
+  rootfile -> rootout;
+  interp   -> bridges;
+  viz      -> dot;
+  sema     -> objtbl [style=invis];
+
+  // cli + difftest associations (loose)
+  cli -> syntax [style=invis];
+  diff -> interp [label="tests every layer", style=dotted, color="gray60", constraint=false];
+}

@@ -791,3 +791,153 @@ fn composite_object_derived_synonym_and_take_colon_not_captured() {
     };
     assert_eq!(downstream.name.name, "downstream");
 }
+
+// ---------- `->` member access (NPS dialect: `dijet->j1[0]`) ----------
+
+#[test]
+fn member_access_simple() {
+    let e = cond("size(dijet->jj) == 1");
+    // size(...) is a Call; its argument is a Member.
+    let Expr::Cmp { lhs, .. } = &e else {
+        panic!("expected cmp, got {e:?}");
+    };
+    let Expr::Call { args, name, .. } = lhs.as_ref() else {
+        panic!("expected call");
+    };
+    assert_eq!(name.name, "size");
+    let Arg::Expr(arg) = &args[0] else { panic!() };
+    let Expr::Member { field, .. } = arg.as_ref() else {
+        panic!("expected member, got {arg:?}");
+    };
+    assert_eq!(field.name, "jj");
+}
+
+#[test]
+fn member_access_then_index() {
+    // `dijet->j1[0]` is Member then Index in the same postfix loop.
+    let e = cond("eta(dijet->j1[0]) > 2.0");
+    let Expr::Cmp { lhs, .. } = &e else { panic!() };
+    let Expr::Call { args, .. } = lhs.as_ref() else {
+        panic!()
+    };
+    let Arg::Expr(arg) = &args[0] else { panic!() };
+    let Expr::Index { base, .. } = arg.as_ref() else {
+        panic!("expected index, got {arg:?}");
+    };
+    let Expr::Member { field, .. } = base.as_ref() else {
+        panic!("expected member base");
+    };
+    assert_eq!(field.name, "j1");
+}
+
+#[test]
+fn arrow_does_not_break_subtraction() {
+    // The greedy `->` lex must not steal `-` from `a - b` or negatives.
+    let e = cond("eta(j1) - eta(j2) > -1.5");
+    assert!(matches!(e, Expr::Cmp { .. }));
+}
+
+// ---------- `sort(...)` take source (NPS: `take sort(jets, pt(jets), descend)`) ----------
+
+#[test]
+fn sort_take_source_is_call() {
+    let file = parse_ok("object sortedJets\n  take sort(jets, pt(jets), descend)\n");
+    let Section::Object(obj) = &file.sections[0] else {
+        panic!()
+    };
+    let ObjectStmt::Take {
+        source: TakeSource::Call { name, args },
+        ..
+    } = &obj.stmts[0]
+    else {
+        panic!("expected call take source");
+    };
+    assert_eq!(name.name, "sort");
+    assert_eq!(args.len(), 3);
+}
+
+// ---------- `all(...)` as a call (correctness hardening) ----------
+
+#[test]
+fn all_with_args_is_call() {
+    let e = cond("all(jets, pt > 30)");
+    let Expr::Call { name, .. } = &e else {
+        panic!("expected call, got {e:?}");
+    };
+    assert_eq!(name.name, "all");
+}
+
+#[test]
+fn bare_all_still_keyword() {
+    let e = cond("pt(jets) > all");
+    let Expr::Cmp { rhs, .. } = &e else { panic!() };
+    assert!(matches!(rhs.as_ref(), Expr::All(_)));
+}
+
+// ---------- underscore-in-section-name (NPS25011 `SR3L_1`, NPS25009 `SR_3b3j`) ----------
+
+#[test]
+fn region_name_with_underscore_digit() {
+    let file = parse_ok("region SR3L_1\n  select pt(jets) > 30\n");
+    let Section::Region(r) = &file.sections[0] else {
+        panic!()
+    };
+    assert_eq!(r.name.name, "SR3L_1");
+    assert_eq!(r.stmts.len(), 1);
+}
+
+#[test]
+fn region_name_with_underscore_digit_then_ident() {
+    let file = parse_ok("region SR_3b3j\n  select pt(jets) > 30\n");
+    let Section::Region(r) = &file.sections[0] else {
+        panic!()
+    };
+    assert_eq!(r.name.name, "SR_3b3j");
+}
+
+#[test]
+fn object_name_with_underscore_digit() {
+    let file = parse_ok("object jets_2x\n  take Jet\n");
+    let Section::Object(o) = &file.sections[0] else {
+        panic!()
+    };
+    assert_eq!(o.name.name, "jets_2x");
+}
+
+#[test]
+fn spaced_underscore_index_not_absorbed_into_name() {
+    // `region R` followed by a select using `goodJets_1` indexing must NOT
+    // absorb the indexing into the region name.
+    let file = parse_ok("region R\n  select pT(goodJets_1) > 30\n");
+    let Section::Region(r) = &file.sections[0] else {
+        panic!()
+    };
+    assert_eq!(r.name.name, "R");
+}
+
+// ---------- recover_block_stmt backstop (unrecognized stmt -> warning, not error) ----------
+
+#[test]
+fn unrecognized_region_stmt_is_warning_not_error() {
+    // A statement starting with a token the dispatcher does not recognize as a
+    // keyword or a bare region reference (here a leading `*`) yields `None`
+    // from `parse_region_stmt`, triggering the warning-level recovery backstop.
+    let r = parse("region R\n  * garbage here\n  select pt(jets) > 30\n");
+    let has_error = r.diags.iter().any(|d| d.severity == Severity::Error);
+    assert!(!has_error, "should not be an error: {:#?}", r.diags);
+    let has_warn = r
+        .diags
+        .iter()
+        .any(|d| d.severity == Severity::Warning && d.message.contains("unrecognized"));
+    assert!(has_warn, "expected a recovery warning: {:#?}", r.diags);
+    // The well-formed `select` after the bad line still parses.
+    let Section::Region(region) = &r.file.sections[0] else {
+        panic!()
+    };
+    assert!(
+        region
+            .stmts
+            .iter()
+            .any(|s| matches!(s, RegionStmt::Cut { .. }))
+    );
+}

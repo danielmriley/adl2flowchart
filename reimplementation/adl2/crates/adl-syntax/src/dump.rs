@@ -384,6 +384,9 @@ impl Dumper {
             Expr::Dot { base, field, .. } => {
                 self.nested(&format!("Dot field={}", field.name), |d| d.expr(base));
             }
+            Expr::Member { base, field, .. } => {
+                self.nested(&format!("Member field={}", field.name), |d| d.expr(base));
+            }
             Expr::Index { base, index, .. } => {
                 self.nested(&format!("Index {}", index.canon()), |d| d.expr(base));
             }

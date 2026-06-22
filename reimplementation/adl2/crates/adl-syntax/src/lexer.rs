@@ -285,6 +285,7 @@ impl<'s> Lexer<'s> {
             (b'~', Some(b'=')) => (TokKind::TildeEq, 2),
             (b'+', Some(b'-')) => (TokKind::PlusMinus, 2),
             (b'+', _) => (TokKind::Plus, 1),
+            (b'-', Some(b'>')) => (TokKind::Arrow, 2),
             (b'-', _) => (TokKind::Minus, 1),
             (b'*', _) => (TokKind::Star, 1),
             (b'/', _) => (TokKind::Slash, 1),

@@ -454,6 +454,23 @@ impl<'a> Resolver<'a> {
                                 } else {
                                     Some(self.intern_coll(Collection::Combination { parts }))
                                 }
+                            } else if name.name.eq_ignore_ascii_case("sort") {
+                                // `sort(coll, key, dir)` is a permutation of `coll`:
+                                // set membership = parent collection (sound), but
+                                // the pT-ordering invariant is never asserted, so
+                                // the whole object is tagged Unsupported.
+                                let parent = args.iter().find_map(|a| {
+                                    if let Arg::Expr(e) = a {
+                                        self.target_collection(e, &ctx)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                unsupported_reason.get_or_insert_with(|| {
+                                    "sorted collection ordering is outside the checked fragment"
+                                        .to_owned()
+                                });
+                                parent
                             } else {
                                 unsupported_reason = Some(format!(
                                     "take source `{}(...)` is not supported",
@@ -1039,6 +1056,19 @@ impl<'a> Resolver<'a> {
             }
             Expr::Call { name, args, span } => self.resolve_call(name, args, *span, ctx),
             Expr::Dot { base, field, span } => self.resolve_dot(base, field, *span, ctx),
+            Expr::Member { base, field, span } => {
+                // Recurse for diagnostics; the value is opaque. The reason embeds
+                // `field.name` so distinct accesses (`->j1` vs `->j2`) render
+                // distinctly and never intern to the same opaque quantity.
+                let _ = self.resolve_expr(base, ctx);
+                HNode::unsupported(
+                    *span,
+                    format!(
+                        "member access `->{}` of a composite candidate is outside the checked fragment",
+                        field.name
+                    ),
+                )
+            }
             Expr::Index { span, .. } | Expr::UnderscoreIndex { span, .. } => {
                 match self.resolve_target(e, ctx) {
                     Target::Met => self.met_scalar("pt", *span),

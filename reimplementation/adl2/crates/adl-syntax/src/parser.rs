@@ -79,6 +79,45 @@ impl<'s> Parser<'s> {
         matches!(self.toks[self.pos].kind, TokKind::Newline | TokKind::Eof)
     }
 
+    /// Read a section name (after `region`/`object`/etc.), greedily absorbing
+    /// contiguous `_<digit>`/`_<ident>` runs that the lexer split off because
+    /// `_<digit>` is the underscore-indexing operator. Region/object names like
+    /// `SR3L_1` or `SR_3b3j` are single names in canonical ADL; only names in
+    /// this section-keyword context are joined — expression-context `_<digit>`
+    /// indexing is untouched. Joining requires byte-adjacency (no whitespace)
+    /// so a spaced `a _1` is never merged.
+    fn parse_section_name(&mut self, context: &str) -> Ident {
+        let first = self.expect_ident(context);
+        let mut end = first.span.end;
+        loop {
+            let i = self.sig_index();
+            let tok = &self.toks[i];
+            if !matches!(tok.kind, TokKind::Underscore) || tok.span.start != end {
+                break;
+            }
+            // Absorb the `_`.
+            end = tok.span.end;
+            self.pos = i + 1;
+            // Absorb a contiguous Int and/or Ident segment (`_1`, `_3b3j`).
+            loop {
+                let j = self.sig_index();
+                let seg = &self.toks[j];
+                let adjacent = seg.span.start == end;
+                match seg.kind {
+                    TokKind::Int(_) | TokKind::Ident(_) if adjacent => {
+                        end = seg.span.end;
+                        self.pos = j + 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let span = first.span.to(Span::new(first.span.start, end));
+        let name = self.src[first.span.start as usize..end as usize].to_string();
+        self.last_span = span;
+        Ident { name, span }
+    }
+
     fn bump(&mut self) -> Token {
         let i = self.sig_index();
         let tok = self.toks[i].clone();
@@ -116,6 +155,49 @@ impl<'s> Parser<'s> {
             }
             self.bump();
         }
+    }
+
+    /// Backstop for an unrecognized statement inside a section block. Returns
+    /// `false` at a section keyword or EOF (block ends); otherwise emits a
+    /// *warning* (never an error, so exit stays 0) and skips the offending
+    /// line. Skipping a cut only drops a constraint, which can weaken a
+    /// verdict but never fabricate a PROVEN — sound by construction.
+    fn recover_block_stmt(&mut self, ctx_label: &str) -> bool {
+        if self.at_eof() {
+            return false;
+        }
+        // A bare identifier at this point may be a mistyped section keyword
+        // (e.g. top-level `flooble ...`); end the block and let the top-level
+        // dispatcher report it. Region blocks already consume legitimate bare
+        // idents (region references) before reaching this backstop.
+        if matches!(self.peek().kind, TokKind::Ident(_)) {
+            return false;
+        }
+        if let TokKind::Kw(
+            Kw::Object
+            | Kw::Obj
+            | Kw::Composite
+            | Kw::Trigger
+            | Kw::Region
+            | Kw::Algo
+            | Kw::HistoList
+            | Kw::Define
+            | Kw::Def
+            | Kw::Info
+            | Kw::Table
+            | Kw::CountsFormat,
+        ) = self.peek().kind
+        {
+            return false;
+        }
+        let span = self.peek().span;
+        self.diags.push(Diagnostic::warning(
+            span,
+            format!("unrecognized `{ctx_label}` statement; skipped"),
+        ));
+        self.bump();
+        self.recover();
+        true
     }
 
     fn expect_ident(&mut self, what: &str) -> Ident {
@@ -402,7 +484,7 @@ impl<'s> Parser<'s> {
             TokKind::Kw(Kw::Trigger) => ObjectKw::Trigger,
             _ => ObjectKw::Object,
         };
-        let name = self.expect_ident(&format!("a name after `{}`", keyword.as_str()));
+        let name = self.parse_section_name(&format!("a name after `{}`", keyword.as_str()));
         let mut stmts = Vec::new();
         loop {
             match self.peek().kind {
@@ -442,7 +524,12 @@ impl<'s> Parser<'s> {
                 {
                     stmts.push(self.parse_derived_candidate());
                 }
-                _ => break,
+                _ => {
+                    if self.recover_block_stmt("object") {
+                        continue;
+                    }
+                    break;
+                }
             }
         }
         ObjectBlock {
@@ -561,7 +648,18 @@ impl<'s> Parser<'s> {
                 span: start.to(self.last_span),
             };
         }
-        let name = self.expect_ident("a source collection name");
+        // `sort` is a keyword (region-level sort stmt), but at object-level it
+        // appears as a call-form take source `sort(coll, key, dir)`; accept the
+        // keyword as a plain name here so the `LParen` branch captures it.
+        let name = if self.peek().is_kw(Kw::Sort) {
+            let tok = self.bump();
+            Ident {
+                name: "sort".to_string(),
+                span: tok.span,
+            }
+        } else {
+            self.expect_ident("a source collection name")
+        };
         if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
             let args = self.parse_paren_args();
             TakeSource::Call { name, args }
@@ -592,10 +690,18 @@ impl<'s> Parser<'s> {
             TokKind::Kw(Kw::HistoList) => RegionKw::HistoList,
             _ => RegionKw::Region,
         };
-        let name = self.expect_ident(&format!("a name after `{}`", keyword.as_str()));
+        let name = self.parse_section_name(&format!("a name after `{}`", keyword.as_str()));
         let mut stmts = Vec::new();
-        while let Some(stmt) = self.parse_region_stmt() {
-            stmts.push(stmt);
+        loop {
+            match self.parse_region_stmt() {
+                Some(stmt) => stmts.push(stmt),
+                None => {
+                    if self.recover_block_stmt("region") {
+                        continue;
+                    }
+                    break;
+                }
+            }
         }
         RegionBlock {
             keyword,
@@ -1013,12 +1119,9 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// `comparison = additive [ cmp-op additive
-    ///                        | "[]" signed-num signed-num
-    ///                        | "][" signed-num signed-num ]`
-    fn parse_comparison(&mut self) -> Expr {
-        let lhs = self.parse_additive();
-        let op = match self.peek().kind {
+    /// The comparison operator at the cursor, if any.
+    fn peek_cmp_op(&self) -> Option<CmpOp> {
+        match self.peek().kind {
             TokKind::Gt => Some(CmpOp::Gt),
             TokKind::Lt => Some(CmpOp::Lt),
             TokKind::Ge => Some(CmpOp::Ge),
@@ -1027,8 +1130,28 @@ impl<'s> Parser<'s> {
             TokKind::Ne => Some(CmpOp::Ne),
             TokKind::TildeEq => Some(CmpOp::ApproxEq),
             _ => None,
-        };
-        if let Some(op) = op {
+        }
+    }
+
+    /// `comparison = additive { cmp-op additive }
+    ///             | additive ( "[]" | "][" ) signed-num signed-num`
+    ///
+    /// A chain of two or more comparisons (`a < x < b`) is desugared in place
+    /// to the conjunction `(a < x) and (x < b)`: each link is an ordinary
+    /// `Cmp` and the joins are `Binary{And}`, so the chain stays fully inside
+    /// the analyzable fragment (resolve flattens the `And`, the encoder builds
+    /// one atom per link). The shared middle operand is cloned into both
+    /// links; it is a value, so evaluating it twice is observationally
+    /// identical and the desugaring is sound.
+    fn parse_comparison(&mut self) -> Expr {
+        let first = self.parse_additive();
+        // No comparison operator: fall through to the band check / bare lhs.
+        if self.peek_cmp_op().is_none() {
+            return self.parse_band_suffix(first);
+        }
+        // Parse one-or-more `cmp-op additive` links, folding into a chain.
+        let mut links: Vec<(CmpOp, Expr)> = Vec::new();
+        while let Some(op) = self.peek_cmp_op() {
             let op_span = self.bump().span;
             if op == CmpOp::ApproxEq && !self.tilde_warned {
                 self.tilde_warned = true;
@@ -1038,15 +1161,52 @@ impl<'s> Parser<'s> {
                         .with_help("this warning is emitted once per file"),
                 );
             }
-            let rhs = self.parse_additive();
-            let span = lhs.span().to(rhs.span());
+            let operand = self.parse_additive();
+            links.push((op, operand));
+        }
+        // Single comparison: the common case, no cloning.
+        if links.len() == 1 {
+            let (op, rhs) = links.into_iter().next().expect("len checked");
+            let span = first.span().to(rhs.span());
             return Expr::Cmp {
                 op,
-                lhs: Box::new(lhs),
+                lhs: Box::new(first),
                 rhs: Box::new(rhs),
                 span,
             };
         }
+        // Chain of N comparisons → conjunction of N `Cmp` links sharing
+        // adjacent operands. `prev` is the left operand of the next link.
+        let mut prev = first;
+        let mut conj: Option<Expr> = None;
+        for (op, operand) in links {
+            let lhs = prev.clone();
+            let span = lhs.span().to(operand.span());
+            let cmp = Expr::Cmp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(operand.clone()),
+                span,
+            };
+            conj = Some(match conj {
+                None => cmp,
+                Some(acc) => {
+                    let span = acc.span().to(cmp.span());
+                    Expr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(acc),
+                        rhs: Box::new(cmp),
+                        span,
+                    }
+                }
+            });
+            prev = operand;
+        }
+        conj.expect("chain has at least two links")
+    }
+
+    /// The optional `"[]"`/`"]["` band suffix on a comparison's left operand.
+    fn parse_band_suffix(&mut self, lhs: Expr) -> Expr {
         let band = match self.peek().kind {
             TokKind::BandIn => Some(BandKind::In),
             TokKind::BandOut => Some(BandKind::Out),
@@ -1129,7 +1289,7 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// `postfix = primary { "." ident | "[" index [":" index] "]"
+    /// `postfix = primary { "." ident | "->" ident | "[" index [":" index] "]"
     ///                    | "_" index | "_" }`
     fn parse_postfix(&mut self) -> Expr {
         let mut expr = self.parse_primary();
@@ -1140,6 +1300,16 @@ impl<'s> Parser<'s> {
                     let field = self.expect_ident("a property name after `.`");
                     let span = expr.span().to(field.span);
                     expr = Expr::Dot {
+                        base: Box::new(expr),
+                        field,
+                        span,
+                    };
+                }
+                TokKind::Arrow => {
+                    self.bump();
+                    let field = self.expect_ident("a member name after `->`");
+                    let span = expr.span().to(field.span);
+                    expr = Expr::Member {
                         base: Box::new(expr),
                         field,
                         span,
@@ -1275,7 +1445,23 @@ impl<'s> Parser<'s> {
                     Expr::Ident(id)
                 }
             }
-            TokKind::Kw(Kw::All) => Expr::All(self.bump().span),
+            TokKind::Kw(Kw::All) => {
+                let span = self.bump().span;
+                if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
+                    let name = Ident {
+                        name: "all".to_string(),
+                        span,
+                    };
+                    let args = self.parse_paren_args();
+                    Expr::Call {
+                        name,
+                        args,
+                        span: span.to(self.last_span),
+                    }
+                } else {
+                    Expr::All(span)
+                }
+            }
             TokKind::Kw(Kw::None) => Expr::NoneKw(self.bump().span),
             TokKind::Kw(Kw::True) => Expr::True(self.bump().span),
             TokKind::Kw(Kw::False) => Expr::False(self.bump().span),

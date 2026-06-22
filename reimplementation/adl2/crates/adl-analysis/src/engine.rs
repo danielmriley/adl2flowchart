@@ -576,15 +576,21 @@ impl Engine<'_> {
                                 // (release-blocking) when the interpreter could
                                 // FULLY decide the region. If the rejection
                                 // co-occurs with something the interpreter
-                                // cannot decide — an opaque quantity (no
-                                // reference interpretation) or an out-of-fragment
-                                // construct like OPEN-1 unindexed angular
-                                // separation — the region is not fully
+                                // cannot decide, the region is not fully
                                 // interpreter-checkable, so a rejected witness is
                                 // expected: downgrade quietly, no internal-bug
-                                // diagnostic.
-                                if why.contains("no reference interpretation")
+                                // diagnostic. That covers (a) either region being
+                                // inexact — any out-of-fragment construct
+                                // (unresolved identifier, sorted/sliced/composite
+                                // collection, member access) resolves to Unknown,
+                                // so its witness need not realize; and (b) an
+                                // opaque quantity / OPEN-1 leaf that is encodable
+                                // but has no reference interpretation.
+                                if !exact
+                                    || why.contains("no reference interpretation")
                                     || why.contains("OPEN-1 unresolved")
+                                    || why.contains("cannot evaluate")
+                                    || why.contains("unresolved identifier")
                                 {
                                     report.reason = format!(
                                         "under-approximations intersect, but no witness could \

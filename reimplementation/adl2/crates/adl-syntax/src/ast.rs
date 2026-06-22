@@ -431,6 +431,12 @@ pub enum Expr {
         field: Ident,
         span: Span,
     },
+    /// `base->field` — member access into a composite candidate.
+    Member {
+        base: Box<Expr>,
+        field: Ident,
+        span: Span,
+    },
     /// `base[i]` single-element index.
     Index {
         base: Box<Expr>,
@@ -491,6 +497,7 @@ impl Expr {
             | Expr::Ternary { span, .. }
             | Expr::Call { span, .. }
             | Expr::Dot { span, .. }
+            | Expr::Member { span, .. }
             | Expr::Index { span, .. }
             | Expr::Slice { span, .. }
             | Expr::UnderscoreIndex { span, .. }
@@ -509,6 +516,7 @@ impl Expr {
             self,
             Expr::Ident(_)
                 | Expr::Dot { .. }
+                | Expr::Member { .. }
                 | Expr::Index { .. }
                 | Expr::Slice { .. }
                 | Expr::UnderscoreIndex { .. }

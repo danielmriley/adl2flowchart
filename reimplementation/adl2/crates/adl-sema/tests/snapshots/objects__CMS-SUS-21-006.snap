@@ -3,19 +3,19 @@ source: crates/adl-sema/tests/snapshots.rs
 expression: "object_table(&hir, false)"
 ---
 == objects ==
-  electrons                    electrons <- ELECTRON                                                         pt > 40, |eta| < 2.4, passIso? == 1, tightID? == 1                partial: cut out of fragment
+  electrons                    electrons <- ELECTRON                                                         pt > 40, |eta| < 2.4, passIso? == 1, tightId == 1                 partial: cut out of fragment
                                  size(electrons) ≤ size(ELECTRON)  (subset of parent)
   muons                        muons <- MUON                                                                 pt > 40, |eta| < 2.4, passIso? == 1, mediumID? == 1               partial: cut out of fragment
                                  size(muons) ≤ size(MUON)  (subset of parent)
   leptons                      leptons                                                                       —                                                                 exact
                                  size(leptons) = size(electrons) + size(muons)  (disjoint parts ⇒ exact; else ≤)
-  electronsTransferfactor      electronsTransferfactor <- ELECTRON                                           pt > 30, |eta| < 2.4, passIso? == 1, tightID? == 1                partial: cut out of fragment
+  electronsTransferfactor      electronsTransferfactor <- ELECTRON                                           pt > 30, |eta| < 2.4, passIso? == 1, tightId == 1                 partial: cut out of fragment
                                  size(electronsTransferfactor) ≤ size(ELECTRON)  (subset of parent)
   muonsTransferfactor          muonsTransferfactor <- MUON                                                   pt > 30, |eta| < 2.4, passIso? == 1, mediumID? == 1               partial: cut out of fragment
                                  size(muonsTransferfactor) ≤ size(MUON)  (subset of parent)
-  jets                         jets <- JET                                                                   jetid? == 1, pt > 30, |eta| < 2.4, not deltaR(JET, leptons) < 0…  partial: cut out of fragment
+  jets                         jets <- JET                                                                   jetId == 1, pt > 30, |eta| < 2.4, not deltaR(JET, leptons) < 0.4  partial: cut out of fragment
                                  size(jets) ≤ size(JET)  (subset of parent)
-  jets4DTiso                   jets4DTiso <- JET                                                             jetid? == 1, pt > 15, |eta| < 2.4, not deltaR(JET, leptons) < 0…  partial: cut out of fragment
+  jets4DTiso                   jets4DTiso <- JET                                                             jetId == 1, pt > 15, |eta| < 2.4, not deltaR(JET, leptons) < 0.4  partial: cut out of fragment
                                  size(jets4DTiso) ≤ size(JET)  (subset of parent)
   bjets                        bjets <- jets <- JET                                                          bJetTagDeepCSVBvsAll? > 0.6324, bJetTagDeepCSVBvsAll? > 0.4941,…  partial: cut out of fragment
                                  size(bjets) ≤ size(jets)  (subset of parent)

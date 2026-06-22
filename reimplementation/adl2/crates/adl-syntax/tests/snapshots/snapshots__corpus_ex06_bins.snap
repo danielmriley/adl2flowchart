@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex06_bins.adl\")"
 ---
 File
   Info name=analysis @20:1
-    Line key=title items=[str:"ADL/CL ex6: Bins in regions"]
+    Line key=title value="\"ADL/CL ex6: Bins in regions\""
   Object kw=object name=jets @24:1
     Take kw=take src=Jet @25:3
     Cut kw=select @26:3

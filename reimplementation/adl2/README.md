@@ -7,6 +7,9 @@ them as Graphviz diagrams. It is the from-scratch successor to the legacy
 tool in `../../legacy_parser/`, built so that the soundness properties the
 legacy tool earned through two audits hold here *by construction*.
 
+New here? Start with [docs/QUICKSTART.md](docs/QUICKSTART.md) — a 5-minute
+tour from `check` to the solver-backed `verify` proofs.
+
 Status: all spec phases through the parity gate draft are built and green,
 plus Phase 9 histogram production (`run --histos`, native pure-Rust
 `out.root`) and the full Phase 10 event pipeline: Delphes ingestion
@@ -41,6 +44,7 @@ alias smash2=$PWD/target/release/smash2
 ```bash
 smash2 check analysis.adl              # exit 1 on errors; stdout stays clean
 smash2 check --dump-ast analysis.adl   # canonical AST text dump to stdout
+smash2 check --json analysis.adl       # diagnostics as a JSON array (editors/CI)
 ```
 
 Diagnostics carry spans, labels, and help ("`selct` is not a keyword; did
@@ -54,7 +58,13 @@ smash2 verify analysis.adl
 smash2 verify --json analysis.adl > report.json     # versioned schema
 smash2 verify --no-solver analysis.adl              # interval heuristic only
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
+smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
 ```
+
+(Several files are each analyzed on their own for now — a per-unit report in
+human mode, a JSON array under `--json`. Cross-*file* region relations — the
+sound cross-analysis overlap matrix — are the planned next step, designed in
+[`MULTIFILE_PLAN.md`](MULTIFILE_PLAN.md).)
 
 Per region: encoding coverage with named dropped cuts, vacuity check.
 Per pair: PROVEN DISJOINT / PROVEN OVERLAPPING (with witness) / PROVEN
@@ -244,20 +254,28 @@ exactly by uproot in the wiring tests.
 (SPEC_EVENT_PIPELINE §1). Experiment specifics live in **converter
 profiles** (a pure data table in `adl-ingest`: branch names → canonical
 keys, tag-derivation rules, weight source); the core event model never
-sees experiment names. `delphes` is the first profile; `cms-nanoaod` is
-spec'd for v2.
+sees experiment names. Two profiles ship: `delphes` and `nanoaod` (CMS
+NanoAOD — `Events` tree, `n<Coll>` counters, underscored leaves, flat
+per-event `MET_pt`/`MET_phi`/`genWeight` scalars, and the continuous
+`btagDeepB` discriminant as the `btag` property).
 
 ```bash
-# Run an analysis straight off a Delphes file (native read, no temp files):
+# Run an analysis straight off a Delphes or NanoAOD file (native read):
 smash2 run analysis.adl events.root --profile delphes
+smash2 run analysis.adl nano.root  --profile nanoaod
 
 # Materialize canonical JSONL (byte-deterministic) for debugging/fixtures:
-smash2 ingest events.root --profile delphes -o events.jsonl
+smash2 ingest events.root --profile nanoaod -o events.jsonl
 
 # Generate the independent uproot oracle script (also the no-Rust path):
-smash2 ingest --profile delphes --emit-script out/
+smash2 ingest --profile nanoaod --emit-script out/
 python3 out/to_jsonl.py events.root events.jsonl   # byte-identical output
 ```
+
+Both profiles are validated against their generated uproot oracle on a real
+sample (the Delphes T2tt file; the committed CMS Open Data ttbar NanoAOD
+fixture) — the native reader and the independent uproot path must produce
+byte-identical JSONL.
 
 The mapping (branch → canonical): `Jet`/`FatJet` pt/eta/phi/m + `btag`/
 `tautag` flags from the Delphes bitmasks (bit 0 = the card's default

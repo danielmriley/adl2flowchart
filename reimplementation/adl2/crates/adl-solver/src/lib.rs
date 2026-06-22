@@ -21,7 +21,6 @@
 
 #[cfg(feature = "native")]
 pub mod native;
-pub mod num;
 pub mod subprocess;
 
 #[cfg(feature = "native")]

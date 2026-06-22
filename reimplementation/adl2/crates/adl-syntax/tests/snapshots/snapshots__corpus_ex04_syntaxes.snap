@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex04_syntaxes.adl\")"
 ---
 File
   Info name=analysis @19:1
-    Line key=title items=[str:"ADL/CL ex4: Alternative syntaxes"]
+    Line key=title value="\"ADL/CL ex4: Alternative syntaxes\""
   Object kw=object name=goodJets @23:1
     Take kw=take src=Jet @24:3
     Cut kw=select @25:3

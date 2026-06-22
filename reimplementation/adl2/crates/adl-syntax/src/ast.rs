@@ -63,15 +63,14 @@ pub struct InfoBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InfoLine {
     pub key: Ident,
-    pub items: Vec<InfoItem>,
+    /// Free-form metadata value: the raw rest of the line after the key,
+    /// trimmed. Never semantically analyzed, so kept as opaque text
+    /// (may contain URLs, arithmetic, punctuation; SPEC_LANGUAGE info-line).
+    pub value: String,
+    /// Span of the value text; empty (`key.span` collapsed) when there is
+    /// no value after the key.
+    pub value_span: Span,
     pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum InfoItem {
-    Ident(Ident),
-    Str(StrLit),
-    Num(NumLit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +155,15 @@ pub enum ObjectStmt {
     },
     Reject {
         cond: Expr,
+        span: Span,
+    },
+    /// Derived candidate inside a composite block: `object <name> = <expr>`
+    /// (canonical) or `candidate <name> = <expr>` (NPS dialect synonym).
+    /// Both forms are equivalent; `keyword` records which was written.
+    Derived {
+        keyword: String,
+        name: Ident,
+        body: Expr,
         span: Span,
     },
 }

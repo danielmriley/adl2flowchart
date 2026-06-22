@@ -490,6 +490,17 @@ impl<'a> Resolver<'a> {
                 }
                 ObjectStmt::Cut { cond, .. } => cuts.push((false, cond)),
                 ObjectStmt::Reject { cond, .. } => cuts.push((true, cond)),
+                ObjectStmt::Derived { name, .. } => {
+                    // A derived candidate (`object/candidate ll = l1 + l2`)
+                    // builds a per-tuple 4-vector from the block's binders.
+                    // This is combinatorial and outside the checked fragment;
+                    // record it so the block resolves to Unknown rather than
+                    // a spurious error.
+                    ctx.elem_aliases.insert(name.name.to_ascii_lowercase());
+                    unsupported_reason.get_or_insert_with(|| {
+                        "derived composite candidate is outside the checked fragment".to_owned()
+                    });
+                }
             }
         }
 
@@ -891,8 +902,25 @@ impl<'a> Resolver<'a> {
                         Target::Coll(c)
                     };
                 }
-                if self.defines_by_key.contains_key(&key) {
-                    return Target::None;
+                if let Some(&didx) = self.defines_by_key.get(&key) {
+                    // A define is a scope-free alias for its body expression.
+                    // Resolve THROUGH it to the body's target so an aliased
+                    // particle (`define leadjet = jets[0]`) makes
+                    // `f(leadjet)` and `f(jets[0])` the SAME quantity — else
+                    // they intern as two distinct opaque args and fabricate a
+                    // false PROVEN OVERLAPPING between contradictory cuts.
+                    // Resolve the body in the default (scope-free) context,
+                    // exactly as `resolve_define` does, and guard cycles.
+                    if matches!(self.def_state[didx], State::InProgress) {
+                        return Target::None;
+                    }
+                    let def = self.ast_defines[didx];
+                    let prev =
+                        std::mem::replace(&mut self.def_state[didx], State::InProgress);
+                    let body_ctx = Ctx::default();
+                    let target = self.resolve_target(&def.body, &body_ctx);
+                    self.def_state[didx] = prev;
+                    return target;
                 }
                 if self.ext.base_collection(&id.name).is_some()
                     && !self.ext.is_event_scalar(&id.name)

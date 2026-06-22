@@ -1,11 +1,11 @@
-//! Linear atoms: `Σ cᵢ·Quantityᵢ ⋈ k` over interned [`QuantityId`]s.
-//!
-//! Non-finite constants cannot construct atoms (SPEC_ANALYSIS §1, audit
-//! Bug 5 layer 1): [`LinAtom::new`] returns `Err` for any NaN/infinite
-//! coefficient or right-hand constant, including ones produced by
-//! coefficient merging.
+//! Linear atoms: `Σ cᵢ·Quantityᵢ ⋈ k` over interned [`QuantityId`]s, with
+//! coefficients and the right-hand constant held as **exact rationals**
+//! ([`Rat`]). Rationals are always finite, so atom construction is total —
+//! there is no non-finite coefficient/constant to reject (the old f64
+//! overflow/NaN failure modes vanish), and folding cut arithmetic is exact:
+//! the analyzer and interpreter agree on the rational fragment to the bit.
 
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 
 /// Comparison relation of a [`LinAtom`] (`⋈ ∈ <, ≤, >, ≥, =, ≠`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,9 +59,9 @@ impl Rel {
         }
     }
 
-    /// Evaluate `lhs ⋈ rhs` on concrete (finite) values.
+    /// Evaluate `lhs ⋈ rhs` exactly.
     #[must_use]
-    pub fn eval(self, lhs: f64, rhs: f64) -> bool {
+    pub fn eval(self, lhs: &Rat, rhs: &Rat) -> bool {
         match self {
             Rel::Lt => lhs < rhs,
             Rel::Le => lhs <= rhs,
@@ -73,90 +73,52 @@ impl Rel {
     }
 }
 
-/// Why a [`LinAtom`] could not be constructed.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LinAtomError {
-    /// A coefficient (possibly after merging duplicate quantities) is NaN
-    /// or infinite.
-    NonFiniteCoefficient(QuantityId),
-    /// The right-hand constant is NaN or infinite.
-    NonFiniteConstant,
-}
-
-impl std::fmt::Display for LinAtomError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LinAtomError::NonFiniteCoefficient(q) => {
-                write!(f, "non-finite coefficient for quantity {q}")
-            }
-            LinAtomError::NonFiniteConstant => write!(f, "non-finite right-hand constant"),
-        }
-    }
-}
-
-impl std::error::Error for LinAtomError {}
-
 /// A linear atom `Σ cᵢ·qᵢ ⋈ k` in canonical form: terms sorted by
-/// `QuantityId`, duplicate quantities merged, zero coefficients dropped,
-/// every constant finite **by construction**.
-#[derive(Debug, Clone, PartialEq)]
+/// `QuantityId`, duplicate quantities merged, zero coefficients dropped.
+/// Coefficients and the constant are exact rationals.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinAtom {
-    terms: Vec<(f64, QuantityId)>,
+    terms: Vec<(Rat, QuantityId)>,
     rel: Rel,
-    constant: f64,
+    constant: Rat,
 }
 
 impl LinAtom {
-    /// Construct a canonical atom.
-    ///
-    /// # Errors
-    /// Rejects NaN/infinite coefficients and constants — including a
-    /// coefficient that becomes non-finite when duplicate quantities are
-    /// merged (audit Bug 5 layer 1: no non-finite value may reach a
-    /// solver encoding).
+    /// Construct a canonical atom. Total: rationals never go non-finite, and
+    /// merging duplicate quantities is exact.
+    #[must_use]
     pub fn new(
-        terms: impl IntoIterator<Item = (f64, QuantityId)>,
+        terms: impl IntoIterator<Item = (Rat, QuantityId)>,
         rel: Rel,
-        constant: f64,
-    ) -> Result<Self, LinAtomError> {
-        if !constant.is_finite() {
-            return Err(LinAtomError::NonFiniteConstant);
-        }
-        let mut merged: std::collections::BTreeMap<QuantityId, f64> =
+        constant: Rat,
+    ) -> Self {
+        let mut merged: std::collections::BTreeMap<QuantityId, Rat> =
             std::collections::BTreeMap::new();
         for (c, q) in terms {
-            if !c.is_finite() {
-                return Err(LinAtomError::NonFiniteCoefficient(q));
-            }
-            let entry = merged.entry(q).or_insert(0.0);
-            *entry += c;
-            if !entry.is_finite() {
-                return Err(LinAtomError::NonFiniteCoefficient(q));
-            }
+            let entry = merged.entry(q).or_insert_with(Rat::zero);
+            *entry = &*entry + &c;
         }
         let terms = merged
             .into_iter()
-            .filter(|&(_, c)| c != 0.0)
+            .filter(|(_, c)| !c.is_zero())
             .map(|(q, c)| (c, q))
             .collect();
-        Ok(Self {
+        Self {
             terms,
             rel,
             constant,
-        })
+        }
     }
 
     /// Convenience: the single-term atom `1·q ⋈ k`.
-    ///
-    /// # Errors
-    /// Same contract as [`LinAtom::new`].
-    pub fn single(q: QuantityId, rel: Rel, constant: f64) -> Result<Self, LinAtomError> {
-        Self::new([(1.0, q)], rel, constant)
+    #[must_use]
+    pub fn single(q: QuantityId, rel: Rel, constant: Rat) -> Self {
+        Self::new([(Rat::one(), q)], rel, constant)
     }
 
     /// Canonical term list `(coefficient, quantity)`, sorted by quantity.
     #[must_use]
-    pub fn terms(&self) -> &[(f64, QuantityId)] {
+    pub fn terms(&self) -> &[(Rat, QuantityId)] {
         &self.terms
     }
 
@@ -166,8 +128,8 @@ impl LinAtom {
     }
 
     #[must_use]
-    pub fn constant(&self) -> f64 {
-        self.constant
+    pub fn constant(&self) -> &Rat {
+        &self.constant
     }
 
     /// The exact negation: same linear form, negated relation.
@@ -177,7 +139,7 @@ impl LinAtom {
         Self {
             terms: self.terms.clone(),
             rel: self.rel.negated(),
-            constant: self.constant,
+            constant: self.constant.clone(),
         }
     }
 }
@@ -190,57 +152,45 @@ mod tests {
         QuantityId(n)
     }
 
-    #[test]
-    fn rejects_non_finite_constant() {
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(
-                LinAtom::new([(1.0, q(0))], Rel::Lt, bad),
-                Err(LinAtomError::NonFiniteConstant)
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_non_finite_coefficient() {
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(
-                LinAtom::new([(bad, q(2))], Rel::Ge, 1.0),
-                Err(LinAtomError::NonFiniteCoefficient(q(2)))
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_overflow_from_merging() {
-        let huge = f64::MAX;
-        assert_eq!(
-            LinAtom::new([(huge, q(1)), (huge, q(1))], Rel::Gt, 0.0),
-            Err(LinAtomError::NonFiniteCoefficient(q(1)))
-        );
+    fn r(n: i64) -> Rat {
+        Rat::from_i64(n)
     }
 
     #[test]
     fn canonicalizes_merge_sort_and_zero_drop() {
         let a = LinAtom::new(
             [
-                (2.0, q(3)),
-                (1.0, q(1)),
-                (3.0, q(3)),
-                (4.0, q(2)),
-                (-4.0, q(2)),
+                (r(2), q(3)),
+                (r(1), q(1)),
+                (r(3), q(3)),
+                (r(4), q(2)),
+                (r(-4), q(2)),
             ],
             Rel::Le,
-            7.0,
-        )
-        .unwrap();
-        assert_eq!(a.terms(), &[(1.0, q(1)), (5.0, q(3))]);
+            r(7),
+        );
+        assert_eq!(a.terms(), &[(r(1), q(1)), (r(5), q(3))]);
         assert_eq!(a.rel(), Rel::Le);
-        assert_eq!(a.constant(), 7.0);
+        assert_eq!(a.constant(), &r(7));
+    }
+
+    #[test]
+    fn merging_huge_coefficients_is_exact_not_overflow() {
+        // The old f64 path overflowed `MAX + MAX → inf` and rejected the
+        // atom; rationals merge it exactly to `2·MAX`.
+        let big = Rat::from_decimal_f64(f64::MAX).unwrap();
+        let a = LinAtom::new([(big.clone(), q(1)), (big.clone(), q(1))], Rel::Gt, r(0));
+        assert_eq!(a.terms().len(), 1);
+        assert_eq!(a.terms()[0].0, &big + &big);
     }
 
     #[test]
     fn negation_is_involutive() {
-        let a = LinAtom::new([(1.0, q(0)), (-2.5, q(4))], Rel::Lt, 30.0).unwrap();
+        let a = LinAtom::new(
+            [(r(1), q(0)), (Rat::from_decimal_f64(-2.5).unwrap(), q(4))],
+            Rel::Lt,
+            r(30),
+        );
         assert_ne!(a.negated(), a);
         assert_eq!(a.negated().negated(), a);
         for rel in [Rel::Lt, Rel::Le, Rel::Gt, Rel::Ge, Rel::Eq, Rel::Ne] {

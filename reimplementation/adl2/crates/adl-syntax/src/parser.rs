@@ -219,43 +219,43 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// `info-line = ident { ident | string | signed-num }` — greedy to EOL.
+    /// `info-line = ident <raw-rest-of-line>`. The value is free-form
+    /// metadata that is never semantically analyzed (URLs, arithmetic,
+    /// arbitrary punctuation), so after the key we consume every token up to
+    /// the newline regardless of its kind and slice the raw source text.
     fn parse_info_line(&mut self) -> InfoLine {
         let key = self.expect_ident("an info key");
         let start = key.span;
-        let mut items = Vec::new();
-        while !self.nl_before() {
-            match &self.peek().kind {
-                TokKind::Ident(_) => {
-                    let id = self.expect_ident("info item");
-                    items.push(InfoItem::Ident(id));
-                }
-                TokKind::Str(_) => {
-                    let tok = self.bump();
-                    let TokKind::Str(value) = tok.kind else {
-                        unreachable!()
-                    };
-                    items.push(InfoItem::Str(StrLit {
-                        value,
-                        span: tok.span,
-                    }));
-                }
-                TokKind::Int(_) | TokKind::Real(_) => {
-                    items.push(InfoItem::Num(self.parse_signed_num()));
-                }
-                TokKind::Minus if self.peek2().is_number() => {
-                    items.push(InfoItem::Num(self.parse_signed_num()));
-                }
-                _ => {
-                    self.error_here("unexpected token in info line");
-                    self.recover();
-                    break;
-                }
+
+        // Raw token index: the first token after the key, skipping leading
+        // newlines is unnecessary — the key consumed the current line's start,
+        // so `self.pos` is positioned right after it. Collect spans of every
+        // token until the line ends.
+        let mut value_lo = None;
+        let mut value_hi = self.last_span; // collapses to key end when empty
+        while !matches!(self.toks[self.pos].kind, TokKind::Newline | TokKind::Eof) {
+            let span = self.toks[self.pos].span;
+            if value_lo.is_none() {
+                value_lo = Some(span);
             }
+            value_hi = span;
+            self.pos += 1;
+            self.last_span = span;
         }
+
+        let (value, value_span) = match value_lo {
+            Some(lo) => {
+                let vspan = lo.to(value_hi);
+                let raw = self.src[vspan.start as usize..vspan.end as usize].trim();
+                (raw.to_string(), vspan)
+            }
+            None => (String::new(), key.span.to(key.span)),
+        };
+
         InfoLine {
             key,
-            items,
+            value,
+            value_span,
             span: start.to(self.last_span),
         }
     }
@@ -425,6 +425,23 @@ impl<'s> Parser<'s> {
                         span: start.to(self.last_span),
                     });
                 }
+                // Derived candidate inside a composite block. Canonical ADL
+                // writes `object <name> = <expr>`; the NPS dialect writes
+                // `candidate <name> = <expr>`. Only valid inside `composite`
+                // — elsewhere `object`/`candidate` start a new section.
+                TokKind::Kw(Kw::Object | Kw::Obj)
+                    if keyword == ObjectKw::Composite
+                        && self.derived_candidate_ahead() =>
+                {
+                    stmts.push(self.parse_derived_candidate());
+                }
+                TokKind::Ident(ref name)
+                    if keyword == ObjectKw::Composite
+                        && name == "candidate"
+                        && self.derived_candidate_ahead() =>
+                {
+                    stmts.push(self.parse_derived_candidate());
+                }
                 _ => break,
             }
         }
@@ -432,6 +449,55 @@ impl<'s> Parser<'s> {
             keyword,
             name,
             stmts,
+            span: kw_tok.span.to(self.last_span),
+        }
+    }
+
+    /// True when the cursor (`candidate`/`object`/`obj` keyword) is followed
+    /// by `<ident> "="` — the shape of a derived-candidate statement. The
+    /// separator must be `=`: a top-level object's take form uses `:`
+    /// (`object OSd : COMB(...)`), which must instead terminate the composite
+    /// block, so `:` is deliberately excluded here.
+    fn derived_candidate_ahead(&self) -> bool {
+        matches!(self.peek2().kind, TokKind::Ident(_)) && {
+            // The token after the name must be `=`.
+            let mut i = self.sig_index();
+            // skip keyword
+            i += 1;
+            while matches!(self.toks[i].kind, TokKind::Newline) {
+                i += 1;
+            }
+            // skip name ident
+            i += 1;
+            while matches!(self.toks[i].kind, TokKind::Newline) {
+                i += 1;
+            }
+            matches!(self.toks[i].kind, TokKind::Assign)
+        }
+    }
+
+    /// `derived-candidate = ("object"|"obj"|"candidate") ident "=" expr`
+    /// — the composite-block derived object. `candidate` is the NPS-dialect
+    /// synonym for `object` here.
+    fn parse_derived_candidate(&mut self) -> ObjectStmt {
+        let kw_tok = self.bump();
+        let keyword = match kw_tok.kind {
+            TokKind::Kw(Kw::Obj) => "obj".to_string(),
+            TokKind::Kw(Kw::Object) => "object".to_string(),
+            _ => "candidate".to_string(),
+        };
+        let name = self.expect_ident("a derived candidate name");
+        if matches!(self.peek().kind, TokKind::Assign) {
+            self.bump();
+        } else {
+            self.error_here("expected `=` after the candidate name");
+        }
+        let body = self.parse_condition();
+        let body = self.extend_particle_list(body);
+        ObjectStmt::Derived {
+            keyword,
+            name,
+            body,
             span: kw_tok.span.to(self.last_span),
         }
     }
@@ -573,6 +639,14 @@ impl<'s> Parser<'s> {
             TokKind::Kw(Kw::Print) => Some(self.parse_print_stmt()),
             TokKind::Kw(Kw::Counts) => Some(self.parse_counts_stmt()),
             TokKind::Kw(Kw::Sort) => Some(self.parse_sort_stmt()),
+            // Canonical-ADL region inheritance `take <region>` (and the legacy
+            // `using` synonym) ≡ a bare region reference, which is smash2's
+            // native inheritance form. Object-level `take` (a collection
+            // source) is a different parse context, so there is no ambiguity.
+            TokKind::Kw(Kw::Take | Kw::Using) => {
+                self.bump();
+                Some(self.parse_region_ref())
+            }
             TokKind::Ident(_) => Some(self.parse_region_ref()),
             _ => None,
         }

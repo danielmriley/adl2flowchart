@@ -294,10 +294,14 @@ impl Under {
 mod tests {
     use super::*;
     use crate::lin::Rel;
-    use adl_sema::QuantityId;
+    use adl_sema::{QuantityId, Rat};
 
     fn atom(q: u32, rel: Rel, k: f64) -> Formula {
-        Formula::Atom(LinAtom::single(QuantityId(q), rel, k).unwrap())
+        Formula::Atom(LinAtom::single(
+            QuantityId(q),
+            rel,
+            Rat::from_decimal_f64(k).unwrap(),
+        ))
     }
 
     #[test]
@@ -335,7 +339,7 @@ mod tests {
             d.over().qformula(),
             &QFormula::And(vec![
                 QFormula::True,
-                QFormula::Atom(LinAtom::single(QuantityId(1), Rel::Lt, 5.0).unwrap()),
+                QFormula::Atom(LinAtom::single(QuantityId(1), Rel::Lt, Rat::from_decimal_f64(5.0).unwrap())),
             ])
         );
         assert_eq!(

@@ -3,7 +3,7 @@
 
 use adl_formula::{EncodedRegion, Formula, LinAtom, QFormula, Rel, encode_region, encode_regions};
 use adl_sema::{
-    ElemIndex, ExtDecls, Hir, HirRegion, HirRegionStmt, Quantity, QuantityId, QuantityTable,
+    ElemIndex, ExtDecls, Hir, HirRegion, HirRegionStmt, Quantity, QuantityId, QuantityTable, Rat,
     ScalarSource, SymbolTable, analyze_str,
 };
 use adl_syntax::diag::Severity;
@@ -57,7 +57,13 @@ fn size_q(hir: &Hir) -> QuantityId {
 }
 
 fn atom(terms: &[(f64, QuantityId)], rel: Rel, k: f64) -> Formula {
-    Formula::Atom(LinAtom::new(terms.iter().copied(), rel, k).unwrap())
+    Formula::Atom(LinAtom::new(
+        terms
+            .iter()
+            .map(|&(c, q)| (Rat::from_decimal_f64(c).unwrap(), q)),
+        rel,
+        Rat::from_decimal_f64(k).unwrap(),
+    ))
 }
 
 fn atom1(q: QuantityId, rel: Rel, k: f64) -> Formula {
@@ -190,7 +196,8 @@ fn trigger_conjunction_encodes_both_flags() {
         let Formula::Atom(a) = p else {
             panic!("expected trigger atom, got {p:?}")
         };
-        assert_eq!((a.rel(), a.constant()), (Rel::Eq, 1.0));
+        assert_eq!(a.rel(), Rel::Eq);
+        assert_eq!(a.constant(), &Rat::from_i64(1));
     }
 }
 
@@ -263,9 +270,14 @@ fn ratio_encodes_exact_two_branches() {
 }
 
 #[test]
-fn constant_denominator_folds_into_coefficients() {
+fn constant_denominator_clears_into_an_exact_atom() {
+    // `MET / d ⋈ c` clears the denominator at the comparison level
+    // (`MET ⋈ c·d`) rather than folding the f64 reciprocal `1/d` into the
+    // coefficient — the latter shifts the cut boundary off the interpreter's
+    // for non-dyadic `d` (a false-PROVEN source). For `MET / 2 > 50` that is
+    // `MET > 100`, with the coefficient left at exactly 1.
     let (enc, hir) = encode("region SR\n  select MET / 2 > 50\n", 0);
-    assert_eq!(enc.formula, atom(&[(0.5, met_q(&hir))], Rel::Gt, 50.0));
+    assert_eq!(enc.formula, atom(&[(1.0, met_q(&hir))], Rel::Gt, 100.0));
 }
 
 #[test]
@@ -459,12 +471,17 @@ fn non_finite_literal_is_unknown_not_an_atom() {
 }
 
 #[test]
-fn constant_arithmetic_overflow_fails_the_cut() {
-    // ~f64::MAX as a literal is finite; ×10 overflows during folding, so
-    // the enclosing comparison is false (SPEC_LANGUAGE §4.4).
+fn constant_arithmetic_does_not_overflow_over_rationals() {
+    // ~f64::MAX as a literal; ×10 would overflow f64 but is EXACT over
+    // rationals, so the cut stays a normal (satisfiable) atom — no spurious
+    // §4.4 collapse to false (and no fabricated empty/disjoint downstream).
     let max = format!("17976931348623157{}", "0".repeat(292));
     let (enc, _) = encode(&format!("region SR\n  select MET > {max} * 10\n"), 0);
-    assert_eq!(enc.formula, Formula::False);
+    assert!(
+        matches!(enc.formula, Formula::Atom(_)),
+        "got {:?}",
+        enc.formula
+    );
 }
 
 // ---- exact |E| ⋈ const expansion (extension of the linear row) ------------
@@ -484,6 +501,42 @@ fn abs_versus_constant_expands_exactly() {
         gt.formula,
         Formula::Or(vec![atom1(met, Rel::Gt, 250.0), atom1(met, Rel::Lt, 150.0)])
     );
+}
+
+// `|E| >= 0`, so comparing `|E|` to a NEGATIVE constant is itself constant.
+// Regression for the abs_cmp soundness bug: `|E| == c` (c<0) was encoded as
+// a satisfiable two-point disjunction and `|E| != c` (c<0) as a two-point
+// exclusion — both wrong, letting through false PROVEN verdicts. The exact,
+// relation-uniform answer is True/False with no atoms over MET at all.
+#[test]
+fn abs_versus_negative_constant_is_exactly_constant() {
+    for (op, expect) in [
+        ("<", Formula::False),
+        ("<=", Formula::False),
+        ("==", Formula::False),
+        (">", Formula::True),
+        (">=", Formula::True),
+        ("!=", Formula::True),
+    ] {
+        let (enc, _hir) = encode(&format!("region SR\n  select abs(MET - 200) {op} -5\n"), 0);
+        assert_eq!(enc.formula, expect, "abs(...) {op} -5 must fold to {expect:?}");
+    }
+}
+
+// Boundary guard: `c == 0` must NOT be swallowed by the `c < 0` short-circuit
+// (0.0 < 0.0 is false), so it still takes the exact general expansion and
+// stays a genuine constraint on MET — `|MET-200| == 0` is satisfiable (only at
+// MET==200) and `|MET-200| != 0` is not a tautology. A regression that widened
+// the guard to `c <= 0` would fold these to False/True respectively.
+#[test]
+fn abs_versus_zero_keeps_the_exact_constraint() {
+    let (eq, _hir) = encode("region SR\n  select abs(MET - 200) == 0\n", 0);
+    assert_ne!(eq.formula, Formula::False, "|MET-200| == 0 is satisfiable at MET==200");
+    assert_ne!(eq.formula, Formula::True);
+
+    let (ne, _hir) = encode("region SR\n  select abs(MET - 200) != 0\n", 0);
+    assert_ne!(ne.formula, Formula::True, "|MET-200| != 0 is not a tautology");
+    assert_ne!(ne.formula, Formula::False);
 }
 
 // ---- whole-file smoke -------------------------------------------------------

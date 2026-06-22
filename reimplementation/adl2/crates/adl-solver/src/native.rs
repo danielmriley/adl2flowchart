@@ -5,10 +5,9 @@
 //! whole legacy echo-tag/dropped-assert hazard class (audit Bug 5 layer
 //! 2) does not exist here.
 
-use crate::num::rational_of;
 use crate::{AssertName, Model, QSort, SatResult, Solver};
 use adl_formula::{LinAtom, QFormula, Rel};
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use z3::ast::{Bool, Int, Real};
@@ -76,22 +75,22 @@ impl NativeSolver {
         &entry.1
     }
 
-    fn real_of(v: f64) -> Real {
-        let r = rational_of(v);
-        let num = if r.negative {
-            format!("-{}", r.numerator)
+    fn real_of(r: &Rat) -> Real {
+        let p = r.to_parts();
+        let num = if p.negative {
+            format!("-{}", p.numerator)
         } else {
-            r.numerator.clone()
+            p.numerator
         };
-        Real::from_rational_str(&num, &r.denominator)
+        Real::from_rational_str(&num, &p.denominator)
             .expect("decimal rational strings are valid z3 numerals")
     }
 
     fn atom_term(&mut self, a: &LinAtom) -> Bool {
         let mut sum: Option<Real> = None;
-        for &(c, q) in a.terms() {
-            let var = self.var(q, QSort::Real).as_real();
-            let term = if c == 1.0 {
+        for (c, q) in a.terms() {
+            let var = self.var(*q, QSort::Real).as_real();
+            let term = if c.is_one() {
                 var
             } else {
                 Real::mul(&[Self::real_of(c), var])
@@ -101,7 +100,7 @@ impl NativeSolver {
                 Some(s) => Real::add(&[s, term]),
             });
         }
-        let lhs = sum.unwrap_or_else(|| Self::real_of(0.0));
+        let lhs = sum.unwrap_or_else(|| Self::real_of(&Rat::zero()));
         let rhs = Self::real_of(a.constant());
         match a.rel() {
             Rel::Lt => lhs.lt(&rhs),

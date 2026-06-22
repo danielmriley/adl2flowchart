@@ -26,7 +26,7 @@ use crate::formula::{DiagTable, Formula};
 use crate::lin::{LinAtom, Rel};
 use adl_sema::{
     ArithOp, CollectionId, ElemIndex, Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt,
-    Quantity, QuantityId, QuantityTable, ScalarSource,
+    Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -218,11 +218,13 @@ fn collect_quantities(node: &HNode, out: &mut BTreeSet<QuantityId>) {
     }
 }
 
-/// A linear expression `Σ cᵢ·qᵢ + k` under construction.
+/// A linear expression `Σ cᵢ·qᵢ + k` under construction, over exact
+/// rationals — folding is exact, so the atom boundary matches the
+/// interpreter's evaluation of the same cut to the bit.
 #[derive(Debug, Clone, Default)]
 struct LinExpr {
-    terms: BTreeMap<QuantityId, f64>,
-    k: f64,
+    terms: BTreeMap<QuantityId, Rat>,
+    k: Rat,
 }
 
 /// Why an expression has no [`LinExpr`] form.
@@ -231,8 +233,8 @@ enum LinErr {
     /// Structurally outside linear arithmetic; comparison-level patterns
     /// (ratio, abs) may still apply, else `Unknown`.
     NonLinear(String),
-    /// Constant arithmetic went non-finite (incl. division by a constant
-    /// zero): the enclosing comparison is **false** (SPEC_LANGUAGE §4.4).
+    /// Division by a constant zero: the enclosing comparison is **false**
+    /// (SPEC_LANGUAGE §4.4).
     NonFinite,
     /// A numeric literal itself parses non-finite: it cannot construct an
     /// atom (audit Bug 5), so the comparison is `Unknown`.
@@ -240,7 +242,7 @@ enum LinErr {
 }
 
 impl LinExpr {
-    fn constant(k: f64) -> Self {
+    fn constant(k: Rat) -> Self {
         Self {
             terms: BTreeMap::new(),
             k,
@@ -249,39 +251,34 @@ impl LinExpr {
 
     fn quantity(q: QuantityId) -> Self {
         Self {
-            terms: BTreeMap::from([(q, 1.0)]),
-            k: 0.0,
+            terms: BTreeMap::from([(q, Rat::one())]),
+            k: Rat::zero(),
         }
     }
 
-    fn all_finite(&self) -> bool {
-        self.k.is_finite() && self.terms.values().all(|c| c.is_finite())
-    }
-
-    fn combine(&self, other: &Self, sign: f64) -> Option<Self> {
+    /// `self + sign·other`, exact (rationals never overflow).
+    fn combine(&self, other: &Self, negate: bool) -> Self {
         let mut out = self.clone();
-        out.k += sign * other.k;
-        for (&q, &c) in &other.terms {
-            *out.terms.entry(q).or_insert(0.0) += sign * c;
+        let adj = |c: &Rat| if negate { -c } else { c.clone() };
+        out.k = &out.k + &adj(&other.k);
+        for (q, c) in &other.terms {
+            let entry = out.terms.entry(*q).or_insert_with(Rat::zero);
+            *entry = &*entry + &adj(c);
         }
-        out.all_finite().then_some(out)
+        out
     }
 
-    fn add(&self, other: &Self) -> Option<Self> {
-        self.combine(other, 1.0)
+    fn sub(&self, other: &Self) -> Self {
+        self.combine(other, true)
     }
 
-    fn sub(&self, other: &Self) -> Option<Self> {
-        self.combine(other, -1.0)
-    }
-
-    fn scale(&self, c: f64) -> Option<Self> {
+    fn scale(&self, c: &Rat) -> Self {
         let mut out = self.clone();
-        out.k *= c;
+        out.k = &out.k * c;
         for v in out.terms.values_mut() {
-            *v *= c;
+            *v = &*v * c;
         }
-        out.all_finite().then_some(out)
+        out
     }
 }
 
@@ -299,9 +296,9 @@ impl Encoder<'_> {
     }
 
     /// Small-constant atom used by the OPEN-1 expansion and triggers;
-    /// constants are tiny literals, so construction cannot fail.
-    fn simple_atom(&mut self, q: QuantityId, rel: Rel, k: f64) -> Formula {
-        LinAtom::single(q, rel, k).map_or(Formula::False, Formula::Atom)
+    /// constants are tiny integers.
+    fn simple_atom(&mut self, q: QuantityId, rel: Rel, k: i64) -> Formula {
+        Formula::Atom(LinAtom::single(q, rel, Rat::from_i64(k)))
     }
 
     // ---- regions --------------------------------------------------------
@@ -376,7 +373,7 @@ impl Encoder<'_> {
             // `trigger t` ⇒ atom `trig(t) = 1`.
             HKind::Quantity(q) => match self.table.quantity(*q) {
                 Quantity::EventScalar(ScalarSource::Trigger(_)) => {
-                    self.simple_atom(*q, Rel::Eq, 1.0)
+                    self.simple_atom(*q, Rel::Eq, 1)
                 }
                 _ => self.unknown(node.span, "numeric quantity used as a boolean condition"),
             },
@@ -449,7 +446,7 @@ impl Encoder<'_> {
             .into_iter()
             .map(|(coll, i)| {
                 let sq = self.table.intern_quantity(Quantity::Size(coll));
-                self.simple_atom(sq, Rel::Gt, f64::from(i))
+                self.simple_atom(sq, Rel::Gt, i64::from(i))
             })
             .collect();
         parts.push(inner);
@@ -487,17 +484,17 @@ impl Encoder<'_> {
             })
             .collect();
 
-        let mut plus_parts = vec![self.simple_atom(size_q, Rel::Eq, 0.0)];
+        let mut plus_parts = vec![self.simple_atom(size_q, Rel::Eq, 0)];
         plus_parts.extend(instances.iter().cloned());
-        plus_parts.push(self.simple_atom(size_q, Rel::Gt, f64::from(OPEN1_BOUND)));
+        plus_parts.push(self.simple_atom(size_q, Rel::Gt, i64::from(OPEN1_BOUND)));
         let plus = forr(plus_parts);
 
         let mut minus_parts = vec![
-            self.simple_atom(size_q, Rel::Ge, 1.0),
-            self.simple_atom(size_q, Rel::Le, f64::from(OPEN1_BOUND)),
+            self.simple_atom(size_q, Rel::Ge, 1),
+            self.simple_atom(size_q, Rel::Le, i64::from(OPEN1_BOUND)),
         ];
         for (i, p) in (0..OPEN1_BOUND).zip(instances) {
-            let guard = self.simple_atom(size_q, Rel::Le, f64::from(i));
+            let guard = self.simple_atom(size_q, Rel::Le, i64::from(i));
             minus_parts.push(forr(vec![guard, p]));
         }
         let minus = fand(minus_parts);
@@ -570,11 +567,12 @@ impl Encoder<'_> {
         let l = self.lin(lhs);
         let r = self.lin(rhs);
         match (l, r) {
-            (Ok(l), Ok(r)) => match l.sub(&r) {
-                // l ⋈ r  ⇔  Σ terms ⋈ −k.
-                Some(d) => self.atom_of(d.terms, rel, -d.k),
-                None => Formula::False, // §4.4: non-finite constant arithmetic
-            },
+            (Ok(l), Ok(r)) => {
+                // l ⋈ r  ⇔  Σ terms ⋈ −k. Exact: rationals never overflow.
+                let d = l.sub(&r);
+                let k = -&d.k;
+                self.atom_of(d.terms, rel, k)
+            }
             (Err(LinErr::NonFinite), _) | (_, Err(LinErr::NonFinite)) => Formula::False,
             (Err(LinErr::BadLiteral), _) | (_, Err(LinErr::BadLiteral)) => {
                 self.unknown(span, "non-finite numeric literal cannot construct an atom")
@@ -593,7 +591,7 @@ impl Encoder<'_> {
 
     /// Non-linear side vs constant `c`: exact ratio and absolute-value
     /// rewrites; anything else is `Unknown`.
-    fn pattern(&mut self, side: &HNode, rel: Rel, c: f64, why: &str, span: Span) -> Formula {
+    fn pattern(&mut self, side: &HNode, rel: Rel, c: Rat, why: &str, span: Span) -> Formula {
         match &side.kind {
             HKind::Binary {
                 op: ArithOp::Div,
@@ -608,7 +606,7 @@ impl Encoder<'_> {
     /// Exact two-branch ratio encoding (SPEC_ANALYSIS §1):
     /// `L/D ⋈ c` (D non-constant) ⇒ `(D>0 ∧ L ⋈ cD) ∨ (D<0 ∧ L ⋈̄ cD)`.
     /// `D = 0` fails the cut (neither branch admits it; §4.4).
-    fn ratio(&mut self, num: &HNode, den: &HNode, rel: Rel, c: f64, span: Span) -> Formula {
+    fn ratio(&mut self, num: &HNode, den: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
         let l = match self.lin(num) {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio numerator is not linear", span),
@@ -618,36 +616,54 @@ impl Encoder<'_> {
             Err(e) => return self.lin_err(e, "ratio denominator is not linear", span),
         };
         if d.terms.is_empty() {
-            // A constant denominator is handled by plain linear folding;
-            // reaching here means the numerator was rejected upstream.
-            return self.unknown(span, "ratio numerator is not linear");
+            // Constant denominator: clear it EXACTLY. `L/d ⋈ c` ⇔ `L ⋈ c·d`
+            // (d>0) or `L ⋈̄ c·d` (d<0); `d=0` fails the cut (§4.4). Rational
+            // arithmetic keeps the boundary on the interpreter's exactly.
+            if d.k.is_zero() {
+                return Formula::False; // §4.4
+            }
+            let cd = d.scale(&c);
+            let e = l.sub(&cd);
+            let rel = if d.k.is_negative() { rel.flipped() } else { rel };
+            let k = -&e.k;
+            return self.atom_of(e.terms, rel, k);
         }
-        let Some(cd) = d.scale(c) else {
-            return Formula::False; // §4.4
-        };
-        let Some(e) = l.sub(&cd) else {
-            return Formula::False; // §4.4
-        };
-        let d_pos = self.atom_of(d.terms.clone(), Rel::Gt, -d.k);
-        let e_pos = self.atom_of(e.terms.clone(), rel, -e.k);
-        let d_neg = self.atom_of(d.terms, Rel::Lt, -d.k);
-        let e_neg = self.atom_of(e.terms, rel.flipped(), -e.k);
+        let cd = d.scale(&c);
+        let e = l.sub(&cd);
+        let neg_d_k = -&d.k;
+        let neg_e_k = -&e.k;
+        let d_pos = self.atom_of(d.terms.clone(), Rel::Gt, neg_d_k.clone());
+        let e_pos = self.atom_of(e.terms.clone(), rel, neg_e_k.clone());
+        let d_neg = self.atom_of(d.terms, Rel::Lt, neg_d_k);
+        let e_neg = self.atom_of(e.terms, rel.flipped(), neg_e_k);
         forr(vec![fand(vec![d_pos, e_pos]), fand(vec![d_neg, e_neg])])
     }
 
     /// Exact absolute-value expansion against a constant:
     /// `|E| < c ⇔ E < c ∧ E > −c`, `|E| > c ⇔ E > c ∨ E < −c`, etc.
-    fn abs_cmp(&mut self, inner: &HNode, rel: Rel, c: f64, span: Span) -> Formula {
+    fn abs_cmp(&mut self, inner: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
         let e = match self.lin(inner) {
             Ok(v) => v,
             Err(err) => {
                 return self.lin_err(err, "absolute value of a non-linear expression", span);
             }
         };
-        let hi = c - e.k;
-        let lo = -c - e.k;
-        let upper = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, hi);
-        let lower = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, lo);
+        // `|E| >= 0` always, so a comparison against a negative constant is
+        // itself constant — exact for every relation, no approximation. The
+        // expansion below is only correct for `c >= 0`; without this guard
+        // `|E| == c` (c<0) would encode as SAT and `|E| != c` (c<0) as a
+        // two-point exclusion — both unsound (false PROVEN verdicts).
+        if c.is_negative() {
+            return match rel {
+                Rel::Lt | Rel::Le | Rel::Eq => Formula::False,
+                Rel::Gt | Rel::Ge | Rel::Ne => Formula::True,
+            };
+        }
+        let hi = &c - &e.k;
+        let neg_c = -&c;
+        let lo = &neg_c - &e.k;
+        let upper = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, hi.clone());
+        let lower = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, lo.clone());
         match rel {
             Rel::Lt => {
                 let parts = vec![upper(self, Rel::Lt), lower(self, Rel::Gt)];
@@ -679,13 +695,15 @@ impl Encoder<'_> {
     /// `x [] lo hi ⇔ lo ≤ x ∧ x ≤ hi`; `x ][ lo hi ⇔ x ≤ lo ∨ x ≥ hi`
     /// (SPEC_LANGUAGE §4.4).
     fn band(&mut self, kind: BandKind, expr: &HNode, lo: &str, hi: &str, span: Span) -> Formula {
-        let (Some(lo), Some(hi)) = (parse_finite(lo), parse_finite(hi)) else {
+        let (Some(lo), Some(hi)) = (parse_rat(lo), parse_rat(hi)) else {
             return self.unknown(span, "non-finite numeric literal cannot construct an atom");
         };
         let e = match self.lin(expr) {
             Ok(v) => v,
             Err(err) => return self.lin_err(err, "band expression is not linear", span),
         };
+        let lo_k = &lo - &e.k;
+        let hi_k = &hi - &e.k;
         let lo_bound = self.atom_of(
             e.terms.clone(),
             if kind == BandKind::In {
@@ -693,7 +711,7 @@ impl Encoder<'_> {
             } else {
                 Rel::Le
             },
-            lo - e.k,
+            lo_k,
         );
         let hi_bound = self.atom_of(
             e.terms,
@@ -702,7 +720,7 @@ impl Encoder<'_> {
             } else {
                 Rel::Ge
             },
-            hi - e.k,
+            hi_k,
         );
         match kind {
             BandKind::In => fand(vec![lo_bound, hi_bound]),
@@ -721,14 +739,10 @@ impl Encoder<'_> {
     }
 
     /// Build `Σ terms ⋈ k` with constant folding and Int-size coercion.
-    fn atom_of(&mut self, terms: BTreeMap<QuantityId, f64>, mut rel: Rel, mut k: f64) -> Formula {
+    fn atom_of(&mut self, terms: BTreeMap<QuantityId, Rat>, mut rel: Rel, mut k: Rat) -> Formula {
         if terms.is_empty() {
-            // Constant comparison: fold. Non-finite k comes from constant
-            // arithmetic, so the comparison is false (§4.4).
-            if !k.is_finite() {
-                return Formula::False;
-            }
-            return if rel.eval(0.0, k) {
+            // Constant comparison: fold exactly.
+            return if rel.eval(&Rat::zero(), &k) {
                 Formula::True
             } else {
                 Formula::False
@@ -738,8 +752,8 @@ impl Encoder<'_> {
         // sizes is an integer, so fractional bounds tighten exactly.
         let int_valued = terms
             .iter()
-            .all(|(q, c)| matches!(self.table.quantity(*q), Quantity::Size(_)) && c.fract() == 0.0);
-        if int_valued && k.is_finite() && k.fract() != 0.0 {
+            .all(|(q, c)| matches!(self.table.quantity(*q), Quantity::Size(_)) && c.is_integer());
+        if int_valued && !k.is_integer() {
             match rel {
                 Rel::Lt | Rel::Le => {
                     rel = Rel::Le;
@@ -753,12 +767,7 @@ impl Encoder<'_> {
                 Rel::Ne => return Formula::True,
             }
         }
-        match LinAtom::new(terms.into_iter().map(|(q, c)| (c, q)), rel, k) {
-            Ok(a) => Formula::Atom(a),
-            // Non-finite coefficients/constants here arose from constant
-            // arithmetic (literals were screened): comparison false (§4.4).
-            Err(_) => Formula::False,
-        }
+        Formula::Atom(LinAtom::new(terms.into_iter().map(|(q, c)| (c, q)), rel, k))
     }
 
     // ---- linear extraction ----------------------------------------------
@@ -768,12 +777,12 @@ impl Encoder<'_> {
             return Err(LinErr::NonLinear(reason.clone()));
         }
         match &node.kind {
-            HKind::Num(s) => match parse_finite(s) {
+            HKind::Num(s) => match parse_rat(s) {
                 Some(v) => Ok(LinExpr::constant(v)),
                 None => Err(LinErr::BadLiteral),
             },
             HKind::Quantity(q) => Ok(LinExpr::quantity(*q)),
-            HKind::Neg(a) => self.lin(a)?.scale(-1.0).ok_or(LinErr::NonFinite),
+            HKind::Neg(a) => Ok(self.lin(a)?.scale(&Rat::from_i64(-1))),
             HKind::Abs(_) => Err(LinErr::NonLinear(
                 "absolute value (only `|E| ⋈ const` is expanded)".to_owned(),
             )),
@@ -805,20 +814,20 @@ impl Encoder<'_> {
             ArithOp::Add => {
                 let l = self.lin(lhs)?;
                 let r = self.lin(rhs)?;
-                l.add(&r).ok_or(LinErr::NonFinite)
+                Ok(l.combine(&r, false))
             }
             ArithOp::Sub => {
                 let l = self.lin(lhs)?;
                 let r = self.lin(rhs)?;
-                l.sub(&r).ok_or(LinErr::NonFinite)
+                Ok(l.sub(&r))
             }
             ArithOp::Mul => {
                 let l = self.lin(lhs)?;
                 let r = self.lin(rhs)?;
                 if l.terms.is_empty() {
-                    r.scale(l.k).ok_or(LinErr::NonFinite)
+                    Ok(r.scale(&l.k))
                 } else if r.terms.is_empty() {
-                    l.scale(r.k).ok_or(LinErr::NonFinite)
+                    Ok(l.scale(&r.k))
                 } else {
                     Err(LinErr::NonLinear(
                         "product of two event quantities".to_owned(),
@@ -834,21 +843,38 @@ impl Encoder<'_> {
                         "ratio with a non-constant denominator".to_owned(),
                     ));
                 }
-                if r.k == 0.0 {
+                if r.k.is_zero() {
                     return Err(LinErr::NonFinite); // §4.4: division by zero
                 }
                 let l = self.lin(lhs)?;
-                l.scale(1.0 / r.k).ok_or(LinErr::NonFinite)
+                if l.terms.is_empty() {
+                    // constant / constant: exact rational division.
+                    return match l.k.checked_div(&r.k) {
+                        Some(v) => Ok(LinExpr::constant(v)),
+                        None => Err(LinErr::NonFinite), // r.k != 0, so unreachable
+                    };
+                }
+                // variable numerator / constant denominator: deferred to the
+                // comparison level, where multiply-through clears the
+                // denominator with the numerator's exact coefficients; a
+                // nested occurrence has no comparison to clear it -> Unknown.
+                Err(LinErr::NonLinear(
+                    "division by a constant (cleared at the comparison level)".to_owned(),
+                ))
             }
             ArithOp::Pow => {
                 let l = self.lin(lhs)?;
                 let r = self.lin(rhs)?;
                 if l.terms.is_empty() && r.terms.is_empty() {
-                    let v = l.k.powf(r.k);
-                    if v.is_finite() {
-                        Ok(LinExpr::constant(v))
-                    } else {
-                        Err(LinErr::NonFinite)
+                    // Only INTEGER powers stay rational; a fractional exponent
+                    // is generally irrational, so it leaves the linear fragment
+                    // (Unknown) rather than being folded to an inexact f64.
+                    match r.k.to_i64().and_then(|n| i32::try_from(n).ok()) {
+                        Some(n) => match l.k.powi(n) {
+                            Some(v) => Ok(LinExpr::constant(v)),
+                            None => Err(LinErr::NonFinite), // 0^negative (§4.4)
+                        },
+                        None => Err(LinErr::NonLinear("non-integer power".to_owned())),
                     }
                 } else {
                     Err(LinErr::NonLinear("non-constant power".to_owned()))
@@ -858,7 +884,8 @@ impl Encoder<'_> {
     }
 }
 
-/// Parse a canonical numeral; `None` if it does not parse finite.
-fn parse_finite(s: &str) -> Option<f64> {
-    s.parse::<f64>().ok().filter(|v| v.is_finite())
+/// Parse a canonical numeral as an exact decimal rational (the value the
+/// physicist wrote); `None` if it does not parse finite.
+fn parse_rat(s: &str) -> Option<Rat> {
+    s.parse::<f64>().ok().and_then(Rat::from_decimal_f64)
 }

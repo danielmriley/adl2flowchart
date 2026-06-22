@@ -22,7 +22,7 @@ use crate::witness::{Validation, validate_witness};
 use adl_axioms::{AxiomSet, catalog_entry, quantity_label, twin_pairs};
 use adl_formula::{Over, QFormula, Under};
 use adl_interp::Interp;
-use adl_sema::{ElemIndex, ExtDecls, Hir, Quantity, QuantityId};
+use adl_sema::{ElemIndex, ExtDecls, Hir, Quantity, QuantityId, Rat};
 use adl_solver::{AssertName, Model, QSort, SatResult, Solver};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -49,6 +49,11 @@ const MAX_WITNESS_ATTEMPTS: u32 = 6;
 /// a decimal ε would smear model values off the f64 grid and break
 /// equality atoms over sums.
 const WITNESS_EPS: f64 = 9.5367431640625e-7; // 2^-20
+
+/// A finite `f64` (axiom/hint/witness constant) as an exact `Rat`.
+fn rat(v: f64) -> Rat {
+    Rat::from_decimal_f64(v).expect("finite constant")
+}
 
 /// Snap every model value to the dyadic 2⁻²² grid (second-chance
 /// realization). A solver vertex can sit at a non-dyadic rational where
@@ -80,8 +85,9 @@ fn blocking_clause(model: &Model, mentioned: &BTreeSet<QuantityId>) -> Option<QF
     for &q in mentioned {
         if let Some(v) = model.get(q)
             && v.is_finite()
-            && let Ok(atom) = adl_formula::LinAtom::single(q, adl_formula::Rel::Ne, v)
+            && let Some(rv) = Rat::from_decimal_f64(v)
         {
+            let atom = adl_formula::LinAtom::single(q, adl_formula::Rel::Ne, rv);
             parts.push(QFormula::Atom(atom));
         }
     }
@@ -503,7 +509,7 @@ impl Engine<'_> {
                         break;
                     };
                     let validation = validate_witness(
-                        self.hir, self.ext, interp, &model, &combined, &ra.name, &rb.name,
+                        self.hir, self.ext, interp, &model, &combined, ra.idx, rb.idx,
                     );
                     let validation = match validation {
                         Validation::Rejected(first_why) => {
@@ -511,7 +517,7 @@ impl Engine<'_> {
                             // burning a solver retry.
                             let snapped = snap_model(&model);
                             match validate_witness(
-                                self.hir, self.ext, interp, &snapped, &combined, &ra.name, &rb.name,
+                                self.hir, self.ext, interp, &snapped, &combined, ra.idx, rb.idx,
                             ) {
                                 Validation::Rejected(_) => Validation::Rejected(first_why),
                                 ok => {
@@ -565,14 +571,36 @@ impl Engine<'_> {
                         report.kind = VerdictKind::PossiblyOverlapping;
                         match last_reject {
                             Some(why) => {
-                                report.reason = format!(
-                                    "overlap model found, but witness re-validation failed; \
-                                     downgraded to POSSIBLY ({why})"
-                                );
-                                internal.push(format!(
-                                    "INTERNAL: witness validation failed for {} vs {}: {why}",
-                                    ra.name, rb.name
-                                ));
+                                // A witness the interpreter rejects is only a
+                                // genuine encoder/interpreter contradiction
+                                // (release-blocking) when the interpreter could
+                                // FULLY decide the region. If the rejection
+                                // co-occurs with something the interpreter
+                                // cannot decide — an opaque quantity (no
+                                // reference interpretation) or an out-of-fragment
+                                // construct like OPEN-1 unindexed angular
+                                // separation — the region is not fully
+                                // interpreter-checkable, so a rejected witness is
+                                // expected: downgrade quietly, no internal-bug
+                                // diagnostic.
+                                if why.contains("no reference interpretation")
+                                    || why.contains("OPEN-1 unresolved")
+                                {
+                                    report.reason = format!(
+                                        "under-approximations intersect, but no witness could \
+                                         be realized through the interpreter (the region depends \
+                                         on an opaque quantity); capped at POSSIBLY ({why})"
+                                    );
+                                } else {
+                                    report.reason = format!(
+                                        "overlap model found, but witness re-validation failed; \
+                                         downgraded to POSSIBLY ({why})"
+                                    );
+                                    internal.push(format!(
+                                        "INTERNAL: witness validation failed for {} vs {}: {why}",
+                                        ra.name, rb.name
+                                    ));
+                                }
                             }
                             None => {
                                 report.reason = "solver returned SAT but no model; capped at \
@@ -673,19 +701,17 @@ impl Engine<'_> {
         let lo_atoms: Vec<QFormula> = lo_hints
             .iter()
             .map(|(&sq, &min_idx)| {
-                QFormula::Atom(
-                    adl_formula::LinAtom::single(sq, adl_formula::Rel::Gt, min_idx)
-                        .expect("finite hint constant"),
-                )
+                QFormula::Atom(adl_formula::LinAtom::single(
+                    sq,
+                    adl_formula::Rel::Gt,
+                    rat(min_idx),
+                ))
             })
             .collect();
         let mut hi_atoms: Vec<QFormula> = hi_hints
             .iter()
             .map(|(&sq, &cap)| {
-                QFormula::Atom(
-                    adl_formula::LinAtom::single(sq, adl_formula::Rel::Le, cap)
-                        .expect("finite hint constant"),
-                )
+                QFormula::Atom(adl_formula::LinAtom::single(sq, adl_formula::Rel::Le, rat(cap)))
             })
             .collect();
         // Top wish: dPhi = 0 outright. Zero is dyadic (f64-exact in any
@@ -696,10 +722,11 @@ impl Engine<'_> {
         let zero_atoms: Vec<QFormula> = dphi_hints
             .iter()
             .map(|&q| {
-                QFormula::Atom(
-                    adl_formula::LinAtom::single(q, adl_formula::Rel::Eq, 0.0)
-                        .expect("finite hint constant"),
-                )
+                QFormula::Atom(adl_formula::LinAtom::single(
+                    q,
+                    adl_formula::Rel::Eq,
+                    Rat::zero(),
+                ))
             })
             .collect();
         // Dyadic dPhi wish bounds, strictly inside [−π, π): (a) keeps
@@ -712,14 +739,16 @@ impl Engine<'_> {
         const DPHI_WISH_BOUND: f64 = 3.140625; // dyadic, < π
         for q in &dphi_hints {
             let q = *q;
-            hi_atoms.push(QFormula::Atom(
-                adl_formula::LinAtom::single(q, adl_formula::Rel::Ge, -DPHI_WISH_BOUND)
-                    .expect("finite hint constant"),
-            ));
-            hi_atoms.push(QFormula::Atom(
-                adl_formula::LinAtom::single(q, adl_formula::Rel::Le, DPHI_WISH_BOUND)
-                    .expect("finite hint constant"),
-            ));
+            hi_atoms.push(QFormula::Atom(adl_formula::LinAtom::single(
+                q,
+                adl_formula::Rel::Ge,
+                rat(-DPHI_WISH_BOUND),
+            )));
+            hi_atoms.push(QFormula::Atom(adl_formula::LinAtom::single(
+                q,
+                adl_formula::Rel::Le,
+                rat(DPHI_WISH_BOUND),
+            )));
         }
         let try_with = |s: &mut dyn Solver, atoms: &[&[QFormula]]| -> Option<Model> {
             s.push();
@@ -772,17 +801,21 @@ impl Engine<'_> {
                 if all_int {
                     return QFormula::Atom(a.clone());
                 }
-                let rebuild = |rel: Rel, k: f64| -> QFormula {
-                    adl_formula::LinAtom::new(a.terms().iter().copied(), rel, k)
-                        .map_or_else(|_| QFormula::Atom(a.clone()), QFormula::Atom)
+                let eps = rat(WITNESS_EPS);
+                let rebuild = |rel: Rel, k: Rat| -> QFormula {
+                    QFormula::Atom(adl_formula::LinAtom::new(
+                        a.terms().iter().cloned(),
+                        rel,
+                        k,
+                    ))
                 };
                 match a.rel() {
-                    Rel::Lt | Rel::Le => rebuild(a.rel(), a.constant() - WITNESS_EPS),
-                    Rel::Gt | Rel::Ge => rebuild(a.rel(), a.constant() + WITNESS_EPS),
+                    Rel::Lt | Rel::Le => rebuild(a.rel(), a.constant() - &eps),
+                    Rel::Gt | Rel::Ge => rebuild(a.rel(), a.constant() + &eps),
                     Rel::Eq => QFormula::Atom(a.clone()),
                     Rel::Ne => QFormula::Or(vec![
-                        rebuild(Rel::Le, a.constant() - WITNESS_EPS),
-                        rebuild(Rel::Ge, a.constant() + WITNESS_EPS),
+                        rebuild(Rel::Le, a.constant() - &eps),
+                        rebuild(Rel::Ge, a.constant() + &eps),
                     ]),
                 }
             }
@@ -896,11 +929,10 @@ impl Engine<'_> {
 }
 
 fn lookup_size(hir: &Hir, coll: adl_sema::CollectionId) -> Option<QuantityId> {
-    hir.table
-        .quantities()
-        .iter()
-        .position(|q| matches!(q, Quantity::Size(c) if *c == coll))
-        .map(|i| QuantityId(u32::try_from(i).expect("quantity id fits")))
+    // O(1) via the interner — was a linear scan of the whole quantity table,
+    // a hot path under the per-witness retry loop and a scaling hazard once
+    // the table spans many files.
+    hir.table.quantity_id(&Quantity::Size(coll))
 }
 
 /// Witness values for the report: every mentioned quantity, plus the

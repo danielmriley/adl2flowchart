@@ -124,6 +124,31 @@ fn pt_descending_is_validated_never_resorted() {
     assert!(adl_interp::parse_event(r#"{"Jet": [{"pt": 50}, {"pt": 50}]}"#, ext()).is_ok());
 }
 
+/// PHASE0 soundness: an element WITHOUT a `pt` key must not reset the
+/// ordering check — the pT-bearing subsequence must still be globally
+/// non-increasing, because ORD/IDOM assert `c[i].pt >= c[j].pt` by index
+/// across the gap. `[pt=10, {no pt}, pt=100]` must be REJECTED (else the
+/// axiom fabricates a false PROVEN DISJOINT on an event the loader accepts).
+#[test]
+fn missing_pt_element_does_not_reset_ordering() {
+    let bad = adl_interp::parse_event(
+        r#"{"Jet": [{"pt": 10}, {"eta": 1.0, "phi": 0.5}, {"pt": 100}]}"#,
+        ext(),
+    );
+    assert!(
+        matches!(bad, Err(adl_interp::EventError::NotPtDescending { index: 2, .. })),
+        "non-descending across a pt-less gap must be rejected, got {bad:?}"
+    );
+    // A genuinely descending subsequence around a pt-less element is fine.
+    assert!(
+        adl_interp::parse_event(
+            r#"{"Jet": [{"pt": 100}, {"eta": 1.0}, {"pt": 50}]}"#,
+            ext()
+        )
+        .is_ok()
+    );
+}
+
 /// §4.1 + PHASE0 OPEN-3: indices are 0-based; `C_n` is the same index
 /// operator as `C[n]`.
 #[test]
@@ -691,4 +716,253 @@ fn evaluation_is_deterministic() {
     let i2 = Interp::new(&h2, ext());
     let ev = event(STD);
     assert_eq!(i1.run_event(&ev), i2.run_event(&ev));
+}
+
+// ---- §4.3 witness validation: non-short-circuiting membership ----------
+
+// Regression for review finding #3 (witness-validation masking). An opaque
+// external statement must not hide a LATER decidable cut that fails:
+// `eval_region_by_name` short-circuits at the opaque statement (Err), but
+// `eval_region_membership` evaluates on and reports the decidable rejection
+// (`Ok(false)`), so the witness layer downgrades to POSSIBLY instead of
+// accepting a bogus "candidate" overlap.
+#[test]
+fn region_membership_sees_failing_cut_behind_opaque_statement() {
+    let adl = "\
+object jets
+  take Jet
+
+region SRfail
+  select sum(jets.pT) > 100
+  select MET.pT > 500
+
+region SRopaque
+  select sum(jets.pT) > 100
+  select MET.pT > 5
+";
+    let h = hir(adl);
+    let interp = Interp::new(&h, ext());
+    let ev = event(r#"{"Jet":[{"pt":40,"eta":0,"phi":0,"m":0}],"MET":{"pt":10,"phi":0}}"#);
+
+    // The short-circuiting walk stops at the opaque statement.
+    let by_name = interp.eval_region_by_name("SRfail", &ev);
+    assert!(
+        by_name
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.reason.contains("no reference interpretation")),
+        "eval_region_by_name should short-circuit on the opaque statement, got {by_name:?}"
+    );
+
+    // Non-short-circuiting membership reaches the failing MET cut and rejects.
+    assert_eq!(
+        interp.eval_region_membership("SRfail", &ev),
+        Ok(false),
+        "a decidable failing cut behind an opaque statement must be observed"
+    );
+
+    // When the only obstruction is the opaque statement (later cuts pass),
+    // membership surfaces the opaque error (the legitimate candidate path) —
+    // NOT a false rejection.
+    let opaque = interp.eval_region_membership("SRopaque", &ev);
+    assert!(
+        opaque
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.reason.contains("no reference interpretation")),
+        "opaque-only obstruction must surface as the opaque error, got {opaque:?}"
+    );
+}
+
+// The masking must also be closed when the decidable cut sits behind an opaque
+// term WITHIN a single boolean expression (`opaque AND decidable-false`), and
+// across a `<region>` (RegionPred) reference. Both routed through the
+// short-circuiting evaluator before the three-valued membership fix.
+#[test]
+fn region_membership_unmasks_opaque_in_and_and_via_regionpred() {
+    let adl = "\
+object jets
+  take Jet
+
+region INTRA
+  select sum(jets.pT) > 100 and MET.pT > 500
+
+region P
+  select sum(jets.pT) > 100
+  select MET.pT > 500
+
+region VIAREF
+  select P
+";
+    let h = hir(adl);
+    let interp = Interp::new(&h, ext());
+    let ev = event(r#"{"Jet":[{"pt":40,"eta":0,"phi":0,"m":0}],"MET":{"pt":10,"phi":0}}"#);
+
+    // `opaque AND (MET 10 > 500 == false)` is decidably false (Kleene: F∧U=F).
+    assert_eq!(
+        interp.eval_region_membership("INTRA", &ev),
+        Ok(false),
+        "a decidable-false conjunct must win over an opaque conjunct"
+    );
+
+    // VIAREF passes iff P passes; P is decidably false, so VIAREF must reject —
+    // the RegionPred edge must not surface P's opaque cut as the answer.
+    assert_eq!(
+        interp.eval_region_membership("VIAREF", &ev),
+        Ok(false),
+        "a region referenced as a predicate must propagate a decidable rejection"
+    );
+}
+
+// The masking must also be closed when a region is used as a NUMBER (the
+// `select presel == 1` idiom and its nesting under arithmetic/band), which
+// routes through the numeric evaluator. Before the three-valued `num3`, these
+// short-circuited on the referenced region's opaque cut and masked a decidable
+// rejection into an opaque Err (a false PROVEN OVERLAPPING).
+#[test]
+fn region_membership_unmasks_regionpred_in_numeric_position() {
+    let adl = "\
+object jets
+  take Jet
+
+region P
+  select sum(jets.pT) > 100
+  select MET.pT > 500
+
+region EQ
+  select P == 1
+
+region BAND
+  select P [] 0.5 1.5
+
+region ARITH
+  select P + 0 > 0.5
+";
+    let h = hir(adl);
+    let interp = Interp::new(&h, ext());
+    let ev = event(r#"{"Jet":[{"pt":40,"eta":0,"phi":0,"m":0}],"MET":{"pt":10,"phi":0}}"#);
+
+    // P is decidably false (MET 10 < 500) so P-as-number is 0.0; every region
+    // built on that number is decidably false and must reject, not block.
+    for region in ["EQ", "BAND", "ARITH"] {
+        assert_eq!(
+            interp.eval_region_membership(region, &ev),
+            Ok(false),
+            "region-as-number `{region}` must propagate the decidable rejection"
+        );
+    }
+}
+
+// Divergence guard: on OPAQUE-FREE regions the three-valued membership path
+// (region3/truth3/num3) must agree EXACTLY with the two-valued short-circuit
+// evaluator (eval_region_by_name) — three-valued logic only differs from
+// two-valued when an Unknown is present, and these inputs have none. Covers
+// and/or/not, comparisons, bands, ternary, arithmetic, and region-as-number.
+#[test]
+fn membership_matches_two_valued_on_opaque_free_regions() {
+    let adl = "\
+object jets
+  take Jet
+  select pT > 30
+
+region BASE
+  select size(jets) >= 1
+  select MET.pT > 100
+
+region BOOL
+  select (MET.pT > 100 and size(jets) >= 2) or not (HT > 50)
+
+region TERN
+  select (MET.pT > 100 ? HT > 10 : HT > 9999)
+
+region NUMREF
+  select BASE == 1
+  select BASE + 1 > 1.5
+
+region BANDS
+  select MET.pT [] 50 800
+";
+    let h = hir(adl);
+    let interp = Interp::new(&h, ext());
+    let events = [
+        r#"{"Jet":[{"pt":40},{"pt":35}],"MET":{"pt":150,"phi":0},"HT":60}"#,
+        r#"{"Jet":[{"pt":40}],"MET":{"pt":80,"phi":0},"HT":40}"#,
+        r#"{"Jet":[],"MET":{"pt":900,"phi":0},"HT":5}"#,
+        r#"{"Jet":[{"pt":40},{"pt":35},{"pt":31}],"MET":{"pt":500,"phi":0},"HT":1000}"#,
+    ];
+    for (n, json) in events.iter().enumerate() {
+        let ev = event(json);
+        for region in ["BASE", "BOOL", "TERN", "NUMREF", "BANDS"] {
+            let two = interp.eval_region_by_name(region, &ev);
+            let three = interp.eval_region_membership(region, &ev);
+            assert_eq!(
+                two, three,
+                "event {n} region {region}: three-valued membership ({three:?}) must match \
+                 two-valued ({two:?}) on opaque-free input"
+            );
+        }
+    }
+}
+
+// Kleene completeness (review re-verification round 2): an undecidable ternary
+// guard is still decidable when both branches agree, and a §4.4 soft non-value
+// decides a comparison False even alongside an opaque operand. Both were
+// masking holes that produced the false PROVEN OVERLAPPING class.
+#[test]
+fn region_membership_kleene_ternary_and_soft_nonvalue() {
+    let adl = "\
+object jets
+  take Jet
+
+region TUF
+  select (sum(jets.pT) > 0) ? MET.pT > 99999 : MET.pT > 88888
+
+region TUT
+  select (sum(jets.pT) > 0) ? MET.pT > 5 : MET.pT > 9
+
+region SOFT
+  select jets[5].pT == sum(jets.pT)
+
+region SOFTBINOP
+  select jets[5].pT * sum(jets.pT) > 5
+
+region SOFTBINOP2
+  select sum(jets.pT) * jets[5].pT > 5
+";
+    let h = hir(adl);
+    let interp = Interp::new(&h, ext());
+    let ev = event(r#"{"Jet":[{"pt":40,"eta":0,"phi":0,"m":0}],"MET":{"pt":10,"phi":0}}"#);
+
+    // U ? F : F  ->  False (guard irrelevant; both branches reject).
+    assert_eq!(
+        interp.eval_region_membership("TUF", &ev),
+        Ok(false),
+        "ternary, undecidable guard, both branches false -> must reject"
+    );
+    // U ? T : T  ->  True (both branches accept).
+    assert_eq!(
+        interp.eval_region_membership("TUT", &ev),
+        Ok(true),
+        "ternary, undecidable guard, both branches true -> must pass"
+    );
+    // §4.4: jets[5] is a missing element (soft non-value) -> comparison false,
+    // even though the other operand sum(...) is opaque (hard Unknown).
+    assert_eq!(
+        interp.eval_region_membership("SOFT", &ev),
+        Ok(false),
+        "a soft non-value decides the comparison false despite an opaque operand"
+    );
+    // §4.4 absorbing rule in arithmetic: a soft non-value propagates through a
+    // product even when the other factor is opaque, so the cut is decidably
+    // false (both operand orders).
+    assert_eq!(
+        interp.eval_region_membership("SOFTBINOP", &ev),
+        Ok(false),
+        "soft non-value must absorb an opaque operand in arithmetic (lhs)"
+    );
+    assert_eq!(
+        interp.eval_region_membership("SOFTBINOP2", &ev),
+        Ok(false),
+        "soft non-value must absorb an opaque operand in arithmetic (rhs)"
+    );
 }

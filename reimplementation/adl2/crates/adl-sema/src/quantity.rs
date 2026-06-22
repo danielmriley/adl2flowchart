@@ -210,6 +210,13 @@ impl QuantityTable {
         id
     }
 
+    /// The id of an already-interned quantity, or `None` if it was never
+    /// interned. O(1) lookup via the interner map — no scan of the table.
+    #[must_use]
+    pub fn quantity_id(&self, q: &Quantity) -> Option<QuantityId> {
+        self.quant_ids.get(q).copied()
+    }
+
     /// Intern an angular separation, canonically ordering the operands of
     /// unoriented kinds so `dR(a,b)` and `dR(b,a)` are the SAME quantity
     /// by construction, while oriented kinds keep argument order.

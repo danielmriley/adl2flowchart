@@ -181,9 +181,27 @@ impl<'s> Lexer<'s> {
 
         if is_real {
             // Mantissa text always parses as f64.
-            let value: f64 = text.parse().unwrap_or(0.0);
+            let mut value: f64 = text.parse().unwrap_or(0.0);
             let end = start + text.len();
             let span = Span::new(start as u32, end as u32);
+            // A subnormal literal (nonzero, magnitude below the smallest normal
+            // f64 ~2.2e-308) is a lexical error. The analyzer models cuts in
+            // exact real arithmetic while the interpreter evaluates them in f64;
+            // the two only diverge in the subnormal range, where that mismatch
+            // could otherwise fabricate a false PROVEN EMPTY/DISJOINT. Such
+            // magnitudes are physically meaningless, so we reject rather than
+            // silently approximate, and recover with 0.0.
+            if value.is_subnormal() {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("subnormal literal `{text}` is not supported"),
+                    )
+                    .with_label("magnitude is below the smallest normal f64")
+                    .with_help("use a representable magnitude (≥ 2.3e-308) or 0"),
+                );
+                value = 0.0;
+            }
             self.tokens.push(Token {
                 kind: TokKind::Real(value),
                 span,

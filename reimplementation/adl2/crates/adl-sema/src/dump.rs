@@ -161,6 +161,14 @@ fn render_ctx(hir: &Hir) -> RenderCtx<'_> {
     }
 }
 
+/// Canonical text of a single resolved expression node, over `hir`'s tables.
+/// Used to render diagnostics when no source text is available (e.g. a merged
+/// cross-file unit, whose spans index no single source).
+#[must_use]
+pub fn render_node(hir: &Hir, node: &crate::hir::HNode) -> String {
+    render_ctx(hir).node(node)
+}
+
 /// Deterministic quantity-table dump: collections (id order), element
 /// predicates (id order), quantities (sorted by canonical render).
 #[must_use]

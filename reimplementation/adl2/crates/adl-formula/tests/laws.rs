@@ -8,7 +8,7 @@
 //! - on Unknown/Dual-free formulas the two projections coincide.
 
 use adl_formula::{DiagId, Formula, LinAtom, QFormula, Rel};
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 use proptest::prelude::*;
 
 fn arb_rel() -> impl Strategy<Value = Rel> {
@@ -24,15 +24,15 @@ fn arb_rel() -> impl Strategy<Value = Rel> {
 
 fn arb_atom() -> impl Strategy<Value = LinAtom> {
     let term = (
-        (-3i32..=3).prop_map(f64::from),
+        (-3i64..=3).prop_map(Rat::from_i64),
         (0u32..4).prop_map(QuantityId),
     );
     (
         proptest::collection::vec(term, 0..3),
         arb_rel(),
-        (-10i32..=10).prop_map(f64::from),
+        (-10i64..=10).prop_map(Rat::from_i64),
     )
-        .prop_map(|(terms, rel, k)| LinAtom::new(terms, rel, k).expect("finite by construction"))
+        .prop_map(|(terms, rel, k)| LinAtom::new(terms, rel, k))
 }
 
 fn arb_formula() -> impl Strategy<Value = Formula> {
@@ -106,8 +106,8 @@ fn unknown_projects_to_polarity_units() {
 
 #[test]
 fn dual_projects_to_its_branches() {
-    let plus = Formula::Atom(LinAtom::single(QuantityId(0), Rel::Gt, 1.0).unwrap());
-    let minus = Formula::Atom(LinAtom::single(QuantityId(0), Rel::Gt, 2.0).unwrap());
+    let plus = Formula::Atom(LinAtom::single(QuantityId(0), Rel::Gt, Rat::from_i64(1)));
+    let minus = Formula::Atom(LinAtom::single(QuantityId(0), Rel::Gt, Rat::from_i64(2)));
     let d = Formula::Dual {
         plus: Box::new(plus.clone()),
         minus: Box::new(minus.clone()),

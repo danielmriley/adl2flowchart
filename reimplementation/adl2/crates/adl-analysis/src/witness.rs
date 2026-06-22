@@ -50,8 +50,8 @@ pub fn validate_witness(
     interp: &Interp<'_>,
     model: &Model,
     mentioned: &BTreeSet<QuantityId>,
-    region_a: &str,
-    region_b: &str,
+    region_a: usize,
+    region_b: usize,
 ) -> Validation {
     let json = match build_event_json(hir, ext, model, mentioned) {
         Ok(j) => j,
@@ -72,14 +72,22 @@ pub fn validate_witness(
         };
         let mut opaque: Option<String> = None;
         let mut missing: Option<String> = None;
-        for name in [region_a, region_b] {
-            match interp.eval_region_by_name(name, &event) {
+        for idx in [region_a, region_b] {
+            // Resolve by INDEX (not name): merged units can share a region
+            // name, and a name lookup returns the first match — masking the
+            // second region's cuts and fabricating a "validated" overlap.
+            let name = hir.symbols.display(hir.regions[idx].name);
+            // Non-short-circuiting membership: a decidable failing cut must be
+            // seen even when an opaque statement precedes it in source order,
+            // otherwise an unsatisfiable region is mistaken for an opaque
+            // "candidate" overlap and the pair is falsely PROVEN OVERLAPPING.
+            match interp.eval_region_membership_idx(idx, &event) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Validation::Rejected(format!(
                         "interpreter rejects the witness event in region {name} ({}); \
                          event: {json}",
-                        failing_stmts(hir, interp, name, &event)
+                        failing_stmts(hir, interp, idx, &event)
                     ));
                 }
                 Err(e) if e.reason.contains("no reference interpretation") => {
@@ -159,11 +167,11 @@ fn patch_missing(json: &str, reason: &str) -> Option<String> {
 fn failing_stmts(
     hir: &Hir,
     interp: &Interp<'_>,
-    region: &str,
+    idx: usize,
     event: &adl_interp::Event,
 ) -> String {
     use adl_sema::HirRegionStmt;
-    let Some(r) = hir.region(region) else {
+    let Some(r) = hir.regions.get(idx) else {
         return "region not found".to_owned();
     };
     let mut out = Vec::new();

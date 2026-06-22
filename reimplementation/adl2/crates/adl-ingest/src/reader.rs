@@ -25,7 +25,7 @@
 //! Non-finite leaf values are refused: they are unrepresentable in
 //! canonical JSONL and physically meaningless in every mapped property.
 
-use crate::profile::{CollectionSpec, LeafKind, Profile};
+use crate::profile::{CollectionSpec, LeafKind, Profile, ScalarSpec};
 use oxyroot::{ReaderTree, RootFile, Slice};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -298,7 +298,7 @@ fn read_tree(tree: &ReaderTree, profile: &Profile) -> Result<Ingested, IngestErr
     // --- mapped object collections, in profile order -------------------
     let mut loaded: Vec<LoadedCollection<'_>> = Vec::new();
     for spec in &profile.collections {
-        match load_collection(tree, spec, entries, &leaf_names, &mut diags)? {
+        match load_collection(tree, profile, spec, entries, &leaf_names, &mut diags)? {
             Some(lc) => loaded.push(lc),
             None => diags.push(IngestDiag::AbsentCollection {
                 branch: spec.branch.clone(),
@@ -306,37 +306,21 @@ fn read_tree(tree: &ReaderTree, profile: &Profile) -> Result<Ingested, IngestErr
         }
     }
 
-    // --- MET, scalars, weight (one-element branches) -------------------
-    let met = match &profile.met {
-        Some(m) => load_one_element_pair(
-            tree,
-            &m.branch,
-            &m.pt_leaf,
-            &m.phi_leaf,
-            entries,
-            &leaf_names,
-            &mut diags,
-        )?,
-        None => None,
-    };
+    // --- MET, scalars, weight (flat scalars or one-element branches) ---
+    let met = load_met(tree, profile, entries, &leaf_names, &mut diags)?;
     let mut scalars: Vec<(String, Vec<Option<f64>>)> = Vec::new();
     for s in &profile.scalars {
-        if let Some(vals) =
-            load_one_element(tree, &s.branch, &s.leaf, entries, &leaf_names, &mut diags)?
-        {
+        if let Some(vals) = load_scalar(tree, profile, s, entries, &leaf_names, &mut diags)? {
             scalars.push((s.key.clone(), vals));
         }
     }
-    let weights = match &profile.weight {
-        Some(w) => load_one_element(tree, &w.branch, &w.leaf, entries, &leaf_names, &mut diags)?,
-        None => None,
-    };
+    let weights = load_weight(tree, profile, entries, &leaf_names, &mut diags)?;
 
     // --- LHE multiweights: counted, dropped, diagnosed -----------------
     if let Some((branch, leaf)) = &profile.lhe_weights {
-        let full = format!("{branch}.{leaf}");
+        let full = profile.leaf_branch(branch, leaf);
         if leaf_names.contains(&full) {
-            let count = read_counter(tree, &counter_name(branch), entries)?
+            let count = read_counter(tree, &profile.counter_branch(branch), entries)?
                 .iter()
                 .map(|&c| c as u64)
                 .sum();
@@ -380,11 +364,7 @@ fn leaf_branch_names(tree: &ReaderTree) -> BTreeSet<String> {
         .collect()
 }
 
-fn counter_name(branch: &str) -> String {
-    format!("{branch}_size")
-}
-
-/// Read a collection's `_size` counter: one i32 per tree entry.
+/// Read a collection's element-count branch: one int per tree entry.
 fn read_counter(tree: &ReaderTree, name: &str, entries: usize) -> Result<Vec<usize>, IngestError> {
     let b = tree
         .branch(name)
@@ -393,20 +373,31 @@ fn read_counter(tree: &ReaderTree, name: &str, entries: usize) -> Result<Vec<usi
             needed_for: "collection chunking (counter-authoritative re-chunk)".to_owned(),
         })?;
     let got = b.item_type_name();
-    if got != "int32_t" {
-        return Err(IngestError::TypeMismatch {
-            branch: name.to_owned(),
-            expected: "int32_t",
-            got,
-        });
-    }
-    let raw: Vec<i32> = b
-        .as_iter::<i32>()
-        .map_err(|e| IngestError::Tree {
-            name: name.to_owned(),
-            message: e.to_string(),
-        })?
-        .collect();
+    let read_err = |e: String| IngestError::Tree {
+        name: name.to_owned(),
+        message: e,
+    };
+    // Delphes counters are `int32_t`; NanoAOD `n<Coll>` counters are
+    // `uint32_t`. Both widen to i64 before the non-negative check.
+    let raw: Vec<i64> = match got.as_str() {
+        "int32_t" => b
+            .as_iter::<i32>()
+            .map_err(|e| read_err(e.to_string()))?
+            .map(i64::from)
+            .collect(),
+        "uint32_t" => b
+            .as_iter::<u32>()
+            .map_err(|e| read_err(e.to_string()))?
+            .map(i64::from)
+            .collect(),
+        _ => {
+            return Err(IngestError::TypeMismatch {
+                branch: name.to_owned(),
+                expected: "int32_t|uint32_t",
+                got,
+            });
+        }
+    };
     if raw.len() != entries {
         return Err(IngestError::EntryCount {
             branch: name.to_owned(),
@@ -439,38 +430,83 @@ fn read_leaf_flat(
             needed_for: "a profile-mapped property".to_owned(),
         })?;
     let got = b.item_type_name();
-    let expected = match kind {
-        LeafKind::F32 => "float[]",
-        LeafKind::I32 => "int32_t[]",
-        LeafKind::TagBit(_) => "uint32_t[]",
-    };
-    if got != expected {
-        return Err(IngestError::TypeMismatch {
-            branch: branch.to_owned(),
-            expected,
-            got,
-        });
-    }
     // oxyroot's error type is not exported; capture it as text.
     let read_err = |message: String| IngestError::Tree {
         name: branch.to_owned(),
         message,
     };
+    // Flatten every basket into one column. Accepted on-disk widths mirror
+    // the `to_jsonl.py` oracle: F32 takes float[]/double[]; I32 takes any
+    // signed/unsigned 8/16/32-bit width (charges, jet IDs, iso categories);
+    // Bool takes bool[]; TagBit takes the uint32 mask.
+    macro_rules! flat_int {
+        ($t:ty) => {{
+            let mut vals: Vec<i64> = Vec::new();
+            for s in b
+                .as_iter::<Slice<$t>>()
+                .map_err(|e| read_err(e.to_string()))?
+            {
+                vals.extend(s.into_vec().into_iter().map(i64::from));
+            }
+            FlatColumn::Int(vals)
+        }};
+    }
     let col = match kind {
         LeafKind::F32 => {
             let mut vals: Vec<f64> = Vec::new();
-            for s in b
-                .as_iter::<Slice<f32>>()
-                .map_err(|e| read_err(e.to_string()))?
-            {
-                vals.extend(s.into_vec().into_iter().map(f64::from));
+            match got.as_str() {
+                "float[]" => {
+                    for s in b
+                        .as_iter::<Slice<f32>>()
+                        .map_err(|e| read_err(e.to_string()))?
+                    {
+                        vals.extend(s.into_vec().into_iter().map(f64::from));
+                    }
+                }
+                "double[]" => {
+                    for s in b
+                        .as_iter::<Slice<f64>>()
+                        .map_err(|e| read_err(e.to_string()))?
+                    {
+                        vals.extend(s.into_vec());
+                    }
+                }
+                _ => {
+                    return Err(IngestError::TypeMismatch {
+                        branch: branch.to_owned(),
+                        expected: "float[]|double[]",
+                        got,
+                    });
+                }
             }
             FlatColumn::F64(vals)
         }
-        LeafKind::I32 => {
+        LeafKind::I32 => match got.as_str() {
+            "int8_t[]" | "char[]" => flat_int!(i8),
+            "uint8_t[]" => flat_int!(u8),
+            "int16_t[]" => flat_int!(i16),
+            "uint16_t[]" => flat_int!(u16),
+            "int32_t[]" => flat_int!(i32),
+            "uint32_t[]" => flat_int!(u32),
+            _ => {
+                return Err(IngestError::TypeMismatch {
+                    branch: branch.to_owned(),
+                    expected: "int8_t[]|uint8_t[]|int16_t[]|uint16_t[]|int32_t[]|uint32_t[]",
+                    got,
+                });
+            }
+        },
+        LeafKind::Bool => {
+            if got != "bool[]" {
+                return Err(IngestError::TypeMismatch {
+                    branch: branch.to_owned(),
+                    expected: "bool[]",
+                    got,
+                });
+            }
             let mut vals: Vec<i64> = Vec::new();
             for s in b
-                .as_iter::<Slice<i32>>()
+                .as_iter::<Slice<bool>>()
                 .map_err(|e| read_err(e.to_string()))?
             {
                 vals.extend(s.into_vec().into_iter().map(i64::from));
@@ -478,14 +514,14 @@ fn read_leaf_flat(
             FlatColumn::Int(vals)
         }
         LeafKind::TagBit(_) => {
-            let mut vals: Vec<i64> = Vec::new();
-            for s in b
-                .as_iter::<Slice<u32>>()
-                .map_err(|e| read_err(e.to_string()))?
-            {
-                vals.extend(s.into_vec().into_iter().map(i64::from));
+            if got != "uint32_t[]" {
+                return Err(IngestError::TypeMismatch {
+                    branch: branch.to_owned(),
+                    expected: "uint32_t[]",
+                    got,
+                });
             }
-            FlatColumn::Int(vals)
+            flat_int!(u32)
         }
     };
     let len = match &col {
@@ -507,23 +543,32 @@ fn read_leaf_flat(
 /// `Ok(None)` when the collection is entirely absent from the file.
 fn load_collection<'p>(
     tree: &ReaderTree,
+    profile: &Profile,
     spec: &'p CollectionSpec,
     entries: usize,
     leaf_names: &BTreeSet<String>,
     diags: &mut Vec<IngestDiag>,
 ) -> Result<Option<LoadedCollection<'p>>, IngestError> {
-    let prefix = format!("{}.", spec.branch);
-    let present = leaf_names.contains(&counter_name(&spec.branch))
-        || leaf_names.iter().any(|n| n.starts_with(&prefix));
+    // Present iff the counter or some *mapped* leaf exists. Deliberately
+    // not a `starts_with(prefix)` scan: an orphan sibling leaf the profile
+    // does not map (e.g. `Jet_area` with no `nJet`) must not force the
+    // collection present and then hard-error on the absent counter — the
+    // oracle omits such a collection, so the native reader does too.
+    let counter = profile.counter_branch(&spec.branch);
+    let present = leaf_names.contains(&counter)
+        || spec
+            .leaves
+            .iter()
+            .any(|l| leaf_names.contains(&profile.leaf_branch(&spec.branch, &l.leaf)));
     if !present {
         return Ok(None);
     }
-    let counts = read_counter(tree, &counter_name(&spec.branch), entries)?;
+    let counts = read_counter(tree, &counter, entries)?;
     let total: usize = counts.iter().sum();
 
     let mut columns = Vec::with_capacity(spec.leaves.len());
     for leaf in &spec.leaves {
-        let branch = format!("{}.{}", spec.branch, leaf.leaf);
+        let branch = profile.leaf_branch(&spec.branch, &leaf.leaf);
         let mut col = read_leaf_flat(tree, &branch, leaf.kind, total)?;
         match (&mut col, leaf.kind) {
             (FlatColumn::F64(vals), _) => {
@@ -576,17 +621,18 @@ fn entry_of(counts: &[usize], pos: usize) -> usize {
 /// no element (diagnosed). Multi-element events take the first (diagnosed).
 fn load_one_element(
     tree: &ReaderTree,
+    profile: &Profile,
     branch: &str,
     leaf: &str,
     entries: usize,
     leaf_names: &BTreeSet<String>,
     diags: &mut Vec<IngestDiag>,
 ) -> Result<Option<Vec<Option<f64>>>, IngestError> {
-    let full = format!("{branch}.{leaf}");
+    let full = profile.leaf_branch(branch, leaf);
     if !leaf_names.contains(&full) {
         return Ok(None);
     }
-    let counts = read_counter(tree, &counter_name(branch), entries)?;
+    let counts = read_counter(tree, &profile.counter_branch(branch), entries)?;
     let total: usize = counts.iter().sum();
     let FlatColumn::F64(vals) = read_leaf_flat(tree, &full, LeafKind::F32, total)? else {
         unreachable!("F32 kind loads F64 column")
@@ -629,9 +675,10 @@ fn load_one_element(
 
 /// Load the MET vector's two leaves off one shared counter, so the
 /// multiplicity diagnostics fire once for the branch, not per leaf.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn load_one_element_pair(
     tree: &ReaderTree,
+    profile: &Profile,
     branch: &str,
     pt_leaf: &str,
     phi_leaf: &str,
@@ -639,12 +686,12 @@ fn load_one_element_pair(
     leaf_names: &BTreeSet<String>,
     diags: &mut Vec<IngestDiag>,
 ) -> Result<Option<Vec<Option<(f64, f64)>>>, IngestError> {
-    let pt_full = format!("{branch}.{pt_leaf}");
-    let phi_full = format!("{branch}.{phi_leaf}");
+    let pt_full = profile.leaf_branch(branch, pt_leaf);
+    let phi_full = profile.leaf_branch(branch, phi_leaf);
     if !leaf_names.contains(&pt_full) && !leaf_names.contains(&phi_full) {
         return Ok(None);
     }
-    let counts = read_counter(tree, &counter_name(branch), entries)?;
+    let counts = read_counter(tree, &profile.counter_branch(branch), entries)?;
     let total: usize = counts.iter().sum();
     let load = |full: &str| -> Result<Vec<f64>, IngestError> {
         let FlatColumn::F64(vals) = read_leaf_flat(tree, full, LeafKind::F32, total)? else {
@@ -691,6 +738,131 @@ fn load_one_element_pair(
     Ok(Some(out))
 }
 
+/// Read a flat one-value-per-event scalar leaf (NanoAOD `MET_pt`,
+/// `genWeight`): one value per tree entry, no counter. `None` when the
+/// branch is absent from the file.
+fn read_scalar_flat(
+    tree: &ReaderTree,
+    full: &str,
+    entries: usize,
+    leaf_names: &BTreeSet<String>,
+) -> Result<Option<Vec<f64>>, IngestError> {
+    if !leaf_names.contains(full) {
+        return Ok(None);
+    }
+    let b = tree.branch(full).ok_or_else(|| IngestError::MissingBranch {
+        name: full.to_owned(),
+        needed_for: "a flat per-event scalar".to_owned(),
+    })?;
+    let got = b.item_type_name();
+    let read_err = |e: String| IngestError::Tree {
+        name: full.to_owned(),
+        message: e,
+    };
+    let vals: Vec<f64> = match got.as_str() {
+        "float" => b
+            .as_iter::<f32>()
+            .map_err(|e| read_err(e.to_string()))?
+            .map(f64::from)
+            .collect(),
+        "double" => b
+            .as_iter::<f64>()
+            .map_err(|e| read_err(e.to_string()))?
+            .collect(),
+        _ => {
+            return Err(IngestError::TypeMismatch {
+                branch: full.to_owned(),
+                expected: "float|double",
+                got,
+            });
+        }
+    };
+    if vals.len() != entries {
+        return Err(IngestError::EntryCount {
+            branch: full.to_owned(),
+            expected: entries,
+            got: vals.len(),
+        });
+    }
+    if let Some(pos) = vals.iter().position(|v| !v.is_finite()) {
+        return Err(IngestError::NonFinite {
+            branch: full.to_owned(),
+            entry: pos,
+        });
+    }
+    Ok(Some(vals))
+}
+
+/// The MET vector, dispatched by naming: flat `MET_pt`/`MET_phi` scalars
+/// (NanoAOD) or a one-element `MissingET` branch read via a counter (Delphes).
+#[allow(clippy::type_complexity)]
+fn load_met(
+    tree: &ReaderTree,
+    profile: &Profile,
+    entries: usize,
+    leaf_names: &BTreeSet<String>,
+    diags: &mut Vec<IngestDiag>,
+) -> Result<Option<Vec<Option<(f64, f64)>>>, IngestError> {
+    let Some(m) = &profile.met else {
+        return Ok(None);
+    };
+    if profile.naming.flat_event_vars {
+        let pt = read_scalar_flat(tree, &profile.leaf_branch(&m.branch, &m.pt_leaf), entries, leaf_names)?;
+        let phi =
+            read_scalar_flat(tree, &profile.leaf_branch(&m.branch, &m.phi_leaf), entries, leaf_names)?;
+        Ok(match (pt, phi) {
+            (Some(pt), Some(phi)) => {
+                Some(pt.into_iter().zip(phi).map(|(p, h)| Some((p, h))).collect())
+            }
+            _ => None,
+        })
+    } else {
+        load_one_element_pair(
+            tree, profile, &m.branch, &m.pt_leaf, &m.phi_leaf, entries, leaf_names, diags,
+        )
+    }
+}
+
+/// A per-event scalar, dispatched by naming (flat NanoAOD vs one-element Delphes).
+fn load_scalar(
+    tree: &ReaderTree,
+    profile: &Profile,
+    spec: &ScalarSpec,
+    entries: usize,
+    leaf_names: &BTreeSet<String>,
+    diags: &mut Vec<IngestDiag>,
+) -> Result<Option<Vec<Option<f64>>>, IngestError> {
+    if profile.naming.flat_event_vars {
+        Ok(
+            read_scalar_flat(tree, &profile.leaf_branch(&spec.branch, &spec.leaf), entries, leaf_names)?
+                .map(|v| v.into_iter().map(Some).collect()),
+        )
+    } else {
+        load_one_element(tree, profile, &spec.branch, &spec.leaf, entries, leaf_names, diags)
+    }
+}
+
+/// The event weight, dispatched by naming (flat `genWeight` vs `Event.Weight`).
+fn load_weight(
+    tree: &ReaderTree,
+    profile: &Profile,
+    entries: usize,
+    leaf_names: &BTreeSet<String>,
+    diags: &mut Vec<IngestDiag>,
+) -> Result<Option<Vec<Option<f64>>>, IngestError> {
+    let Some(w) = &profile.weight else {
+        return Ok(None);
+    };
+    if profile.naming.flat_event_vars {
+        Ok(
+            read_scalar_flat(tree, &profile.leaf_branch(&w.branch, &w.leaf), entries, leaf_names)?
+                .map(|v| v.into_iter().map(Some).collect()),
+        )
+    } else {
+        load_one_element(tree, profile, &w.branch, &w.leaf, entries, leaf_names, diags)
+    }
+}
+
 /// Classify every leaf branch the mapping has not consumed: unmapped
 /// leaves of mapped branches (summary diagnostic), known drops (silent —
 /// they are part of the profile table), unknown families (diagnostic).
@@ -733,10 +905,29 @@ fn classify_rest(profile: &Profile, leaf_names: &BTreeSet<String>) -> Vec<Ingest
     // Event.Weight / Weight.Weight are consumed even though their branch
     // families are known drops; nothing to add — KnownDrop swallows them.
 
+    // Flat per-event scalars (NanoAOD MET/weight) consumed by the mapping —
+    // no collection family or known-drop branch swallows them.
+    let mut consumed: BTreeSet<String> = BTreeSet::new();
+    if profile.naming.flat_event_vars {
+        if let Some(m) = &profile.met {
+            consumed.insert(profile.leaf_branch(&m.branch, &m.pt_leaf));
+            consumed.insert(profile.leaf_branch(&m.branch, &m.phi_leaf));
+        }
+        for s in &profile.scalars {
+            consumed.insert(profile.leaf_branch(&s.branch, &s.leaf));
+        }
+        if let Some(w) = &profile.weight {
+            consumed.insert(profile.leaf_branch(&w.branch, &w.leaf));
+        }
+    }
+
     let mut unmapped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut unknown: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for name in leaf_names {
-        if let Some(prefix) = name.strip_suffix("_size") {
+        if consumed.contains(name) {
+            continue;
+        }
+        if let Some(prefix) = profile.counter_prefix(name) {
             // Counters of known families are consumed; unknown families
             // are reported via their leaves (or alone if leafless).
             if !families.contains_key(prefix) {
@@ -744,8 +935,9 @@ fn classify_rest(profile: &Profile, leaf_names: &BTreeSet<String>) -> Vec<Ingest
             }
             continue;
         }
-        let Some((prefix, leaf)) = name.split_once('.') else {
-            // A bare top-level leaf branch: not a Delphes shape we map.
+        let Some((prefix, leaf)) = name.split_once(profile.naming.leaf_sep) else {
+            // A bare top-level leaf branch (NanoAOD `run`/`event`, or a shape
+            // we do not map).
             unknown.entry(name.clone()).or_default();
             continue;
         };

@@ -13,10 +13,15 @@ use std::fmt::Write as _;
 /// How a leaf's raw values become a canonical property value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeafKind {
-    /// `float[]` widened f32 → f64.
+    /// `float[]` (or `double[]`) widened to f64.
     F32,
-    /// `int32_t[]` (charges, ...): emitted as a JSON integer.
+    /// Any signed/unsigned integer width (`int8`..`uint32`) — charges,
+    /// jet IDs, iso categories: emitted as a JSON integer, per-width
+    /// decoded to i64.
     I32,
+    /// `bool[]` (lepton quality flags like `tightId`): emitted as the
+    /// JSON integer 0 or 1.
+    Bool,
     /// `uint32_t[]` working-point bitmask → flag ∈ {0, 1} from the given
     /// bit ([DECIDE-I1]); set higher/other bits are *diagnosed*, never
     /// silently folded in.
@@ -84,9 +89,36 @@ pub struct WeightSpec {
     pub leaf: String,
 }
 
+/// How a collection's per-event element count branch is named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterStyle {
+    /// `<branch>_size` (Delphes).
+    SizeSuffix,
+    /// `n<branch>` (NanoAOD).
+    NPrefix,
+}
+
+/// Branch-naming conventions of an input format, so the reader and the
+/// `to_jsonl.py` oracle stay one data table across Delphes (dotted leaves,
+/// `_size` counters, one-element MET/scalar branches) and NanoAOD
+/// (underscored leaves, `n<branch>` counters, flat per-event scalars).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Naming {
+    /// Separator between a collection branch and its leaf (`"."` | `"_"`).
+    pub leaf_sep: &'static str,
+    /// How element-count branches are named.
+    pub counter: CounterStyle,
+    /// MET / scalars / weight are flat one-value-per-event scalar branches
+    /// (NanoAOD) rather than one-element collection branches read via a
+    /// counter (Delphes).
+    pub flat_event_vars: bool,
+}
+
 /// A converter profile: the complete branch → canonical-model data table.
 #[derive(Debug, Clone)]
 pub struct Profile {
+    /// Branch-naming conventions (Delphes vs NanoAOD).
+    pub naming: Naming,
     /// Profile name (`"delphes"`).
     pub name: String,
     /// Profile version; `name/version` identifies the mapping in
@@ -111,6 +143,39 @@ impl Profile {
     #[must_use]
     pub fn id(&self) -> String {
         format!("{}/{}", self.name, self.version)
+    }
+
+    /// Full branch name of a leaf, per the profile's naming convention
+    /// (`Jet.PT` for Delphes, `Jet_pt` for NanoAOD). An empty `leaf` names
+    /// a bare top-level branch (`genWeight`).
+    #[must_use]
+    pub fn leaf_branch(&self, branch: &str, leaf: &str) -> String {
+        if leaf.is_empty() {
+            branch.to_owned()
+        } else {
+            format!("{branch}{}{leaf}", self.naming.leaf_sep)
+        }
+    }
+
+    /// Element-count branch name for a collection (`Jet_size` | `nJet`).
+    #[must_use]
+    pub fn counter_branch(&self, branch: &str) -> String {
+        match self.naming.counter {
+            CounterStyle::SizeSuffix => format!("{branch}_size"),
+            CounterStyle::NPrefix => format!("n{branch}"),
+        }
+    }
+
+    /// Whether a leaf-branch name is an element-count branch under this
+    /// naming convention; returns the collection prefix it counts if so.
+    #[must_use]
+    pub fn counter_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
+        match self.naming.counter {
+            CounterStyle::SizeSuffix => name.strip_suffix("_size"),
+            CounterStyle::NPrefix => name
+                .strip_prefix('n')
+                .filter(|rest| rest.chars().next().is_some_and(char::is_uppercase)),
+        }
     }
 
     /// The per-run `[DECIDE]` choices baked into this table, derived from
@@ -156,7 +221,7 @@ impl Profile {
         if let Some(w) = &self.weight {
             out.push((
                 "weight_branch".to_owned(),
-                format!("{}.{}", w.branch, w.leaf),
+                self.leaf_branch(&w.branch, &w.leaf),
             ));
         }
         out
@@ -222,6 +287,11 @@ pub fn delphes() -> Profile {
         constants,
     };
     Profile {
+        naming: Naming {
+            leaf_sep: ".",
+            counter: CounterStyle::SizeSuffix,
+            flat_event_vars: false,
+        },
         name: "delphes".to_owned(),
         version: 1,
         tree: "Delphes".to_owned(),
@@ -270,18 +340,123 @@ pub fn delphes() -> Profile {
     }
 }
 
+/// The CMS NanoAOD profile (`Events` tree, `n<Coll>` counters, underscored
+/// leaves, flat per-event MET/weight scalars). Maps the standard physics
+/// objects; b-tagging is the continuous `btagDeepB` discriminant (a float
+/// `btag` property, cut on directly in ADL — NanoAOD has no working-point
+/// bit), masses come from each collection's own `mass` leaf, and the weight
+/// is `genWeight`. Triggers (`HLT_*`) and gen/LHE branches are not mapped in
+/// v1 (surfaced as unmapped/unknown diagnostics, never errors).
+#[must_use]
+pub fn nanoaod() -> Profile {
+    fn kin() -> Vec<LeafSpec> {
+        vec![
+            f32_leaf("pt", "pt"),
+            f32_leaf("eta", "eta"),
+            f32_leaf("phi", "phi"),
+            f32_leaf("mass", "m"),
+        ]
+    }
+    let charge = || LeafSpec {
+        leaf: "charge".to_owned(),
+        prop: "q".to_owned(),
+        kind: LeafKind::I32,
+    };
+    let i32_leaf = |leaf: &str, prop: &str| LeafSpec {
+        leaf: leaf.to_owned(),
+        prop: prop.to_owned(),
+        kind: LeafKind::I32,
+    };
+    let bool_leaf = |leaf: &str, prop: &str| LeafSpec {
+        leaf: leaf.to_owned(),
+        prop: prop.to_owned(),
+        kind: LeafKind::Bool,
+    };
+    // b-tag discriminants are CONTINUOUS floats and must be emitted under
+    // their own NanoAOD/ADL spellings — NOT `btag` (a {0,1} tag bit under
+    // the TAG axiom). `btagDeepB` (DeepCSV), `btagDeepFlavB` (DeepJet, the
+    // official Run-2 recommendation), `btagCSVV2` all resolve to continuous
+    // ADL identities, matching real cuts (`select btagDeepFlavB > 0.3`).
+    // FatJet carries only `btagCSVV2` on this layout, so the extra DeepJet
+    // discriminant is mapped on Jet only (a mapped-but-absent leaf is a hard
+    // error, so we do not map branches a collection does not carry).
+    let col = |branch: &str, leaves: Vec<LeafSpec>| CollectionSpec {
+        branch: branch.to_owned(),
+        key: branch.to_owned(),
+        leaves,
+        constants: vec![],
+    };
+    let mut jet = kin();
+    jet.push(f32_leaf("btagDeepB", "btagDeepB"));
+    jet.push(f32_leaf("btagDeepFlavB", "btagDeepFlavB"));
+    jet.push(f32_leaf("btagCSVV2", "btagCSVV2"));
+    jet.push(i32_leaf("jetId", "jetId"));
+    jet.push(i32_leaf("puId", "puId"));
+    let mut fatjet = kin();
+    fatjet.push(f32_leaf("btagDeepB", "btagDeepB"));
+    fatjet.push(f32_leaf("btagCSVV2", "btagCSVV2"));
+    let lepton = || {
+        let mut v = kin();
+        v.push(charge());
+        v
+    };
+    // Muon quality IDs (`bool[]`) and the iso-working-point category
+    // (`pfIsoId`, `uint8[]`): real preselections cut `select tightId == 1`
+    // and `select pfIsoId >= 4`.
+    let muon = || {
+        let mut v = lepton();
+        v.push(bool_leaf("tightId", "tightId"));
+        v.push(bool_leaf("looseId", "looseId"));
+        v.push(i32_leaf("pfIsoId", "pfIsoId"));
+        v
+    };
+
+    Profile {
+        naming: Naming {
+            leaf_sep: "_",
+            counter: CounterStyle::NPrefix,
+            flat_event_vars: true,
+        },
+        name: "nanoaod".to_owned(),
+        version: 1,
+        tree: "Events".to_owned(),
+        collections: vec![
+            col("Jet", jet),
+            col("FatJet", fatjet),
+            col("Electron", lepton()),
+            col("Muon", muon()),
+            col("Tau", lepton()),
+            col("Photon", kin()),
+        ],
+        met: Some(MetSpec {
+            branch: "MET".to_owned(),
+            pt_leaf: "pt".to_owned(),
+            phi_leaf: "phi".to_owned(),
+            known_dropped_leaves: vec![],
+        }),
+        scalars: vec![],
+        weight: Some(WeightSpec {
+            branch: "genWeight".to_owned(),
+            leaf: String::new(),
+        }),
+        lhe_weights: None,
+        known_drop_branches: vec![],
+    }
+}
+
 /// Look up a profile by CLI name. `None` for unknown names; the caller
 /// reports the supported list.
 #[must_use]
 pub fn by_name(name: &str) -> Option<Profile> {
     match name.to_ascii_lowercase().as_str() {
         "delphes" | "delphes/1" => Some(delphes()),
+        "nanoaod" | "nanoaod/1" => Some(nanoaod()),
         _ => None,
     }
 }
 
 /// The profile names [`by_name`] accepts (for error messages).
-pub const KNOWN_PROFILES: &[&str] = &["delphes"];
+pub const KNOWN_PROFILES: &[&str] = &["delphes", "nanoaod"];
 
 #[cfg(test)]
 mod tests {
@@ -309,9 +484,87 @@ mod tests {
     fn by_name_is_case_insensitive_and_total_over_known() {
         assert!(by_name("Delphes").is_some());
         assert!(by_name("delphes/1").is_some());
-        assert!(by_name("nanoaod").is_none());
+        assert!(by_name("NanoAOD").is_some());
+        assert!(by_name("nanoaod/1").is_some());
+        assert!(by_name("cms").is_none());
         for name in KNOWN_PROFILES {
             assert!(by_name(name).is_some(), "{name}");
         }
+    }
+
+    #[test]
+    fn naming_helpers_follow_the_convention() {
+        let d = delphes();
+        assert_eq!(d.leaf_branch("Jet", "PT"), "Jet.PT");
+        assert_eq!(d.counter_branch("Jet"), "Jet_size");
+        assert_eq!(d.counter_prefix("Jet_size"), Some("Jet"));
+        assert_eq!(d.counter_prefix("Jet.PT"), None);
+
+        let n = nanoaod();
+        assert_eq!(n.leaf_branch("Jet", "pt"), "Jet_pt");
+        assert_eq!(n.leaf_branch("genWeight", ""), "genWeight"); // empty leaf → bare branch
+        assert_eq!(n.counter_branch("Jet"), "nJet");
+        assert_eq!(n.counter_prefix("nJet"), Some("Jet"));
+        assert_eq!(n.counter_prefix("nElectron"), Some("Electron"));
+        assert_eq!(n.counter_prefix("genWeight"), None); // 'n' then lowercase, not a counter
+        assert_eq!(n.counter_prefix("Jet_pt"), None);
+    }
+
+    #[test]
+    fn nanoaod_profile_shape() {
+        let p = nanoaod();
+        assert_eq!(p.id(), "nanoaod/1");
+        assert_eq!(p.tree, "Events");
+        assert_eq!(p.naming.leaf_sep, "_");
+        assert_eq!(p.naming.counter, CounterStyle::NPrefix);
+        assert!(p.naming.flat_event_vars, "MET/weight are flat scalars");
+
+        let keys: Vec<&str> = p.collections.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["Jet", "FatJet", "Electron", "Muon", "Tau", "Photon"]);
+
+        // Jet maps the kinematics + the float b-tag discriminant under its
+        // own ADL spelling `btagDeepB` (a continuous property, NOT the {0,1}
+        // `btag` tag bit).
+        let jet = p.collections.iter().find(|c| c.key == "Jet").unwrap();
+        let props: Vec<&str> = jet.leaves.iter().map(|l| l.prop.as_str()).collect();
+        assert_eq!(
+            props,
+            [
+                "pt", "eta", "phi", "m", "btagDeepB", "btagDeepFlavB", "btagCSVV2", "jetId", "puId"
+            ]
+        );
+        let btag = jet.leaves.iter().find(|l| l.prop == "btagDeepB").unwrap();
+        assert_eq!(btag.leaf, "btagDeepB");
+        assert_eq!(btag.kind, LeafKind::F32);
+        // The DeepJet discriminant the audit added (official Run-2 b-tag).
+        let deepflav = jet.leaves.iter().find(|l| l.prop == "btagDeepFlavB").unwrap();
+        assert_eq!((deepflav.leaf.as_str(), deepflav.kind), ("btagDeepFlavB", LeafKind::F32));
+        // Jet-quality IDs are plain integer leaves.
+        let jet_id = jet.leaves.iter().find(|l| l.prop == "jetId").unwrap();
+        assert_eq!((jet_id.leaf.as_str(), jet_id.kind), ("jetId", LeafKind::I32));
+
+        // FatJet carries only btagCSVV2 (no DeepJet branch on this layout).
+        let fatjet = p.collections.iter().find(|c| c.key == "FatJet").unwrap();
+        let fprops: Vec<&str> = fatjet.leaves.iter().map(|l| l.prop.as_str()).collect();
+        assert_eq!(fprops, ["pt", "eta", "phi", "m", "btagDeepB", "btagCSVV2"]);
+
+        // Muons carry an integer charge plus bool quality IDs and an iso id.
+        let muon = p.collections.iter().find(|c| c.key == "Muon").unwrap();
+        let q = muon.leaves.iter().find(|l| l.prop == "q").unwrap();
+        assert_eq!((q.leaf.as_str(), q.kind), ("charge", LeafKind::I32));
+        let tight = muon.leaves.iter().find(|l| l.prop == "tightId").unwrap();
+        assert_eq!((tight.leaf.as_str(), tight.kind), ("tightId", LeafKind::Bool));
+        let iso = muon.leaves.iter().find(|l| l.prop == "pfIsoId").unwrap();
+        assert_eq!((iso.leaf.as_str(), iso.kind), ("pfIsoId", LeafKind::I32));
+
+        // MET is flat MET_pt/MET_phi; weight is the flat genWeight scalar.
+        let met = p.met.as_ref().unwrap();
+        assert_eq!(p.leaf_branch(&met.branch, &met.pt_leaf), "MET_pt");
+        let w = p.weight.as_ref().unwrap();
+        assert_eq!(p.leaf_branch(&w.branch, &w.leaf), "genWeight");
+
+        // decides() renders the flat weight branch with no trailing separator.
+        let d = p.decides();
+        assert!(d.iter().any(|(k, v)| k == "weight_branch" && v == "genWeight"), "{d:?}");
     }
 }

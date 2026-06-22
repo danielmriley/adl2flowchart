@@ -91,19 +91,33 @@ fn eval_formula(f: &QFormula, vals: &BTreeMap<QuantityId, f64>) -> bool {
             let lhs: f64 = a
                 .terms()
                 .iter()
-                .map(|&(c, q)| c * vals.get(&q).copied().unwrap_or(0.0))
+                .map(|(c, q)| c.to_f64() * vals.get(q).copied().unwrap_or(0.0))
                 .sum();
+            let k = a.constant().to_f64();
             // The axioms are statements over REAL-valued event quantities;
             // the interpreter computes a rounded f64 image (e.g. wrap(-d)
             // is not bit-exactly -wrap(d)). Equalities therefore get an
             // epsilon; inequalities stay exact.
             if a.rel() == adl_formula::Rel::Eq {
-                let scale = 1.0_f64.max(lhs.abs()).max(a.constant().abs());
-                (lhs - a.constant()).abs() <= 1e-9 * scale
+                let scale = 1.0_f64.max(lhs.abs()).max(k.abs());
+                (lhs - k).abs() <= 1e-9 * scale
             } else {
-                a.rel().eval(lhs, a.constant())
+                rel_eval_f64(a.rel(), lhs, k)
             }
         }
+    }
+}
+
+/// f64 evaluation of a relation (the `Rel::eval` API is exact-rational now).
+fn rel_eval_f64(rel: adl_formula::Rel, a: f64, b: f64) -> bool {
+    use adl_formula::Rel;
+    match rel {
+        Rel::Lt => a < b,
+        Rel::Le => a <= b,
+        Rel::Gt => a > b,
+        Rel::Ge => a >= b,
+        Rel::Eq => a == b,
+        Rel::Ne => a != b,
     }
 }
 
@@ -261,6 +275,57 @@ fn sub_axiom_is_single_source_only_unions_get_uni() {
         uni.iter()
             .any(|d| d.contains("size(leptons) <= size(eles) + size(muons)")),
         "{uni:?}"
+    );
+}
+
+#[test]
+fn ord_axiom_skips_filtered_union_but_keeps_base_chain() {
+    // ORD/IDOM ride on pT-descending order. A base-rooted filtered chain
+    // (jets <- Jet) preserves it; a filter OVER A UNION does not — the
+    // interpreter concatenates union parts without a pT-merge, so
+    // `goodleptons = [eles..] ++ [muons..]` can have element 1 with higher pT
+    // than element 0. Emitting ORD there asserts a false fact into every
+    // UNSAT-direction proof (false PROVEN DISJOINT/EMPTY/SUBSET).
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+object eles
+  take Ele
+
+object muons
+  take Muo
+
+object goodleptons
+  take union(eles, muons)
+  select pT > 20
+
+region SR
+  select pT(jets[0]) >= 0
+  select pT(jets[1]) >= 0
+  select pT(goodleptons[0]) >= 0
+  select pT(goodleptons[1]) >= 0
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+    let ord: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::Ord)
+        .map(|i| i.description.as_str())
+        .collect();
+
+    // Base-rooted filtered collection: ORD MUST still fire (no regression).
+    assert!(
+        ord.iter().any(|d| d.contains("jets[0]") && d.contains("jets[1]")),
+        "ORD must still constrain a base-rooted filtered collection: {ord:?}"
+    );
+    // Filtered-over-union: ORD MUST NOT fire.
+    assert!(
+        !ord.iter().any(|d| d.contains("goodleptons")),
+        "ORD must never constrain a filtered-union collection: {ord:?}"
     );
 }
 

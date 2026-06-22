@@ -21,7 +21,7 @@ pub mod lin;
 
 pub use encode::{EncodedRegion, OPEN1_BOUND, encode_region, encode_regions};
 pub use formula::{DiagId, DiagTable, Formula, FormulaDiag, Over, QFormula, Under};
-pub use lin::{LinAtom, LinAtomError, Rel};
+pub use lin::{LinAtom, Rel};
 
 /// Crate identity marker used by the bootstrap smoke test.
 pub const CRATE_NAME: &str = "adl-formula";

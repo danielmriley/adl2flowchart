@@ -528,14 +528,19 @@ fn load_collection(
 }
 
 /// PHASE0: collections arrive pT-descending; assert, never re-sort.
-/// Objects without a `pt` property are exempt (and break the chain).
+///
+/// An object without a `pt` property is *skipped*, but it must NOT reset the
+/// running maximum: the ORD/IDOM axioms assert `c[i].pt >= c[j].pt` for every
+/// `i < j` directly by index, so the pT-bearing SUBSEQUENCE must be globally
+/// non-increasing. Resetting on a gap would accept e.g. `[pt=10, {no pt},
+/// pt=100]`, on which `c[0].pt >= c[2].pt` (10 >= 100) is false — letting the
+/// axiom fabricate a false PROVEN DISJOINT/SUBSET.
 fn validate_pt_descending(line: usize, ev: &Event, ext: &ExtDecls) -> Result<(), EventError> {
     let (pt_key, _) = ext.prop_canon("pt");
     for (name, objs) in &ev.collections {
         let mut prev: Option<f64> = None;
         for (i, obj) in objs.iter().enumerate() {
             let Some(pt) = obj.get(&pt_key) else {
-                prev = None;
                 continue;
             };
             if let Some(p) = prev

@@ -111,6 +111,89 @@ fn check_bad_reports_and_exits_one() {
     assert!(err.contains("FAILED"));
 }
 
+#[test]
+fn check_json_clean_is_empty_array_on_stdout() {
+    let out = run(&[
+        "check",
+        "--json",
+        golden("disjoint_pt.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout(&out), "[]\n", "clean file → empty JSON array on stdout");
+    assert!(stderr(&out).is_empty(), "--json puts everything on stdout");
+}
+
+#[test]
+fn check_json_emits_structured_diagnostics_and_exits_one() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("smash2_checkjson_{}.adl", std::process::id()));
+    std::fs::write(&path, "region R\n  selct x > 1\n").expect("write adl");
+    let out = run(&["check", "--json", path.to_str().unwrap()]);
+    assert_eq!(code(&out), 1, "errors → exit 1");
+    let body = stdout(&out);
+    // A JSON array carrying the stable schema fields; diagnostics never go
+    // to stderr in --json mode.
+    assert!(body.starts_with('[') && body.trim_end().ends_with(']'), "{body}");
+    assert!(body.contains("\"severity\":\"error\""), "{body}");
+    for field in ["\"file\":", "\"line\":", "\"col\":", "\"start\":", "\"end\":", "\"message\":"] {
+        assert!(body.contains(field), "missing {field} in {body}");
+    }
+    assert!(stderr(&out).is_empty(), "no text diagnostics on stderr in --json mode");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn verify_multifile_reports_each_unit() {
+    let a = corpus("tutorials/ex01_selection.adl");
+    let b = corpus("tutorials/ex03_objreco.adl");
+    // Human mode: a per-unit header before each report, both units present.
+    let out = run(&[
+        "verify",
+        "--no-solver",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let body = stdout(&out);
+    assert!(body.contains("==== ex01_selection.adl ===="), "{body}");
+    assert!(body.contains("==== ex03_objreco.adl ===="), "{body}");
+    assert_eq!(body.matches("summary:").count(), 2, "one summary per unit");
+
+    // JSON mode: a top-level array of per-unit reports.
+    let out = run(&[
+        "verify",
+        "--no-solver",
+        "--json",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let body = stdout(&out);
+    assert!(body.starts_with('['), "json multi-file is an array: {}", &body[..body.len().min(40)]);
+    assert_eq!(body.matches("\"schema_version\"").count(), 2, "two reports in the array");
+}
+
+#[test]
+fn verify_cross_merges_units_and_namespaces_regions() {
+    let a = corpus("tutorials/ex01_selection.adl");
+    let b = corpus("tutorials/ex03_objreco.adl");
+    let out = run(&[
+        "verify",
+        "--no-solver",
+        "--cross",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let body = stdout(&out);
+    // One merged report whose regions are namespaced by their source file.
+    assert!(body.contains("ex01_selection.adl::"), "{body}");
+    assert!(body.contains("ex03_objreco.adl::"), "{body}");
+    assert_eq!(body.matches("summary:").count(), 1, "cross is one merged report");
+    // Cross-unit pairs exist (more pairs than either file alone would give).
+    assert!(body.contains("verdict matrix"), "{body}");
+}
+
 // --- verify (snapshots, --no-solver for determinism) ---------------------
 
 #[test]

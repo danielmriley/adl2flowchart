@@ -67,6 +67,114 @@ region SR_y
     );
 }
 
+/// EPRED soundness: an object filter `pt / d ⋈ c` must clear the constant
+/// denominator with EXACT coefficients, not fold the f64 reciprocal `1/d`
+/// (which asserts a predicate stronger than the truth). A jet with pt == 49
+/// is a genuine member of `{Jet : pt/49 >= 1}`, so the two regions below
+/// share the event pt == 49 — the analyzer must NOT prove either region
+/// empty nor the pair disjoint.
+#[test]
+fn epred_ratio_filter_does_not_fabricate_empty_or_disjoint() {
+    let src = "\
+object jets
+  take Jet
+  select pt / 49 >= 1
+
+region A
+  select jets[0].pt <= 49
+
+region B
+  select jets[0].pt >= 49
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "epred_ratio.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    for reg in &r.regions {
+        assert_ne!(
+            reg.empty,
+            adl_analysis::EmptyStatus::Proven,
+            "region {} falsely proven empty (pt=49 is a member)",
+            reg.name
+        );
+    }
+    let p = &r.pairwise[0];
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "regions share pt=49, must not be PROVEN DISJOINT: {}",
+        p.reason
+    );
+    assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{}", p.reason);
+}
+
+/// Encoder soundness: a coefficient that OVERFLOWS to non-finite (here
+/// `MAX + MAX`) puts the cut outside the linear fragment — the interpreter
+/// still evaluates it per-event and gets a finite result for small inputs.
+/// It must be Unknown, NOT constant-false; treating it as false would
+/// fabricate a PROVEN EMPTY (the cut `MAX*MET - (0 - MAX*MET) > 0` accepts
+/// MET = 0.1 in the interpreter).
+#[test]
+fn coefficient_overflow_is_unknown_not_empty() {
+    let big = format!("{:.1}", f64::MAX);
+    let src = format!(
+        "region A\n  select {big} * MET - (0 - {big} * MET) > 0\nregion B\n  select MET > 0\n"
+    );
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(&src, "overflow.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    let a = r
+        .regions
+        .iter()
+        .find(|reg| reg.name == "A")
+        .expect("region A");
+    assert_ne!(
+        a.empty,
+        adl_analysis::EmptyStatus::Proven,
+        "overflow cut must not be proven empty"
+    );
+}
+
+/// Identity soundness: a `define` that aliases a particle must make
+/// `f(alias)` and `f(literal)` the SAME opaque quantity. Otherwise the two
+/// intern as distinct free quantities and the solver finds a spurious model
+/// where one physical scalar takes two values — a false PROVEN OVERLAPPING
+/// between cuts that are decidably disjoint (`tagger(jets[0]) > 100` and
+/// `tagger(jets[0]) < 50`).
+#[test]
+fn define_aliased_opaque_arg_matches_the_literal() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+define leadjet = jets[0]
+region RA
+  select size(jets) >= 1
+  select tagger(jets[0]) > 100
+region RB
+  select size(jets) >= 1
+  select tagger(leadjet) < 50
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "alias.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "aliased opaque arg must intern identically to the literal (got {:?}: {})",
+        p.kind,
+        p.reason
+    );
+}
+
 /// A validated witness, for contrast: same shapes, realizable model.
 #[test]
 fn realizable_witness_validates_and_proves_overlap() {

@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex10_tableweight.adl\")"
 ---
 File
   Info name=analysis @12:1
-    Line key=title items=[str:"ADL/CL ex10: Tables, weights, efficiencies"]
+    Line key=title value="\"ADL/CL ex10: Tables, weights, efficiencies\""
   Table name=eleTrigger1 type=efficiency nvars=1 errors=false @16:1
     Values [0.3 0.0 10.0 0.5 10.0 20.0 0.7 20.0 50.0 0.8 50.0 70.0 0.95 70.0 7000.0]
   Table name=eleTrigger2 type=efficiency nvars=2 errors=false @27:1

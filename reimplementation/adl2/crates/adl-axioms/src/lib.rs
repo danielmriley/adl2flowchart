@@ -30,7 +30,7 @@
 use adl_formula::{LinAtom, QFormula, Rel};
 use adl_sema::{
     AngKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind, HNode, Hir,
-    ParticleRef, Quantity, QuantityId, QuantityTable, ScalarSource,
+    ParticleRef, Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -427,24 +427,35 @@ impl Emit<'_> {
     }
 
     fn atom(terms: &[(f64, QuantityId)], rel: Rel, k: f64) -> QFormula {
-        QFormula::Atom(
-            LinAtom::new(terms.iter().copied(), rel, k)
-                .expect("axiom constants are small finite literals"),
-        )
+        let r = |v: f64| Rat::from_decimal_f64(v).expect("axiom constants are finite literals");
+        QFormula::Atom(LinAtom::new(
+            terms.iter().map(|&(c, q)| (r(c), q)),
+            rel,
+            r(k),
+        ))
     }
 
     fn label(&self, q: QuantityId) -> String {
         quantity_label(self.hir, q)
     }
 
-    /// Is `c` a base or (transitively single-source) filtered collection?
-    /// ORD/IDOM ride on pT ordering, which unions/combinations do not keep
-    /// (a union can interleave).
+    /// Is `c` pT-descending? ORD/IDOM ride on pT ordering, which a base
+    /// collection has and a filter preserves (it keeps source order) — but
+    /// a union/combination interleaves, so the property only holds when the
+    /// *transitive* root of the filter chain is a base. A `Filtered` whose
+    /// ancestor is a `Union` (e.g. `take union(eles,muons) select pT>20`)
+    /// is NOT globally pT-descending: the interpreter concatenates union
+    /// parts without a pT-merge. Matching `Filtered { .. }` directly here
+    /// would assert false ordering facts and yield false PROVEN verdicts.
     fn pt_ordered(&self, c: CollectionId) -> bool {
-        matches!(
-            self.hir.table.collection(c),
-            Collection::Base(_) | Collection::Filtered { .. }
-        )
+        let mut c = c;
+        loop {
+            match self.hir.table.collection(c) {
+                Collection::Base(_) => return true,
+                Collection::Filtered { parent, .. } => c = *parent,
+                Collection::Union(_) | Collection::Combination { .. } => return false,
+            }
+        }
     }
 
     fn elem_pt_quantities(
@@ -765,9 +776,6 @@ fn encode_pred_exact(
         }
         HKind::Not(inner) => Some(encode_pred_exact(table, inner, coll, index)?.not()),
         HKind::Cmp { op, lhs, rhs } => {
-            let l = lin_pred(table, lhs, coll, index)?;
-            let r = lin_pred(table, rhs, coll, index)?;
-            let diff = l.sub(&r)?;
             let rel = match op {
                 adl_syntax::ast::CmpOp::Gt => Rel::Gt,
                 adl_syntax::ast::CmpOp::Lt => Rel::Lt,
@@ -776,18 +784,34 @@ fn encode_pred_exact(
                 adl_syntax::ast::CmpOp::Eq => Rel::Eq,
                 adl_syntax::ast::CmpOp::Ne | adl_syntax::ast::CmpOp::ApproxEq => Rel::Ne,
             };
-            lin_atom(diff.terms, rel, -diff.k)
+            // A `var / const` ratio side cannot be linearized by `lin_pred`
+            // (folding the f64 reciprocal asserts a too-strong predicate).
+            // Clear the constant denominator EXACTLY at the comparison level,
+            // exactly as the main encoder's `ratio()` does.
+            if let Some(a) = clear_ratio(table, lhs, rhs, rel, coll, index) {
+                return Some(a);
+            }
+            if let Some(a) = clear_ratio(table, rhs, lhs, rel.flipped(), coll, index) {
+                return Some(a);
+            }
+            let l = lin_pred(table, lhs, coll, index)?;
+            let r = lin_pred(table, rhs, coll, index)?;
+            let diff = l.sub(&r);
+            let k = -&diff.k;
+            Some(lin_atom(diff.terms, rel, k))
         }
         HKind::Band { kind, expr, lo, hi } => {
             let e = lin_pred(table, expr, coll, index)?;
-            let lo: f64 = lo.parse().ok().filter(|v: &f64| v.is_finite())?;
-            let hi: f64 = hi.parse().ok().filter(|v: &f64| v.is_finite())?;
+            let lo = lo.parse::<f64>().ok().and_then(Rat::from_decimal_f64)?;
+            let hi = hi.parse::<f64>().ok().and_then(Rat::from_decimal_f64)?;
             let (lo_rel, hi_rel, combine_and) = match kind {
                 adl_syntax::ast::BandKind::In => (Rel::Ge, Rel::Le, true),
                 adl_syntax::ast::BandKind::Out => (Rel::Le, Rel::Ge, false),
             };
-            let lo_b = lin_atom(e.terms.clone(), lo_rel, lo - e.k)?;
-            let hi_b = lin_atom(e.terms, hi_rel, hi - e.k)?;
+            let lo_k = &lo - &e.k;
+            let hi_k = &hi - &e.k;
+            let lo_b = lin_atom(e.terms.clone(), lo_rel, lo_k);
+            let hi_b = lin_atom(e.terms, hi_rel, hi_k);
             Some(if combine_and {
                 QFormula::And(vec![lo_b, hi_b])
             } else {
@@ -799,53 +823,87 @@ fn encode_pred_exact(
 }
 
 struct PredLin {
-    terms: BTreeMap<QuantityId, f64>,
-    k: f64,
+    terms: BTreeMap<QuantityId, Rat>,
+    k: Rat,
 }
 
 impl PredLin {
-    fn constant(k: f64) -> Self {
+    fn constant(k: Rat) -> Self {
         Self {
             terms: BTreeMap::new(),
             k,
         }
     }
 
-    fn finite(&self) -> bool {
-        self.k.is_finite() && self.terms.values().all(|c| c.is_finite())
-    }
-
-    fn sub(mut self, other: &Self) -> Option<Self> {
-        self.k -= other.k;
-        for (&q, &c) in &other.terms {
-            *self.terms.entry(q).or_insert(0.0) -= c;
+    fn sub(mut self, other: &Self) -> Self {
+        self.k = &self.k - &other.k;
+        for (q, c) in &other.terms {
+            let entry = self.terms.entry(*q).or_insert_with(Rat::zero);
+            *entry = &*entry - c;
         }
-        self.finite().then_some(self)
+        self
     }
 
-    fn scale(mut self, c: f64) -> Option<Self> {
-        self.k *= c;
+    fn scale(mut self, c: &Rat) -> Self {
+        self.k = &self.k * c;
         for v in self.terms.values_mut() {
-            *v *= c;
+            *v = &*v * c;
         }
-        self.finite().then_some(self)
+        self
     }
 }
 
-fn lin_atom(terms: BTreeMap<QuantityId, f64>, rel: Rel, k: f64) -> Option<QFormula> {
+fn lin_atom(terms: BTreeMap<QuantityId, Rat>, rel: Rel, k: Rat) -> QFormula {
     if terms.is_empty() {
-        if !k.is_finite() {
-            return None;
-        }
-        return Some(if rel.eval(0.0, k) {
+        return if rel.eval(&Rat::zero(), &k) {
             QFormula::True
         } else {
             QFormula::False
-        });
+        };
     }
-    LinAtom::new(terms.into_iter().map(|(q, c)| (c, q)), rel, k)
-        .ok()
-        .map(QFormula::Atom)
+    QFormula::Atom(LinAtom::new(terms.into_iter().map(|(q, c)| (c, q)), rel, k))
+}
+
+/// Encode `ratio_side ⋈ other_side` when `ratio_side` is `num / den` with a
+/// constant denominator, by clearing the denominator with EXACT coefficients
+/// — `num ⋈ other·den` (`den > 0`) or `num ⋈̄ other·den` (`den < 0`) — instead
+/// of folding the inexact f64 reciprocal `1/den` (which would assert an EPRED
+/// predicate stronger than the truth). Mirrors `adl-formula`'s `ratio()`.
+/// Returns `None` when the shape does not match (a non-`Div` side, a
+/// non-constant denominator, or a non-linear operand), leaving the caller's
+/// generic path to drop the conjunct (a sound EPRED weakening).
+fn clear_ratio(
+    table: &mut QuantityTable,
+    ratio_side: &HNode,
+    other_side: &HNode,
+    rel: Rel,
+    coll: CollectionId,
+    index: u32,
+) -> Option<QFormula> {
+    let HKind::Binary {
+        op: adl_sema::ArithOp::Div,
+        lhs: num,
+        rhs: den,
+    } = &ratio_side.kind
+    else {
+        return None;
+    };
+    let d = lin_pred(table, den, coll, index)?;
+    if !d.terms.is_empty() {
+        return None; // non-constant denominator: out of the linear fragment
+    }
+    if d.k.is_zero() {
+        // `x / 0` is never a member (the interpreter's comparison is false).
+        return Some(QFormula::False);
+    }
+    let l = lin_pred(table, num, coll, index)?;
+    let r = lin_pred(table, other_side, coll, index)?;
+    // L/d ⋈ R  ⇔  L ⋈ R·d  (relation flips when d < 0).
+    let rd = r.scale(&d.k);
+    let e = l.sub(&rd);
+    let rel = if d.k.is_negative() { rel.flipped() } else { rel };
+    let k = -&e.k;
+    Some(lin_atom(e.terms, rel, k))
 }
 
 fn lin_pred(
@@ -858,10 +916,11 @@ fn lin_pred(
         return None;
     }
     match &node.kind {
-        HKind::Num(s) => {
-            let v: f64 = s.parse().ok()?;
-            v.is_finite().then(|| PredLin::constant(v))
-        }
+        HKind::Num(s) => s
+            .parse::<f64>()
+            .ok()
+            .and_then(Rat::from_decimal_f64)
+            .map(PredLin::constant),
         HKind::ElemSelfProp(prop) => {
             let q = table.intern_quantity(Quantity::ElemProp {
                 coll,
@@ -869,43 +928,52 @@ fn lin_pred(
                 prop: *prop,
             });
             Some(PredLin {
-                terms: BTreeMap::from([(q, 1.0)]),
-                k: 0.0,
+                terms: BTreeMap::from([(q, Rat::one())]),
+                k: Rat::zero(),
             })
         }
         HKind::Quantity(q) => Some(PredLin {
-            terms: BTreeMap::from([(*q, 1.0)]),
-            k: 0.0,
+            terms: BTreeMap::from([(*q, Rat::one())]),
+            k: Rat::zero(),
         }),
-        HKind::Neg(a) => lin_pred(table, a, coll, index)?.scale(-1.0),
+        HKind::Neg(a) => Some(lin_pred(table, a, coll, index)?.scale(&Rat::from_i64(-1))),
         HKind::Binary { op, lhs, rhs } => {
             let l = lin_pred(table, lhs, coll, index)?;
             let r = lin_pred(table, rhs, coll, index)?;
             match op {
                 adl_sema::ArithOp::Add => {
                     let mut out = l;
-                    out.k += r.k;
+                    out.k = &out.k + &r.k;
                     for (q, c) in r.terms {
-                        *out.terms.entry(q).or_insert(0.0) += c;
+                        let entry = out.terms.entry(q).or_insert_with(Rat::zero);
+                        *entry = &*entry + &c;
                     }
-                    out.finite().then_some(out)
+                    Some(out)
                 }
-                adl_sema::ArithOp::Sub => l.sub(&r),
+                adl_sema::ArithOp::Sub => Some(l.sub(&r)),
                 adl_sema::ArithOp::Mul => {
                     if l.terms.is_empty() {
-                        r.scale(l.k)
+                        Some(r.scale(&l.k))
                     } else if r.terms.is_empty() {
-                        l.scale(r.k)
+                        Some(l.scale(&r.k))
                     } else {
                         None
                     }
                 }
                 adl_sema::ArithOp::Div => {
-                    if r.terms.is_empty() && r.k != 0.0 {
-                        l.scale(1.0 / r.k)
-                    } else {
-                        None
+                    if !r.terms.is_empty() || r.k.is_zero() {
+                        // Non-constant or zero denominator: not linear here.
+                        return None;
                     }
+                    if l.terms.is_empty() {
+                        // Constant / constant: exact rational division.
+                        return l.k.checked_div(&r.k).map(PredLin::constant);
+                    }
+                    // var / const: deferred to the comparison level
+                    // (`clear_ratio`), where the denominator is cleared with
+                    // EXACT coefficients (folding `scale(1/d)` would assert an
+                    // EPRED predicate stronger than the truth — false-PROVEN).
+                    None
                 }
                 adl_sema::ArithOp::Pow => None,
             }

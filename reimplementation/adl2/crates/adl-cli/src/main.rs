@@ -48,13 +48,19 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Print the canonical AST dump for each file to stdout.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         dump_ast: bool,
+        /// Emit diagnostics as a JSON array to stdout (machine-readable;
+        /// for editors / CI gating) instead of the human text report.
+        #[arg(long)]
+        json: bool,
     },
     /// Full analysis: pairwise verdicts, vacuity, bins (legacy `smash -r`).
     Verify {
-        /// The ADL file to analyze.
-        file: PathBuf,
+        /// One or more ADL files. Each is analyzed independently (a per-unit
+        /// report); cross-file region relations are a separate, planned step.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
         /// Emit the versioned JSON report instead of the human report.
         #[arg(long)]
         json: bool,
@@ -71,6 +77,12 @@ enum Command {
         /// `overlap`, `gap`, `empty`, `non-exact`.
         #[arg(long, value_name = "KINDS")]
         fail_on: Option<String>,
+        /// Merge all files into one shared identity space and analyze region
+        /// relations ACROSS files (the cross-analysis overlap matrix); regions
+        /// are reported as `<file>::<region>`. Without this, several files are
+        /// analyzed independently.
+        #[arg(long)]
+        cross: bool,
     },
     /// Evaluate regions over JSONL events: per-region pass/fail + bins.
     Run {
@@ -150,14 +162,19 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let verbose = cli.verbose;
     let result = match cli.command {
-        Command::Check { files, dump_ast } => cmd::check::run(&files, verbose, dump_ast),
+        Command::Check {
+            files,
+            dump_ast,
+            json,
+        } => cmd::check::run(&files, verbose, dump_ast, json),
         Command::Verify {
-            file,
+            files,
             json,
             explain,
             no_solver,
             fail_on,
-        } => cmd::verify::run(&file, json, explain, no_solver, fail_on.as_deref(), verbose),
+            cross,
+        } => cmd::verify::run(&files, json, explain, no_solver, fail_on.as_deref(), verbose, cross),
         Command::Run {
             file,
             events,

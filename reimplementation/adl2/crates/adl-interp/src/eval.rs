@@ -212,6 +212,49 @@ impl<'h> Interp<'h> {
         Ev::new(self, event).region(idx)
     }
 
+    /// Non-short-circuiting region membership, for witness validation.
+    ///
+    /// Same return type and pass/fail meaning as [`Self::eval_region_by_name`]
+    /// (`Ok(true)` passes, `Ok(false)` is rejected, `Err` is a blocking
+    /// error), but a decidable rejection is reported even when an opaque
+    /// (no-reference-interpretation) statement precedes it in source order.
+    /// The short-circuiting walk would surface the opaque error first and a
+    /// caller could mistake an unsatisfiable region for an opaque "candidate"
+    /// overlap; this method evaluates every statement and prefers a decidable
+    /// `Ok(false)` over any error.
+    ///
+    /// # Errors
+    /// Returns an [`EvalError`] for unknown regions, or the first blocking
+    /// evaluation error when no statement decidably rejects the event.
+    pub fn eval_region_membership(&self, name: &str, event: &Event) -> EvalResult<bool> {
+        let idx = self.region_index(name).ok_or_else(|| EvalError {
+            span: Span::default(),
+            reason: format!("no region named `{name}`"),
+        })?;
+        Ev::new(self, event).region3(idx).into_result()
+    }
+
+    /// Non-short-circuiting region membership by region INDEX (not name).
+    ///
+    /// Resolving by index is collision-proof: name-based lookup returns the
+    /// first match, so duplicate region names (e.g. same-basename units merged
+    /// for cross-file analysis) would mask one region's cuts and could fabricate
+    /// a "validated" overlap. Witness re-validation must use this. Semantics are
+    /// otherwise those of [`Self::eval_region_membership`].
+    ///
+    /// # Errors
+    /// Returns an [`EvalError`] for an out-of-range index, or the first blocking
+    /// evaluation error when no statement decidably rejects the event.
+    pub fn eval_region_membership_idx(&self, idx: usize, event: &Event) -> EvalResult<bool> {
+        if idx >= self.hir.regions.len() {
+            return Err(EvalError {
+                span: Span::default(),
+                reason: format!("region index {idx} out of range"),
+            });
+        }
+        Ev::new(self, event).region3(idx).into_result()
+    }
+
     /// Evaluate every region (in declaration order) plus bin assignments.
     #[must_use]
     pub fn run_event(&self, event: &Event) -> Vec<RegionResult> {
@@ -385,6 +428,7 @@ fn compare(op: CmpOp, a: f64, b: f64) -> bool {
     }
 }
 
+
 /// Eta/phi components of a particle reference (either may be absent).
 struct Angles {
     eta: Option<f64>,
@@ -392,6 +436,38 @@ struct Angles {
 }
 
 /// Per-event evaluation state: memoized collections and region verdicts.
+/// Three-valued (Kleene) truth, used only by the non-short-circuiting
+/// membership evaluation ([`Ev::region3`]/[`Ev::truth3`]): `Unknown` carries
+/// the blocking reason so the witness layer can classify it (opaque vs
+/// missing-data) exactly as it did the two-valued `Err`.
+enum Tri {
+    True,
+    False,
+    Unknown(EvalError),
+}
+
+impl Tri {
+    fn from_bool(b: bool) -> Self {
+        if b { Tri::True } else { Tri::False }
+    }
+
+    fn not(self) -> Self {
+        match self {
+            Tri::True => Tri::False,
+            Tri::False => Tri::True,
+            unknown @ Tri::Unknown(_) => unknown,
+        }
+    }
+
+    fn into_result(self) -> EvalResult<bool> {
+        match self {
+            Tri::True => Ok(true),
+            Tri::False => Ok(false),
+            Tri::Unknown(e) => Err(e),
+        }
+    }
+}
+
 struct Ev<'h, 'e> {
     it: &'e Interp<'h>,
     event: &'e Event,
@@ -473,6 +549,280 @@ impl<'h, 'e> Ev<'h, 'e> {
             }
         }
         Ok(true)
+    }
+
+    /// Three-valued (Kleene) region membership, for witness validation.
+    ///
+    /// Unlike [`Self::region_walk`], evaluation never short-circuits on a
+    /// blocking value: a decidable rejection (`False`) is preferred over any
+    /// `Unknown` (opaque / out-of-fragment / missing data) *anywhere* in the
+    /// boolean structure — across statements, inside `and`/`or`/`not`/ternary,
+    /// across `Inherit` edges, and across `<region>` (`RegionPred`) references
+    /// (which the short-circuiting [`Self::region`] would surface as an opaque
+    /// error first). This is the soundness-critical property for witness
+    /// validation: a cut that definitively fails must be observed even when an
+    /// opaque term is evaluated first, or an unsatisfiable region is mistaken
+    /// for an opaque "candidate" overlap and the pair is falsely PROVEN
+    /// OVERLAPPING. When nothing decidably rejects, the *first* `Unknown` (in
+    /// evaluation order) is returned, preserving the error ordering the witness
+    /// layer's patch-and-retry on missing event data relies on to converge.
+    ///
+    /// Membership of a region is the conjunction of its statements, so it is
+    /// `False` if any statement is decidably `False`, else `Unknown` if any is
+    /// `Unknown`, else `True`. The `regions` short-circuit cache is never
+    /// consulted (this walk has different — sound — short-circuit rules).
+    fn region3(&mut self, idx: usize) -> Tri {
+        let mut unknown: Option<EvalError> = None;
+        let region = &self.it.hir.regions[idx];
+        for stmt in &region.stmts {
+            let t = match stmt {
+                HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => self.truth3(n, None),
+                HirRegionStmt::Reject(n) => self.truth3(n, None).not(),
+                HirRegionStmt::Inherit { region, .. } => self.region3(*region),
+                HirRegionStmt::Bin { .. } | HirRegionStmt::BinCond { .. } => continue,
+                HirRegionStmt::NonMembership { tag, span, .. } => {
+                    if let Fragment::Unsupported(reason) = tag {
+                        Tri::Unknown(EvalError {
+                            span: *span,
+                            reason: format!("cannot evaluate region: {reason}"),
+                        })
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            match t {
+                Tri::True => {}
+                Tri::False => return Tri::False,
+                Tri::Unknown(e) => {
+                    if unknown.is_none() {
+                        unknown = Some(e);
+                    }
+                }
+            }
+        }
+        unknown.map_or(Tri::True, Tri::Unknown)
+    }
+
+    /// Three-valued (Kleene) sibling of [`Self::truth`]: boolean connectives
+    /// are evaluated so a decisive `False`/`True` is never hidden behind an
+    /// `Unknown` sub-term (`False ∧ Unknown = False`, `True ∨ Unknown = True`).
+    /// A `RegionPred` recurses through [`Self::region3`] (NOT the
+    /// short-circuiting [`Self::region`]), and comparisons / bands /
+    /// numeric-as-predicate nodes evaluate their operands through the
+    /// three-valued [`Self::num3`] — so a region used as a *number*
+    /// (`<region> == 1`, `<region> [] lo hi`, `<region> + x > y`) is likewise
+    /// never masked. Genuine leaves with no inner `RegionPred` delegate to the
+    /// two-valued [`Self::truth`], whose `Err` becomes `Unknown`.
+    fn truth3(&mut self, node: &'h HNode, elem: Option<&EventObject>) -> Tri {
+        if let Fragment::Unsupported(reason) = &node.tag {
+            return Tri::Unknown(EvalError {
+                span: node.span,
+                reason: reason.clone(),
+            });
+        }
+        match &node.kind {
+            HKind::Bool(b) => Tri::from_bool(*b),
+            HKind::Not(a) => self.truth3(a, elem).not(),
+            HKind::And(parts) => {
+                let mut unknown = None;
+                for p in parts {
+                    match self.truth3(p, elem) {
+                        Tri::True => {}
+                        Tri::False => return Tri::False,
+                        Tri::Unknown(e) => {
+                            if unknown.is_none() {
+                                unknown = Some(e);
+                            }
+                        }
+                    }
+                }
+                unknown.map_or(Tri::True, Tri::Unknown)
+            }
+            HKind::Or(parts) => {
+                let mut unknown = None;
+                for p in parts {
+                    match self.truth3(p, elem) {
+                        Tri::False => {}
+                        Tri::True => return Tri::True,
+                        Tri::Unknown(e) => {
+                            if unknown.is_none() {
+                                unknown = Some(e);
+                            }
+                        }
+                    }
+                }
+                unknown.map_or(Tri::False, Tri::Unknown)
+            }
+            // `g ? a : b`: decide via the guard. An undecidable guard is still
+            // decidable when BOTH branches agree (the guard is then irrelevant:
+            // `U?F:F = F`, `U?T:T = T`) — otherwise Unknown. Missing else is
+            // `true` (§4.4).
+            HKind::Ternary { guard, then, els } => match self.truth3(guard, elem) {
+                Tri::True => self.truth3(then, elem),
+                Tri::False => match els {
+                    Some(e) => self.truth3(e, elem),
+                    None => Tri::True,
+                },
+                Tri::Unknown(e) => {
+                    let then_t = self.truth3(then, elem);
+                    let else_t = match els {
+                        Some(e2) => self.truth3(e2, elem),
+                        None => Tri::True,
+                    };
+                    match (then_t, else_t) {
+                        (Tri::False, Tri::False) => Tri::False,
+                        (Tri::True, Tri::True) => Tri::True,
+                        _ => Tri::Unknown(e),
+                    }
+                }
+            },
+            HKind::RegionPred(idx) => self.region3(*idx),
+            // §4.4: a soft non-value on EITHER side makes the comparison
+            // false unconditionally — that already decides the cut, so it
+            // wins even when the other operand is a blocking Unknown (checked
+            // first, before the Err -> Unknown arm). A blocking operand with
+            // no soft non-value makes the comparison Unknown.
+            HKind::Cmp { op, lhs, rhs } => match (self.num3(lhs, elem), self.num3(rhs, elem)) {
+                (Ok(Err(_)), _) | (_, Ok(Err(_))) => Tri::False,
+                (Err(e), _) | (_, Err(e)) => Tri::Unknown(e),
+                (Ok(Ok(a)), Ok(Ok(b))) => Tri::from_bool(compare(*op, a, b)),
+            },
+            HKind::Band { kind, expr, lo, hi } => match self.num3(expr, elem) {
+                Err(e) => Tri::Unknown(e),
+                Ok(Err(_)) => Tri::False,
+                Ok(Ok(v)) => {
+                    let lo = match parse_num(lo, node.span) {
+                        Ok(x) => x,
+                        Err(e) => return Tri::Unknown(e),
+                    };
+                    let hi = match parse_num(hi, node.span) {
+                        Ok(x) => x,
+                        Err(e) => return Tri::Unknown(e),
+                    };
+                    Tri::from_bool(match kind {
+                        BandKind::In => lo <= v && v <= hi,
+                        BandKind::Out => v <= lo || v >= hi,
+                    })
+                }
+            },
+            // Numeric value used as a predicate: nonzero is true; a soft
+            // non-value fails the cut; a blocking operand is Unknown. Routed
+            // through num3 because Neg/Abs/Binary can nest a RegionPred.
+            HKind::Num(_)
+            | HKind::Quantity(_)
+            | HKind::ElemSelfProp(_)
+            | HKind::Neg(_)
+            | HKind::Abs(_)
+            | HKind::Binary { .. } => match self.num3(node, elem) {
+                Err(e) => Tri::Unknown(e),
+                Ok(Ok(v)) => Tri::from_bool(v != 0.0),
+                Ok(Err(_)) => Tri::False,
+            },
+            // Genuine leaves / out-of-fragment: no inner RegionPred to mask;
+            // two-valued truth yields the decided value or an Err -> Unknown.
+            HKind::CollProp { .. }
+            | HKind::Particle(_)
+            | HKind::CollValue(_)
+            | HKind::Unsupported => match self.truth(node, elem) {
+                Ok(true) => Tri::True,
+                Ok(false) => Tri::False,
+                Err(e) => Tri::Unknown(e),
+            },
+        }
+    }
+
+    /// Three-valued numeric sibling of [`Self::num`], used only by membership
+    /// validation. Identical arithmetic to [`Self::num`] except that every
+    /// node which can carry a `RegionPred` (directly, or nested under
+    /// `Neg`/`Abs`/`Binary`/`Ternary`, or as a boolean-valued operand) routes
+    /// through [`Self::truth3`]/[`Self::region3`] so a region used as a number
+    /// with a *decidable* value (`0.0`/`1.0`) is never masked into an opaque
+    /// `Err`. Leaf nodes that cannot contain a `RegionPred` (literals,
+    /// quantities, externals, angles, element props) delegate to the
+    /// two-valued [`Self::num`], which is exact for them.
+    fn num3(&mut self, node: &'h HNode, elem: Option<&EventObject>) -> EvalResult<NumRes> {
+        if let Fragment::Unsupported(reason) = &node.tag {
+            return self.err(node.span, reason.clone());
+        }
+        match &node.kind {
+            HKind::Neg(a) => Ok(self.num3(a, elem)?.map(|v| -v)),
+            HKind::Abs(a) => Ok(self.num3(a, elem)?.map(f64::abs)),
+            HKind::Binary { op, lhs, rhs } => {
+                // §4.4: a soft non-value is ABSORBING in arithmetic — it
+                // propagates even past a blocking (opaque) operand. Checked
+                // before the blocking Err so a cut over a missing element stays
+                // a decidable rejection (`softNV * opaque > k` is False) rather
+                // than being masked into Unknown. (Two-valued `num` `?`-aborts
+                // on the blocking operand first; this is the sound refinement.)
+                let (a, b) = match (self.num3(lhs, elem), self.num3(rhs, elem)) {
+                    (Ok(Err(nv)), _) | (_, Ok(Err(nv))) => return Ok(Err(nv)),
+                    (Err(e), _) | (_, Err(e)) => return Err(e),
+                    (Ok(Ok(a)), Ok(Ok(b))) => (a, b),
+                };
+                let v = match op {
+                    adl_sema::ArithOp::Add => a + b,
+                    adl_sema::ArithOp::Sub => a - b,
+                    adl_sema::ArithOp::Mul => a * b,
+                    adl_sema::ArithOp::Div => a / b,
+                    adl_sema::ArithOp::Pow => a.powf(b),
+                };
+                Ok(fin(v))
+            }
+            HKind::Ternary { guard, then, els } => match self.truth3(guard, elem) {
+                Tri::True => self.num3(then, elem),
+                Tri::False => match els {
+                    Some(e) => self.num3(e, elem),
+                    None => Ok(Ok(1.0)),
+                },
+                // Undecidable guard: still decidable when both branches yield
+                // the same value (or both the same kind of soft non-value), so
+                // a `g?v:v` feeding a comparison is not masked into Unknown.
+                //
+                // RESIDUAL (documented, sound): when the branches differ
+                // numerically but the *enclosing* comparison would be False on
+                // both (e.g. `(opaque ? missing : 5) > 1000`), this returns the
+                // guard's Unknown rather than the decidable False — closing it
+                // requires distributing the comparison over the branches
+                // (supervaluation / guard path-splitting), which three-valued
+                // Kleene evaluation does not do. This is strictly conservative:
+                // it can only weaken a verdict to POSSIBLY / a caveated overlap
+                // candidate (the accepted `OVERLAP_CAVEAT` behavior), never
+                // turn a non-passing witness into a passing one.
+                Tri::Unknown(e) => {
+                    let then_v = self.num3(then, elem)?;
+                    let else_v = match els {
+                        Some(e2) => self.num3(e2, elem)?,
+                        None => Ok(1.0),
+                    };
+                    match (then_v, else_v) {
+                        (Ok(a), Ok(b)) if a == b => Ok(Ok(a)),
+                        (Err(nv), Err(_)) => Ok(Err(nv)),
+                        _ => Err(e),
+                    }
+                }
+            },
+            // Boolean-valued nodes used numerically -> 1.0/0.0, three-valued.
+            HKind::Not(_)
+            | HKind::And(_)
+            | HKind::Or(_)
+            | HKind::Cmp { .. }
+            | HKind::Band { .. }
+            | HKind::RegionPred(_) => match self.truth3(node, elem) {
+                Tri::True => Ok(Ok(1.0)),
+                Tri::False => Ok(Ok(0.0)),
+                Tri::Unknown(e) => Err(e),
+            },
+            // Leaves with no inner RegionPred: the exact two-valued evaluator.
+            HKind::Num(_)
+            | HKind::Bool(_)
+            | HKind::Quantity(_)
+            | HKind::ElemSelfProp(_)
+            | HKind::CollProp { .. }
+            | HKind::Particle(_)
+            | HKind::CollValue(_)
+            | HKind::Unsupported => self.num(node, elem),
+        }
     }
 
     // ---- predicates ------------------------------------------------------

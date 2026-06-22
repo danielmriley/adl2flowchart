@@ -39,6 +39,11 @@ rootfile = { path = "crates/rootfile" }
 # Third-party (probed available against crates.io on 2026-06-11; see BUILD_NOTES.md).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Exact rational arithmetic for the cut/atom numeric core (airtight PROVEN:
+# the analyzer and interpreter agree on the rational fragment to the bit).
+num-rational = { version = "0.4", default-features = false, features = ["num-bigint"] }
+num-bigint = { version = "0.4", default-features = false }
+num-traits = { version = "0.2", default-features = false }
 clap = { version = "4", features = ["derive"] }
 z3 = "0.20"
 # Delphes TTree reading (SPEC_EVENT_PIPELINE §1.1): pinned exactly — the

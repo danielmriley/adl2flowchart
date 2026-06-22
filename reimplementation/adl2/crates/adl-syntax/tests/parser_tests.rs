@@ -607,6 +607,18 @@ region R
 }
 
 #[test]
+fn region_take_is_inheritance_synonym_for_a_bare_ref() {
+    // Canonical ADL inherits a region's cuts with `take <region>`; smash2's
+    // native form is a bare region name. Both must parse to RegionRef.
+    let src = "region base\n  select x > 1\nregion sr\n  take base\n  select y > 2\n";
+    let file = parse_ok(src);
+    let Section::Region(r) = &file.sections[1] else {
+        panic!()
+    };
+    assert!(matches!(&r.stmts[0], RegionStmt::RegionRef(id) if id.name == "base"));
+}
+
+#[test]
 fn bin_with_label_and_boolean_body() {
     let src = "region R\n  bin \"35\" m(j[0]) [] 65 105 and MET > 300\n";
     let file = parse_ok(src);
@@ -710,4 +722,72 @@ fn dump_is_deterministic() {
         dump_ast(&src, &r.file)
     };
     assert_eq!(a, b);
+}
+
+#[test]
+fn info_freeform_value_and_composite_candidate() {
+    // Regression for the two NPS-corpus parser gaps:
+    //  1. info-line values are free-form metadata (URLs, arithmetic,
+    //     punctuation) consumed raw to end of line — never tokenized/rejected.
+    //  2. `candidate <name> = <expr>` is the NPS-dialect synonym for the
+    //     composite derived object `object <name> = <expr>`.
+    let src = "info analysis\n\
+               \x20 title Search for SUSY in diphoton + MET\n\
+               \x20 arXiv XXXX.XXXXX\n\
+               \x20 hepdata https://www.hepdata.net/record/xxxx\n\
+               composite dilepton\n\
+               \x20 take disjoint(leptons l1, leptons l2)\n\
+               \x20 candidate ll = l1 + l2\n\
+               \x20 select mass(ll) > 20\n";
+    let file = parse_ok(src);
+
+    let Section::Info(info) = &file.sections[0] else {
+        panic!("expected info block");
+    };
+    assert_eq!(info.lines.len(), 3);
+    assert_eq!(info.lines[0].key.name, "title");
+    assert_eq!(info.lines[0].value, "Search for SUSY in diphoton + MET");
+    assert_eq!(info.lines[1].value, "XXXX.XXXXX");
+    assert_eq!(info.lines[2].key.name, "hepdata");
+    assert_eq!(info.lines[2].value, "https://www.hepdata.net/record/xxxx");
+
+    let Section::Object(comp) = &file.sections[1] else {
+        panic!("expected composite block");
+    };
+    assert_eq!(comp.keyword, ObjectKw::Composite);
+    let derived = comp
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            ObjectStmt::Derived { keyword, name, .. } => Some((keyword.clone(), name.name.clone())),
+            _ => None,
+        })
+        .expect("composite block must contain a derived candidate");
+    assert_eq!(derived, ("candidate".to_string(), "ll".to_string()));
+}
+
+#[test]
+fn composite_object_derived_synonym_and_take_colon_not_captured() {
+    // Canonical spelling `object Z = l1 + l2` inside composite is a derived
+    // candidate; but `object foo : take(...)` (`:` separator) must still
+    // terminate the composite and start a new top-level object block.
+    let src = "composite Zc\n\
+               \x20 take disjoint(leptons l1, leptons l2)\n\
+               \x20 object Z = l1 + l2\n\
+               object downstream\n\
+               \x20 take Zc\n";
+    let file = parse_ok(src);
+    let Section::Object(comp) = &file.sections[0] else {
+        panic!("expected composite");
+    };
+    assert!(comp.stmts.iter().any(|s| matches!(
+        s,
+        ObjectStmt::Derived { keyword, .. } if keyword == "object"
+    )));
+    // The following `object downstream` is its own section, not swallowed.
+    assert_eq!(file.sections.len(), 2);
+    let Section::Object(downstream) = &file.sections[1] else {
+        panic!("expected downstream object block");
+    };
+    assert_eq!(downstream.name.name, "downstream");
 }

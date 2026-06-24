@@ -49,6 +49,12 @@ impl RenderCtx<'_> {
             ParticleRef::Binder { coll, name } => {
                 format!("{}@{}", self.coll(*coll), self.symbols.display(*name))
             }
+            ParticleRef::ThisElem => "this".to_owned(),
+            ParticleRef::ReduceElem => "@elem".to_owned(),
+            ParticleRef::Sum(parts) => {
+                let parts: Vec<String> = parts.iter().map(|p| self.particle(p)).collect();
+                format!("({})", parts.join(" + "))
+            }
         }
     }
 
@@ -100,6 +106,15 @@ impl RenderCtx<'_> {
             HKind::Bool(b) => b.to_string(),
             HKind::Quantity(q) => self.quantity(self.table.quantity(*q)),
             HKind::ElemSelfProp(p) => format!("this.{}", self.table.prop_display(*p)),
+            HKind::ReduceProp(p) => format!("@elem.{}", self.table.prop_display(*p)),
+            HKind::Reduce { kind, coll, body, slice } => {
+                let s = match slice {
+                    Some((a, Some(b))) => format!("[{a}:{b}]"),
+                    Some((a, None)) => format!("[{a}:]"),
+                    None => String::new(),
+                };
+                format!("{}({}{s} of {})", kind.as_str(), self.coll(*coll), self.node(body))
+            }
             HKind::CollProp { coll, prop } => {
                 format!("{}[*].{}", self.coll(*coll), self.table.prop_display(*prop))
             }
@@ -193,9 +208,18 @@ pub fn quantity_table_dump(hir: &Hir) -> String {
                 let parts: Vec<String> = parts.iter().map(|&p| rc.coll(p)).collect();
                 format!("Union({})", parts.join(", "))
             }
-            Collection::Combination { parts } => {
+            Collection::Combination { parts, kind, .. } => {
                 let parts: Vec<String> = parts.iter().map(|&p| rc.coll(p)).collect();
-                format!("Combination({})", parts.join(", "))
+                format!("Combination[{kind:?}]({})", parts.join(", "))
+            }
+            Collection::Sorted { source, key, dir } => {
+                format!("Sorted({}, {key:?}, {dir:?})", rc.coll(*source))
+            }
+            Collection::Slice { source, start, end } => {
+                format!("Slice({}, {start}..{end:?})", rc.coll(*source))
+            }
+            Collection::CombProject { comb, axis } => {
+                format!("CombProject({}, {axis:?})", rc.coll(*comb))
             }
         };
         let names = if names.is_empty() {

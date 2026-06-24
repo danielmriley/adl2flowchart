@@ -40,10 +40,28 @@ object muons
 object leptons
   take union(eles, muons)
 
+object sortedLeptons
+  take sort(leptons, pt(leptons), descend)
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+
+composite emu
+  take cartesian(eles e, muons m)
+
+composite emuD
+  take disjoint(eles e2, muons m2)
+
 region SR
   select size(jets) >= 0
+  select size(jets[1:3]) >= 0
   select size(bjets) >= 0
   select size(leptons) >= 0
+  select size(sortedLeptons) >= 0
+  select size(dijet) >= 0
+  select size(emu) >= 0
+  select size(emuD) >= 0
+  select size(emu->e) >= 0
   select size(eles) >= 0
   select size(muons) >= 0
   select pT(jets[0]) >= 0
@@ -59,6 +77,8 @@ region SR
   select dEta(jets[0], muons[0]) [] -10 10
   select dEta(muons[0], jets[0]) [] -10 10
   select dR(jets[0], eles[0]) >= 0
+  select cos(dPhi(jets[0], jets[1])) >= -1
+  select sin(dPhi(jets[0], jets[1])) <= 1
   trigger mu_trig
 ";
 
@@ -245,6 +265,52 @@ region SR
 }
 
 #[test]
+fn trig_axiom_bounds_cos_sin_only_not_tan() {
+    // P3: opaque cos/sin calls get -1 <= . <= 1; tan (unbounded) gets NONE.
+    let src = "\
+object jets
+  take Jet
+
+region SR
+  select cos(dPhi(jets[0], jets[1])) >= -2
+  select sin(dPhi(jets[0], jets[1])) <= 2
+  select tan(dPhi(jets[0], jets[1])) >= -1000000
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+
+    let trig: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::Trig)
+        .map(|i| i.description.as_str())
+        .collect();
+    assert!(
+        trig.iter().any(|d| d.contains("cos")),
+        "cos must get a TRIG [-1,1] bound: {trig:?}"
+    );
+    assert!(
+        trig.iter().any(|d| d.contains("sin")),
+        "sin must get a TRIG [-1,1] bound: {trig:?}"
+    );
+    assert!(
+        !trig.iter().any(|d| d.contains("tan")),
+        "tan must get NO TRIG bound (unbounded): {trig:?}"
+    );
+
+    // The bound holds on a concrete event (the interpreter computes cos/sin
+    // of the realized dPhi, which is in [-1,1] by definition).
+    let event = parse_event(
+        r#"{"Jet": [{"pt": 100.0, "eta": 0.0, "phi": 1.0, "m": 5.0},
+                    {"pt": 90.0, "eta": 0.5, "phi": -2.0, "m": 5.0}]}"#,
+        &ext,
+    )
+    .expect("event parses");
+    check_all_hold(&hir, &ext, &axioms, &[event]);
+}
+
+#[test]
 fn sub_axiom_is_single_source_only_unions_get_uni() {
     let (mut hir, ext) = analyzed(VOCAB);
     let qs = all_quantities(&hir);
@@ -411,5 +477,63 @@ region SR
             .iter()
             .any(|d| d.to_lowercase().contains("bdt") || d.to_lowercase().contains("aplanarity")),
         "bdt/aplanarity externals must get NO NNEG instance: {nneg:?}"
+    );
+}
+
+#[test]
+fn comb_size_lower_bound_is_cartesian_only_not_disjoint() {
+    // SOUNDNESS GUARD (USER ANSWER 4): the positive existence lower bound
+    // `all-parts-nonempty => size(K) >= 1` may fire ONLY for a bare CARTESIAN.
+    // A same-source OR cross-source DISJOINT must NOT get it — value-equal
+    // elements can form zero pairs even with non-empty sources.
+    let src = "\
+object eles
+  take Ele
+object muons
+  take Muo
+object jets
+  take Jet
+
+composite emuCart
+  take cartesian(eles e, muons m)
+
+composite emuDisj
+  take disjoint(eles e2, muons m2)
+
+composite jjDisj
+  take disjoint(jets j1, jets j2)
+
+region SR
+  select size(emuCart) >= 0
+  select size(emuDisj) >= 0
+  select size(jjDisj) >= 0
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+    let combsize: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::CombSize)
+        .map(|i| i.description.as_str())
+        .collect();
+
+    // The cartesian gets the `>= 1` lower bound.
+    assert!(
+        combsize.iter().any(|d| d.contains(">= 1") && d.contains("emuCart")),
+        "cartesian must get the all-nonempty lower bound: {combsize:?}"
+    );
+    // NEITHER disjoint composite gets a `>= 1` lower bound (only the
+    // `< 2 => = 0` / `= 0 => = 0` zero facts).
+    assert!(
+        !combsize
+            .iter()
+            .any(|d| d.contains(">= 1") && (d.contains("emuDisj") || d.contains("jjDisj"))),
+        "disjoint composites must NOT get a positive lower bound: {combsize:?}"
+    );
+    // The same-source disjoint gets its `size(C) < 2 => size(K) = 0` fact.
+    assert!(
+        combsize.iter().any(|d| d.contains("< 2 =>") && d.contains("jjDisj")),
+        "same-source disjoint must get the size<2 zero fact: {combsize:?}"
     );
 }

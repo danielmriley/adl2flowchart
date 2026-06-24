@@ -173,6 +173,9 @@ pub enum TakeSource {
     Ident(Ident),
     Call { name: Ident, args: Vec<Arg> },
     Union { members: Vec<Ident>, span: Span },
+    /// A postfix collection expression as a take source (`take coll[2:]`,
+    /// `take coll[:4]`): the source is the sliced/indexed collection.
+    Expr(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +347,21 @@ impl CmpOp {
             CmpOp::Eq => "==",
             CmpOp::Ne => "!=",
             CmpOp::ApproxEq => "~=",
+        }
+    }
+
+    /// The relation with operands swapped (`a ⋈ b` ⇔ `b flipped(⋈) a`):
+    /// `>`↔`<`, `>=`↔`<=`; `==`/`!=`/`~=` are symmetric.
+    #[must_use]
+    pub fn flipped(self) -> CmpOp {
+        match self {
+            CmpOp::Gt => CmpOp::Lt,
+            CmpOp::Lt => CmpOp::Gt,
+            CmpOp::Ge => CmpOp::Le,
+            CmpOp::Le => CmpOp::Ge,
+            CmpOp::Eq => CmpOp::Eq,
+            CmpOp::Ne => CmpOp::Ne,
+            CmpOp::ApproxEq => CmpOp::ApproxEq,
         }
     }
 }

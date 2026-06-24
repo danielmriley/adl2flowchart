@@ -104,6 +104,36 @@ pub enum ParticleRef {
     /// A composite-block binder slot (`take leptons l1, l2`); identity is
     /// the (collection, binder-name) pair — never merged across names.
     Binder { coll: CollectionId, name: Symbol },
+    /// The implicit *outer* element of an object-block filter, used as a
+    /// particle inside a reducer body (`reject any(dR(this, X)) < 0.4`).
+    /// Interpret-only: the analyzer keeps reducer bodies opaque (P1).
+    ThisElem,
+    /// The current iteration element of the innermost reducer (`any`/`all`/
+    /// `min`/`max`/`sum`) body. Interpret-only (P1).
+    ReduceElem,
+    /// A 4-vector sum of particle references (`l1 + l2`), canonically
+    /// flattened and operand-sorted at construction so association and
+    /// argument order do not create distinct identities. Build via
+    /// [`ParticleRef::sum`]; never construct the variant directly.
+    Sum(Vec<ParticleRef>),
+}
+
+impl ParticleRef {
+    /// Build a canonical 4-vector sum: nested `Sum`s are flattened and the
+    /// operands are sorted (`ParticleRef` derives `Ord`), so `l0+(l1+l2)`,
+    /// `(l0+l1)+l2` and `l2+l1+l0` all intern to the same identity.
+    #[must_use]
+    pub fn sum(parts: impl IntoIterator<Item = ParticleRef>) -> ParticleRef {
+        let mut flat = Vec::new();
+        for p in parts {
+            match p {
+                ParticleRef::Sum(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
+        }
+        flat.sort();
+        ParticleRef::Sum(flat)
+    }
 }
 
 /// Source of a per-event scalar.
@@ -161,6 +191,37 @@ pub enum Quantity {
     },
 }
 
+/// Sort direction of a [`Collection::Sorted`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SortDir {
+    Ascend,
+    Descend,
+}
+
+/// Sort key of a [`Collection::Sorted`]. `Prop(pt)` + [`SortDir::Descend`]
+/// over a provably pt-descending source is the *only* shape the analyzer
+/// may canonicalize to an alias of the source (P2); every other key/dir is
+/// opaque (size/existence-only). The key is the interner's identity, so two
+/// sorts by different properties never unify.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SortKey {
+    /// Sort by a single per-element property (the interpreter re-sorts by it).
+    Prop(PropId),
+    /// A key not reducible to one per-element property; the interpreter keeps
+    /// source order and any indexed access is diagnosed `Unsupported`. The
+    /// string is the canonical render (interning identity).
+    Opaque(String),
+}
+
+/// How a composite enumerates tuples (`take comb`/`disjoint`/`cartesian`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombKind {
+    /// Ordered product including cross-collection repeats (`cartesian`).
+    Cartesian,
+    /// Unordered pairs of value-distinct elements (`disjoint`, USER ANSWER 4).
+    Disjoint,
+}
+
 /// A collection's defining structure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Collection {
@@ -174,8 +235,66 @@ pub enum Collection {
     },
     /// Concatenation of parts (order is part of the identity).
     Union(Vec<CollectionId>),
-    /// Combinatorial composite (COMB / multi-binder blocks).
-    Combination { parts: Vec<CollectionId> },
+    /// A re-sorted permutation of `source` (`take sort(coll, key, dir)`). Same
+    /// element *set* as the source; the per-index order is the key's. Never an
+    /// index-ordering fact unless P2's exact pt-descending alias gate fires.
+    Sorted {
+        source: CollectionId,
+        key: SortKey,
+        dir: SortDir,
+    },
+    /// A contiguous half-open sub-range `source[start..end]` (`coll[a:b]`).
+    /// `end == None` means "through the end".
+    Slice {
+        source: CollectionId,
+        start: u32,
+        end: Option<u32>,
+    },
+    /// Combinatorial composite (COMB / multi-binder blocks): a collection of
+    /// *tuples* over `parts`. `kind` selects the enumeration; `members` is the
+    /// per-slot binder (name, source) in slot order; `candidate` is an
+    /// optional 4-vector candidate built from the binders
+    /// (`candidate ll = l1 + l2`); `cuts` are per-tuple filters (interned
+    /// predicate ids over the tuple). Interpret-only in P1.
+    Combination {
+        parts: Vec<CollectionId>,
+        kind: CombKind,
+        members: Vec<CompositeBinder>,
+        candidate: Option<CompositeCandidate>,
+        cuts: Vec<ElemPredId>,
+    },
+    /// A projection of a [`Collection::Combination`] onto one axis
+    /// (`X->ll` candidate, `X->l1` member): one element per surviving tuple.
+    CombProject {
+        comb: CollectionId,
+        axis: CombAxis,
+    },
+}
+
+/// One binder slot of a composite block: its name and the source collection
+/// its element ranges over.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompositeBinder {
+    pub name: Symbol,
+    pub source: CollectionId,
+}
+
+/// Which axis of a composite a projection selects.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombAxis {
+    /// A binder member slot, by name (`X->l1`).
+    Member(Symbol),
+    /// The candidate 4-vector (`X->ll`), by name.
+    Candidate(Symbol),
+}
+
+/// A composite candidate definition (`candidate ll = l1 + l2`): the binder
+/// name it is bound to and the 4-vector sum it denotes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompositeCandidate {
+    pub name: Symbol,
+    /// The candidate 4-vector (a `ParticleRef::Sum` over the tuple binders).
+    pub vector: ParticleRef,
 }
 
 /// Structural interner for collections, quantities and properties.
@@ -274,5 +393,35 @@ impl QuantityTable {
     #[must_use]
     pub fn quantities(&self) -> &[Quantity] {
         &self.quants
+    }
+
+    /// Is `c` provably pT-descending? ORD/IDOM/EPRED index-ordering facts ride
+    /// on this predicate; it is the **single source of truth** shared by the
+    /// axiom emitter and the resolver's sort-alias gate (plan §risk 5 — no
+    /// second copy may diverge).
+    ///
+    /// True only for a base collection, a `Filtered` chain rooted at a base
+    /// (filtering preserves source order), a `Slice` of a pT-descending source
+    /// (a contiguous sub-sequence of a sorted list stays sorted), and a
+    /// descending pT `Sorted` of a pT-descending source (the identity
+    /// permutation — the sole alias shape). `pt_key` is the canonical pT
+    /// property key (`ext.prop_canon("pt").0`). Everything else — a non-pT or
+    /// ascending sort, a `Union`, a `Combination`/projection — is `false`
+    /// (the sound posture: only ever weakens to POSSIBLY, never a false PROVEN).
+    #[must_use]
+    pub fn pt_ordered(&self, c: CollectionId, pt_key: &str) -> bool {
+        match self.collection(c) {
+            Collection::Base(_) => true,
+            Collection::Filtered { parent, .. } => self.pt_ordered(*parent, pt_key),
+            Collection::Slice { source, .. } => self.pt_ordered(*source, pt_key),
+            Collection::Sorted { source, key, dir } => {
+                *dir == SortDir::Descend
+                    && matches!(key, SortKey::Prop(p) if self.prop_key(*p) == pt_key)
+                    && self.pt_ordered(*source, pt_key)
+            }
+            Collection::Union(_)
+            | Collection::Combination { .. }
+            | Collection::CombProject { .. } => false,
+        }
     }
 }

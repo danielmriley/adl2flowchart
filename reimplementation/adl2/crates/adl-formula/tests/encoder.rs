@@ -594,3 +594,191 @@ fn band_over_unindexed_collection_is_dual() {
     assert_eq!(parts.len(), 5); // size=0, three instances, size>3
     assert!(matches!(parts[1], Formula::And(_)));
 }
+
+// ---- row: composite per-candidate cut existence (2D dual, P3) ------------
+
+/// Collect every linear atom in a formula (projection-agnostic).
+fn atoms(f: &Formula, out: &mut Vec<LinAtom>) {
+    match f {
+        Formula::Atom(a) => out.push(a.clone()),
+        Formula::And(v) | Formula::Or(v) => v.iter().for_each(|p| atoms(p, out)),
+        Formula::Dual { plus, minus, .. } => {
+            atoms(plus, out);
+            atoms(minus, out);
+        }
+        Formula::True | Formula::False | Formula::Unknown(_) => {}
+    }
+}
+
+/// An OPAQUE per-tuple cut (`mass(jj)` is irrational ⇒ Unknown leaf) must
+/// NOT tighten the over-side: the existence disjunction folds to `true`, so
+/// the over-projection equals the plain `size(K) >= 1` atom. This is the
+/// load-bearing no-op-on-opacity guarantee — the corpus reality.
+#[test]
+fn comb_existence_opaque_cut_is_a_noop_over() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select mass(jj) > 20
+
+region SR
+  select size(dijet->jj) >= 1
+";
+    let (enc, hir) = encode(src, 0);
+    // A Dual is built; its OVER projection is satisfiability-equivalent to
+    // the plain `size(K) >= 1` atom because every per-tuple disjunct over the
+    // opaque candidate mass folds to `true`.
+    let Formula::Dual { plus, minus, .. } = &enc.formula else {
+        panic!("expected a 2D Dual, got {:?}", enc.formula);
+    };
+    // plus = And([size>=1, Or([Unknown(=mass opaque), escape…])]); over →
+    // the existence Or carries a `true` disjunct (Unknown→true), so it folds
+    // away under the solver, leaving only the size constraint.
+    let over = enc.formula.over().into_qformula();
+    let QFormula::And(parts) = &over else {
+        panic!("expected And over, got {over:?}");
+    };
+    let size_ge1 = QFormula::Atom(LinAtom::new(
+        [(Rat::from_decimal_f64(1.0).unwrap(), {
+            // the projected size(K) atom is the first And conjunct
+            let QFormula::Atom(a) = &parts[0] else {
+                panic!("first conjunct must be the size atom");
+            };
+            a.terms()[0].1
+        })],
+        Rel::Ge,
+        Rat::from_decimal_f64(1.0).unwrap(),
+    ));
+    assert_eq!(parts[0], size_ge1, "first conjunct is size(K) >= 1");
+    // The existence conjunct over-projects to a disjunction whose tuple
+    // disjunct is just existence guards (the opaque `mass(jj)` cut folded to
+    // `true`): NO atom anywhere references the candidate-mass quantity.
+    let QFormula::Or(ex) = &parts[1] else {
+        panic!("second conjunct must be the existence Or, got {:?}", parts[1]);
+    };
+    fn qatoms(f: &QFormula, out: &mut Vec<LinAtom>) {
+        match f {
+            QFormula::Atom(a) => out.push(a.clone()),
+            QFormula::And(v) | QFormula::Or(v) => v.iter().for_each(|p| qatoms(p, out)),
+            QFormula::True | QFormula::False => {}
+        }
+    }
+    let mut over_atoms = Vec::new();
+    qatoms(&over, &mut over_atoms);
+    // The candidate mass is an opaque ExternalFn quantity; it must NOT survive
+    // into the over-projection (it folded to `true`).
+    let mass_q = (0..hir.table.quantities().len())
+        .map(|i| QuantityId(u32::try_from(i).unwrap()))
+        .find(|&q| matches!(hir.table.quantity(q), Quantity::ExternalFn { .. }));
+    if let Some(mq) = mass_q {
+        assert!(
+            over_atoms.iter().all(|a| a.terms().iter().all(|(_, q)| *q != mq)),
+            "opaque candidate mass must NOT reach the over-projection"
+        );
+    }
+    // The tuple's existence disjunct carries only source-size guards.
+    assert!(
+        ex.iter().any(|d| matches!(d, QFormula::And(_))),
+        "the (0,1) tuple disjunct (existence guards) must be present, got {ex:?}"
+    );
+    // Under side is the plain atom (no strengthening — USER ANSWER 4).
+    let under = enc.formula.under().into_qformula();
+    assert_eq!(under, size_ge1, "under == plain size atom, no per-tuple atom");
+    let _ = (plus, minus);
+}
+
+/// An ANALYZABLE per-tuple cut (`dphi(j1,j2)` is a linear angular sep) DOES
+/// reach the over-side: the substituted atom `dphi(jets[0], jets[1]) > 0.5`
+/// appears, so the over-projection is no longer the bare size atom. The
+/// existence structure is present and references the bound source elements.
+#[test]
+fn comb_existence_analyzable_cut_reaches_over_side() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select dphi(j1, j2) > 0.5
+
+region SR
+  select size(dijet->jj) >= 1
+";
+    let (enc, hir) = encode(src, 0);
+    let Formula::Dual { plus, minus, why } = &enc.formula else {
+        panic!("expected a 2D Dual, got {:?}", enc.formula);
+    };
+    assert!(
+        enc.diags.get(*why).unwrap().reason.contains("2D"),
+        "diag must name the 2D expansion"
+    );
+    // The SUBSTITUTED angular sep dphi(jets[0], jets[1]) — a DIFFERENT
+    // interned quantity than the original binder-arg dphi(j1, j2) — appears in
+    // the over (plus) side. We find it by its `Elem` arguments.
+    use adl_sema::{ElemIndex as EI, ParticleRef};
+    let subst_dphi = hir.table.quantities().iter().position(|q| {
+        matches!(q, Quantity::AngularSep { a, b, .. }
+            if matches!(a, ParticleRef::Elem { index: EI::FromFront(_), .. })
+            && matches!(b, ParticleRef::Elem { index: EI::FromFront(_), .. }))
+    });
+    assert!(
+        subst_dphi.is_some(),
+        "binder dphi must substitute to an Elem-arg AngularSep"
+    );
+    let aq = QuantityId(u32::try_from(subst_dphi.unwrap()).unwrap());
+    let mut plus_atoms = Vec::new();
+    atoms(plus, &mut plus_atoms);
+    assert!(
+        plus_atoms.iter().any(|a| a.terms().iter().any(|(_, q)| *q == aq)),
+        "the analyzable per-tuple cut must reach the over (plus) side"
+    );
+    // The UNDER side carries NO per-tuple atom — it is exactly the plain size
+    // atom (no existence strengthening; USER ANSWER 4 keeps the disjoint
+    // lower bound opaque).
+    let mut minus_atoms = Vec::new();
+    atoms(minus, &mut minus_atoms);
+    assert!(
+        minus_atoms.iter().all(|a| a.terms().iter().all(|(_, q)| *q != aq)),
+        "under side must NOT strengthen with the per-tuple cut (USER ANSWER 4)"
+    );
+}
+
+/// The 2D Dual negates soundly: `reject size(K) >= 1` swaps branches so the
+/// over-side becomes `size(K) <= 0` (a superset of the true "no surviving
+/// tuple" set) — never a false claim about the per-tuple cut.
+#[test]
+fn comb_existence_dual_negates_soundly() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select dphi(j1, j2) > 0.5
+
+region SR
+  reject size(dijet->jj) >= 1
+";
+    let (enc, _) = encode(src, 0);
+    let Formula::Dual { plus, minus, .. } = &enc.formula else {
+        panic!("expected a 2D Dual under reject, got {:?}", enc.formula);
+    };
+    // Over (plus) of the negated form is the under(atom).not() = (size>=1).not()
+    // = size < 1: a sound superset of "no tuple survives" (integers: < 1 ⇔ = 0).
+    let over = enc.formula.over().into_qformula();
+    let QFormula::Atom(a) = &over else {
+        panic!("negated over must be the single size<1 atom, got {over:?}");
+    };
+    assert_eq!(a.rel(), Rel::Lt);
+    assert_eq!(a.constant(), &Rat::from_decimal_f64(1.0).unwrap());
+    let _ = (plus, minus);
+}

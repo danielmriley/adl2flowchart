@@ -252,6 +252,108 @@ fn opaque_pt_in_impossible_ratio_proves_region_empty() {
     assert_ne!(sane.empty, EmptyStatus::Proven, "control region stays live");
 }
 
+/// P3 Combination witness realizer: an overlap over a composite tuple count
+/// (`size(K->cand) >= 1`) must be REALIZED through the interpreter — the
+/// realizer builds the binder source collection, the interpreter materializes
+/// the disjoint combination and forms a value-distinct pair, then validates
+/// the overlap. Before P3 this hard-failed ("composite projection in witness")
+/// and downgraded to POSSIBLY.
+#[test]
+fn composite_overlap_witness_validates_through_the_interpreter() {
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+object bjets
+  take jets
+  select btag == 1
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+
+region SR_x
+  select size(dijet->jj) >= 1
+
+region SR_y
+  select size(dijet->jj) >= 1
+  select size(bjets) >= 0
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "composite_overlap.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenOverlapping,
+        "composite overlap must validate, got {:?} ({})",
+        p.kind,
+        p.reason
+    );
+    assert_eq!(
+        p.witness_validated,
+        Some(true),
+        "the interpreter must validate the realized composite witness"
+    );
+    assert!(
+        r.internal_diagnostics.is_empty(),
+        "no internal diagnostic for a realizable composite: {:?}",
+        r.internal_diagnostics
+    );
+}
+
+/// The realizer NEVER fabricates a false Validated: when a composite region's
+/// membership depends on the candidate's opaque invariant mass (`mass(jj)`),
+/// the interpreter cannot evaluate it and the witness stays a CANDIDATE
+/// (verdict keeps its caveat / downgrades), never a false PROVEN OVERLAPPING.
+#[test]
+fn composite_opaque_mass_falls_to_candidate_not_false_validated() {
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+
+region SR_x
+  select size(dijet->jj) >= 1
+  select mass(dijet->jj[0]) > 50
+
+region SR_y
+  select size(dijet->jj) >= 1
+  select mass(dijet->jj[0]) < 200
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "composite_mass.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    // The opaque mass blocks a fully-validated overlap: the verdict must NOT
+    // be a clean PROVEN OVERLAPPING with witness_validated == Some(true).
+    assert_ne!(
+        p.witness_validated,
+        Some(true),
+        "an opaque candidate mass must NOT produce a validated witness: {}",
+        p.reason
+    );
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "the regions are not disjoint; mass(jj) is a free var: {}",
+        p.reason
+    );
+}
+
 #[test]
 fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");

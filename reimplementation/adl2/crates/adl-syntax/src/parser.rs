@@ -663,6 +663,11 @@ impl<'s> Parser<'s> {
         if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
             let args = self.parse_paren_args();
             TakeSource::Call { name, args }
+        } else if !self.nl_before() && matches!(self.peek().kind, TokKind::LBracket) {
+            // `take coll[2:]` / `take coll[:4]`: a postfix slice/index source.
+            let base = Expr::Ident(name);
+            let expr = self.parse_index_suffix(base);
+            TakeSource::Expr(Box::new(expr))
         } else {
             TakeSource::Ident(name)
         }

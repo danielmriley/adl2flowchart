@@ -22,11 +22,12 @@
 //! event fails the cut); non-finite numeric *literals* cannot construct
 //! atoms and become `Unknown` instead.
 
-use crate::formula::{DiagTable, Formula};
+use crate::formula::{DiagId, DiagTable, Formula};
 use crate::lin::{LinAtom, Rel};
 use adl_sema::{
-    ArithOp, CollectionId, ElemIndex, Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt,
-    Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
+    ArithOp, CombKind, Collection, CollectionId, CompositeBinder, ElemIndex, ElemPred, ElemPredId,
+    Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, ParticleRef, Quantity, QuantityArg,
+    QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -34,6 +35,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// OPEN-1 bounded-expansion depth (PHASE0_RESOLUTIONS: `k = 3`).
 pub const OPEN1_BOUND: u32 = 3;
+
+/// Per-binder index bound for the 2D composite-existence expansion (P3). A
+/// `k`-binder combination expands `COMB2D_BOUND^k` index tuples within the
+/// bound (e.g. `2` ⇒ one disjoint pair `(0,1)` / four cartesian pairs), with
+/// a size escape disjunct beyond it so no real surviving tuple is excluded.
+/// Deliberately smaller than [`OPEN1_BOUND`] to cap the `k²` blowup the plan
+/// warns about; the corpus composites are all 2-binder, so `2` already
+/// covers the dominant `size == 1` / `size >= 1` pattern.
+pub const COMB2D_BOUND: u32 = 2;
+
+/// Which quantifier the bounded expansion encodes. `Open1` is the
+/// region-level unindexed-collection cut whose ∀/∃ reading is *unresolved*
+/// (the over-approx unions both readings, the under-approx intersects
+/// them). `Any`/`All` are the reducer keywords, whose quantifier is
+/// **resolved**, giving a strictly tighter (never looser) Dual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DualKind {
+    /// Unresolved ∀/∃ (OPEN-1, the legacy unindexed-collection cut).
+    Open1,
+    /// `any(P)` ≡ ∃ element with `P`.
+    Any,
+    /// `all(P)` ≡ ∀ present elements have `P`.
+    All,
+}
 
 /// One region's exact formula plus the diagnostics its `Unknown`/`Dual`
 /// leaves point at (region-local [`DiagTable`]).
@@ -63,6 +88,7 @@ pub fn encode_region(hir: &mut Hir, region: usize) -> EncodedRegion {
         table,
         regions,
         symbols,
+        elem_preds,
         ..
     } = hir;
     let name = regions
@@ -73,6 +99,7 @@ pub fn encode_region(hir: &mut Hir, region: usize) -> EncodedRegion {
     let mut enc = Encoder {
         table,
         regions,
+        elem_preds,
         diags: DiagTable::default(),
         stack: Vec::new(),
     };
@@ -285,6 +312,9 @@ impl LinExpr {
 struct Encoder<'h> {
     table: &'h mut QuantityTable,
     regions: &'h [HirRegion],
+    /// Interned per-tuple cuts of composite blocks (indexed by `ElemPredId`),
+    /// read by the 2D composite-existence dual-expansion.
+    elem_preds: &'h [ElemPred],
     diags: DiagTable,
     /// Regions currently being inlined (inheritance cycle detection).
     stack: Vec<usize>,
@@ -383,7 +413,20 @@ impl Encoder<'_> {
                 node.span,
                 "unindexed collection property used as a bare boolean",
             ),
+            // Boolean reducers (`any`/`all`) get a per-kind Dual bounded
+            // expansion (P2); numeric reducers (`sum`/`min`/`max`) used as a
+            // bare boolean are not conditions. (`min`/`max ⋈ c` is desugared
+            // to `any`/`all` at resolve time, so a surviving numeric Reduce
+            // here is genuinely value-position.)
+            HKind::Reduce {
+                kind, coll, body, ..
+            } if kind.is_boolean() => self.encode_reduce(*kind, *coll, body, node.span),
+            HKind::Reduce { kind, .. } => self.unknown(
+                node.span,
+                format!("`{}` reducer is not a boolean condition", kind.as_str()),
+            ),
             HKind::ElemSelfProp(_)
+            | HKind::ReduceProp(_)
             | HKind::Particle(_)
             | HKind::CollValue(_)
             | HKind::Neg(_)
@@ -410,7 +453,23 @@ impl Encoder<'_> {
                 let inner = self.leaf_inner(node);
                 self.guard_existence(node, inner)
             }
-            (Some(coll), None) => self.dual_expand(coll, node),
+            (Some(coll), None) => {
+                let size_q = self.table.intern_quantity(Quantity::Size(coll));
+                let instances: Vec<Formula> = (0..OPEN1_BOUND)
+                    .map(|i| {
+                        let inst = self.subst(node, coll, i);
+                        self.leaf(&inst)
+                    })
+                    .collect();
+                let why = self.diags.push(
+                    node.span,
+                    format!(
+                        "unindexed collection cut: \u{2200}/\u{2203} reading unresolved (OPEN-1); \
+                         Dual bounded expansion k={OPEN1_BOUND}"
+                    ),
+                );
+                self.build_dual(DualKind::Open1, size_q, instances, why)
+            }
             (Some(_), Some(_)) => self.unknown(
                 node.span,
                 "comparison references more than one unindexed collection (OPEN-1)",
@@ -461,55 +520,286 @@ impl Encoder<'_> {
         }
     }
 
-    /// OPEN-1 (PHASE0): unindexed collection cut at region level. The
-    /// ∀/∃ reading is unresolved, so encode a `Dual` bounded expansion
-    /// with `k = 3`, where `P(i)` is the cut applied to element `i`:
+    /// Build the per-kind `Dual` bounded expansion from the already-encoded
+    /// per-element instances `P(i)` (`i = 0..k`), the collection's `size_q`,
+    /// and a diagnostic `why`. `instances[i]` is `P(i)`.
     ///
-    /// - `plus`  ⊇ both readings:
-    ///   `size=0 ∨ P(0) ∨ P(1) ∨ P(2) ∨ size>3`
-    ///   — the `size=0` disjunct is the **empty-collection case** the
-    ///   legacy ∀-plus dropped (audit Bug 1: ∀ over an empty collection
-    ///   is vacuously true, so the over-approximation must admit it);
-    ///   `size>3` admits a witness beyond the expansion bound.
-    /// - `minus` ⊆ both readings:
-    ///   `1≤size≤3 ∧ ⋀ᵢ (size≤i ∨ P(i))`
-    ///   — every present element satisfies the cut (⊆ ∀) and at least
-    ///   one element exists (⊆ ∃).
-    fn dual_expand(&mut self, coll: CollectionId, node: &HNode) -> Formula {
-        let size_q = self.table.intern_quantity(Quantity::Size(coll));
-        let instances: Vec<Formula> = (0..OPEN1_BOUND)
-            .map(|i| {
-                let inst = self.subst(node, coll, i);
-                self.leaf(&inst)
-            })
-            .collect();
+    /// The three quantifier readings (SPEC_ANALYSIS §1, audit Bug 1):
+    ///
+    /// - **`Open1`** (∀/∃ unresolved): `plus` unions both readings'
+    ///   over-approximations (`size=0 ∨ ⋁ᵢ P(i) ∨ size>k`); `minus`
+    ///   intersects both readings' under-approximations
+    ///   (`1≤size≤k ∧ ⋀ᵢ(size≤i ∨ P(i))`).
+    /// - **`Any`** (∃): `plus = ⋁ᵢ P(i) ∨ size>k` (a witness exists at
+    ///   some present index, or beyond the bound); `minus = ⋁ᵢ(size>i ∧
+    ///   P(i))` (a present element provably satisfies `P`). Empty ⇒ false,
+    ///   correctly NOT in `plus`.
+    /// - **`All`** (∀): `plus = ⋀ᵢ(size≤i ∨ P(i))` (every present element
+    ///   within the bound satisfies `P`; admits `size>k`); `minus = size=0
+    ///   ∨ (1≤size≤k ∧ ⋀ᵢ(size≤i ∨ P(i)))` — the `size=0` disjunct is the
+    ///   **vacuous-true** empty case, which belongs to `All`, never `Any`.
+    fn build_dual(
+        &mut self,
+        kind: DualKind,
+        size_q: QuantityId,
+        instances: Vec<Formula>,
+        why: DiagId,
+    ) -> Formula {
+        let k = i64::from(OPEN1_BOUND);
+        // `⋀ᵢ (size ≤ i ∨ P(i))` — "every present element up to the bound
+        // satisfies P". Shared by Open1-minus, All-plus and All-minus.
+        let all_within_bound = |enc: &mut Self, insts: &[Formula]| {
+            let mut parts = Vec::new();
+            for (i, p) in insts.iter().enumerate() {
+                let guard = enc.simple_atom(size_q, Rel::Le, i as i64);
+                parts.push(forr(vec![guard, p.clone()]));
+            }
+            fand(parts)
+        };
+        let (plus, minus) = match kind {
+            DualKind::Open1 => {
+                let mut plus_parts = vec![self.simple_atom(size_q, Rel::Eq, 0)];
+                plus_parts.extend(instances.iter().cloned());
+                plus_parts.push(self.simple_atom(size_q, Rel::Gt, k));
+                let plus = forr(plus_parts);
 
-        let mut plus_parts = vec![self.simple_atom(size_q, Rel::Eq, 0)];
-        plus_parts.extend(instances.iter().cloned());
-        plus_parts.push(self.simple_atom(size_q, Rel::Gt, i64::from(OPEN1_BOUND)));
-        let plus = forr(plus_parts);
+                let mut minus_parts = vec![
+                    self.simple_atom(size_q, Rel::Ge, 1),
+                    self.simple_atom(size_q, Rel::Le, k),
+                ];
+                minus_parts.push(all_within_bound(self, &instances));
+                (plus, fand(minus_parts))
+            }
+            DualKind::Any => {
+                let mut plus_parts: Vec<Formula> = instances.clone();
+                plus_parts.push(self.simple_atom(size_q, Rel::Gt, k));
+                let plus = forr(plus_parts);
 
-        let mut minus_parts = vec![
-            self.simple_atom(size_q, Rel::Ge, 1),
-            self.simple_atom(size_q, Rel::Le, i64::from(OPEN1_BOUND)),
-        ];
-        for (i, p) in (0..OPEN1_BOUND).zip(instances) {
-            let guard = self.simple_atom(size_q, Rel::Le, i64::from(i));
-            minus_parts.push(forr(vec![guard, p]));
-        }
-        let minus = fand(minus_parts);
-
-        let why = self.diags.push(
-            node.span,
-            format!(
-                "unindexed collection cut: \u{2200}/\u{2203} reading unresolved (OPEN-1); \
-                 Dual bounded expansion k={OPEN1_BOUND}"
-            ),
-        );
+                let mut minus_parts = Vec::new();
+                for (i, p) in instances.iter().enumerate() {
+                    let guard = self.simple_atom(size_q, Rel::Gt, i as i64);
+                    minus_parts.push(fand(vec![guard, p.clone()]));
+                }
+                (plus, forr(minus_parts))
+            }
+            DualKind::All => {
+                let plus = all_within_bound(self, &instances);
+                let empty = self.simple_atom(size_q, Rel::Eq, 0);
+                let lo = self.simple_atom(size_q, Rel::Ge, 1);
+                let hi = self.simple_atom(size_q, Rel::Le, k);
+                let bounded = fand(vec![lo, hi, all_within_bound(self, &instances)]);
+                (plus, forr(vec![empty, bounded]))
+            }
+        };
         Formula::Dual {
             plus: Box::new(plus),
             minus: Box::new(minus),
             why,
+        }
+    }
+
+    /// Encode a boolean reducer `any(P)` / `all(P)` (P2). The iteration
+    /// collection's element `i` is substituted into the body to get `P(i)`,
+    /// each `P(i)` is encoded as a boolean formula, and the per-kind `Dual`
+    /// bounded expansion folds them. When the iteration collection is a
+    /// concrete-bound static slice, the indices rebase onto the source (so
+    /// `min(jets[:4]…)` reasons at source indices `0..4`, EPRED/ORD coming
+    /// for free) and the encoding is exact (no Dual).
+    fn encode_reduce(
+        &mut self,
+        kind: ReduceKind,
+        coll: CollectionId,
+        body: &HNode,
+        span: Span,
+    ) -> Formula {
+        let dual_kind = match kind {
+            ReduceKind::Any => DualKind::Any,
+            ReduceKind::All => DualKind::All,
+            // Numeric reducers never reach here (boolean-only callers).
+            _ => {
+                return self.unknown(span, "numeric reducer used as a boolean condition");
+            }
+        };
+
+        // Static slice with a concrete upper bound (`jets[:4]`): the element
+        // count is fixed at `end - start` (clamped by the source), so emit an
+        // EXACT conjunction over exactly those indices, no Dual. Reducer
+        // indices rebase onto the source (`slice[j] ≡ src[start+j]`),
+        // inheriting ORD/IDOM/EPRED. An open-ended slice (`jets[2:]`) has no
+        // static count — it falls through to the bounded Dual over the slice
+        // id (whose SZSLICE bounds its size).
+        if let Collection::Slice {
+            source,
+            start,
+            end: Some(end),
+        } = *self.table.collection(coll)
+        {
+            let n = end.saturating_sub(start);
+            return self.encode_static_slice_reduce(dual_kind, source, start, n, body);
+        }
+
+        let size_q = self.table.intern_quantity(Quantity::Size(coll));
+        let instances: Vec<Formula> = (0..OPEN1_BOUND)
+            .map(|i| {
+                let inst = self.subst_reduce(body, coll, i);
+                self.boolean(&inst)
+            })
+            .collect();
+        let why = self.diags.push(
+            span,
+            format!(
+                "`{}` reducer: bounded expansion k={OPEN1_BOUND}",
+                kind.as_str()
+            ),
+        );
+        self.build_dual(dual_kind, size_q, instances, why)
+    }
+
+    /// Static-slice reducer over `src[start .. start+n]`: the slice has
+    /// **exactly** `n` elements once the source is long enough, so emit an
+    /// exact (no-Dual) conjunction/disjunction guarded by `size(src) > i`.
+    /// Each present index `start+j` is encoded directly against the source —
+    /// ORD/IDOM/EPRED ride the source's pT order if it has one.
+    ///
+    /// `all`: `⋀_{j<n} (size(src) ≤ start+j ∨ P(start+j))` (vacuous on a
+    /// short source — sound, matches the interpreter's clamp+empty rule).
+    /// `any`: `⋁_{j<n} (size(src) > start+j ∧ P(start+j))`.
+    fn encode_static_slice_reduce(
+        &mut self,
+        kind: DualKind,
+        source: CollectionId,
+        start: u32,
+        n: u32,
+        body: &HNode,
+    ) -> Formula {
+        let size_q = self.table.intern_quantity(Quantity::Size(source));
+        let mut parts = Vec::new();
+        for j in 0..n {
+            let abs = start.saturating_add(j);
+            let inst = self.subst_reduce(body, source, abs);
+            let p = self.boolean(&inst);
+            let idx = i64::from(abs);
+            match kind {
+                DualKind::All | DualKind::Open1 => {
+                    let guard = self.simple_atom(size_q, Rel::Le, idx);
+                    parts.push(forr(vec![guard, p]));
+                }
+                DualKind::Any => {
+                    let guard = self.simple_atom(size_q, Rel::Gt, idx);
+                    parts.push(fand(vec![guard, p]));
+                }
+            }
+        }
+        match kind {
+            DualKind::All | DualKind::Open1 => fand(parts),
+            DualKind::Any => forr(parts),
+        }
+    }
+
+    /// Clone a reducer body, replacing every reference to the iteration
+    /// element with the interned `coll[index]` element. The iteration
+    /// element appears as `HKind::ReduceProp(prop)` (`pt(X)`) and as
+    /// `ParticleRef::ReduceElem` inside angular/external quantities
+    /// (`dR(this, X)`). A body part that still references an opaque element
+    /// (`ThisElem`, a `Sum`, …) stays an opaque quantity, so the leaf's
+    /// encoder falls to `Unknown` — sound.
+    fn subst_reduce(&mut self, node: &HNode, coll: CollectionId, index: u32) -> HNode {
+        let kind = match &node.kind {
+            HKind::ReduceProp(prop) => {
+                let q = self.table.intern_quantity(Quantity::ElemProp {
+                    coll,
+                    index: ElemIndex::FromFront(index),
+                    prop: *prop,
+                });
+                HKind::Quantity(q)
+            }
+            HKind::Quantity(q) => HKind::Quantity(self.subst_reduce_quantity(*q, coll, index)),
+            HKind::Neg(a) => HKind::Neg(Box::new(self.subst_reduce(a, coll, index))),
+            HKind::Not(a) => HKind::Not(Box::new(self.subst_reduce(a, coll, index))),
+            HKind::Abs(a) => HKind::Abs(Box::new(self.subst_reduce(a, coll, index))),
+            HKind::Binary { op, lhs, rhs } => HKind::Binary {
+                op: *op,
+                lhs: Box::new(self.subst_reduce(lhs, coll, index)),
+                rhs: Box::new(self.subst_reduce(rhs, coll, index)),
+            },
+            HKind::Cmp { op, lhs, rhs } => HKind::Cmp {
+                op: *op,
+                lhs: Box::new(self.subst_reduce(lhs, coll, index)),
+                rhs: Box::new(self.subst_reduce(rhs, coll, index)),
+            },
+            HKind::And(v) => HKind::And(v.iter().map(|n| self.subst_reduce(n, coll, index)).collect()),
+            HKind::Or(v) => HKind::Or(v.iter().map(|n| self.subst_reduce(n, coll, index)).collect()),
+            HKind::Band { kind, expr, lo, hi } => HKind::Band {
+                kind: *kind,
+                expr: Box::new(self.subst_reduce(expr, coll, index)),
+                lo: lo.clone(),
+                hi: hi.clone(),
+            },
+            HKind::Ternary { guard, then, els } => HKind::Ternary {
+                guard: Box::new(self.subst_reduce(guard, coll, index)),
+                then: Box::new(self.subst_reduce(then, coll, index)),
+                els: els.as_ref().map(|e| Box::new(self.subst_reduce(e, coll, index))),
+            },
+            other => other.clone(),
+        };
+        HNode {
+            kind,
+            span: node.span,
+            tag: node.tag.clone(),
+        }
+    }
+
+    /// Rewrite an interned quantity, replacing `ParticleRef::ReduceElem`
+    /// with `coll[index]`. Re-interns the rewritten quantity; if it has no
+    /// `ReduceElem` it returns the same id. Quantities that still carry an
+    /// opaque `ReduceElem` (e.g. nested in a `Sum`) are left untouched —
+    /// they remain free, and the leaf encoder keeps them opaque.
+    fn subst_reduce_quantity(
+        &mut self,
+        q: QuantityId,
+        coll: CollectionId,
+        index: u32,
+    ) -> QuantityId {
+        let elem = ParticleRef::Elem {
+            coll,
+            index: ElemIndex::FromFront(index),
+        };
+        let subst_p = |p: &ParticleRef| -> ParticleRef {
+            if matches!(p, ParticleRef::ReduceElem) {
+                elem.clone()
+            } else {
+                p.clone()
+            }
+        };
+        match self.table.quantity(q).clone() {
+            Quantity::AngularSep { kind, a, b, .. } => {
+                let (na, nb) = (subst_p(&a), subst_p(&b));
+                if na == a && nb == b {
+                    return q;
+                }
+                self.table.intern_angular(kind, na, nb)
+            }
+            Quantity::ExternalFn { name, args } => {
+                let mut changed = false;
+                let new_args: Vec<QuantityArg> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        QuantityArg::Particle(ParticleRef::ReduceElem) => {
+                            changed = true;
+                            QuantityArg::Particle(elem.clone())
+                        }
+                        other => other.clone(),
+                    })
+                    .collect();
+                if !changed {
+                    return q;
+                }
+                self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: new_args,
+                })
+            }
+            _ => q,
         }
     }
 
@@ -560,6 +850,353 @@ impl Encoder<'_> {
         }
     }
 
+    // ---- composite per-candidate cut existence (2D dual, P3) --------------
+
+    /// Refine a positive lower bound on a composite tuple count with the
+    /// per-tuple cut structure (plan P3 / Tier 2). The exact membership of
+    /// `size(K) >= 1` is `∃ surviving tuple`, i.e. `∃ binder-index tuple t :
+    /// P(t) ∧ (disjoint value-distinctness)`. We refine only the **OVER**
+    /// side, which is the sound, valuable direction:
+    ///
+    /// - **Over**: `atom ∧ (⋁_t P_over(t)  ∨  size-escape)`. Conjoining a
+    ///   fact *implied by membership* (a surviving tuple is within the bound
+    ///   and passes `P`, or lies beyond the bound) never drops a real member,
+    ///   so the result stays a superset. When every `P_over(t)` is `true`
+    ///   (opaque cut — `mass`, `dR`), the disjunction folds to `true` and the
+    ///   refinement is a no-op: the encoding degrades exactly to `atom`,
+    ///   which the COMBSIZE axioms already bound. The gain materializes only
+    ///   when a per-tuple cut is built from analyzable per-element quantities
+    ///   and is unsatisfiable for every bounded tuple.
+    /// - **Under**: just `atom`. USER ANSWER 4: same-source `disjoint`
+    ///   value-distinctness makes the existence *lower* bound opaque (two
+    ///   value-equal elements form 0 pairs), so we never strengthen the
+    ///   under-approximation here. (The cartesian both-nonempty lower bound
+    ///   already lives in COMBSIZE and is unaffected.)
+    ///
+    /// Applies only to a `size(K) ⋈ k` atom that is a positive lower bound
+    /// (`>= c`/`> c`/`== c` with the satisfying region requiring `size >= 1`),
+    /// where `K` is a `Combination`/`CombProject` carrying per-tuple `cuts`.
+    /// Returns `None` (fall through to the plain atom) otherwise.
+    fn try_comb_existence(
+        &mut self,
+        terms: &BTreeMap<QuantityId, Rat>,
+        rel: Rel,
+        k: &Rat,
+        span: Span,
+    ) -> Option<Formula> {
+        // Single positive-coefficient size term, comparing to a constant that
+        // forces at least one surviving tuple.
+        let q = match terms.iter().next() {
+            Some((q, c)) if terms.len() == 1 && c.is_one() => *q,
+            _ => return None,
+        };
+        // A lower bound that implies `size >= 1`: `size >= k` (k>=1),
+        // `size > k` (k>=0), `size == k` (k>=1). Other relations (`<`, `<=`,
+        // `!=`, or a non-positive bound) do not assert existence.
+        let forces_existence = match rel {
+            Rel::Ge => k >= &Rat::one(),
+            Rel::Gt => k >= &Rat::zero(),
+            Rel::Eq => k >= &Rat::one(),
+            Rel::Lt | Rel::Le | Rel::Ne => false,
+        };
+        if !forces_existence {
+            return None;
+        }
+        let Quantity::Size(coll) = *self.table.quantity(q) else {
+            return None;
+        };
+        // Resolve `K` to the underlying combination (projection ⇒ its comb).
+        let comb_id = match self.table.collection(coll).clone() {
+            Collection::Combination { .. } => coll,
+            Collection::CombProject { comb, .. } => comb,
+            _ => return None,
+        };
+        let Collection::Combination {
+            parts,
+            kind,
+            members,
+            cuts,
+            ..
+        } = self.table.collection(comb_id).clone()
+        else {
+            return None;
+        };
+        if cuts.is_empty() || parts.is_empty() {
+            // Nothing to refine: COMBSIZE already covers the cuts-free case
+            // (and asserts its own existence lower bound where sound).
+            return None;
+        }
+        // Build the bounded set of per-binder index tuples (i<j for a
+        // same-source disjoint; the full product otherwise), capped at
+        // `COMB2D_BOUND` per binder.
+        let tuples = self.binder_index_tuples(&parts, kind);
+        if tuples.is_empty() {
+            return None;
+        }
+        // `P(t)` = conjunction of every per-tuple cut, encoded over the
+        // tuple's bound elements. Encoded as a boolean Formula whose OVER
+        // projection is what the existence disjunct uses.
+        let mut existence: Vec<Formula> = Vec::new();
+        for t in &tuples {
+            let p = self.encode_tuple_cuts(&cuts, &members, &parts, t);
+            existence.push(p);
+        }
+        // Size escape: a surviving tuple could use a binder index at or beyond
+        // the bound. Sound over-approximation — `size(part_s) > B` for any
+        // slot admits the possibility, so we union one disjunct per slot.
+        for &part in &parts {
+            let sq = self.table.intern_quantity(Quantity::Size(part));
+            existence.push(self.simple_atom(sq, Rel::Gt, i64::from(COMB2D_BOUND)));
+        }
+        let atom = self.atom_of(terms.clone(), rel, k.clone());
+        if atom == Formula::False {
+            return Some(atom);
+        }
+        let why = self.diags.push(
+            span,
+            format!(
+                "composite tuple-count lower bound: 2D per-candidate-cut existence \
+                 expansion (bound={COMB2D_BOUND}); under-approx kept opaque (USER ANSWER 4)"
+            ),
+        );
+        // Over: atom ∧ (⋁ P_over(t) ∨ escape). Under: atom (no strengthening).
+        let plus = fand(vec![atom.clone(), forr(existence)]);
+        Some(Formula::Dual {
+            plus: Box::new(plus),
+            minus: Box::new(atom),
+            why,
+        })
+    }
+
+    /// Bounded per-binder index tuples for the 2D expansion. Same-source
+    /// `disjoint` over `>= 2` binders enumerates strictly-increasing tuples
+    /// (matching the interpreter's `i < j` rule — no value-equal repeats);
+    /// every other shape (cross-source disjoint, cartesian) takes the full
+    /// product. Each binder index ranges `0..COMB2D_BOUND`.
+    fn binder_index_tuples(&self, parts: &[CollectionId], kind: CombKind) -> Vec<Vec<u32>> {
+        let b = COMB2D_BOUND;
+        let mut tuples: Vec<Vec<u32>> = vec![Vec::new()];
+        for _ in parts {
+            let mut next = Vec::new();
+            for t in &tuples {
+                for i in 0..b {
+                    let mut nt = t.clone();
+                    nt.push(i);
+                    next.push(nt);
+                }
+            }
+            tuples = next;
+        }
+        let same_source = parts.len() >= 2 && parts.windows(2).all(|w| w[0] == w[1]);
+        if kind == CombKind::Disjoint && same_source {
+            tuples
+                .into_iter()
+                .filter(|idxs| idxs.windows(2).all(|w| w[0] < w[1]))
+                .collect()
+        } else {
+            tuples
+        }
+    }
+
+    /// Encode the conjunction of a composite's per-tuple `cuts` for one bound
+    /// index tuple, substituting each binder name with `parts[slot][idx]`.
+    /// Each cut is a boolean predicate over the tuple binders; a cut that
+    /// references an opaque quantity (`mass(cand)`, `dR(l1,l2)`) folds to an
+    /// `Unknown` leaf whose OVER projection is `true` — so an opaque cut
+    /// contributes no tightening (sound).
+    fn encode_tuple_cuts(
+        &mut self,
+        cuts: &[ElemPredId],
+        members: &[CompositeBinder],
+        parts: &[CollectionId],
+        idx: &[u32],
+    ) -> Formula {
+        let mut parts_f: Vec<Formula> = Vec::new();
+        // Existence guard: every bound element must be present.
+        for (slot, &i) in idx.iter().enumerate() {
+            let sq = self.table.intern_quantity(Quantity::Size(parts[slot]));
+            parts_f.push(self.simple_atom(sq, Rel::Gt, i64::from(i)));
+        }
+        for &cut in cuts {
+            let node = self.elem_preds[cut.0 as usize].node.clone();
+            let inst = self.subst_binders(&node, members, parts, idx);
+            // The plan keeps candidate mass/pt-of-sum OPAQUE: a cut that did
+            // NOT fully ground to indexed per-element quantities (it still
+            // references a binder, or a `Sum` candidate over binders —
+            // `mass(jj)`, `pt(jj)`) becomes Unknown for this tuple, whose OVER
+            // projection is `true`. Only cuts built from analyzable
+            // per-element quantities (indexed ElemProp, sizes, tags, angular
+            // seps between binder elements) reach the over side.
+            if self.has_residual_binder(&inst) {
+                parts_f.push(self.unknown(
+                    inst.span,
+                    "composite per-tuple cut references an opaque candidate \
+                     (mass/pt of a 4-vector sum) — kept opaque (P3)",
+                ));
+            } else {
+                parts_f.push(self.boolean(&inst));
+            }
+        }
+        fand(parts_f)
+    }
+
+    /// Does `node` still reference a composite binder (directly or inside a
+    /// candidate `Sum`)? Such a reference means the 2D substitution could not
+    /// ground the quantity to an indexed per-element quantity — it stays
+    /// opaque (mass/pt of a sum), so the whole leaf must be Unknown.
+    fn has_residual_binder(&self, node: &HNode) -> bool {
+        fn particle_has_binder(p: &ParticleRef) -> bool {
+            match p {
+                ParticleRef::Binder { .. } => true,
+                ParticleRef::Sum(parts) => parts.iter().any(particle_has_binder),
+                _ => false,
+            }
+        }
+        let quantity_has_binder = |table: &QuantityTable, q: QuantityId| -> bool {
+            match table.quantity(q) {
+                Quantity::AngularSep { a, b, .. } => {
+                    particle_has_binder(a) || particle_has_binder(b)
+                }
+                Quantity::ExternalFn { args, .. } => args.iter().any(|arg| {
+                    matches!(arg, QuantityArg::Particle(p) if particle_has_binder(p))
+                }),
+                _ => false,
+            }
+        };
+        match &node.kind {
+            HKind::Quantity(q) => quantity_has_binder(self.table, *q),
+            HKind::ReduceProp(_) | HKind::ElemSelfProp(_) => false,
+            _ => hnode_children(node)
+                .into_iter()
+                .any(|c| self.has_residual_binder(c)),
+        }
+    }
+
+    /// Clone a per-tuple cut node, replacing every `ParticleRef::Binder{name}`
+    /// (and `ReduceProp`/binder-anchored quantities) with the indexed source
+    /// element `parts[slot][idx[slot]]`, where `slot` is the binder's position
+    /// in `members`. A reference to a binder the tuple does not bind, or to an
+    /// opaque sub-term, is left untouched (it stays opaque ⇒ Unknown leaf).
+    fn subst_binders(
+        &mut self,
+        node: &HNode,
+        members: &[CompositeBinder],
+        parts: &[CollectionId],
+        idx: &[u32],
+    ) -> HNode {
+        let kind = match &node.kind {
+            HKind::Quantity(q) => {
+                HKind::Quantity(self.subst_binder_quantity(*q, members, parts, idx))
+            }
+            HKind::Neg(a) => HKind::Neg(Box::new(self.subst_binders(a, members, parts, idx))),
+            HKind::Not(a) => HKind::Not(Box::new(self.subst_binders(a, members, parts, idx))),
+            HKind::Abs(a) => HKind::Abs(Box::new(self.subst_binders(a, members, parts, idx))),
+            HKind::Binary { op, lhs, rhs } => HKind::Binary {
+                op: *op,
+                lhs: Box::new(self.subst_binders(lhs, members, parts, idx)),
+                rhs: Box::new(self.subst_binders(rhs, members, parts, idx)),
+            },
+            HKind::Cmp { op, lhs, rhs } => HKind::Cmp {
+                op: *op,
+                lhs: Box::new(self.subst_binders(lhs, members, parts, idx)),
+                rhs: Box::new(self.subst_binders(rhs, members, parts, idx)),
+            },
+            HKind::And(v) => {
+                HKind::And(v.iter().map(|n| self.subst_binders(n, members, parts, idx)).collect())
+            }
+            HKind::Or(v) => {
+                HKind::Or(v.iter().map(|n| self.subst_binders(n, members, parts, idx)).collect())
+            }
+            HKind::Band { kind, expr, lo, hi } => HKind::Band {
+                kind: *kind,
+                expr: Box::new(self.subst_binders(expr, members, parts, idx)),
+                lo: lo.clone(),
+                hi: hi.clone(),
+            },
+            HKind::Ternary { guard, then, els } => HKind::Ternary {
+                guard: Box::new(self.subst_binders(guard, members, parts, idx)),
+                then: Box::new(self.subst_binders(then, members, parts, idx)),
+                els: els.as_ref().map(|e| Box::new(self.subst_binders(e, members, parts, idx))),
+            },
+            other => other.clone(),
+        };
+        HNode {
+            kind,
+            span: node.span,
+            tag: node.tag.clone(),
+        }
+    }
+
+    /// The source element a binder name resolves to in this tuple, or `None`
+    /// if the name is not a bound slot.
+    fn binder_elem(
+        members: &[CompositeBinder],
+        parts: &[CollectionId],
+        idx: &[u32],
+        name: adl_sema::Symbol,
+    ) -> Option<ParticleRef> {
+        let slot = members.iter().position(|m| m.name == name)?;
+        Some(ParticleRef::Elem {
+            coll: *parts.get(slot)?,
+            index: ElemIndex::FromFront(*idx.get(slot)?),
+        })
+    }
+
+    /// Rewrite an interned quantity, replacing every `ParticleRef::Binder`
+    /// with its bound source element. Re-interns; an unchanged quantity keeps
+    /// its id. A `Sum`/opaque candidate over binders stays opaque (the
+    /// existing `ExternalFn`/`Sum` posture) — sound: it folds to an Unknown
+    /// leaf whose OVER projection is `true`.
+    fn subst_binder_quantity(
+        &mut self,
+        q: QuantityId,
+        members: &[CompositeBinder],
+        parts: &[CollectionId],
+        idx: &[u32],
+    ) -> QuantityId {
+        let subst_p = |p: &ParticleRef| -> ParticleRef {
+            match p {
+                ParticleRef::Binder { name, .. } => {
+                    Self::binder_elem(members, parts, idx, *name).unwrap_or_else(|| p.clone())
+                }
+                other => other.clone(),
+            }
+        };
+        match self.table.quantity(q).clone() {
+            Quantity::AngularSep { kind, a, b, .. } => {
+                let (na, nb) = (subst_p(&a), subst_p(&b));
+                if na == a && nb == b {
+                    return q;
+                }
+                self.table.intern_angular(kind, na, nb)
+            }
+            Quantity::ExternalFn { name, args } => {
+                let mut changed = false;
+                let new_args: Vec<QuantityArg> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        QuantityArg::Particle(p @ ParticleRef::Binder { .. }) => {
+                            let np = subst_p(p);
+                            if np != *p {
+                                changed = true;
+                            }
+                            QuantityArg::Particle(np)
+                        }
+                        other => other.clone(),
+                    })
+                    .collect();
+                if !changed {
+                    return q;
+                }
+                self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: new_args,
+                })
+            }
+            _ => q,
+        }
+    }
+
     // ---- comparisons --------------------------------------------------------
 
     fn cmp(&mut self, op: CmpOp, lhs: &HNode, rhs: &HNode, span: Span) -> Formula {
@@ -571,6 +1208,12 @@ impl Encoder<'_> {
                 // l ⋈ r  ⇔  Σ terms ⋈ −k. Exact: rationals never overflow.
                 let d = l.sub(&r);
                 let k = -&d.k;
+                // P3: a positive lower bound on a composite tuple count
+                // (`size(K) >= 1`, `size(K->cand) == 1`, …) gains a 2D
+                // per-candidate-cut existence refinement on the OVER side.
+                if let Some(f) = self.try_comb_existence(&d.terms, rel, &k, span) {
+                    return f;
+                }
                 self.atom_of(d.terms, rel, k)
             }
             (Err(LinErr::NonFinite), _) | (_, Err(LinErr::NonFinite)) => Formula::False,
@@ -793,6 +1436,17 @@ impl Encoder<'_> {
             HKind::ElemSelfProp(_) => Err(LinErr::NonLinear(
                 "implicit-element property outside an object block".to_owned(),
             )),
+            HKind::ReduceProp(_) => Err(LinErr::NonLinear(
+                "reducer-element property is interpret-only".to_owned(),
+            )),
+            // A reducer in arithmetic position is a value, not a condition:
+            // boolean reducers (`any`/`all`) are encoded at the boolean
+            // layer; a numeric reducer (`sum`, or a `min`/`max` outside a
+            // monotone comparison) is an opaque value here.
+            HKind::Reduce { kind, .. } => Err(LinErr::NonLinear(format!(
+                "`{}` reducer value is opaque to linear arithmetic",
+                kind.as_str()
+            ))),
             HKind::Bool(_)
             | HKind::Cmp { .. }
             | HKind::And(_)

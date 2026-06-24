@@ -150,6 +150,9 @@ impl Dumper {
                         let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
                         let _ = write!(header, " src=union({})", names.join(","));
                     }
+                    TakeSource::Expr(_) => {
+                        let _ = write!(header, " src=expr");
+                    }
                 }
                 if !binders.is_empty() {
                     let names: Vec<&str> = binders.iter().map(|b| b.name.as_str()).collect();

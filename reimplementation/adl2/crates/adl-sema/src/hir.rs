@@ -29,6 +29,37 @@ impl Fragment {
     }
 }
 
+/// A reducer over a collection (`any`/`all`/`min`/`max`/`sum`). Booleans
+/// (`Any`/`All`) fold a predicate body; numerics (`Sum`/`Min`/`Max`) fold a
+/// scalar body. Interpret-only in P1 (no analyzer encoding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduceKind {
+    Any,
+    All,
+    Sum,
+    Min,
+    Max,
+}
+
+impl ReduceKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReduceKind::Any => "any",
+            ReduceKind::All => "all",
+            ReduceKind::Sum => "sum",
+            ReduceKind::Min => "min",
+            ReduceKind::Max => "max",
+        }
+    }
+
+    /// `Any`/`All` fold a boolean body; `Sum`/`Min`/`Max` fold a scalar.
+    #[must_use]
+    pub fn is_boolean(self) -> bool {
+        matches!(self, ReduceKind::Any | ReduceKind::All)
+    }
+}
+
 /// Arithmetic operator (boolean structure is separate: `And`/`Or`/`Not`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithOp {
@@ -96,6 +127,7 @@ impl HNode {
             HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => vec![lhs, rhs],
             HKind::And(v) | HKind::Or(v) => v.iter().collect(),
             HKind::Band { expr, .. } => vec![expr],
+            HKind::Reduce { body, .. } => vec![body],
             HKind::Ternary { guard, then, els } => {
                 let mut v = vec![guard.as_ref(), then.as_ref()];
                 if let Some(e) = els {
@@ -118,6 +150,19 @@ pub enum HKind {
     Quantity(QuantityId),
     /// Property of the implicit element (object-block cut context).
     ElemSelfProp(PropId),
+    /// Property of the current reducer iteration element (`pt(jets)` inside
+    /// `any(pt(jets) > 30)`). Interpret-only (P1).
+    ReduceProp(PropId),
+    /// A reducer over a collection (`any`/`all`/`min`/`max`/`sum`).
+    /// Interpret-only in P1: the formula/axiom layers tag it `Unsupported`.
+    /// `slice` is reserved for P1-part-B static slices (`coll[:n]`); always
+    /// `None` today.
+    Reduce {
+        kind: ReduceKind,
+        coll: CollectionId,
+        body: Box<HNode>,
+        slice: Option<(u32, Option<u32>)>,
+    },
     /// Unindexed per-element property at region level (OPEN-1: the
     /// formula layer applies the Dual bounded expansion).
     CollProp {

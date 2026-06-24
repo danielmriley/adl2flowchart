@@ -214,7 +214,13 @@ fn base_of(hir: &Hir, c: CollectionId) -> Option<CollectionId> {
     match hir.table.collection(c) {
         Collection::Base(_) => Some(c),
         Collection::Filtered { parent, .. } => base_of(hir, *parent),
-        Collection::Union(_) | Collection::Combination { .. } => None,
+        // A sort/slice shares its source's base (same element set / sub-range).
+        Collection::Sorted { source, .. } | Collection::Slice { source, .. } => {
+            base_of(hir, *source)
+        }
+        Collection::Union(_)
+        | Collection::Combination { .. }
+        | Collection::CombProject { .. } => None,
     }
 }
 
@@ -232,8 +238,46 @@ fn realizable(hir: &Hir, c: CollectionId, out: &mut BTreeSet<CollectionId>) -> R
             }
             Ok(())
         }
-        Collection::Combination { .. } => Err("combinatorial collection in witness".to_owned()),
+        // A sort/slice realizes through its source (the witness only needs the
+        // element set; the interpreter re-sorts/sub-ranges at validation).
+        Collection::Sorted { source, .. } | Collection::Slice { source, .. } => {
+            realizable(hir, *source, out)
+        }
+        // A composite realizes through its binder SOURCES (P3): build those
+        // base/filtered collections from the model, then let the interpreter
+        // enumerate the tuples and apply the per-tuple cuts during
+        // re-validation. The composite itself is never serialized directly.
+        // If the candidate/per-tuple cut depends on an opaque mass/pt, the
+        // interpreter reports "no reference interpretation" and the witness
+        // stays a Candidate — never a false Validated.
+        Collection::Combination { parts, .. } => {
+            for &p in parts {
+                realizable(hir, p, out)?;
+            }
+            Ok(())
+        }
+        Collection::CombProject { comb, .. } => realizable(hir, *comb, out),
     }
+}
+
+/// Base collections that feed a same-source `disjoint` composite (whose
+/// surviving pairs require kinematically-distinct elements, USER ANSWER 4).
+/// The realizer gives these per-index distinct `eta` so a disjoint pair can
+/// form; every other base keeps the unperturbed `eta = 0` default.
+fn disjoint_source_bases(hir: &Hir) -> BTreeSet<CollectionId> {
+    use adl_sema::CombKind;
+    let mut out = BTreeSet::new();
+    for c in hir.table.collections() {
+        if let Collection::Combination { parts, kind, .. } = c
+            && *kind == CombKind::Disjoint
+            && parts.len() >= 2
+            && parts.windows(2).all(|w| w[0] == w[1])
+            && let Some(b) = base_of(hir, parts[0])
+        {
+            out.insert(b);
+        }
+    }
+    out
 }
 
 fn build_event_json(
@@ -433,11 +477,22 @@ fn build_event_json(
     // -- phase 2.5: default the remaining standard properties ----------------
     // (free values; the formulas never constrained them — SPEC §4.1 says
     // objects carry them, and the interpreter soft-fails their absence.)
+    //
+    // For base collections that feed a same-source `disjoint` composite, the
+    // `eta` default is made per-index DISTINCT (`0.1 * index`) so the source
+    // elements are kinematically distinct (USER ANSWER 4): with all-equal
+    // eta/phi/m, the value-distinctness drop nulls every pair and
+    // `size(K) >= 1` can never validate, downgrading a sound overlap to
+    // POSSIBLY. The perturbation is SCOPED to disjoint-source bases so it
+    // does not churn unrelated witnesses; a free per-index eta only ever
+    // fills an UNSET value (a pinned/angular-realized eta wins), so it never
+    // makes a real member event rejected — validation remains the safety net.
+    let disjoint_source_bases = disjoint_source_bases(hir);
     {
         let eta_key = ext.prop_canon("eta").0;
         let phi_key = ext.prop_canon("phi").0;
         let m_key = ext.prop_canon("m").0;
-        let defaults: [(&str, f64); 6] = [
+        let const_defaults: [(&str, f64); 6] = [
             (&eta_key, 0.0),
             (&phi_key, 0.0),
             (&m_key, 0.0),
@@ -445,9 +500,14 @@ fn build_event_json(
             ("ctag", 0.0),
             ("tautag", 0.0),
         ];
-        for objs in built.values_mut() {
-            for o in objs {
-                for (k, v) in defaults {
+        for (base, objs) in built.iter_mut() {
+            let distinct_eta = disjoint_source_bases.contains(base);
+            for (i, o) in objs.iter_mut().enumerate() {
+                if distinct_eta {
+                    #[allow(clippy::cast_precision_loss)]
+                    o.entry(eta_key.clone()).or_insert(0.1 * i as f64);
+                }
+                for (k, v) in const_defaults {
                     o.entry(k.to_owned()).or_insert(v);
                 }
             }

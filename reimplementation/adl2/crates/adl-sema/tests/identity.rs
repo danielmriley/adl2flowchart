@@ -335,3 +335,81 @@ fn region_used_as_predicate_inlines_prior_region() {
         HirRegionStmt::Inherit { region: 0, .. }
     ));
 }
+
+// ---- P2 sort -> alias (soundness-critical) -----------------------------
+
+#[test]
+fn descending_pt_sort_of_pt_ordered_source_aliases_to_source() {
+    // A stable descending-pT sort of a pT-descending source (base or
+    // filtered) is the identity permutation: it canonicalizes to the SOURCE
+    // collection id, so it inherits ORD/IDOM/EPRED and cross-region identity.
+    let hir = analyze(
+        "object jets\n  take Jet\n  select pT > 30\n\
+         object sjets\n  take sort(jets, pt(jets), descend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_eq!(sjets, jets, "descending-pt sort of an ordered source is an alias");
+    // No opaque Sorted collection was interned for this shape.
+    assert!(
+        !hir.table
+            .collections()
+            .iter()
+            .any(|c| matches!(c, Collection::Sorted { .. })),
+        "the aliased sort must not leave a distinct Sorted collection"
+    );
+}
+
+#[test]
+fn ascending_sort_does_not_alias_and_stays_opaque_sorted() {
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         object sjets\n  take sort(jets, pt(jets), ascend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_ne!(sjets, jets, "ascending sort is NOT the identity permutation");
+    assert!(
+        matches!(hir.table.collection(sjets), Collection::Sorted { .. }),
+        "ascending sort stays an opaque Sorted"
+    );
+    // pt_ordered must be false for it (no ORD/IDOM index facts).
+    let pt = ExtDecls::legacy().prop_canon("pt").0;
+    assert!(!hir.table.pt_ordered(sjets, &pt));
+}
+
+#[test]
+fn sort_over_union_does_not_alias() {
+    // The source is a union (not pT-descending), so even a descending-pT sort
+    // must NOT alias — the gravest false-PROVEN trap.
+    let hir = analyze(
+        "object eles\n  take Ele\n\
+         object muons\n  take Muo\n\
+         object leptons\n  take union(eles, muons)\n\
+         object sleptons\n  take sort(leptons, pt(leptons), descend)\n",
+    );
+    let leptons = hir.collection_of("leptons").unwrap();
+    let sleptons = hir.collection_of("sleptons").unwrap();
+    assert_ne!(sleptons, leptons, "sort over a union must not alias");
+    assert!(matches!(
+        hir.table.collection(sleptons),
+        Collection::Sorted { .. }
+    ));
+    let pt = ExtDecls::legacy().prop_canon("pt").0;
+    assert!(!hir.table.pt_ordered(sleptons, &pt));
+}
+
+#[test]
+fn sort_by_non_pt_key_does_not_alias() {
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         object sjets\n  take sort(jets, eta(jets), descend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_ne!(sjets, jets, "a non-pt sort key must not alias");
+    assert!(matches!(
+        hir.table.collection(sjets),
+        Collection::Sorted { .. }
+    ));
+}

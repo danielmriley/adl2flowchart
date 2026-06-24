@@ -41,6 +41,16 @@ pub struct EventObject {
 }
 
 impl EventObject {
+    /// Build a synthetic object from canonical (key, value) pairs — used by
+    /// the interpreter to materialize composite-candidate 4-vectors
+    /// (`candidate ll = l1 + l2`) as indexable elements.
+    #[must_use]
+    pub fn from_props(props: impl IntoIterator<Item = (String, f64)>) -> Self {
+        EventObject {
+            props: props.into_iter().collect(),
+        }
+    }
+
     /// Property value by canonical key (see [`ExtDecls::prop_canon`]).
     #[must_use]
     pub fn get(&self, canon_key: &str) -> Option<f64> {

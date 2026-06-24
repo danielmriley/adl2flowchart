@@ -29,8 +29,8 @@
 
 use adl_formula::{LinAtom, QFormula, Rel};
 use adl_sema::{
-    AngKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind, HNode, Hir,
-    ParticleRef, Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
+    AngKind, CombAxis, CombKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind,
+    HNode, Hir, ParticleRef, Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,6 +54,10 @@ pub enum AxiomId {
     Twin,
     Epred,
     Idom,
+    Szslice,
+    Szperm,
+    CombSize,
+    Trig,
 }
 
 impl AxiomId {
@@ -70,11 +74,15 @@ impl AxiomId {
             AxiomId::Twin => "TWIN",
             AxiomId::Epred => "EPRED",
             AxiomId::Idom => "IDOM",
+            AxiomId::Szslice => "SZSLICE",
+            AxiomId::Szperm => "SZPERM",
+            AxiomId::CombSize => "COMBSIZE",
+            AxiomId::Trig => "TRIG",
         }
     }
 
     /// All catalog ids, in catalog order.
-    pub const ALL: [AxiomId; 10] = [
+    pub const ALL: [AxiomId; 14] = [
         AxiomId::Ord,
         AxiomId::Sz0,
         AxiomId::Sub,
@@ -85,6 +93,10 @@ impl AxiomId {
         AxiomId::Twin,
         AxiomId::Epred,
         AxiomId::Idom,
+        AxiomId::Szslice,
+        AxiomId::Szperm,
+        AxiomId::CombSize,
+        AxiomId::Trig,
     ];
 }
 
@@ -140,13 +152,14 @@ pub fn catalog() -> &'static [CatalogEntry] {
         CatalogEntry {
             id: AxiomId::Nneg,
             statement: "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external \
-                        calls named exactly pt/m/mass/e/energy/dr (case-insensitive)",
+                        calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)",
             justification: "true of every physical event because these are magnitudes by \
                             definition: pT, mass and energy of ANY particle combination are \
                             >= 0 (m and E of a summed four-vector by the timelike/lightlike \
-                            physical-state condition), and dR is a metric distance. The \
-                            EXACT-NAME rule keeps unrelated opaque functions (bdt, \
-                            aplanarity, ...) free",
+                            physical-state condition), dR is a metric distance, and sqrt is \
+                            the non-negative real root. The EXACT-NAME rule keeps unrelated \
+                            opaque functions (bdt, aplanarity, ...) free, and excludes \
+                            eta/phi-of-sum (no sign axiom)",
             assumption: "none",
         },
         CatalogEntry {
@@ -187,6 +200,49 @@ pub fn catalog() -> &'static [CatalogEntry] {
                             j >= i and P is pT-descending; satisfiable for absent elements \
                             under the canonical pad-with-0 extension",
             assumption: "ORD + SUB",
+        },
+        CatalogEntry {
+            id: AxiomId::Szslice,
+            statement: "0 <= size(coll[a:b]) <= size(coll); also <= b - a for a concrete \
+                        upper bound b >= a",
+            justification: "true of every physical event because a half-open contiguous slice \
+                            src[a..b] is a sub-list: its length never exceeds the source length, \
+                            nor (for a concrete end) the requested window width b - a",
+            assumption: "slice = clamped half-open sub-range",
+        },
+        CatalogEntry {
+            id: AxiomId::Szperm,
+            statement: "size(sort(C, key, dir)) = size(C)",
+            justification: "true of every physical event because a sort is a permutation of the \
+                            source list — a bijection preserves cardinality regardless of the \
+                            (event-dependent) key. NO per-index ordering fact rides on this; \
+                            ORD/IDOM stay off for a non-pT/ascending/union-rooted sort",
+            assumption: "sort = permutation",
+        },
+        CatalogEntry {
+            id: AxiomId::CombSize,
+            statement: "size(K->axis) = size(K); for a same-source disjoint K over C: \
+                        size(C) < 2 => size(K) = 0 and size(K) >= 0; for a cartesian/cross-source \
+                        disjoint K over distinct parts: any part empty => size(K) = 0, all parts \
+                        non-empty => size(K) >= 1",
+            justification: "true of every physical event by tuple combinatorics: a projection \
+                            keeps one element per surviving tuple (a bijection onto the tuples); a \
+                            same-source pair needs >= 2 distinct source elements to form ANY tuple \
+                            (the POSITIVE lower bound size(K) >= 1 is DELIBERATELY OMITTED — \
+                            value-distinctness, USER ANSWER 4, lets two value-equal elements form \
+                            zero pairs); a cross-source product is non-empty exactly when every \
+                            factor is",
+            assumption: "comb = tuple enumeration; disjoint distinctness by kinematic value",
+        },
+        CatalogEntry {
+            id: AxiomId::Trig,
+            statement: "-1 <= cos(x) <= 1 and -1 <= sin(x) <= 1 for opaque cos/sin calls",
+            justification: "true of every physical event because the circular functions are \
+                            bounded in [-1, 1] for every real argument, regardless of the (opaque) \
+                            argument. NOT applied to tan/asin/... (unbounded / domain-restricted), \
+                            and never constant-folded (an irrational cos value is not an exact \
+                            rational)",
+            assumption: "none",
         },
     ]
 }
@@ -316,6 +372,12 @@ fn particle_label(hir: &Hir, p: &ParticleRef) -> String {
                 hir.symbols.display(*name)
             )
         }
+        ParticleRef::ThisElem => "this".to_owned(),
+        ParticleRef::ReduceElem => "elem".to_owned(),
+        ParticleRef::Sum(parts) => {
+            let parts: Vec<String> = parts.iter().map(|p| particle_label(hir, p)).collect();
+            format!("({})", parts.join(" + "))
+        }
     }
 }
 
@@ -409,11 +471,15 @@ fn emit_round(hir: &mut Hir, ext: &ExtDecls, qs: &[QuantityId]) -> Vec<AxiomInst
     em.sub(qs);
     em.uni(qs);
     em.nneg(qs);
+    em.trig(qs);
     em.dphi(qs);
     em.tag(qs);
     em.twin(qs);
     em.epred(qs);
     em.idom(qs);
+    em.szslice(qs);
+    em.szperm(qs);
+    em.comb_size(qs);
     em.out
 }
 
@@ -439,23 +505,17 @@ impl Emit<'_> {
         quantity_label(self.hir, q)
     }
 
-    /// Is `c` pT-descending? ORD/IDOM ride on pT ordering, which a base
-    /// collection has and a filter preserves (it keeps source order) — but
-    /// a union/combination interleaves, so the property only holds when the
-    /// *transitive* root of the filter chain is a base. A `Filtered` whose
-    /// ancestor is a `Union` (e.g. `take union(eles,muons) select pT>20`)
-    /// is NOT globally pT-descending: the interpreter concatenates union
-    /// parts without a pT-merge. Matching `Filtered { .. }` directly here
-    /// would assert false ordering facts and yield false PROVEN verdicts.
+    /// Is `c` pT-descending? ORD/IDOM/EPRED ride on pT ordering. Delegates to
+    /// the single shared walk on [`QuantityTable::pt_ordered`] (plan §risk 5 —
+    /// no second copy may diverge): true for a base, a filtered chain rooted at
+    /// a base (filtering preserves source order), a slice of a pT-descending
+    /// source (a contiguous sub-sequence stays sorted), and a descending-pT
+    /// sort of a pT-descending source (the identity permutation — but that
+    /// exact shape is aliased to the source at resolve time, so it never
+    /// reaches here as a distinct `Sorted`). A union/combination/projection,
+    /// a non-pT or ascending sort, is `false` (the sound posture).
     fn pt_ordered(&self, c: CollectionId) -> bool {
-        let mut c = c;
-        loop {
-            match self.hir.table.collection(c) {
-                Collection::Base(_) => return true,
-                Collection::Filtered { parent, .. } => c = *parent,
-                Collection::Union(_) | Collection::Combination { .. } => return false,
-            }
-        }
+        self.hir.table.pt_ordered(c, &self.pt_key)
     }
 
     fn elem_pt_quantities(
@@ -563,11 +623,16 @@ impl Emit<'_> {
     }
 
     // NNEG: pt/m/e element props, ht-family scalars, MET.pt, dR >= 0;
-    // opaque external calls named exactly pt/m/mass/e/energy/dr
+    // opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt
     // (case-insensitive symbol key) are magnitudes of SOME particle
     // combination, hence >= 0 regardless of the (opaque) arguments.
+    // `sqrt` is the non-negative real root by definition; the mass/pt/e of
+    // a 4-vector sum (`mass(l1+l2)`) interns as the exact-name `mass`/`pt`/`e`
+    // getter, so it inherits NNEG via the existing exact-name rule. `eta`/`phi`
+    // of a sum are deliberately ABSENT (eta unbounded, phi convention-
+    // dependent — a sign axiom there is the false-PROVEN trap, plan §risk 4).
     fn nneg(&mut self, qs: &[QuantityId]) {
-        const NNEG_EXTFN_KEYS: [&str; 6] = ["pt", "m", "mass", "e", "energy", "dr"];
+        const NNEG_EXTFN_KEYS: [&str; 7] = ["pt", "m", "mass", "e", "energy", "dr", "sqrt"];
         for &q in qs {
             let nonneg = match self.hir.table.quantity(q) {
                 Quantity::ElemProp { prop, .. } => self
@@ -592,6 +657,27 @@ impl Emit<'_> {
                 let f = Self::atom(&[(1.0, q)], Rel::Ge, 0.0);
                 let d = format!("{} >= 0", self.label(q));
                 self.push(AxiomId::Nneg, f, d);
+            }
+        }
+    }
+
+    // TRIG: -1 <= cos(x) <= 1 and -1 <= sin(x) <= 1 for opaque cos/sin calls
+    // (P3). Universally true of any real argument; sound regardless of the
+    // (opaque) argument. Only the bounded circular functions — tan/asin/etc.
+    // are deliberately excluded (unbounded / domain-restricted).
+    fn trig(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            let Quantity::ExternalFn { name, .. } = self.hir.table.quantity(q) else {
+                continue;
+            };
+            let key = self.hir.symbols.key(*name);
+            if key == "cos" || key == "sin" {
+                let f = QFormula::And(vec![
+                    Self::atom(&[(1.0, q)], Rel::Le, 1.0),
+                    Self::atom(&[(1.0, q)], Rel::Ge, -1.0),
+                ]);
+                let d = format!("-1 <= {} <= 1", self.label(q));
+                self.push(AxiomId::Trig, f, d);
             }
         }
     }
@@ -713,6 +799,176 @@ impl Emit<'_> {
                 let f = Self::atom(&[(1.0, qf), (-1.0, qp)], Rel::Le, 0.0);
                 let d = format!("{} <= {}", self.label(qf), self.label(qp));
                 self.push(AxiomId::Idom, f, d);
+            }
+        }
+    }
+
+    // SZSLICE: 0 <= size(src[a:b]) <= size(src); also <= b - a for a
+    // concrete upper bound b >= a. The `<= size(src) - a` clamped bound is
+    // an ITE (deferred); these two are the unconditional linear subset.
+    fn szslice(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            let Quantity::Size(c) = self.hir.table.quantity(q) else {
+                continue;
+            };
+            let Collection::Slice { source, start, end } = *self.hir.table.collection(*c) else {
+                continue;
+            };
+            // size(slice) <= size(src).
+            let qsrc = self.hir.table.intern_quantity(Quantity::Size(source));
+            let f = Self::atom(&[(1.0, q), (-1.0, qsrc)], Rel::Le, 0.0);
+            let d = format!("{} <= {}", self.label(q), self.label(qsrc));
+            self.push(AxiomId::Szslice, f, d);
+            // size(slice) <= b - a, only when the window width is non-negative
+            // (a concrete end >= start; an inverted window clamps to empty, so
+            // `size <= negative` would be false — never emitted).
+            if let Some(end) = end
+                && end >= start
+            {
+                let width = f64::from(end - start);
+                let f = Self::atom(&[(1.0, q)], Rel::Le, width);
+                let d = format!("{} <= {}", self.label(q), end - start);
+                self.push(AxiomId::Szslice, f, d);
+            }
+        }
+    }
+
+    // SZPERM: size(sort(C, key, dir)) = size(C). A permutation is a bijection,
+    // so it preserves cardinality for ANY key/direction. (The descending-pT
+    // sort of a pT-descending source is already aliased to the source at
+    // resolve time, so it never reaches here as a distinct `Sorted`; this
+    // covers the opaque non-pT / ascending / union-rooted sorts.)
+    fn szperm(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            let Quantity::Size(c) = self.hir.table.quantity(q) else {
+                continue;
+            };
+            let Collection::Sorted { source, .. } = *self.hir.table.collection(*c) else {
+                continue;
+            };
+            let qsrc = self.hir.table.intern_quantity(Quantity::Size(source));
+            let f = Self::atom(&[(1.0, q), (-1.0, qsrc)], Rel::Eq, 0.0);
+            let d = format!("{} = {}", self.label(q), self.label(qsrc));
+            self.push(AxiomId::Szperm, f, d);
+        }
+    }
+
+    // COMBSIZE: tuple-combinatorics size facts (plan §risk 2, USER ANSWER 4).
+    //
+    // (a) COMB-MEMBER-SIZE: size(K->axis) = size(K). A projection keeps exactly
+    //     one element per surviving tuple (a bijection onto the tuples), so the
+    //     count is identical for any axis (member or candidate). Sound even when
+    //     the combination has per-tuple cuts (the projection is over the SAME
+    //     post-cut tuple set).
+    //
+    // (b) On the combination size itself, the SOUND existence facts:
+    //     - size(K) >= 0 always;
+    //     - any source part empty  => size(K) = 0   (no tuples to form at all,
+    //       independent of cuts);
+    //     - same-source disjoint over C with size(C) < 2 => size(K) = 0
+    //       (a strictly-increasing pair needs two source positions);
+    //     - all parts non-empty => size(K) >= 1 ONLY for a cuts-free
+    //       cartesian / cross-source-disjoint combination. The same-source
+    //       disjoint POSITIVE lower bound is DELIBERATELY OMITTED (USER ANSWER
+    //       4: two kinematically value-equal elements form zero pairs), and the
+    //       lower bound is suppressed whenever the combination carries cuts (a
+    //       per-tuple filter can drop every tuple).
+    fn comb_size(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            let Quantity::Size(c) = *self.hir.table.quantity(q) else {
+                continue;
+            };
+            match self.hir.table.collection(c).clone() {
+                // (a) projection size = combination size.
+                Collection::CombProject { comb, axis } => {
+                    let qcomb = self.hir.table.intern_quantity(Quantity::Size(comb));
+                    let f = Self::atom(&[(1.0, q), (-1.0, qcomb)], Rel::Eq, 0.0);
+                    let axis_label = match axis {
+                        CombAxis::Member(s) | CombAxis::Candidate(s) => {
+                            self.hir.symbols.display(s).to_owned()
+                        }
+                    };
+                    let d = format!("{} = {} (->{axis_label})", self.label(q), self.label(qcomb));
+                    self.push(AxiomId::CombSize, f, d);
+                }
+                Collection::Combination {
+                    parts,
+                    kind,
+                    cuts,
+                    candidate,
+                    ..
+                } => {
+                    // size(K) >= 0.
+                    let f = Self::atom(&[(1.0, q)], Rel::Ge, 0.0);
+                    let d = format!("{} >= 0", self.label(q));
+                    self.push(AxiomId::CombSize, f, d);
+
+                    let part_sizes: Vec<QuantityId> = parts
+                        .iter()
+                        .map(|&p| self.hir.table.intern_quantity(Quantity::Size(p)))
+                        .collect();
+                    // Same-source disjoint over >= 2 binders: a strictly-
+                    // increasing index tuple needs >= 2 distinct source
+                    // positions, so a source with < 2 elements forms no tuple.
+                    // (A single-binder "disjoint" is degenerate — one tuple per
+                    // element — so the < 2 zero fact would be unsound; it falls
+                    // to the `else` per-factor-empty handling instead.)
+                    let same_source = parts.len() >= 2 && parts.windows(2).all(|w| w[0] == w[1]);
+
+                    if kind == CombKind::Disjoint && same_source {
+                        // size(C) < 2  =>  size(K) = 0, i.e. size(C) >= 2 OR
+                        // size(K) = 0. (size(C) is an integer; < 2 ⇔ <= 1.)
+                        let qc = part_sizes[0];
+                        let guard = Self::atom(&[(1.0, qc)], Rel::Ge, 2.0);
+                        let empty = Self::atom(&[(1.0, q)], Rel::Eq, 0.0);
+                        let f = QFormula::Or(vec![guard, empty]);
+                        let d = format!("{} < 2 => {} = 0", self.label(qc), self.label(q));
+                        self.push(AxiomId::CombSize, f, d);
+                    } else {
+                        // Cross-source / cartesian: any factor empty => size = 0.
+                        // size(part_i) = 0  =>  size(K) = 0, encoded as
+                        // size(part_i) >= 1  OR  size(K) = 0 for each factor.
+                        for &qp in &part_sizes {
+                            let guard = Self::atom(&[(1.0, qp)], Rel::Ge, 1.0);
+                            let empty = Self::atom(&[(1.0, q)], Rel::Eq, 0.0);
+                            let f = QFormula::Or(vec![guard, empty]);
+                            let d = format!("{} = 0 => {} = 0", self.label(qp), self.label(q));
+                            self.push(AxiomId::CombSize, f, d);
+                        }
+                        // all-parts-nonempty => size(K) >= 1, ONLY for a bare
+                        // CARTESIAN (kind == Cartesian) with no per-tuple cuts (a
+                        // cut can drop every tuple), no candidate (a candidate
+                        // whose 4-vector is a soft non-value — a missing
+                        // mass/property — drops its tuple), and at least one part.
+                        // A cartesian product applies NO value-distinctness drop,
+                        // so non-empty factors guarantee >= 1 surviving tuple. A
+                        // cross-source DISJOINT is EXCLUDED: USER ANSWER 4's
+                        // value-distinctness can drop the sole pair (two
+                        // kinematically value-equal elements across the sources
+                        // form 0 pairs), so its lower bound is unsound.
+                        if kind == CombKind::Cartesian
+                            && cuts.is_empty()
+                            && candidate.is_none()
+                            && !part_sizes.is_empty()
+                        {
+                            // ¬(∀i size(part_i) >= 1)  ∨  size(K) >= 1, i.e.
+                            // ⋁ᵢ size(part_i) <= 0  ∨  size(K) >= 1.
+                            let mut alts: Vec<QFormula> = part_sizes
+                                .iter()
+                                .map(|&qp| Self::atom(&[(1.0, qp)], Rel::Le, 0.0))
+                                .collect();
+                            alts.push(Self::atom(&[(1.0, q)], Rel::Ge, 1.0));
+                            let parts_lbl = part_sizes
+                                .iter()
+                                .map(|&qp| self.label(qp))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let d = format!("all of [{parts_lbl}] >= 1 => {} >= 1", self.label(q));
+                            self.push(AxiomId::CombSize, QFormula::Or(alts), d);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

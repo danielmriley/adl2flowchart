@@ -21,8 +21,8 @@ use crate::dump::RenderCtx;
 use crate::hir::{ElemPred, HKind, HNode, Hir, HirRegion, HirRegionStmt};
 use crate::intern::{Symbol, SymbolTable};
 use crate::quantity::{
-    Collection, CollectionId, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg, QuantityId,
-    QuantityTable, ScalarSource,
+    CombAxis, Collection, CollectionId, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg,
+    QuantityId, QuantityTable, ScalarSource,
 };
 use std::collections::HashMap;
 
@@ -168,9 +168,67 @@ impl Merger {
             Collection::Union(parts) => {
                 Collection::Union(self.remap_colls(src, memo, parts))
             }
-            Collection::Combination { parts } => Collection::Combination {
-                parts: self.remap_colls(src, memo, parts),
-            },
+            Collection::Combination {
+                parts,
+                kind,
+                members,
+                candidate,
+                cuts,
+            } => {
+                let (parts, kind, members, candidate, cuts) = (
+                    parts.clone(),
+                    *kind,
+                    members.clone(),
+                    candidate.clone(),
+                    cuts.clone(),
+                );
+                let parts = self.remap_colls(src, memo, &parts);
+                let members = members
+                    .iter()
+                    .map(|m| crate::quantity::CompositeBinder {
+                        name: self.remap_sym(src, m.name),
+                        source: self.remap_coll(src, memo, m.source),
+                    })
+                    .collect();
+                let candidate = candidate.as_ref().map(|c| crate::quantity::CompositeCandidate {
+                    name: self.remap_sym(src, c.name),
+                    vector: self.remap_particle(src, memo, &c.vector),
+                });
+                let cuts = cuts
+                    .iter()
+                    .map(|p| self.remap_pred(src, memo, *p))
+                    .collect();
+                Collection::Combination {
+                    parts,
+                    kind,
+                    members,
+                    candidate,
+                    cuts,
+                }
+            }
+            Collection::Sorted { source, key, dir } => {
+                let (source, key, dir) = (*source, key.clone(), *dir);
+                Collection::Sorted {
+                    source: self.remap_coll(src, memo, source),
+                    key: self.remap_sort_key(src, memo, key),
+                    dir,
+                }
+            }
+            Collection::Slice { source, start, end } => {
+                let (source, start, end) = (*source, *start, *end);
+                Collection::Slice {
+                    source: self.remap_coll(src, memo, source),
+                    start,
+                    end,
+                }
+            }
+            Collection::CombProject { comb, axis } => {
+                let (comb, axis) = (*comb, axis.clone());
+                Collection::CombProject {
+                    comb: self.remap_coll(src, memo, comb),
+                    axis: self.remap_axis(src, axis),
+                }
+            }
         };
         let before = self.table.collections().len();
         let id = self.table.intern_collection(new);
@@ -267,6 +325,30 @@ impl Merger {
         }
     }
 
+    fn remap_sort_key(
+        &mut self,
+        src: &Hir,
+        memo: &mut Memo,
+        key: crate::quantity::SortKey,
+    ) -> crate::quantity::SortKey {
+        match key {
+            // The opaque key is a self-contained render string (identity),
+            // carrying no unit-local ids — kept verbatim.
+            crate::quantity::SortKey::Opaque(s) => crate::quantity::SortKey::Opaque(s),
+            // `Prop` carries a unit-local PropId; re-intern by key/display.
+            crate::quantity::SortKey::Prop(p) => {
+                crate::quantity::SortKey::Prop(self.remap_prop(src, memo, p))
+            }
+        }
+    }
+
+    fn remap_axis(&mut self, src: &Hir, axis: CombAxis) -> CombAxis {
+        match axis {
+            CombAxis::Member(s) => CombAxis::Member(self.remap_sym(src, s)),
+            CombAxis::Candidate(s) => CombAxis::Candidate(self.remap_sym(src, s)),
+        }
+    }
+
     fn remap_particle(&mut self, src: &Hir, memo: &mut Memo, p: &ParticleRef) -> ParticleRef {
         match p {
             ParticleRef::Elem { coll, index } => ParticleRef::Elem {
@@ -279,6 +361,11 @@ impl Merger {
                 coll: self.remap_coll(src, memo, *coll),
                 name: self.remap_sym(src, *name),
             },
+            ParticleRef::ThisElem => ParticleRef::ThisElem,
+            ParticleRef::ReduceElem => ParticleRef::ReduceElem,
+            ParticleRef::Sum(parts) => {
+                ParticleRef::sum(parts.iter().map(|p| self.remap_particle(src, memo, p)))
+            }
         }
     }
 
@@ -315,6 +402,18 @@ impl Merger {
             HKind::Bool(b) => HKind::Bool(*b),
             HKind::Quantity(q) => HKind::Quantity(self.remap_quant(src, memo, *q)),
             HKind::ElemSelfProp(p) => HKind::ElemSelfProp(self.remap_prop(src, memo, *p)),
+            HKind::ReduceProp(p) => HKind::ReduceProp(self.remap_prop(src, memo, *p)),
+            HKind::Reduce {
+                kind,
+                coll,
+                body,
+                slice,
+            } => HKind::Reduce {
+                kind: *kind,
+                coll: self.remap_coll(src, memo, *coll),
+                body: self.remap_box(src, memo, region_base, body),
+                slice: *slice,
+            },
             HKind::CollProp { coll, prop } => HKind::CollProp {
                 coll: self.remap_coll(src, memo, *coll),
                 prop: self.remap_prop(src, memo, *prop),

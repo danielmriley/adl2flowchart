@@ -37,12 +37,13 @@ pub use objects::object_table;
 pub use ext::ExtDecls;
 pub use hir::{
     ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
-    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec,
+    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec, ReduceKind,
 };
 pub use intern::{Symbol, SymbolTable};
 pub use quantity::{
-    AngKind, Collection, CollectionId, ElemIndex, ElemPredId, ParticleRef, PropId, Quantity,
-    QuantityArg, QuantityId, QuantityTable, ScalarSource,
+    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder, CompositeCandidate,
+    ElemIndex, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg, QuantityId, QuantityTable,
+    ScalarSource, SortDir, SortKey,
 };
 pub use resolve::{analyze, analyze_str};
 

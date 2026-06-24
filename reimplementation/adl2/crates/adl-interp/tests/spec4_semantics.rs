@@ -733,11 +733,11 @@ object jets
   take Jet
 
 region SRfail
-  select sum(jets.pT) > 100
+  select ht(jets) > 100
   select MET.pT > 500
 
 region SRopaque
-  select sum(jets.pT) > 100
+  select ht(jets) > 100
   select MET.pT > 5
 ";
     let h = hir(adl);
@@ -785,10 +785,10 @@ object jets
   take Jet
 
 region INTRA
-  select sum(jets.pT) > 100 and MET.pT > 500
+  select ht(jets) > 100 and MET.pT > 500
 
 region P
-  select sum(jets.pT) > 100
+  select ht(jets) > 100
   select MET.pT > 500
 
 region VIAREF
@@ -826,7 +826,7 @@ object jets
   take Jet
 
 region P
-  select sum(jets.pT) > 100
+  select ht(jets) > 100
   select MET.pT > 500
 
 region EQ
@@ -915,19 +915,19 @@ object jets
   take Jet
 
 region TUF
-  select (sum(jets.pT) > 0) ? MET.pT > 99999 : MET.pT > 88888
+  select (ht(jets) > 0) ? MET.pT > 99999 : MET.pT > 88888
 
 region TUT
-  select (sum(jets.pT) > 0) ? MET.pT > 5 : MET.pT > 9
+  select (ht(jets) > 0) ? MET.pT > 5 : MET.pT > 9
 
 region SOFT
-  select jets[5].pT == sum(jets.pT)
+  select jets[5].pT == ht(jets)
 
 region SOFTBINOP
-  select jets[5].pT * sum(jets.pT) > 5
+  select jets[5].pT * ht(jets) > 5
 
 region SOFTBINOP2
-  select sum(jets.pT) * jets[5].pT > 5
+  select ht(jets) * jets[5].pT > 5
 ";
     let h = hir(adl);
     let interp = Interp::new(&h, ext());

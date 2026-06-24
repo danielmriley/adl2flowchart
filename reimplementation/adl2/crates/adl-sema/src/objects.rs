@@ -187,7 +187,14 @@ fn base_chain(hir: &Hir, id: CollectionId) -> String {
                 });
                 break;
             }
-            Collection::Union(_) | Collection::Combination { .. } => {
+            // A sort/slice is a permutation/sub-range of its source — follow it.
+            Collection::Sorted { source, .. } | Collection::Slice { source, .. } => {
+                links.push(link_name(hir, cur, names));
+                cur = *source;
+            }
+            Collection::Union(_)
+            | Collection::Combination { .. }
+            | Collection::CombProject { .. } => {
                 links.push(link_name(hir, cur, names));
                 break;
             }
@@ -284,6 +291,10 @@ fn render_term(hir: &Hir, n: &HNode) -> String {
         HKind::Num(s) => s.clone(),
         HKind::Bool(b) => b.to_string(),
         HKind::ElemSelfProp(p) => hir.table.prop_display(*p).to_owned(),
+        HKind::ReduceProp(p) => hir.table.prop_display(*p).to_owned(),
+        HKind::Reduce { kind, coll, body, .. } => {
+            format!("{}({}: {})", kind.as_str(), coll_short(hir, *coll), render_clause(hir, body))
+        }
         HKind::CollProp { coll, prop } => {
             format!("{}.{}", coll_short(hir, *coll), hir.table.prop_display(*prop))
         }
@@ -365,6 +376,12 @@ fn render_particle(hir: &Hir, p: &ParticleRef) -> String {
         ParticleRef::Binder { coll, name } => {
             format!("{}@{}", coll_short(hir, *coll), hir.symbols.display(*name))
         }
+        ParticleRef::ThisElem => "this".to_owned(),
+        ParticleRef::ReduceElem => "elem".to_owned(),
+        ParticleRef::Sum(parts) => {
+            let parts: Vec<String> = parts.iter().map(|p| render_particle(hir, p)).collect();
+            format!("({})", parts.join(" + "))
+        }
     }
 }
 
@@ -445,10 +462,27 @@ fn derived_facts(hir: &Hir, id: CollectionId, coll: &Collection) -> Vec<String> 
                 sum
             )]
         }
-        Collection::Combination { parts } => {
+        Collection::Combination { parts, kind, .. } => {
             let names: Vec<String> = parts.iter().map(|&p| coll_short(hir, p)).collect();
-            vec![format!("combination of {}", names.join(", "))]
+            vec![format!("{kind:?} combination of {}", names.join(", "))]
         }
+        // A sort is a permutation of its source: equal size, same element set.
+        Collection::Sorted { source, .. } => vec![format!(
+            "size({}) = size({})  (permutation of source)",
+            coll_short(hir, id),
+            coll_short(hir, *source)
+        )],
+        // A slice is a contiguous sub-range: bounded by its source's size.
+        Collection::Slice { source, .. } => vec![format!(
+            "size({}) ≤ size({})  (contiguous sub-range)",
+            coll_short(hir, id),
+            coll_short(hir, *source)
+        )],
+        Collection::CombProject { comb, axis } => vec![format!(
+            "size({}) = size({})  ({axis:?} axis)",
+            coll_short(hir, id),
+            coll_short(hir, *comb)
+        )],
         Collection::Base(_) => Vec::new(),
     }
 }

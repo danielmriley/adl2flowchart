@@ -28,8 +28,9 @@
 
 use crate::event::{Event, EventObject};
 use adl_sema::{
-    AngKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind, HNode, Hir,
-    HirRegionStmt, ParticleRef, PropId, Quantity, QuantityArg, QuantityId, ScalarSource,
+    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeCandidate, ElemIndex,
+    ElemPredId, ExtDecls, Fragment, HKind, HNode, Hir, HirRegionStmt, ParticleRef, PropId, Quantity,
+    QuantityArg, QuantityId, ReduceKind, ScalarSource, Symbol, SortDir, SortKey,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -63,6 +64,9 @@ pub enum NonValue {
     MissingElement { collection: String, index: u32 },
     /// Object lacks the requested property.
     MissingProperty { property: String },
+    /// `min`/`max` over an empty collection: no extremum exists, so the
+    /// enclosing comparison is false (the empty-collection convention).
+    EmptyReduction { kind: &'static str },
 }
 
 impl fmt::Display for NonValue {
@@ -74,6 +78,9 @@ impl fmt::Display for NonValue {
             }
             NonValue::MissingProperty { property } => {
                 write!(f, "object has no `{property}` property")
+            }
+            NonValue::EmptyReduction { kind } => {
+                write!(f, "`{kind}` over an empty collection has no value")
             }
         }
     }
@@ -173,6 +180,8 @@ pub struct Interp<'h> {
     ext: &'h ExtDecls,
     eta_key: String,
     phi_key: String,
+    pt_key: String,
+    mass_key: String,
 }
 
 impl<'h> Interp<'h> {
@@ -183,6 +192,8 @@ impl<'h> Interp<'h> {
             ext,
             eta_key: ext.prop_canon("eta").0,
             phi_key: ext.prop_canon("phi").0,
+            pt_key: ext.prop_canon("pt").0,
+            mass_key: ext.prop_canon("mass").0,
         }
     }
 
@@ -416,6 +427,77 @@ fn parse_num(text: &str, span: Span) -> EvalResult<f64> {
     })
 }
 
+/// 4-vector getter for an external function name applied to a single
+/// particle argument (`mass`/`m`, `pt`, `eta`, `phi`, `e`/`energy`).
+fn lv_getter(name: &str) -> Option<fn(LV) -> NumRes> {
+    match name {
+        "mass" | "m" => Some(LV::mass),
+        "pt" => Some(LV::pt),
+        "eta" => Some(LV::eta),
+        "phi" => Some(LV::phi),
+        "e" | "energy" => Some(LV::energy),
+        _ => None,
+    }
+}
+
+/// Single-argument scalar function over a real (transcendental/irrational).
+/// Irrational results are honest f64; a non-finite output fails the cut via
+/// `fin` at the call site.
+fn unary_real_fn(name: &str) -> Option<fn(f64) -> f64> {
+    match name {
+        "sqrt" => Some(f64::sqrt),
+        "cos" => Some(f64::cos),
+        "sin" => Some(f64::sin),
+        "tan" => Some(f64::tan),
+        "log" => Some(f64::ln),
+        _ => None,
+    }
+}
+
+/// Enumerate the index tuples of a composite over its slot sizes.
+///
+/// - **Cartesian**: the full ordered product (cross-collection repeats
+///   included), in row-major slot order.
+/// - **Disjoint** (USER ANSWER 4): unordered tuples. Slots sharing the SAME
+///   source collection are enumerated as strictly-increasing index tuples
+///   (unordered, no repeated slot index); cross-source slots keep the ordered
+///   product. The kinematic value-distinctness drop is applied by the caller.
+fn enumerate_index_tuples(
+    kind: CombKind,
+    parts: &[CollectionId],
+    sizes: &[usize],
+) -> Vec<Vec<usize>> {
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let mut tuples: Vec<Vec<usize>> = vec![Vec::new()];
+    for &n in sizes {
+        let mut next = Vec::new();
+        for t in &tuples {
+            for i in 0..n {
+                let mut nt = t.clone();
+                nt.push(i);
+                next.push(nt);
+            }
+        }
+        tuples = next;
+    }
+    match kind {
+        CombKind::Cartesian => tuples,
+        CombKind::Disjoint => {
+            let same_source = parts.windows(2).all(|w| w[0] == w[1]);
+            if same_source {
+                tuples
+                    .into_iter()
+                    .filter(|idxs| idxs.windows(2).all(|w| w[0] < w[1]))
+                    .collect()
+            } else {
+                tuples
+            }
+        }
+    }
+}
+
 fn compare(op: CmpOp, a: f64, b: f64) -> bool {
     match op {
         CmpOp::Gt => a > b,
@@ -433,6 +515,72 @@ fn compare(op: CmpOp, a: f64, b: f64) -> bool {
 struct Angles {
     eta: Option<f64>,
     phi: Option<f64>,
+}
+
+/// A Lorentz 4-vector in Cartesian components, lifted from `(pt, eta, phi, m)`
+/// for 4-vector-sum arithmetic (`mass(l1 + l2)`). All getters are
+/// `fin()`-wrapped: a non-finite result fails the enclosing comparison.
+#[derive(Debug, Clone, Copy)]
+struct LV {
+    px: f64,
+    py: f64,
+    pz: f64,
+    e: f64,
+}
+
+impl LV {
+    /// Lift `(pt, eta, phi, m)` to Cartesian: `px = pt·cosφ`, `py = pt·sinφ`,
+    /// `pz = pt·sinhη`, `E = √(px² + py² + pz² + m²)`.
+    fn from_ptetaphim(pt: f64, eta: f64, phi: f64, m: f64) -> LV {
+        let px = pt * phi.cos();
+        let py = pt * phi.sin();
+        let pz = pt * eta.sinh();
+        let e = (px * px + py * py + pz * pz + m * m).sqrt();
+        LV { px, py, pz, e }
+    }
+
+    /// A massless transverse vector (`pz = 0`, `E = pt`) — the MET summand,
+    /// which carries no `eta`/mass.
+    fn transverse(pt: f64, phi: f64) -> LV {
+        LV {
+            px: pt * phi.cos(),
+            py: pt * phi.sin(),
+            pz: 0.0,
+            e: pt,
+        }
+    }
+
+    fn add(self, o: LV) -> LV {
+        LV {
+            px: self.px + o.px,
+            py: self.py + o.py,
+            pz: self.pz + o.pz,
+            e: self.e + o.e,
+        }
+    }
+
+    /// Invariant mass `√(max(0, E² − |p|²))` (tiny-negative clamped to 0).
+    fn mass(self) -> NumRes {
+        let p2 = self.px * self.px + self.py * self.py + self.pz * self.pz;
+        fin((self.e * self.e - p2).max(0.0).sqrt())
+    }
+
+    fn pt(self) -> NumRes {
+        fin(self.px.hypot(self.py))
+    }
+
+    fn phi(self) -> NumRes {
+        fin(self.py.atan2(self.px))
+    }
+
+    fn eta(self) -> NumRes {
+        let pt = self.px.hypot(self.py);
+        fin((self.pz / pt).asinh())
+    }
+
+    fn energy(self) -> NumRes {
+        fin(self.e)
+    }
 }
 
 /// Per-event evaluation state: memoized collections and region verdicts.
@@ -468,11 +616,27 @@ impl Tri {
     }
 }
 
+/// One surviving composite tuple: the per-slot binder elements (keyed by
+/// binder symbol) and the candidate 4-vector object, if the block declared one.
+#[derive(Clone)]
+struct CombTuple {
+    binders: HashMap<Symbol, EventObject>,
+    candidate: Option<EventObject>,
+}
+
 struct Ev<'h, 'e> {
     it: &'e Interp<'h>,
     event: &'e Event,
     colls: HashMap<CollectionId, Rc<Vec<EventObject>>>,
+    /// Surviving tuples of a composite (post-cut), cached per combination id.
+    comb_tuples: HashMap<CollectionId, Rc<Vec<CombTuple>>>,
     regions: HashMap<usize, Result<bool, EvalError>>,
+    /// Active reducer iteration elements (innermost last). A reducer body's
+    /// [`ParticleRef::ReduceElem`] / [`HKind::ReduceProp`] reads the top.
+    reduce_stack: Vec<EventObject>,
+    /// Active composite binder environment (binder symbol → bound element),
+    /// pushed while evaluating a per-tuple cut or candidate body.
+    binder_env: HashMap<Symbol, EventObject>,
 }
 
 impl<'h, 'e> Ev<'h, 'e> {
@@ -481,7 +645,10 @@ impl<'h, 'e> Ev<'h, 'e> {
             it,
             event,
             colls: HashMap::new(),
+            comb_tuples: HashMap::new(),
             regions: HashMap::new(),
+            reduce_stack: Vec::new(),
+            binder_env: HashMap::new(),
         }
     }
 
@@ -678,6 +845,10 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
             },
             HKind::RegionPred(idx) => self.region3(*idx),
+            // Boolean reducer (`any`/`all`): the Kleene fold is the truth value.
+            HKind::Reduce { kind, coll, body, .. } if kind.is_boolean() => {
+                self.reduce_bool(*kind, *coll, body, elem)
+            }
             // §4.4: a soft non-value on EITHER side makes the comparison
             // false unconditionally — that already decides the cut, so it
             // wins even when the other operand is a blocking Unknown (checked
@@ -712,6 +883,8 @@ impl<'h, 'e> Ev<'h, 'e> {
             HKind::Num(_)
             | HKind::Quantity(_)
             | HKind::ElemSelfProp(_)
+            | HKind::ReduceProp(_)
+            | HKind::Reduce { .. }
             | HKind::Neg(_)
             | HKind::Abs(_)
             | HKind::Binary { .. } => match self.num3(node, elem) {
@@ -813,11 +986,20 @@ impl<'h, 'e> Ev<'h, 'e> {
                 Tri::False => Ok(Ok(0.0)),
                 Tri::Unknown(e) => Err(e),
             },
+            // Boolean reducer used as a number ⇒ 1.0/0.0, three-valued.
+            HKind::Reduce { kind, .. } if kind.is_boolean() => match self.truth3(node, elem) {
+                Tri::True => Ok(Ok(1.0)),
+                Tri::False => Ok(Ok(0.0)),
+                Tri::Unknown(e) => Err(e),
+            },
+            // Numeric reducer: the Kleene fold (uses num3 on the body).
+            HKind::Reduce { kind, coll, body, .. } => self.reduce_num(*kind, *coll, body, elem),
             // Leaves with no inner RegionPred: the exact two-valued evaluator.
             HKind::Num(_)
             | HKind::Bool(_)
             | HKind::Quantity(_)
             | HKind::ElemSelfProp(_)
+            | HKind::ReduceProp(_)
             | HKind::CollProp { .. }
             | HKind::Particle(_)
             | HKind::CollValue(_)
@@ -879,9 +1061,15 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
             }
             HKind::RegionPred(idx) => self.region(*idx),
+            // Boolean reducer (`any`/`all`) as a predicate.
+            HKind::Reduce { kind, coll, body, .. } if kind.is_boolean() => {
+                self.reduce_bool(*kind, *coll, body, elem).into_result()
+            }
             HKind::Num(_)
             | HKind::Quantity(_)
             | HKind::ElemSelfProp(_)
+            | HKind::ReduceProp(_)
+            | HKind::Reduce { .. }
             | HKind::Neg(_)
             | HKind::Abs(_)
             | HKind::Binary { .. } => {
@@ -908,7 +1096,7 @@ impl<'h, 'e> Ev<'h, 'e> {
         match &node.kind {
             HKind::Num(text) => Ok(fin(parse_num(text, node.span)?)),
             HKind::Bool(b) => Ok(Ok(f64::from(*b))),
-            HKind::Quantity(q) => self.quantity(*q, node.span),
+            HKind::Quantity(q) => self.quantity(*q, node.span, elem),
             HKind::ElemSelfProp(prop) => {
                 let Some(obj) = elem else {
                     return self.err(
@@ -918,6 +1106,13 @@ impl<'h, 'e> Ev<'h, 'e> {
                 };
                 Ok(self.object_prop(obj, *prop))
             }
+            HKind::ReduceProp(prop) => self.reduce_prop(node.span, *prop),
+            // A numeric reducer used as a value (`sum`/`min`/`max`). A boolean
+            // reducer used numerically is 1.0/0.0 via `truth`.
+            HKind::Reduce { kind, coll, body, .. } if !kind.is_boolean() => {
+                self.reduce_num(*kind, *coll, body, elem)
+            }
+            HKind::Reduce { .. } => Ok(Ok(f64::from(self.truth(node, elem)?))),
             HKind::Neg(a) => Ok(self.num(a, elem)?.map(|v| -v)),
             HKind::Abs(a) => Ok(self.num(a, elem)?.map(f64::abs)),
             HKind::Binary { op, lhs, rhs } => {
@@ -973,7 +1168,234 @@ impl<'h, 'e> Ev<'h, 'e> {
         }
     }
 
-    fn quantity(&mut self, q: QuantityId, span: Span) -> EvalResult<NumRes> {
+    /// Property of the reducer iteration element by `PropId`.
+    fn reduce_prop(&self, span: Span, prop: PropId) -> EvalResult<NumRes> {
+        match self.reduce_stack.last() {
+            Some(obj) => Ok(self.object_prop(obj, prop)),
+            None => self.err(span, "reducer element property used outside a reducer body"),
+        }
+    }
+
+    /// Kinematic value-equality (USER ANSWER 4): two elements are "the same"
+    /// iff their canonical `(pt, eta, phi, mass)` agree (a missing component on
+    /// one must be missing on the other too).
+    fn kinematic_eq(&self, a: &EventObject, b: &EventObject) -> bool {
+        [
+            &self.it.pt_key,
+            &self.it.eta_key,
+            &self.it.phi_key,
+            &self.it.mass_key,
+        ]
+        .iter()
+        .all(|k| a.get(k) == b.get(k))
+    }
+
+    /// Eta/phi components of an event object (either may be absent).
+    fn obj_angles(&self, obj: &EventObject) -> Angles {
+        Angles {
+            eta: obj.get(&self.it.eta_key),
+            phi: obj.get(&self.it.phi_key),
+        }
+    }
+
+    /// Lift an event object to a Lorentz 4-vector from its `(pt, eta, phi,
+    /// mass)`. A missing `pt`/`eta`/`phi` is a soft non-value (the
+    /// comparison fails); a missing `mass` is `MissingProperty` (we never
+    /// assume massless).
+    fn obj_lorentz(&self, obj: &EventObject) -> Result<LV, NonValue> {
+        let need = |key: &str, name: &str| {
+            obj.get(key).ok_or_else(|| NonValue::MissingProperty {
+                property: name.to_owned(),
+            })
+        };
+        let pt = need(&self.it.pt_key, "pt")?;
+        let eta = need(&self.it.eta_key, "eta")?;
+        let phi = need(&self.it.phi_key, "phi")?;
+        let m = need(&self.it.mass_key, "mass")?;
+        Ok(LV::from_ptetaphim(pt, eta, phi, m))
+    }
+
+    /// Build the Lorentz 4-vector of a particle reference (sum, reducer
+    /// element, `this`, indexed element, or MET summand).
+    fn lorentz(
+        &mut self,
+        p: &ParticleRef,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<Result<LV, NonValue>> {
+        match p {
+            ParticleRef::Sum(parts) => {
+                let parts = parts.clone();
+                let mut acc: Option<LV> = None;
+                for part in &parts {
+                    let lv = match self.lorentz(part, span, elem)? {
+                        Ok(lv) => lv,
+                        Err(nv) => return Ok(Err(nv)),
+                    };
+                    acc = Some(acc.map_or(lv, |a| a.add(lv)));
+                }
+                match acc {
+                    Some(lv) => Ok(Ok(lv)),
+                    None => self.err(span, "empty 4-vector sum"),
+                }
+            }
+            ParticleRef::Elem {
+                coll,
+                index: ElemIndex::FromFront(i),
+            } => {
+                let (coll, i) = (*coll, *i);
+                let objs = self.materialize(coll)?;
+                match objs.get(i as usize) {
+                    Some(obj) => Ok(self.obj_lorentz(obj)),
+                    None => Ok(Err(NonValue::MissingElement {
+                        collection: self.coll_label(coll),
+                        index: i,
+                    })),
+                }
+            }
+            ParticleRef::Elem { .. } => {
+                self.err(span, "negative index `[-n]` is reserved (OPEN-3)")
+            }
+            ParticleRef::ReduceElem => match self.reduce_stack.last() {
+                Some(obj) => Ok(self.obj_lorentz(obj)),
+                None => self.err(span, "reducer element used outside a reducer body"),
+            },
+            ParticleRef::ThisElem => match elem {
+                Some(obj) => Ok(self.obj_lorentz(obj)),
+                None => self.err(span, "`this` used outside an object block"),
+            },
+            // MET summand: massless transverse vector (pz = 0, E = pt).
+            ParticleRef::Met => {
+                if self.event.met.is_empty() {
+                    return self.err(span, "event has no MET vector");
+                }
+                let pt = self.event.met.get(&self.it.pt_key).copied();
+                let phi = self.event.met.get(&self.it.phi_key).copied();
+                match (pt, phi) {
+                    (Some(pt), Some(phi)) => Ok(Ok(LV::transverse(pt, phi))),
+                    _ => Ok(Err(NonValue::MissingProperty {
+                        property: "MET pt/phi".to_owned(),
+                    })),
+                }
+            }
+            // A composite binder (`l1` inside a tuple): the bound element's
+            // Lorentz vector, read from the active binder environment.
+            ParticleRef::Binder { name, .. } => match self.binder_env.get(name) {
+                Some(obj) => Ok(self.obj_lorentz(obj)),
+                None => self.err(span, "composite binder used outside a tuple environment"),
+            },
+            ParticleRef::Whole(_) => self.err(
+                span,
+                "4-vector over an unindexed collection is unsupported",
+            ),
+        }
+    }
+
+    // ---- reducers ---------------------------------------------------------
+
+    /// Evaluate a boolean reducer (`any`/`all`) as Kleene three-valued. The
+    /// body is evaluated per iteration element with that element pushed onto
+    /// the reduce stack; `elem` stays the outer object-filter element.
+    /// Empty-collection convention: `any ⇒ false`, `all ⇒ true` (vacuous).
+    /// Any element evaluating to `Unknown` poisons the fold to `Unknown`.
+    fn reduce_bool(
+        &mut self,
+        kind: ReduceKind,
+        coll: CollectionId,
+        body: &'h HNode,
+        elem: Option<&EventObject>,
+    ) -> Tri {
+        let objs = match self.materialize(coll) {
+            Ok(o) => o,
+            Err(e) => return Tri::Unknown(e),
+        };
+        let mut unknown: Option<EvalError> = None;
+        for obj in objs.iter() {
+            self.reduce_stack.push(obj.clone());
+            let t = self.truth3(body, elem);
+            self.reduce_stack.pop();
+            match (kind, t) {
+                // any: short-circuit on the first True.
+                (ReduceKind::Any, Tri::True) => return Tri::True,
+                (ReduceKind::Any, Tri::False) => {}
+                // all: short-circuit on the first False.
+                (ReduceKind::All, Tri::False) => return Tri::False,
+                (ReduceKind::All, Tri::True) => {}
+                (_, Tri::Unknown(e)) => {
+                    if unknown.is_none() {
+                        unknown = Some(e);
+                    }
+                }
+                // Unreachable: numeric kinds never call reduce_bool.
+                _ => {}
+            }
+        }
+        // No decisive element: an Unknown anywhere poisons the result;
+        // otherwise the vacuous identity (any ⇒ false, all ⇒ true).
+        match unknown {
+            Some(e) => Tri::Unknown(e),
+            None => Tri::from_bool(kind == ReduceKind::All),
+        }
+    }
+
+    /// Evaluate a numeric reducer (`sum`/`min`/`max`) over `coll`. Empty:
+    /// `sum ⇒ 0`, `min`/`max ⇒ EmptyReduction` (comparison-false). Any
+    /// element body that is a blocking `Unknown` poisons to a hard error; a
+    /// soft non-value element is absorbed per the fold's rule (skipped for
+    /// `sum`; propagated as comparison-false for `min`/`max`).
+    fn reduce_num(
+        &mut self,
+        kind: ReduceKind,
+        coll: CollectionId,
+        body: &'h HNode,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<NumRes> {
+        let objs = self.materialize(coll)?;
+        let mut acc: Option<f64> = None;
+        let mut sum = 0.0_f64;
+        let mut any = false;
+        for obj in objs.iter() {
+            self.reduce_stack.push(obj.clone());
+            let v = self.num3(body, elem);
+            self.reduce_stack.pop();
+            let v = match v? {
+                Ok(v) => v,
+                // A soft non-value element: for min/max it makes the whole
+                // comparison false (an element with no value); for sum it is
+                // absorbing too (the spec's div-by-zero rule extends here).
+                Err(nv) => return Ok(Err(nv)),
+            };
+            any = true;
+            sum += v;
+            acc = Some(match (kind, acc) {
+                (ReduceKind::Min, Some(a)) => a.min(v),
+                (ReduceKind::Max, Some(a)) => a.max(v),
+                (_, None) => v,
+                (_, Some(a)) => a,
+            });
+        }
+        Ok(match kind {
+            ReduceKind::Sum => fin(sum),
+            ReduceKind::Min | ReduceKind::Max => {
+                if any {
+                    fin(acc.unwrap_or(0.0))
+                } else {
+                    Err(NonValue::EmptyReduction {
+                        kind: kind.as_str(),
+                    })
+                }
+            }
+            // Unreachable: boolean kinds never call reduce_num.
+            ReduceKind::Any | ReduceKind::All => fin(sum),
+        })
+    }
+
+    fn quantity(
+        &mut self,
+        q: QuantityId,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<NumRes> {
         match self.it.hir.table.quantity(q) {
             Quantity::EventScalar(src) => self.event_scalar(src, span),
             Quantity::Size(coll) => {
@@ -997,20 +1419,34 @@ impl<'h, 'e> Ev<'h, 'e> {
             }
             Quantity::AngularSep { kind, a, b, .. } => {
                 let (kind, a, b) = (*kind, a.clone(), b.clone());
-                self.angular(kind, &a, &b, span)
+                self.angular(kind, &a, &b, span, elem)
             }
             Quantity::ExternalFn { name, args } => {
                 let fname = self.it.hir.symbols.key(*name).to_owned();
-                if fname == "sqrt"
-                    && let [arg] = args.as_slice()
+                // 4-vector-sum / element getter: `mass(l1+l2)`, `pt(jet)` inside
+                // a reducer body, etc. The single argument is a particle whose
+                // Lorentz vector we can build.
+                if let [QuantityArg::Particle(p)] = args.as_slice()
+                    && let Some(getter) = lv_getter(&fname)
+                {
+                    let p = p.clone();
+                    return Ok(match self.lorentz(&p, span, elem)? {
+                        Ok(lv) => getter(lv),
+                        Err(nv) => Err(nv),
+                    });
+                }
+                // Single-argument transcendental / irrational scalar functions.
+                if let [arg] = args.as_slice()
+                    && let Some(f) = unary_real_fn(&fname)
                 {
                     let arg = arg.clone();
-                    let v = match self.arg_num(&arg, span)? {
+                    let v = match self.arg_num(&arg, span, elem)? {
                         Ok(v) => v,
                         Err(nv) => return Ok(Err(nv)),
                     };
-                    // sqrt of a negative is NaN ⇒ comparison-false rule.
-                    return Ok(fin(v.sqrt()));
+                    // A non-finite result (e.g. sqrt of a negative) ⇒ the
+                    // comparison-false rule via `fin`.
+                    return Ok(fin(f(v)));
                 }
                 self.err(
                     span,
@@ -1067,10 +1503,15 @@ impl<'h, 'e> Ev<'h, 'e> {
         }
     }
 
-    fn arg_num(&mut self, arg: &QuantityArg, span: Span) -> EvalResult<NumRes> {
+    fn arg_num(
+        &mut self,
+        arg: &QuantityArg,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<NumRes> {
         match arg {
             QuantityArg::Num(text) => Ok(fin(parse_num(text, span)?)),
-            QuantityArg::Quantity(q) => self.quantity(*q, span),
+            QuantityArg::Quantity(q) => self.quantity(*q, span, elem),
             _ => self.err(span, "function argument is outside the checked fragment"),
         }
     }
@@ -1083,12 +1524,13 @@ impl<'h, 'e> Ev<'h, 'e> {
         a: &ParticleRef,
         b: &ParticleRef,
         span: Span,
+        elem: Option<&EventObject>,
     ) -> EvalResult<NumRes> {
-        let pa = match self.angles(a, span)? {
+        let pa = match self.angles(a, span, elem)? {
             Ok(x) => x,
             Err(nv) => return Ok(Err(nv)),
         };
-        let pb = match self.angles(b, span)? {
+        let pb = match self.angles(b, span, elem)? {
             Ok(x) => x,
             Err(nv) => return Ok(Err(nv)),
         };
@@ -1118,7 +1560,12 @@ impl<'h, 'e> Ev<'h, 'e> {
         })
     }
 
-    fn angles(&mut self, p: &ParticleRef, span: Span) -> EvalResult<Result<Angles, NonValue>> {
+    fn angles(
+        &mut self,
+        p: &ParticleRef,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<Result<Angles, NonValue>> {
         match p {
             ParticleRef::Elem {
                 coll,
@@ -1127,10 +1574,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 let (coll, i) = (*coll, *i);
                 let objs = self.materialize(coll)?;
                 match objs.get(i as usize) {
-                    Some(obj) => Ok(Ok(Angles {
-                        eta: obj.get(&self.it.eta_key),
-                        phi: obj.get(&self.it.phi_key),
-                    })),
+                    Some(obj) => Ok(Ok(self.obj_angles(obj))),
                     None => Ok(Err(NonValue::MissingElement {
                         collection: self.coll_label(coll),
                         index: i,
@@ -1149,13 +1593,36 @@ impl<'h, 'e> Ev<'h, 'e> {
                     phi: self.event.met.get(&self.it.phi_key).copied(),
                 }))
             }
+            // Reducer iteration element (top of the reduce stack).
+            ParticleRef::ReduceElem => match self.reduce_stack.last() {
+                Some(obj) => Ok(Ok(self.obj_angles(obj))),
+                None => self.err(span, "reducer element used outside a reducer body"),
+            },
+            // The outer object-filter element (`this`) used as a particle.
+            ParticleRef::ThisElem => match elem {
+                Some(obj) => Ok(Ok(self.obj_angles(obj))),
+                None => self.err(span, "`this` used outside an object block"),
+            },
+            // A 4-vector sum: its eta/phi come from the summed Lorentz vector.
+            ParticleRef::Sum(_) => Ok(match self.lorentz(p, span, elem)? {
+                Ok(lv) => match (lv.eta(), lv.phi()) {
+                    (Ok(eta), Ok(phi)) => Ok(Angles {
+                        eta: Some(eta),
+                        phi: Some(phi),
+                    }),
+                    _ => Err(NonValue::NonFinite),
+                },
+                Err(nv) => Err(nv),
+            }),
             ParticleRef::Whole(_) => self.err(
                 span,
                 "angular separation over an unindexed collection is ambiguous (OPEN-1 unresolved)",
             ),
-            ParticleRef::Binder { .. } => {
-                self.err(span, "composite binder is outside the checked fragment")
-            }
+            // A composite binder: the bound element's angles from the env.
+            ParticleRef::Binder { name, .. } => match self.binder_env.get(name) {
+                Some(obj) => Ok(Ok(self.obj_angles(obj))),
+                None => self.err(span, "composite binder used outside a tuple environment"),
+            },
         }
     }
 
@@ -1210,11 +1677,186 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
                 Ok(Rc::new(all))
             }
-            Collection::Combination { .. } => self.err(
-                Span::default(),
-                "combinatorial composite (COMB) is outside the checked fragment",
-            ),
+            // A re-sorted permutation of the source (same element set, key's
+            // order). `Prop` keys re-sort by that property; an `Opaque` key
+            // keeps source order (its indexed access is tagged Unsupported at
+            // resolve, so a possibly-wrong order is never observed as a value).
+            Collection::Sorted { source, key, dir } => {
+                let (source, key, dir) = (*source, key.clone(), *dir);
+                let src = self.materialize(source)?;
+                let mut out = src.as_ref().clone();
+                if let SortKey::Prop(prop) = key {
+                    let pkey = self.it.hir.table.prop_key(prop).to_owned();
+                    // Stable sort by the key property; missing values sort last.
+                    // `descend` reverses the comparison. Identity no-op when the
+                    // source already has this order (e.g. pt-descending input).
+                    out.sort_by(|a, b| {
+                        let (va, vb) = (a.get(&pkey), b.get(&pkey));
+                        let ord = match (va, vb) {
+                            (Some(x), Some(y)) => {
+                                x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+                            }
+                            (Some(_), None) => std::cmp::Ordering::Less,
+                            (None, Some(_)) => std::cmp::Ordering::Greater,
+                            (None, None) => std::cmp::Ordering::Equal,
+                        };
+                        match dir {
+                            SortDir::Ascend => ord,
+                            SortDir::Descend => ord.reverse(),
+                        }
+                    });
+                }
+                Ok(Rc::new(out))
+            }
+            // A contiguous half-open sub-range `src[start..end]`, clamped.
+            Collection::Slice { source, start, end } => {
+                let (source, start, end) = (*source, *start as usize, *end);
+                let src = self.materialize(source)?;
+                let lo = start.min(src.len());
+                let hi = end.map_or(src.len(), |e| (e as usize).clamp(lo, src.len()));
+                Ok(Rc::new(src[lo..hi].to_vec()))
+            }
+            // The candidate-or-empty projection of a composite (length = tuple
+            // count). Axis-specific access goes through `CombProject`.
+            Collection::Combination { .. } => {
+                let tuples = self.comb_tuples(id)?;
+                Ok(Rc::new(
+                    tuples
+                        .iter()
+                        .map(|t| t.candidate.clone().unwrap_or_default())
+                        .collect(),
+                ))
+            }
+            // Projection onto a member or candidate axis: one object per tuple.
+            Collection::CombProject { comb, axis } => {
+                let (comb, axis) = (*comb, axis.clone());
+                let tuples = self.comb_tuples(comb)?;
+                let mut out = Vec::with_capacity(tuples.len());
+                for t in tuples.iter() {
+                    let obj = match &axis {
+                        CombAxis::Candidate(_) => t.candidate.clone().unwrap_or_default(),
+                        CombAxis::Member(name) => {
+                            t.binders.get(name).cloned().unwrap_or_default()
+                        }
+                    };
+                    out.push(obj);
+                }
+                Ok(Rc::new(out))
+            }
         }
+    }
+
+    /// Materialize the surviving tuples of a composite (cached). Enumerates
+    /// tuples over the parts, applies the disjoint value-distinctness rule
+    /// (USER ANSWER 4), binds each tuple's candidate 4-vector, and drops
+    /// tuples failing any per-tuple cut (the cuts FILTER the candidate
+    /// collection, USER ANSWER 4).
+    fn comb_tuples(&mut self, id: CollectionId) -> EvalResult<Rc<Vec<CombTuple>>> {
+        if let Some(t) = self.comb_tuples.get(&id) {
+            return Ok(Rc::clone(t));
+        }
+        let Collection::Combination {
+            parts,
+            kind,
+            members,
+            candidate,
+            cuts,
+        } = self.it.hir.table.collection(id).clone()
+        else {
+            return self.err(Span::default(), "internal: comb_tuples on a non-composite");
+        };
+        // Materialize each slot's source collection.
+        let mut slots: Vec<Rc<Vec<EventObject>>> = Vec::with_capacity(parts.len());
+        for p in &parts {
+            slots.push(self.materialize(*p)?);
+        }
+        // Enumerate index tuples per the combinator.
+        let sizes: Vec<usize> = slots.iter().map(|s| s.len()).collect();
+        let index_tuples = enumerate_index_tuples(kind, &parts, &sizes);
+        let drop_value_equal = kind == CombKind::Disjoint;
+
+        let mut out: Vec<CombTuple> = Vec::new();
+        'tuple: for idxs in index_tuples {
+            // USER ANSWER 4: a disjoint tuple with two kinematically value-equal
+            // members forms 0 valid pairs — drop it.
+            if drop_value_equal {
+                for a in 0..idxs.len() {
+                    for b in (a + 1)..idxs.len() {
+                        if self.kinematic_eq(&slots[a][idxs[a]], &slots[b][idxs[b]]) {
+                            continue 'tuple;
+                        }
+                    }
+                }
+            }
+            // Bind each slot's element to its binder name.
+            let mut env: HashMap<Symbol, EventObject> = HashMap::new();
+            for (slot, &i) in idxs.iter().enumerate() {
+                env.insert(members[slot].name, slots[slot][i].clone());
+            }
+            // Build the candidate 4-vector object (if declared) under this env.
+            let cand_obj = match &candidate {
+                Some(c) => match self.candidate_object(c, &env)? {
+                    Some(o) => Some(o),
+                    None => continue, // candidate non-value ⇒ drop tuple
+                },
+                None => None,
+            };
+            // Per-tuple cuts filter the candidate collection.
+            if !self.tuple_passes_cuts(&cuts, &env)? {
+                continue;
+            }
+            out.push(CombTuple {
+                binders: env,
+                candidate: cand_obj,
+            });
+        }
+        let rc = Rc::new(out);
+        self.comb_tuples.insert(id, Rc::clone(&rc));
+        Ok(rc)
+    }
+
+    /// Build the candidate 4-vector object for one tuple from the binder env.
+    /// Returns `None` when the candidate's Lorentz vector is a soft non-value
+    /// (a missing property), so the tuple is dropped.
+    fn candidate_object(
+        &mut self,
+        cand: &CompositeCandidate,
+        env: &HashMap<Symbol, EventObject>,
+    ) -> EvalResult<Option<EventObject>> {
+        let prev = std::mem::replace(&mut self.binder_env, env.clone());
+        let lv = self.lorentz(&cand.vector, Span::default(), None);
+        self.binder_env = prev;
+        let lv = match lv? {
+            Ok(lv) => lv,
+            Err(_) => return Ok(None),
+        };
+        let (Ok(pt), Ok(eta), Ok(phi), Ok(mass)) = (lv.pt(), lv.eta(), lv.phi(), lv.mass()) else {
+            return Ok(None);
+        };
+        Ok(Some(EventObject::from_props([
+            (self.it.pt_key.clone(), pt),
+            (self.it.eta_key.clone(), eta),
+            (self.it.phi_key.clone(), phi),
+            (self.it.mass_key.clone(), mass),
+        ])))
+    }
+
+    /// Evaluate every per-tuple cut under the binder env; `true` iff all pass.
+    fn tuple_passes_cuts(
+        &mut self,
+        cuts: &[ElemPredId],
+        env: &HashMap<Symbol, EventObject>,
+    ) -> EvalResult<bool> {
+        for &pred in cuts {
+            let node: &'h HNode = &self.it.hir.elem_pred(pred).node;
+            let prev = std::mem::replace(&mut self.binder_env, env.clone());
+            let pass = self.truth(node, None);
+            self.binder_env = prev;
+            if !pass? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Human label for a collection (first bound name, else base name).

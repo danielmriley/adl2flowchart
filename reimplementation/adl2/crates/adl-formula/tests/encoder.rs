@@ -290,6 +290,44 @@ fn constant_division_by_zero_fails_the_cut() {
     assert_eq!(rej.formula, Formula::True);
 }
 
+// ---- row: deterministic non-linear scalar vs constant -> opaque atom ------
+
+fn opaque_q(hir: &Hir) -> QuantityId {
+    find_q(hir, |q| matches!(q, Quantity::ExternalFn { .. }))
+}
+
+#[test]
+fn nonlinear_scalar_vs_constant_interns_as_opaque_atom() {
+    // `MET * MET` is a product of two event quantities — not linear — but it
+    // is a deterministic per-event scalar. Compared to a constant it interns
+    // as one opaque (axiom-free) `ExternalFn` quantity, so the comparison
+    // becomes a real atom `O > 4` instead of dropping to Unknown. The region
+    // is exact: the leaf is faithfully represented, just over a free var.
+    let (enc, hir) = encode("region SR\n  select MET * MET > 4\n", 0);
+    let q = opaque_q(&hir);
+    let Quantity::ExternalFn { name, .. } = hir.table.quantity(q) else {
+        unreachable!()
+    };
+    assert_eq!(hir.symbols.display(*name), "opaque.scalar");
+    assert_eq!(enc.formula, atom(&[(1.0, q)], Rel::Gt, 4.0));
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn identical_nonlinear_scalars_share_one_quantity_across_regions() {
+    // The whole point of interning: two regions that compare the SAME
+    // non-linear expression to different thresholds must reference the SAME
+    // opaque `QuantityId` so the solver can prove `MET*MET > 9` disjoint from
+    // `MET*MET < 1`. `find_q`'s uniqueness assertion IS the proof of sharing:
+    // a collision-free second interning would make it find two.
+    let mut hir =
+        build_hir("region HI\n  select MET * MET > 9\nregion LO\n  select MET * MET < 1\n");
+    let encs = encode_regions(&mut hir);
+    let q = opaque_q(&hir); // panics if the two regions did not share one id
+    assert_eq!(encs[0].formula, atom(&[(1.0, q)], Rel::Gt, 9.0));
+    assert_eq!(encs[1].formula, atom(&[(1.0, q)], Rel::Lt, 1.0));
+}
+
 // ---- row: ternary g ? a : b ----------------------------------------------
 
 #[test]

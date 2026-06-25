@@ -1293,7 +1293,15 @@ impl Encoder<'_> {
     }
 
     /// Non-linear side vs constant `c`: exact ratio and absolute-value
-    /// rewrites; anything else is `Unknown`.
+    /// rewrites first (they encode the operator's real structure); failing
+    /// those, a deterministic non-linear scalar (`Rsq`, `MCT`, a charge
+    /// product, a chi2 define) is interned as one opaque free quantity so the
+    /// comparison still becomes a real atom `O ⋈ c` instead of dropping. This
+    /// is the loosest sound over-approximation: `O` is an unconstrained real,
+    /// so a model always exists, yet two regions that compare the *same*
+    /// expression to different thresholds share one `O` and so decide by
+    /// threshold (`Rsq > 0.08` vs `Rsq < 0.05` ⇒ disjoint). Anything that
+    /// cannot be rendered injectively stays `Unknown`.
     fn pattern(&mut self, side: &HNode, rel: Rel, c: Rat, why: &str, span: Span) -> Formula {
         match &side.kind {
             HKind::Binary {
@@ -1302,7 +1310,10 @@ impl Encoder<'_> {
                 rhs: den,
             } => self.ratio(num, den, rel, c, span),
             HKind::Abs(inner) => self.abs_cmp(inner, rel, c, span),
-            _ => self.unknown(span, format!("comparison is not linear arithmetic: {why}")),
+            _ => match self.intern_opaque_scalar(side) {
+                Some(q) => self.atom_of(BTreeMap::from([(q, Rat::one())]), rel, c),
+                None => self.unknown(span, format!("comparison is not linear arithmetic: {why}")),
+            },
         }
     }
 
@@ -1510,6 +1521,25 @@ impl Encoder<'_> {
             QuantityArg::Collection(coll),
             QuantityArg::Opaque(format!("{}{}", slice_key(slice), body_key)),
         ];
+        Some(
+            self.table
+                .intern_quantity(Quantity::ExternalFn { name, args }),
+        )
+    }
+
+    /// Intern a deterministic non-linear scalar sub-expression (`Rsq`,
+    /// `MCT`, a `q1*q2` charge product, …) as a single opaque free quantity,
+    /// keyed by its canonical structure so identical expressions across
+    /// regions share one `QuantityId` and cancel by threshold. Same axiom
+    /// posture as [`Self::intern_reduce`]: a `.`-named `ExternalFn` carries no
+    /// axiom (a free real — `Rsq` is really `>= 0`, but assuming so is not
+    /// needed for soundness and a sign-indefinite body like `pt*cos(phi)`
+    /// would make NNEG unsound, so none is added). `None` when the body is not
+    /// injectively renderable — the caller then keeps the leaf `Unknown`.
+    fn intern_opaque_scalar(&mut self, node: &HNode) -> Option<QuantityId> {
+        let body_key = reduce_body_key(node)?;
+        let name = self.symbols.intern("opaque.scalar");
+        let args = vec![QuantityArg::Opaque(body_key)];
         Some(
             self.table
                 .intern_quantity(Quantity::ExternalFn { name, args }),

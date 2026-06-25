@@ -27,7 +27,7 @@ use crate::lin::{LinAtom, Rel};
 use adl_sema::{
     ArithOp, CombKind, Collection, CollectionId, CompositeBinder, ElemIndex, ElemPred, ElemPredId,
     Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, ParticleRef, Quantity, QuantityArg,
-    QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource,
+    QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource, SymbolTable,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -99,6 +99,7 @@ pub fn encode_region(hir: &mut Hir, region: usize) -> EncodedRegion {
     let mut enc = Encoder {
         table,
         regions,
+        symbols,
         elem_preds,
         diags: DiagTable::default(),
         stack: Vec::new(),
@@ -245,6 +246,61 @@ fn collect_quantities(node: &HNode, out: &mut BTreeSet<QuantityId>) {
     }
 }
 
+/// A canonical, injective structural key for a value-position numeric
+/// reducer body (`sum`/`min`/`max`), rendered over **already-interned** ids
+/// (`QuantityId`, `CollectionId`, `PropId`) so identical text always means
+/// identical resolution. `None` for any node shape that cannot be rendered
+/// injectively — the caller then falls back to a fresh `Unknown`/non-linear
+/// leaf (sound: only ever weakens to POSSIBLY, never a false PROVEN).
+///
+/// Only the shapes a numeric reducer body can actually take are rendered:
+/// the iteration element's property (`ReduceProp`), interned per-event
+/// quantities, region-level collection properties, numeric literals, and
+/// the closed-under-arithmetic operators (`+ - * / ^`, neg, abs) plus
+/// nested reducers. Everything else (booleans, comparisons, particles,
+/// composite binders, the implicit-element `ElemSelfProp`) bails to `None`.
+fn reduce_body_key(node: &HNode) -> Option<String> {
+    if !node.tag.is_in_fragment() {
+        return None;
+    }
+    Some(match &node.kind {
+        HKind::Num(s) => format!("#{s}"),
+        HKind::Quantity(q) => format!("Q{}", q.0),
+        HKind::ReduceProp(p) => format!("RP{}", p.0),
+        HKind::CollProp { coll, prop } => format!("CP{}.{}", coll.0, prop.0),
+        HKind::Neg(a) => format!("(neg {})", reduce_body_key(a)?),
+        HKind::Abs(a) => format!("(abs {})", reduce_body_key(a)?),
+        HKind::Binary { op, lhs, rhs } => format!(
+            "({} {} {})",
+            op.as_str(),
+            reduce_body_key(lhs)?,
+            reduce_body_key(rhs)?
+        ),
+        HKind::Reduce {
+            kind,
+            coll,
+            body,
+            slice,
+        } => format!(
+            "{}[C{}{} {}]",
+            kind.as_str(),
+            coll.0,
+            slice_key(*slice),
+            reduce_body_key(body)?
+        ),
+        _ => return None,
+    })
+}
+
+/// Canonical text of a reducer's static slice (`None` ⇒ empty).
+fn slice_key(slice: Option<(u32, Option<u32>)>) -> String {
+    match slice {
+        Some((a, Some(b))) => format!("[{a}:{b}]"),
+        Some((a, None)) => format!("[{a}:]"),
+        None => String::new(),
+    }
+}
+
 /// A linear expression `Σ cᵢ·qᵢ + k` under construction, over exact
 /// rationals — folding is exact, so the atom boundary matches the
 /// interpreter's evaluation of the same cut to the bit.
@@ -312,6 +368,10 @@ impl LinExpr {
 struct Encoder<'h> {
     table: &'h mut QuantityTable,
     regions: &'h [HirRegion],
+    /// Symbol interner, needed to synthesize the opaque-reducer function name
+    /// (a dotted key — `reduce.sum` — that no source identifier can collide
+    /// with, since identifiers never contain a `.`).
+    symbols: &'h mut SymbolTable,
     /// Interned per-tuple cuts of composite blocks (indexed by `ElemPredId`),
     /// read by the 2D composite-existence dual-expansion.
     elem_preds: &'h [ElemPred],
@@ -1415,6 +1475,47 @@ impl Encoder<'_> {
 
     // ---- linear extraction ----------------------------------------------
 
+    /// Intern a value-position numeric reducer (`sum`/`min`/`max`) as a
+    /// **structurally-interned free quantity**: two structurally-identical
+    /// reducers share one `QuantityId` (so the interval/solver engine cancels
+    /// their bands across regions), while structurally-distinct reducers get
+    /// distinct ids. Modeled as an opaque `ExternalFn` — a free var with NO
+    /// axiom (the loosest sound over-approximation; NNEG on a sign-indefinite
+    /// body like `pt*cos(phi)` would be unsound, so none is added).
+    ///
+    /// The identity is keyed on (reducer kind, iteration-collection id, body
+    /// structure, slice): the iteration collection rides in a real
+    /// `QuantityArg::Collection` (so cross-file merge remaps it), and the body
+    /// shape rides in a `QuantityArg::Opaque` over interned ids (merge
+    /// namespaces it per-unit, so it only ever fails to cross-merge — sound).
+    ///
+    /// Returns `None` (caller falls back to the opaque non-linear leaf) if the
+    /// body cannot be rendered injectively — the conservative posture.
+    fn intern_reduce(
+        &mut self,
+        kind: ReduceKind,
+        coll: CollectionId,
+        body: &HNode,
+        slice: Option<(u32, Option<u32>)>,
+    ) -> Option<QuantityId> {
+        let body_key = reduce_body_key(body)?;
+        // The `.` makes this name unrepresentable as a source identifier
+        // (`[A-Za-z][A-Za-z0-9]*`, `_`-joined — no dots), so it can never
+        // collide with a user/ext function symbol, while still rendering
+        // cleanly in verdict labels (`reduce.sum(...)`).
+        let name = self
+            .symbols
+            .intern(&format!("reduce.{}", kind.as_str()));
+        let args = vec![
+            QuantityArg::Collection(coll),
+            QuantityArg::Opaque(format!("{}{}", slice_key(slice), body_key)),
+        ];
+        Some(
+            self.table
+                .intern_quantity(Quantity::ExternalFn { name, args }),
+        )
+    }
+
     fn lin(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
         if let Fragment::Unsupported(reason) = &node.tag {
             return Err(LinErr::NonLinear(reason.clone()));
@@ -1440,9 +1541,26 @@ impl Encoder<'_> {
                 "reducer-element property is interpret-only".to_owned(),
             )),
             // A reducer in arithmetic position is a value, not a condition:
-            // boolean reducers (`any`/`all`) are encoded at the boolean
-            // layer; a numeric reducer (`sum`, or a `min`/`max` outside a
-            // monotone comparison) is an opaque value here.
+            // boolean reducers (`any`/`all`) are encoded at the boolean layer
+            // (non-linear here). A numeric reducer (`sum`, or a `min`/`max`
+            // outside a monotone comparison) is a value: intern it as a
+            // structurally-interned FREE quantity so structurally-identical
+            // reducers cancel across regions (`HT > 400` vs `HT in [60,400]`
+            // on a shared `sum(jets.pT)`), while distinct ones get distinct
+            // ids. If the body cannot be rendered injectively, fall back to
+            // the opaque non-linear leaf (sound).
+            HKind::Reduce {
+                kind,
+                coll,
+                body,
+                slice,
+            } if !kind.is_boolean() => match self.intern_reduce(*kind, *coll, body, *slice) {
+                Some(q) => Ok(LinExpr::quantity(q)),
+                None => Err(LinErr::NonLinear(format!(
+                    "`{}` reducer body is not injectively renderable",
+                    kind.as_str()
+                ))),
+            },
             HKind::Reduce { kind, .. } => Err(LinErr::NonLinear(format!(
                 "`{}` reducer value is opaque to linear arithmetic",
                 kind.as_str()

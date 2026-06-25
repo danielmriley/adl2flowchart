@@ -354,6 +354,77 @@ region SR_y
     );
 }
 
+/// SOUNDNESS-CRITICAL: two value-position numeric reducers over DIFFERENT
+/// collections (`sum(jets.pT)` vs `sum(eles.pT)`) are distinct free
+/// quantities — they share no band, so `sum(jets.pT) > 400` and
+/// `sum(eles.pT) <= 400` must NOT be PROVEN DISJOINT (an event can satisfy
+/// both). A false PROVEN here would mean the two reducers collided onto one
+/// quantity id.
+#[test]
+fn distinct_reducer_collections_are_not_proven_disjoint() {
+    let src = "\
+object jets
+  take Jet
+object eles
+  take Ele
+
+region SR_x
+  select sum(jets.pT) > 400
+
+region SR_y
+  select sum(eles.pT) <= 400
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "two_sums.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "sum(jets.pT) and sum(eles.pT) are independent free vars; \
+         proving the pair disjoint fabricates a false PROVEN: {}",
+        p.reason
+    );
+}
+
+/// CAPABILITY: two regions whose bands sit on the SAME structurally-interned
+/// reducer (`define HT = sum(jets.pT)`; `HT > 400` vs `HT in [60,400]`) ARE
+/// PROVEN DISJOINT — the cancellation the fix restores (the interval engine
+/// sees one shared free var and proves `(400,inf]` ∩ `[60,400] = ∅`).
+#[test]
+fn shared_reducer_band_is_proven_disjoint() {
+    let src = "\
+object jets
+  take Jet
+define HT = sum(jets.pT)
+
+region SR_hi
+  select HT > 400
+
+region SR_lo
+  select HT [] 60 400
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "shared_ht.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "a shared interned reducer must let the interval engine prove \
+         (400,inf] vs [60,400] disjoint: {}",
+        p.reason
+    );
+}
+
 #[test]
 fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");

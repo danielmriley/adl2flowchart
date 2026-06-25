@@ -782,3 +782,103 @@ region SR
     assert_eq!(a.constant(), &Rat::from_decimal_f64(1.0).unwrap());
     let _ = (plus, minus);
 }
+
+// ---- value-position numeric reducer interning (`sum`/`min`/`max`) --------
+
+/// Every interned reducer quantity (an `ExternalFn` whose synthesized name
+/// is `reduce.<kind>`), in id order.
+fn reduce_qids(hir: &Hir) -> Vec<QuantityId> {
+    hir.table
+        .quantities()
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| {
+            matches!(q, Quantity::ExternalFn { name, .. }
+                if hir.symbols.key(*name).starts_with("reduce."))
+        })
+        .map(|(i, _)| QuantityId(u32::try_from(i).unwrap()))
+        .collect()
+}
+
+/// SOUNDNESS-CRITICAL false-unification regression: six *structurally
+/// different* value-position numeric reducers must intern to six DISTINCT
+/// free quantities. If any two collapsed, a pair of regions guarded by them
+/// (`sum(jets.pT)>400` vs `sum(eles.pT)<=400`) would be falsely PROVEN
+/// DISJOINT even though an event can satisfy both.
+#[test]
+fn distinct_reducers_get_distinct_quantities() {
+    // Each reducer differs from the others in exactly one structural axis:
+    //   kind (sum/min/max), iteration collection (jets/eles/filtered jets),
+    //   or body property (pT/eta). min/max are wrapped in arithmetic so the
+    //   resolver's `min/max ⋈ c → any/all` desugar does not fire (it only
+    //   matches a *bare* reducer on a comparison side).
+    let src = "\
+object jets
+  take Jet
+object eles
+  take Ele
+object goodjets
+  take Jet
+  select pT > 30
+
+region SR
+  select sum(jets.pT) > 400
+  select sum(eles.pT) > 400
+  select sum(jets.eta) > 1
+  select 2 * min(jets.pT) > 60
+  select 2 * max(jets.pT) > 60
+  select sum(goodjets.pT) > 400
+";
+    let (_, hir) = encode(src, 0);
+    let qids = reduce_qids(&hir);
+    let distinct: std::collections::BTreeSet<_> = qids.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        6,
+        "expected 6 DISTINCT interned reducers, got {} (ids {:?}); a collision \
+         would fabricate a false PROVEN DISJOINT",
+        distinct.len(),
+        qids
+    );
+}
+
+/// Two *structurally identical* `sum(jets.pT)` occurrences (one direct, one
+/// via a `define`) must share ONE quantity id — this is the cancellation the
+/// fix restores.
+#[test]
+fn identical_reducers_share_one_quantity() {
+    let src = "\
+object jets
+  take Jet
+define HT = sum(jets.pT)
+
+region SR
+  select HT > 400
+  select sum(jets.pT) < 1000
+";
+    let (_, hir) = encode(src, 0);
+    let qids = reduce_qids(&hir);
+    assert_eq!(
+        qids.len(),
+        1,
+        "structurally identical sums must intern to ONE quantity, got {qids:?}"
+    );
+}
+
+/// A bare value-position `sum(jets.pT) > 400` encodes to exactly ONE exact
+/// atom over the interned free reducer quantity (the leaf the interval engine
+/// cancels across regions).
+#[test]
+fn value_position_sum_is_one_exact_atom() {
+    let src = "\
+object jets
+  take Jet
+region SR
+  select sum(jets.pT) > 400
+";
+    let (enc, hir) = encode(src, 0);
+    let q = reduce_qids(&hir);
+    assert_eq!(q.len(), 1, "one interned reducer expected");
+    assert_eq!(enc.formula, atom1(q[0], Rel::Gt, 400.0));
+    assert!(enc.is_exact(), "a free-quantity atom is exact");
+}

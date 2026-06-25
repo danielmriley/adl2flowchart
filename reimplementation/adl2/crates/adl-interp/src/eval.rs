@@ -61,7 +61,10 @@ pub enum NonValue {
     /// Division by zero or other non-finite arithmetic.
     NonFinite,
     /// Element index beyond the collection's size.
-    MissingElement { collection: String, index: u32 },
+    MissingElement {
+        collection: String,
+        index: ElemIndex,
+    },
     /// Object lacks the requested property.
     MissingProperty { property: String },
     /// `min`/`max` over an empty collection: no extremum exists, so the
@@ -82,6 +85,22 @@ impl fmt::Display for NonValue {
             NonValue::EmptyReduction { kind } => {
                 write!(f, "`{kind}` over an empty collection has no value")
             }
+        }
+    }
+}
+
+/// Concrete 0-based position of `index` within a collection of `len`
+/// elements, or `None` when it falls outside it. `[0]` is the first element
+/// and `[-1]` the last (`[-k]` ⇒ position `len - k`, defined iff `len >= k`).
+fn elem_position(index: ElemIndex, len: usize) -> Option<usize> {
+    match index {
+        ElemIndex::FromFront(i) => {
+            let i = i as usize;
+            (i < len).then_some(i)
+        }
+        ElemIndex::FromBack(k) => {
+            let k = k as usize;
+            (k >= 1 && k <= len).then(|| len - k)
         }
     }
 }
@@ -1239,22 +1258,16 @@ impl<'h, 'e> Ev<'h, 'e> {
                     None => self.err(span, "empty 4-vector sum"),
                 }
             }
-            ParticleRef::Elem {
-                coll,
-                index: ElemIndex::FromFront(i),
-            } => {
-                let (coll, i) = (*coll, *i);
+            ParticleRef::Elem { coll, index } => {
+                let (coll, index) = (*coll, *index);
                 let objs = self.materialize(coll)?;
-                match objs.get(i as usize) {
-                    Some(obj) => Ok(self.obj_lorentz(obj)),
+                match elem_position(index, objs.len()) {
+                    Some(pos) => Ok(self.obj_lorentz(&objs[pos])),
                     None => Ok(Err(NonValue::MissingElement {
                         collection: self.coll_label(coll),
-                        index: i,
+                        index,
                     })),
                 }
-            }
-            ParticleRef::Elem { .. } => {
-                self.err(span, "negative index `[-n]` is reserved (OPEN-3)")
             }
             ParticleRef::ReduceElem => match self.reduce_stack.last() {
                 Some(obj) => Ok(self.obj_lorentz(obj)),
@@ -1404,16 +1417,13 @@ impl<'h, 'e> Ev<'h, 'e> {
                 Ok(Ok(objs.len() as f64))
             }
             Quantity::ElemProp { coll, index, prop } => {
-                let ElemIndex::FromFront(i) = index else {
-                    return self.err(span, "negative index `[-n]` is reserved (OPEN-3)");
-                };
-                let (i, coll, prop) = (*i, *coll, *prop);
+                let (index, coll, prop) = (*index, *coll, *prop);
                 let objs = self.materialize(coll)?;
-                match objs.get(i as usize) {
-                    Some(obj) => Ok(self.object_prop(obj, prop)),
+                match elem_position(index, objs.len()) {
+                    Some(pos) => Ok(self.object_prop(&objs[pos], prop)),
                     None => Ok(Err(NonValue::MissingElement {
                         collection: self.coll_label(coll),
-                        index: i,
+                        index,
                     })),
                 }
             }
@@ -1567,22 +1577,16 @@ impl<'h, 'e> Ev<'h, 'e> {
         elem: Option<&EventObject>,
     ) -> EvalResult<Result<Angles, NonValue>> {
         match p {
-            ParticleRef::Elem {
-                coll,
-                index: ElemIndex::FromFront(i),
-            } => {
-                let (coll, i) = (*coll, *i);
+            ParticleRef::Elem { coll, index } => {
+                let (coll, index) = (*coll, *index);
                 let objs = self.materialize(coll)?;
-                match objs.get(i as usize) {
-                    Some(obj) => Ok(Ok(self.obj_angles(obj))),
+                match elem_position(index, objs.len()) {
+                    Some(pos) => Ok(Ok(self.obj_angles(&objs[pos]))),
                     None => Ok(Err(NonValue::MissingElement {
                         collection: self.coll_label(coll),
-                        index: i,
+                        index,
                     })),
                 }
-            }
-            ParticleRef::Elem { .. } => {
-                self.err(span, "negative index `[-n]` is reserved (OPEN-3)")
             }
             ParticleRef::Met => {
                 if self.event.met.is_empty() {

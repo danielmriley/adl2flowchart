@@ -48,7 +48,7 @@ pub enum GProp {
 pub enum GQuant {
     Met,
     Ht,
-    Elem { coll: u8, idx: u8, prop: GProp },
+    Elem { coll: u8, idx: i8, prop: GProp },
     Size { coll: u8 },
     DPhi,
 }
@@ -352,7 +352,9 @@ fn arb_quant() -> impl Strategy<Value = GQuant> {
     prop_oneof![
         2 => Just(GQuant::Met),
         2 => Just(GQuant::Ht),
-        6 => (0u8..2, 0u8..2, arb_prop())
+        // Front indices `[0] [1]` and back indices `[-1] [-2]` (OPEN-3), so
+        // the encoder-vs-interpreter oracle fuzzes both addressing modes.
+        6 => (0u8..2, proptest::sample::select(&[0i8, 1, -1, -2][..]), arb_prop())
             .prop_map(|(coll, idx, prop)| GQuant::Elem { coll, idx, prop }),
         3 => (0u8..2).prop_map(|coll| GQuant::Size { coll }),
         2 => Just(GQuant::DPhi),

@@ -98,6 +98,20 @@ fn blocking_clause(model: &Model, mentioned: &BTreeSet<QuantityId>) -> Option<QF
     }
 }
 
+/// Whether any mentioned quantity addresses an element from the back
+/// (`coll[-k]`), directly or as an angular-separation anchor.
+fn mentions_back_index(hir: &Hir, quantities: &BTreeSet<QuantityId>) -> bool {
+    use adl_sema::{ElemIndex, ParticleRef};
+    let is_back = |i: &ElemIndex| matches!(i, ElemIndex::FromBack(_));
+    quantities.iter().any(|&q| match hir.table.quantity(q) {
+        Quantity::ElemProp { index, .. } => is_back(index),
+        Quantity::AngularSep { a, b, .. } => [a, b].iter().any(|p| {
+            matches!(p, ParticleRef::Elem { index, .. } if is_back(index))
+        }),
+        _ => false,
+    })
+}
+
 /// Per-region precomputation.
 struct RegionCtx {
     overs: Vec<(AssertName, Over)>,
@@ -487,6 +501,23 @@ impl Engine<'_> {
                     report.kind = VerdictKind::PossiblyOverlapping;
                     report.reason = "under-approximations intersect but the regions share no \
                                      dimension; capped at POSSIBLY"
+                        .to_owned();
+                    return report;
+                }
+                // A back-indexed element (`coll[-k]`) is a sound free leaf for
+                // the UNSAT (disjoint/subset) direction, but the witness
+                // builder cannot realize it: its value is constrained by the
+                // pT-descending input invariant the encoder does not axiomatize
+                // on back-indices, so a SAT model may be unrealizable and the
+                // interpreter check is model-dependent. Treat it like an opaque
+                // quantity — cap the overlap at POSSIBLY rather than chase a
+                // model-dependent (and metamorphically unstable) witness.
+                if mentions_back_index(self.hir, &combined) {
+                    self.pop();
+                    report.kind = VerdictKind::PossiblyOverlapping;
+                    report.reason = "under-approximations intersect, but a back-indexed element \
+                                     (`coll[-k]`) is not realizable by the witness builder; \
+                                     capped at POSSIBLY"
                         .to_owned();
                     return report;
                 }

@@ -294,16 +294,34 @@ fn union_order_is_part_of_identity() {
 }
 
 #[test]
-fn negative_index_is_diagnosed_unsupported() {
+fn back_index_resolves_in_fragment_as_from_back() {
+    // OPEN-3 resolved: `jets[-1]` is the last element, interned as a proper
+    // `ElemProp { index: FromBack(1) }` and NOT flagged unsupported. It is a
+    // distinct quantity from the front element `jets[0]`.
     let hir = analyze(
         "object jets\n  take Jet\n\
-         region SR\n  select jets[-1].pT > 30\n",
+         region SR\n  select jets[0].pT > 100\n  select jets[-1].pT > 30\n",
     );
     let selects = select_nodes(&hir, "SR");
     assert!(
-        selects[0].has_unsupported(),
-        "[-n] must surface as Unsupported (OPEN-3)"
+        !selects[1].has_unsupported(),
+        "`jets[-1]` must be in-fragment now"
     );
+    let backs: Vec<&Quantity> = hir
+        .table
+        .quantities()
+        .iter()
+        .filter(|q| {
+            matches!(
+                q,
+                Quantity::ElemProp {
+                    index: adl_sema::ElemIndex::FromBack(1),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(backs.len(), 1, "jets[-1].pt interns once as FromBack(1)");
 }
 
 #[test]

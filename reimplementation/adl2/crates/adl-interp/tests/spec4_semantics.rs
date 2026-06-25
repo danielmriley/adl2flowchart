@@ -260,6 +260,20 @@ fn pure_rename_is_identity_with_source() {
     ));
 }
 
+/// OPEN-3: `[-k]` addresses from the end — `[-1]` is the last element,
+/// `[-2]` the second-to-last — and `[-k]` past the start fails the cut as a
+/// missing element. STD jets are pT-descending 100, 50, 40, 20.
+#[test]
+fn back_index_addresses_from_the_end() {
+    let adl = "object jets\n  take Jet\n";
+    let r = |cut: &str| format!("{adl}region r\n  select {cut}\n");
+    assert!(passes(&r("jets[-1].pt == 20"), "r", STD));
+    assert!(passes(&r("jets[-2].pt == 40"), "r", STD));
+    assert!(passes(&r("jets[-1].pt < jets[0].pt"), "r", STD));
+    // `[-5]` in a four-jet event: no such element, so the cut is false.
+    assert!(!passes(&r("jets[-5].pt > 0"), "r", STD));
+}
+
 /// §4.2: filtering composes — a filtered collection can itself be a
 /// take source.
 #[test]

@@ -67,6 +67,47 @@ region SR_y
     );
 }
 
+/// A back-indexed element (`coll[-k]`) is a sound free leaf for the
+/// disjoint/subset (UNSAT) direction, but the witness builder cannot
+/// realize it, so an overlap (SAT) that depends on it caps at POSSIBLY
+/// rather than chase a model-dependent witness. These two regions overlap
+/// only on MET (both also gate on `jets[-1]`), so the verdict downgrades.
+#[test]
+fn back_index_overlap_caps_at_possibly() {
+    let src = "\
+object jets
+  take Jet
+
+region RA
+  select jets[-1].pT > 10
+  select MET > 50
+
+region RB
+  select jets[-1].pT > 10
+  select MET < 100
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "backidx_overlap.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::PossiblyOverlapping,
+        "back-index overlap must cap at POSSIBLY, got {:?} ({})",
+        p.kind,
+        p.reason
+    );
+    assert!(
+        p.reason.contains("back-indexed element"),
+        "reason should name the back-index cap: {}",
+        p.reason
+    );
+}
+
 /// EPRED soundness: an object filter `pt / d ⋈ c` must clear the constant
 /// denominator with EXACT coefficients, not fold the f64 reciprocal `1/d`
 /// (which asserts a predicate stronger than the truth). A jet with pt == 49

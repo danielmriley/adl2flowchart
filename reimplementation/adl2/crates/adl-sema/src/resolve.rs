@@ -315,39 +315,15 @@ impl<'a> Resolver<'a> {
         HNode::new(HKind::Quantity(q), span)
     }
 
-    /// Wrap an interned quantity, tagging `Unsupported` if it involves a
-    /// reserved back-index (PHASE0 OPEN-3).
+    /// Wrap an interned quantity as a value node. Back-indexed elements
+    /// (`coll[-k]`, OPEN-3) are in-fragment: the interpreter resolves `[-k]`
+    /// to position `len - k`, and the encoder carries it as an interned
+    /// `ElemProp { index: FromBack(k) }` leaf — a free per-event value with
+    /// the existence guard `size(coll) >= k` (see `quantity_existence`) and
+    /// no front-element ordering axioms (ORD/IDOM/SUB match `FromFront` only,
+    /// so they soundly skip it).
     fn quantity_node(&self, q: QuantityId, span: Span) -> HNode {
-        let mut node = HNode::new(HKind::Quantity(q), span);
-        if self.quantity_uses_back_index(q) {
-            node.tag = Fragment::unsupported("negative index `[-n]` is reserved (OPEN-3)");
-        }
-        node
-    }
-
-    fn quantity_uses_back_index(&self, q: QuantityId) -> bool {
-        fn particle(p: &ParticleRef) -> bool {
-            matches!(
-                p,
-                ParticleRef::Elem {
-                    index: ElemIndex::FromBack(_),
-                    ..
-                }
-            )
-        }
-        match self.table.quantity(q) {
-            Quantity::ElemProp {
-                index: ElemIndex::FromBack(_),
-                ..
-            } => true,
-            Quantity::AngularSep { a, b, .. } => particle(a) || particle(b),
-            Quantity::ExternalFn { args, .. } => args.iter().any(|a| match a {
-                QuantityArg::Particle(p) => particle(p),
-                QuantityArg::Quantity(inner) => self.quantity_uses_back_index(*inner),
-                _ => false,
-            }),
-            _ => false,
-        }
+        HNode::new(HKind::Quantity(q), span)
     }
 
     fn index_val(v: IndexVal) -> ElemIndex {

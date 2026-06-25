@@ -215,20 +215,29 @@ fn quantity_existence(table: &QuantityTable, q: QuantityId, out: &mut BTreeMap<C
         let e = out.entry(coll).or_insert(i);
         *e = (*e).max(i);
     };
+    // The guard emitted per collection is `size > out[coll]`. A front element
+    // `[i]` exists iff `size > i`; a back element `[-k]` iff `size >= k`, i.e.
+    // `size > k - 1`. Both reduce to a `size > N` threshold, and the per-coll
+    // max correctly conjoins them. `[-0]` is degenerate (never exists) and
+    // imposes no guard — sound, the interpreter fails the cut anyway.
+    let floor_need = |index: &ElemIndex| -> Option<u32> {
+        match index {
+            ElemIndex::FromFront(i) => Some(*i),
+            ElemIndex::FromBack(k) => k.checked_sub(1),
+        }
+    };
     match table.quantity(q) {
-        Quantity::ElemProp {
-            coll,
-            index: ElemIndex::FromFront(i),
-            ..
-        } => need(*coll, *i),
+        Quantity::ElemProp { coll, index, .. } => {
+            if let Some(n) = floor_need(index) {
+                need(*coll, n);
+            }
+        }
         Quantity::AngularSep { a, b, .. } => {
             for p in [a, b] {
-                if let adl_sema::ParticleRef::Elem {
-                    coll,
-                    index: ElemIndex::FromFront(i),
-                } = p
+                if let adl_sema::ParticleRef::Elem { coll, index } = p
+                    && let Some(n) = floor_need(index)
                 {
-                    need(*coll, *i);
+                    need(*coll, n);
                 }
             }
         }

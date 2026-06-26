@@ -270,6 +270,39 @@ fn ratio_encodes_exact_two_branches() {
 }
 
 #[test]
+fn ratio_inside_a_band_encodes_exactly() {
+    // `MET/HT [] 0.6 1.4` is `MET/HT >= 0.6 ∧ MET/HT <= 0.6` lowered through
+    // the exact two-branch ratio encoder per bound — not a dropped Unknown
+    // ("band expression is not linear").
+    let (enc, hir) = encode("region SR\n  select MET / HT [] 0.6 1.4\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let lo = Formula::Or(vec![
+        Formula::And(vec![atom1(ht, Rel::Gt, 0.0), atom(&[(1.0, met), (-0.6, ht)], Rel::Ge, 0.0)]),
+        Formula::And(vec![atom1(ht, Rel::Lt, 0.0), atom(&[(1.0, met), (-0.6, ht)], Rel::Le, 0.0)]),
+    ]);
+    let hi = Formula::Or(vec![
+        Formula::And(vec![atom1(ht, Rel::Gt, 0.0), atom(&[(1.0, met), (-1.4, ht)], Rel::Le, 0.0)]),
+        Formula::And(vec![atom1(ht, Rel::Lt, 0.0), atom(&[(1.0, met), (-1.4, ht)], Rel::Ge, 0.0)]),
+    ]);
+    assert_eq!(enc.formula, Formula::And(vec![lo, hi]));
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn nonlinear_ratio_denominator_interns_opaque() {
+    // `MET / (HT*HT) > 1`: the non-linear denominator is interned as one
+    // opaque free scalar D, so the cut becomes the exact two-branch ratio over
+    // D instead of dropping ("ratio denominator is not linear").
+    let (enc, hir) = encode("region SR\n  select MET / (HT * HT) > 1\n", 0);
+    assert!(!matches!(enc.formula, Formula::Unknown(_)), "got {:?}", enc.formula);
+    assert!(
+        hir.table.quantities().iter().any(|q| matches!(q,
+            Quantity::ExternalFn { name, .. } if hir.symbols.display(*name) == "opaque.scalar")),
+        "the HT*HT denominator must intern as an opaque scalar"
+    );
+}
+
+#[test]
 fn constant_denominator_clears_into_an_exact_atom() {
     // `MET / d ⋈ c` clears the denominator at the comparison level
     // (`MET ⋈ c·d`) rather than folding the f64 reciprocal `1/d` into the

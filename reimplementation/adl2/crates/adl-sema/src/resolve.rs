@@ -1486,20 +1486,24 @@ impl<'a> Resolver<'a> {
             Expr::Index { span, .. } | Expr::UnderscoreIndex { span, .. } => {
                 match self.resolve_target(e, ctx) {
                     Target::Met => self.met_scalar("pt", *span),
+                    // A bare indexed element used as a scalar means its `.pt`
+                    // magnitude — the same default MET takes, and the IDENTICAL
+                    // `ElemProp{pt}` quantity an explicit `jets[i].pt` produces
+                    // (one QuantityId, one ORD/IDOM/existence fact, one
+                    // interpreter `.pt` read), so encoder and interpreter stay
+                    // in lock-step. Front and back indices alike.
+                    Target::Particle(ParticleRef::Elem { coll, index }) => {
+                        let prop = self.intern_prop("pt");
+                        let q = self
+                            .table
+                            .intern_quantity(Quantity::ElemProp { coll, index, prop });
+                        self.quantity_node(q, *span)
+                    }
+                    // A whole-collection / composite-binder reference is a
+                    // genuine non-scalar (a 4-vector, not a magnitude).
                     Target::Particle(p) => {
-                        let back = matches!(
-                            p,
-                            ParticleRef::Elem {
-                                index: ElemIndex::FromBack(_),
-                                ..
-                            }
-                        );
                         let mut node = HNode::new(HKind::Particle(p), *span);
-                        node.tag = Fragment::unsupported(if back {
-                            "negative index `[-n]` is reserved (OPEN-3)"
-                        } else {
-                            "particle value used as a scalar"
-                        });
+                        node.tag = Fragment::unsupported("particle value used as a scalar");
                         node
                     }
                     _ => HNode::unsupported(*span, "unsupported indexed expression"),

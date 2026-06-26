@@ -325,6 +325,43 @@ fn back_index_resolves_in_fragment_as_from_back() {
 }
 
 #[test]
+fn bare_indexed_element_as_scalar_defaults_to_pt() {
+    // A bare `jets[1]` in scalar position means `jets[1].pT` — it must be
+    // in-fragment AND intern to the SAME ElemProp the explicit `.pT` produces
+    // (uniqueness below proves the identity), not a fresh/opaque leaf.
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         region SR\n  select jets[1] > 30\n  select jets[1].pT > 30\n",
+    );
+    let selects = select_nodes(&hir, "SR");
+    assert!(
+        !selects[0].has_unsupported(),
+        "bare `jets[1]` must default to .pT, not stay unsupported"
+    );
+    // Both cuts reference `jets[1]`'s pt: exactly one ElemProp at FromFront(1)
+    // exists, so the bare form and the explicit `.pT` form share it.
+    let elem1: Vec<&Quantity> = hir
+        .table
+        .quantities()
+        .iter()
+        .filter(|q| {
+            matches!(
+                q,
+                Quantity::ElemProp {
+                    index: adl_sema::ElemIndex::FromFront(1),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        elem1.len(),
+        1,
+        "bare `jets[1]` and `jets[1].pT` share one ElemProp quantity"
+    );
+}
+
+#[test]
 fn unknown_function_is_interned_but_unsupported() {
     let hir = analyze("object muons\n  take Muon\n  select D0 < 2\n  select D0(Muon) < 2\n");
     let jets = hir.collection_of("muons").unwrap();

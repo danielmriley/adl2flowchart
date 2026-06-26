@@ -1330,11 +1330,11 @@ impl Encoder<'_> {
     /// `L/D ⋈ c` (D non-constant) ⇒ `(D>0 ∧ L ⋈ cD) ∨ (D<0 ∧ L ⋈̄ cD)`.
     /// `D = 0` fails the cut (neither branch admits it; §4.4).
     fn ratio(&mut self, num: &HNode, den: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
-        let l = match self.lin(num) {
+        let l = match self.lin_or_opaque(num) {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio numerator is not linear", span),
         };
-        let d = match self.lin(den) {
+        let d = match self.lin_or_opaque(den) {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio denominator is not linear", span),
         };
@@ -1423,6 +1423,23 @@ impl Encoder<'_> {
         };
         let e = match self.lin(expr) {
             Ok(v) => v,
+            // A non-linear band expression (`MET/HT [] lo hi`, `MCT ][ lo hi`)
+            // is exactly its two bounds: `lo ≤ x ≤ hi` ⇔ `x ≥ lo ∧ x ≤ hi`,
+            // `x ≤ lo ∨ x ≥ hi` for Out. Route each bound through the
+            // comparison machinery (`pattern` → exact ratio / abs / opaque
+            // free leaf), reusing the same encoding `x ⋈ lo` would get.
+            Err(LinErr::NonLinear(why)) => {
+                let (lo_rel, hi_rel) = match kind {
+                    BandKind::In => (Rel::Ge, Rel::Le),
+                    BandKind::Out => (Rel::Le, Rel::Ge),
+                };
+                let lo_bound = self.pattern(expr, lo_rel, lo, &why, span);
+                let hi_bound = self.pattern(expr, hi_rel, hi, &why, span);
+                return match kind {
+                    BandKind::In => fand(vec![lo_bound, hi_bound]),
+                    BandKind::Out => forr(vec![lo_bound, hi_bound]),
+                };
+            }
             Err(err) => return self.lin_err(err, "band expression is not linear", span),
         };
         let lo_k = &lo - &e.k;
@@ -1553,6 +1570,22 @@ impl Encoder<'_> {
             self.table
                 .intern_quantity(Quantity::ExternalFn { name, args }),
         )
+    }
+
+    /// Like [`Self::lin`], but a non-linear-yet-deterministic operand is
+    /// interned as one opaque free scalar (the sound over-approximation of
+    /// [`Self::intern_opaque_scalar`]) instead of failing. Used for a ratio's
+    /// numerator/denominator so `MET / (HT^0.5) ⋈ c` reduces to the exact
+    /// two-branch encoding over a single free quantity rather than dropping.
+    fn lin_or_opaque(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
+        match self.lin(node) {
+            Ok(v) => Ok(v),
+            Err(LinErr::NonLinear(why)) => match self.intern_opaque_scalar(node) {
+                Some(q) => Ok(LinExpr::quantity(q)),
+                None => Err(LinErr::NonLinear(why)),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     fn lin(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {

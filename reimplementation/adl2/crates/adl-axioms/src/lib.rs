@@ -542,6 +542,32 @@ impl Emit<'_> {
         by_coll
     }
 
+    /// Back-indexed pt quantities (`pt(C[-k])`), grouped per collection and
+    /// sorted by depth `k`. Same guards as the front collector.
+    fn elem_pt_back_quantities(
+        &self,
+        qs: &[QuantityId],
+    ) -> BTreeMap<CollectionId, Vec<(u32, QuantityId)>> {
+        let mut by_coll: BTreeMap<CollectionId, Vec<(u32, QuantityId)>> = BTreeMap::new();
+        for &q in qs {
+            if let Quantity::ElemProp {
+                coll,
+                index: ElemIndex::FromBack(k),
+                prop,
+            } = self.hir.table.quantity(q)
+                && self.hir.table.prop_key(*prop) == self.pt_key
+                && self.pt_ordered(*coll)
+            {
+                by_coll.entry(*coll).or_default().push((*k, q));
+            }
+        }
+        for v in by_coll.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+        by_coll
+    }
+
     // ORD: pt(C[i]) >= pt(C[j]) for i < j (mentioned indices, same C).
     fn ord(&mut self, qs: &[QuantityId]) {
         for (_, idx) in self.elem_pt_quantities(qs) {
@@ -552,6 +578,26 @@ impl Emit<'_> {
                     if i < j {
                         let f = Self::atom(&[(1.0, qi), (-1.0, qj)], Rel::Ge, 0.0);
                         let d = format!("{} >= {}", self.label(qi), self.label(qj));
+                        self.push(AxiomId::Ord, f, d);
+                    }
+                }
+            }
+        }
+        // Back-index ORD: a back element closer to the front has the higher
+        // pt under pT-descending, i.e. `pt(C[-k2]) >= pt(C[-k1])` for k1 < k2
+        // ([-1] is the last/lowest). Sound UNCONDITIONALLY: when both exist
+        // (size >= k2) it is a true fact of every pT-descending event; when
+        // size < k2 the deeper leaf is free (only inside its dead size>k2-1
+        // guard), so the fact only relaxes. NO front-to-back cross fact is
+        // emitted (front/back positions alias at size = i + k).
+        for (_, idx) in self.elem_pt_back_quantities(qs) {
+            for a in 0..idx.len() {
+                for b in a + 1..idx.len() {
+                    let (k1, q1) = idx[a];
+                    let (k2, q2) = idx[b];
+                    if k1 < k2 {
+                        let f = Self::atom(&[(1.0, q2), (-1.0, q1)], Rel::Ge, 0.0);
+                        let d = format!("{} >= {}", self.label(q2), self.label(q1));
                         self.push(AxiomId::Ord, f, d);
                     }
                 }

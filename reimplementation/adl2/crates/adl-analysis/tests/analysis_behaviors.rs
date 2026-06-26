@@ -67,6 +67,39 @@ region SR_y
     );
 }
 
+/// Back-index ORD: under pT-descending, a back element closer to the front
+/// has the higher pT (`pt(C[-2]) >= pt(C[-1])`). So `pt(jets[-1]) > 100` and
+/// `pt(jets[-2]) < 50` are PROVEN DISJOINT — pt([-2]) >= pt([-1]) > 100
+/// contradicts pt([-2]) < 50. (The UNSAT/disjoint side is unaffected by the
+/// overlap cap.)
+#[test]
+fn back_index_ord_proves_disjoint() {
+    let src = "\
+object jets
+  take Jet
+
+region A
+  select jets[-1].pT > 100
+
+region B
+  select jets[-2].pT < 50
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "backidx_ord.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "back-index ORD must prove disjoint, got {:?} ({})",
+        r.pairwise[0].kind,
+        r.pairwise[0].reason
+    );
+}
+
 /// A back-indexed element (`coll[-k]`) is a sound free leaf for the
 /// disjoint/subset (UNSAT) direction, but the witness builder cannot
 /// realize it, so an overlap (SAT) that depends on it caps at POSSIBLY

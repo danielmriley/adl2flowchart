@@ -274,6 +274,21 @@ fn back_index_addresses_from_the_end() {
     assert!(!passes(&r("jets[-5].pt > 0"), "r", STD));
 }
 
+/// Scalar n-ary `min`/`max` folds its argument values (NOT a collection
+/// reducer); a missing-element argument is a non-value that makes the
+/// enclosing comparison false. STD jets pT: 100, 50, 40, 20.
+#[test]
+fn scalar_min_max_folds_arguments() {
+    let adl = "object jets\n  take Jet\n";
+    let r = |cut: &str| format!("{adl}region r\n  select {cut}\n");
+    assert!(passes(&r("min(jets[0].pT, jets[1].pT) == 50"), "r", STD));
+    assert!(passes(&r("max(jets[0].pT, jets[1].pT) == 100"), "r", STD));
+    assert!(passes(&r("min(jets[0].pT, jets[1].pT, jets[3].pT) == 20"), "r", STD));
+    assert!(passes(&r("max(jets[1].pT, jets[2].pT, jets[3].pT) == 50"), "r", STD));
+    // A missing-element argument makes the comparison false.
+    assert!(!passes(&r("min(jets[0].pT, jets[9].pT) > 0"), "r", STD));
+}
+
 /// §4.2: filtering composes — a filtered collection can itself be a
 /// take source.
 #[test]

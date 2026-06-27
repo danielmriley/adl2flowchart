@@ -128,6 +128,7 @@ impl HNode {
             HKind::And(v) | HKind::Or(v) => v.iter().collect(),
             HKind::Band { expr, .. } => vec![expr],
             HKind::Reduce { body, .. } => vec![body],
+            HKind::ScalarMinMax { args, .. } => args.iter().collect(),
             HKind::Ternary { guard, then, els } => {
                 let mut v = vec![guard.as_ref(), then.as_ref()];
                 if let Some(e) = els {
@@ -168,6 +169,13 @@ pub enum HKind {
     CollProp {
         coll: CollectionId,
         prop: PropId,
+    },
+    /// Scalar n-ary minimum/maximum of distinct scalar arguments
+    /// (`min(MTb0, MTb1)`) — NOT a collection reducer. Encoded by the
+    /// monotone identity `min(a,…) ⋈ c` against a constant; opaque elsewhere.
+    ScalarMinMax {
+        kind: ReduceKind,
+        args: Vec<HNode>,
     },
     /// A bare particle value (meaningful only inside function arguments;
     /// in value position the node is tagged `Unsupported`).

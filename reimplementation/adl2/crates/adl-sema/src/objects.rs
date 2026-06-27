@@ -298,6 +298,10 @@ fn render_term(hir: &Hir, n: &HNode) -> String {
         HKind::CollProp { coll, prop } => {
             format!("{}.{}", coll_short(hir, *coll), hir.table.prop_display(*prop))
         }
+        HKind::ScalarMinMax { kind, args } => {
+            let inner: Vec<String> = args.iter().map(|a| render_term(hir, a)).collect();
+            format!("{}({})", kind.as_str(), inner.join(", "))
+        }
         HKind::Quantity(q) => render_quantity(hir, hir.table.quantity(*q)),
         HKind::Abs(e) => format!("|{}|", render_term(hir, e)),
         HKind::Neg(e) => format!("-{}", render_term(hir, e)),

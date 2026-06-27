@@ -176,6 +176,9 @@ fn hnode_children(node: &HNode) -> Vec<&HNode> {
         HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => vec![lhs, rhs],
         HKind::And(v) | HKind::Or(v) => v.iter().collect(),
         HKind::Band { expr, .. } => vec![expr],
+        // Scalar min/max args ARE formula-visible quantities (unlike a
+        // reducer body), so the existence/axiom collectors must see them.
+        HKind::ScalarMinMax { args, .. } => args.iter().collect(),
         HKind::Ternary { guard, then, els } => {
             let mut v = vec![guard.as_ref(), then.as_ref()];
             if let Some(e) = els {
@@ -297,6 +300,15 @@ fn reduce_body_key(node: &HNode) -> Option<String> {
             slice_key(*slice),
             reduce_body_key(body)?
         ),
+        HKind::ScalarMinMax { kind, args } => {
+            let mut s = format!("{}<", kind.as_str());
+            for a in args {
+                s.push_str(&reduce_body_key(a)?);
+                s.push(',');
+            }
+            s.push('>');
+            s
+        }
         _ => return None,
     })
 }
@@ -501,6 +513,7 @@ impl Encoder<'_> {
             | HKind::Neg(_)
             | HKind::Binary { .. }
             | HKind::Abs(_)
+            | HKind::ScalarMinMax { .. }
             | HKind::Unsupported => {
                 self.unknown(node.span, "expression is not a boolean condition")
             }
@@ -1319,10 +1332,76 @@ impl Encoder<'_> {
                 rhs: den,
             } => self.ratio(num, den, rel, c, span),
             HKind::Abs(inner) => self.abs_cmp(inner, rel, c, span),
-            _ => match self.intern_opaque_scalar(side) {
-                Some(q) => self.atom_of(BTreeMap::from([(q, Rat::one())]), rel, c),
-                None => self.unknown(span, format!("comparison is not linear arithmetic: {why}")),
-            },
+            // Scalar min/max against a constant — the EXACT monotone identity:
+            // `min(a,…) < c ⇔ ∃ aᵢ < c`, `min(a,…) > c ⇔ ∀ aᵢ > c`, max dual
+            // (Le/Ge alike). Each `aᵢ ⋈ c` recurses through the full
+            // comparison machinery (linear → atom, ratio → two-branch, nested
+            // min → this same rule). `==`/`!=` have no monotone reading, so
+            // they fall to the opaque leaf below.
+            HKind::ScalarMinMax { kind, args } => {
+                let or_branch = matches!(
+                    (kind, rel),
+                    (ReduceKind::Min, Rel::Lt | Rel::Le) | (ReduceKind::Max, Rel::Gt | Rel::Ge)
+                );
+                let and_branch = matches!(
+                    (kind, rel),
+                    (ReduceKind::Min, Rel::Gt | Rel::Ge) | (ReduceKind::Max, Rel::Lt | Rel::Le)
+                );
+                if or_branch || and_branch {
+                    let parts: Vec<Formula> = args
+                        .iter()
+                        .map(|a| self.cmp_node_const(a, rel, c.clone(), span))
+                        .collect();
+                    let combined = if or_branch { forr(parts) } else { fand(parts) };
+                    // `min`/`max` is a value only when EVERY argument is — a
+                    // missing-element arg makes the interpreter's comparison
+                    // false. So conjoin the existence of all args OUTSIDE the
+                    // disjunction (the `Or` reading must not fire via a present
+                    // arg while another is absent). `guard_existence` collects
+                    // the args' element quantities (via `hnode_children`).
+                    self.guard_existence(side, combined)
+                } else {
+                    // `==`/`!=` have no monotone reading. Interning the whole
+                    // min as an opaque free leaf would be sound for the UNSAT
+                    // side, but a free leaf in an OVERLAP makes the witness
+                    // unvalidatable and metamorphically order-dependent
+                    // (Candidate vs Rejected). `==` on a min is rare and absent
+                    // from the corpus, so keep it an honest Unknown.
+                    let _ = why;
+                    self.unknown(span, "scalar min/max compared by equality is opaque")
+                }
+            }
+            _ => self.opaque_atom(side, rel, c, why, span),
+        }
+    }
+
+    /// `side ⋈ c` where `side` is non-linear-but-deterministic: intern it as
+    /// one opaque free scalar (sound over-approximation) or, failing that,
+    /// keep it `Unknown`.
+    fn opaque_atom(&mut self, side: &HNode, rel: Rel, c: Rat, why: &str, span: Span) -> Formula {
+        match self.intern_opaque_scalar(side) {
+            Some(q) => self.atom_of(BTreeMap::from([(q, Rat::one())]), rel, c),
+            None => self.unknown(span, format!("comparison is not linear arithmetic: {why}")),
+        }
+    }
+
+    /// Encode `node ⋈ c` against a constant, reusing the full comparison
+    /// dispatch (linear atom / ratio / abs / opaque / nested min-max). Mirrors
+    /// [`Self::cmp`] with a constant right-hand side.
+    fn cmp_node_const(&mut self, node: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
+        match self.lin(node) {
+            Ok(l) => {
+                let k = &c - &l.k;
+                if let Some(f) = self.try_comb_existence(&l.terms, rel, &k, span) {
+                    return f;
+                }
+                self.atom_of(l.terms, rel, k)
+            }
+            Err(LinErr::NonFinite) => Formula::False,
+            Err(LinErr::BadLiteral) => {
+                self.unknown(span, "non-finite numeric literal cannot construct an atom")
+            }
+            Err(LinErr::NonLinear(why)) => self.pattern(node, rel, c, &why, span),
         }
     }
 
@@ -1635,6 +1714,13 @@ impl Encoder<'_> {
             },
             HKind::Reduce { kind, .. } => Err(LinErr::NonLinear(format!(
                 "`{}` reducer value is opaque to linear arithmetic",
+                kind.as_str()
+            ))),
+            // Scalar min/max is not linear; the comparison path (`pattern`)
+            // desugars it monotonically against a constant, or interns it as
+            // one opaque free scalar for `==`/`!=` and value position.
+            HKind::ScalarMinMax { kind, .. } => Err(LinErr::NonLinear(format!(
+                "`{}` of scalars is not linear arithmetic",
                 kind.as_str()
             ))),
             HKind::Bool(_)

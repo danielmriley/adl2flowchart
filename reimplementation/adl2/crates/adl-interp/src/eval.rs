@@ -906,6 +906,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             | HKind::Reduce { .. }
             | HKind::Neg(_)
             | HKind::Abs(_)
+            | HKind::ScalarMinMax { .. }
             | HKind::Binary { .. } => match self.num3(node, elem) {
                 Err(e) => Tri::Unknown(e),
                 Ok(Ok(v)) => Tri::from_bool(v != 0.0),
@@ -960,6 +961,24 @@ impl<'h, 'e> Ev<'h, 'e> {
                     adl_sema::ArithOp::Pow => a.powf(b),
                 };
                 Ok(fin(v))
+            }
+            HKind::ScalarMinMax { kind, args } => {
+                let mut acc: Option<f64> = None;
+                for a in args {
+                    let v = match self.num3(a, elem)? {
+                        Ok(v) => v,
+                        Err(nv) => return Ok(Err(nv)), // soft non-value is absorbing
+                    };
+                    acc = Some(match acc {
+                        None => v,
+                        Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
+                        Some(p) => p.max(v),
+                    });
+                }
+                match acc {
+                    Some(v) => Ok(fin(v)),
+                    None => Ok(Err(NonValue::EmptyReduction { kind: kind.as_str() })),
+                }
             }
             HKind::Ternary { guard, then, els } => match self.truth3(guard, elem) {
                 Tri::True => self.num3(then, elem),
@@ -1091,6 +1110,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             | HKind::Reduce { .. }
             | HKind::Neg(_)
             | HKind::Abs(_)
+            | HKind::ScalarMinMax { .. }
             | HKind::Binary { .. } => {
                 // Numeric value used as a predicate: nonzero is true; a
                 // soft non-value fails the cut.
@@ -1149,6 +1169,26 @@ impl<'h, 'e> Ev<'h, 'e> {
                     adl_sema::ArithOp::Pow => a.powf(b),
                 };
                 Ok(fin(v))
+            }
+            // Scalar n-ary min/max: fold the arg values; a missing-element arg
+            // is a non-value that makes the enclosing comparison false (§4.4).
+            HKind::ScalarMinMax { kind, args } => {
+                let mut acc: Option<f64> = None;
+                for a in args {
+                    let v = match self.num(a, elem)? {
+                        Ok(v) => v,
+                        Err(nv) => return Ok(Err(nv)),
+                    };
+                    acc = Some(match acc {
+                        None => v,
+                        Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
+                        Some(p) => p.max(v),
+                    });
+                }
+                match acc {
+                    Some(v) => Ok(fin(v)),
+                    None => Ok(Err(NonValue::EmptyReduction { kind: kind.as_str() })),
+                }
             }
             HKind::Ternary { guard, then, els } => {
                 if self.truth(guard, elem)? {

@@ -325,6 +325,21 @@ fn back_index_resolves_in_fragment_as_from_back() {
 }
 
 #[test]
+fn scalar_min_max_resolves_in_fragment() {
+    // `min(a, b)` of two scalar arguments is the n-ary minimum, in-fragment as
+    // a ScalarMinMax node — NOT rejected as a malformed collection reducer.
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         region SR\n  select min(jets[0].pT, jets[1].pT) > 30\n",
+    );
+    let selects = select_nodes(&hir, "SR");
+    assert!(
+        !selects[0].has_unsupported(),
+        "scalar min must resolve in-fragment, got unsupported"
+    );
+}
+
+#[test]
 fn bare_indexed_element_as_scalar_defaults_to_pt() {
     // A bare `jets[1]` in scalar position means `jets[1].pT` — it must be
     // in-fragment AND intern to the SAME ElemProp the explicit `.pT` produces

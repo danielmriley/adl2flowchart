@@ -1921,6 +1921,21 @@ impl<'a> Resolver<'a> {
         ctx: &Ctx,
         cmp_hoist: Option<&dyn Fn(&mut Self, HNode) -> HNode>,
     ) -> HNode {
+        // Scalar n-ary `min`/`max`: two or more arguments is the minimum of
+        // scalar VALUES (`min(MTb0, MTb1)`), a different operator from the
+        // collection reducer. Build a value node (the enclosing comparison
+        // desugars it monotonically in the encoder); a bare-collection arg
+        // resolves to an Unsupported scalar and soundly poisons the node.
+        if matches!(kind, ReduceKind::Min | ReduceKind::Max) && args.len() >= 2 {
+            let nodes: Vec<HNode> = args
+                .iter()
+                .map(|a| match a {
+                    Arg::Expr(e) => self.resolve_expr(e, ctx),
+                    _ => HNode::unsupported(span, "min/max argument must be an expression"),
+                })
+                .collect();
+            return HNode::new(HKind::ScalarMinMax { kind, args: nodes }, span);
+        }
         let [Arg::Expr(body_expr)] = args else {
             return HNode::unsupported(
                 span,

@@ -418,6 +418,13 @@ impl Merger {
                 coll: self.remap_coll(src, memo, *coll),
                 prop: self.remap_prop(src, memo, *prop),
             },
+            HKind::ScalarMinMax { kind, args } => HKind::ScalarMinMax {
+                kind: *kind,
+                args: args
+                    .iter()
+                    .map(|a| self.remap_node(src, memo, region_base, a))
+                    .collect(),
+            },
             HKind::Particle(p) => HKind::Particle(self.remap_particle(src, memo, p)),
             HKind::CollValue(c) => HKind::CollValue(self.remap_coll(src, memo, *c)),
             HKind::Neg(a) => HKind::Neg(self.remap_box(src, memo, region_base, a)),

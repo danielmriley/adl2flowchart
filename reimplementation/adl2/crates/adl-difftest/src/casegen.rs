@@ -60,6 +60,8 @@ pub enum GNum {
     Add(GQuant, GQuant),
     Sub(GQuant, GQuant),
     Scale(f64, GQuant),
+    Min(GQuant, GQuant),
+    Max(GQuant, GQuant),
 }
 
 /// Comparison operator.
@@ -200,6 +202,8 @@ fn num_str(n: &GNum, ctx: &RenderCtx) -> String {
         GNum::Add(a, b) => format!("{} + {}", quant_str(*a, ctx), quant_str(*b, ctx)),
         GNum::Sub(a, b) => format!("{} - {}", quant_str(*a, ctx), quant_str(*b, ctx)),
         GNum::Scale(c, q) => format!("{} * {}", fmt_const(*c), quant_str(*q, ctx)),
+        GNum::Min(a, b) => format!("min({}, {})", quant_str(*a, ctx), quant_str(*b, ctx)),
+        GNum::Max(a, b) => format!("max({}, {})", quant_str(*a, ctx), quant_str(*b, ctx)),
     }
 }
 
@@ -368,6 +372,8 @@ fn arb_num() -> impl Strategy<Value = GNum> {
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Sub(a, b)),
         1 => (proptest::sample::select(SCALE_POOL), arb_quant())
             .prop_map(|(c, q)| GNum::Scale(c, q)),
+        1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Min(a, b)),
+        1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Max(a, b)),
     ]
 }
 
@@ -391,6 +397,8 @@ pub fn pool_for(n: &GNum) -> &'static [f64] {
             GQuant::DPhi => DPHI_POOL,
         },
         GNum::Add(..) | GNum::Sub(..) | GNum::Scale(..) => MIX_POOL,
+        // min/max stays on its arguments' scale so thresholds are meaningful.
+        GNum::Min(a, _) | GNum::Max(a, _) => pool_for(&GNum::Q(*a)),
     }
 }
 

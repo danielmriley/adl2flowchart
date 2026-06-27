@@ -289,6 +289,34 @@ fn ratio_inside_a_band_encodes_exactly() {
 }
 
 #[test]
+fn scalar_min_desugars_monotone() {
+    // min(a,…) < c ⇔ ∃ aᵢ < c (Or); min(a,…) > c ⇔ ∀ aᵢ > c (And).
+    let (enc, hir) = encode("region SR\n  select min(MET, HT) < 50\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![atom1(met, Rel::Lt, 50.0), atom1(ht, Rel::Lt, 50.0)])
+    );
+    let (enc2, _) = encode("region SR\n  select min(MET, HT) > 50\n", 0);
+    assert_eq!(
+        enc2.formula,
+        Formula::And(vec![atom1(met, Rel::Gt, 50.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+    assert!(enc.is_exact() && enc2.is_exact());
+}
+
+#[test]
+fn scalar_max_desugars_dual() {
+    // max(a,…) > c ⇔ ∃ aᵢ > c (Or); max(a,…) < c ⇔ ∀ aᵢ < c (And).
+    let (enc, hir) = encode("region SR\n  select max(MET, HT) > 50\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![atom1(met, Rel::Gt, 50.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+}
+
+#[test]
 fn nonlinear_ratio_denominator_interns_opaque() {
     // `MET / (HT*HT) > 1`: the non-linear denominator is interned as one
     // opaque free scalar D, so the cut becomes the exact two-branch ratio over

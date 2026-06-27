@@ -118,6 +118,10 @@ impl RenderCtx<'_> {
             HKind::CollProp { coll, prop } => {
                 format!("{}[*].{}", self.coll(*coll), self.table.prop_display(*prop))
             }
+            HKind::ScalarMinMax { kind, args } => {
+                let inner: Vec<String> = args.iter().map(|a| self.node(a)).collect();
+                format!("{}({})", kind.as_str(), inner.join(", "))
+            }
             HKind::Particle(p) => self.particle(p),
             HKind::CollValue(c) => self.coll(*c),
             HKind::Neg(e) => format!("(- {})", self.node(e)),

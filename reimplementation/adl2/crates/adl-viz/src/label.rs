@@ -139,6 +139,10 @@ impl<'h> Labeler<'h> {
             HKind::Reduce { kind, coll, body, .. } => {
                 format!("{}({}: {})", kind.as_str(), self.collection(*coll), self.node(body))
             }
+            HKind::ScalarMinMax { kind, args } => {
+                let inner: Vec<String> = args.iter().map(|a| self.node(a)).collect();
+                format!("{}({})", kind.as_str(), inner.join(", "))
+            }
             HKind::CollProp { coll, prop } => {
                 format!("{}[*].{}", self.collection(*coll), t.prop_display(*prop))
             }

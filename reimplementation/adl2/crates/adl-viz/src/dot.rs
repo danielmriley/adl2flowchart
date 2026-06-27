@@ -483,6 +483,7 @@ fn node_label_and_children<'n>(lbl: &Labeler, n: &'n HNode) -> (String, Vec<&'n 
         | HKind::RegionPred(_)
         | HKind::Unsupported => (lbl.node(n), Vec::new()),
         HKind::Reduce { kind, body, .. } => (kind.as_str().to_owned(), vec![body.as_ref()]),
+        HKind::ScalarMinMax { kind, args } => (kind.as_str().to_owned(), args.iter().collect()),
         HKind::Neg(a) => ("neg".to_owned(), vec![a.as_ref()]),
         HKind::Not(a) => ("not".to_owned(), vec![a.as_ref()]),
         HKind::Abs(a) => ("abs".to_owned(), vec![a.as_ref()]),

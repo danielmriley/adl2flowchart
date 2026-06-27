@@ -34,6 +34,11 @@ pub const DPHI_POOL: &[f64] = &[-3.0, -1.5, 0.0, 1.5, 3.0];
 pub const MIX_POOL: &[f64] = &[-100.0, -25.0, 0.0, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0];
 /// Constant multipliers.
 pub const SCALE_POOL: &[f64] = &[2.0, 0.5, -1.0];
+/// Thresholds for ratios (cluster around O(1); 0 exercises the sign branch).
+pub const RATIO_POOL: &[f64] = &[0.0, 0.5, 1.0, 2.0];
+/// Thresholds for unindexed `dR(A,B)` (OPEN-1); dR ≥ 0, so a negative one
+/// makes the separation reading trivially true.
+pub const DR_POOL: &[f64] = &[0.0, 0.4, 1.0, 2.0, 4.0];
 
 /// Element property in the vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +67,12 @@ pub enum GNum {
     Scale(f64, GQuant),
     Min(GQuant, GQuant),
     Max(GQuant, GQuant),
+    /// `a / b` — exercises the two-branch ratio encoder (and ratio-in-band);
+    /// a `b` from the size/btag pools can be 0, hitting the `D=0` branch.
+    Ratio(GQuant, GQuant),
+    /// `a * b` — a product of two quantities is non-linear, exercising the
+    /// opaque-scalar interning path.
+    Mul(GQuant, GQuant),
 }
 
 /// Comparison operator.
@@ -102,6 +113,9 @@ pub enum GCond {
     /// Reference to define `d{i % defines.len()}`; renders as a fixed
     /// fallback condition when the case has no defines.
     Def(u8),
+    /// OPEN-1 unindexed angular cut `dR(jets, eles) ⋈ c` (operator-scoped
+    /// ∀/∃ over the pair product).
+    WholeDR(GRel, f64),
 }
 
 /// One region statement.
@@ -204,6 +218,8 @@ fn num_str(n: &GNum, ctx: &RenderCtx) -> String {
         GNum::Scale(c, q) => format!("{} * {}", fmt_const(*c), quant_str(*q, ctx)),
         GNum::Min(a, b) => format!("min({}, {})", quant_str(*a, ctx), quant_str(*b, ctx)),
         GNum::Max(a, b) => format!("max({}, {})", quant_str(*a, ctx), quant_str(*b, ctx)),
+        GNum::Ratio(a, b) => format!("{} / {}", quant_str(*a, ctx), quant_str(*b, ctx)),
+        GNum::Mul(a, b) => format!("{} * {}", quant_str(*a, ctx), quant_str(*b, ctx)),
     }
 }
 
@@ -261,6 +277,7 @@ pub fn cond_str(c: &GCond, defines: &[GCond], ctx: &RenderCtx) -> String {
                 }
             }
         }
+        GCond::WholeDR(r, k) => format!("dR(jets, eles) {} {}", r.as_str(), fmt_const(*k)),
     }
 }
 
@@ -374,6 +391,8 @@ fn arb_num() -> impl Strategy<Value = GNum> {
             .prop_map(|(c, q)| GNum::Scale(c, q)),
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Min(a, b)),
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Max(a, b)),
+        1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Ratio(a, b)),
+        1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Mul(a, b)),
     ]
 }
 
@@ -396,9 +415,11 @@ pub fn pool_for(n: &GNum) -> &'static [f64] {
             GQuant::Size { .. } => SIZE_POOL,
             GQuant::DPhi => DPHI_POOL,
         },
-        GNum::Add(..) | GNum::Sub(..) | GNum::Scale(..) => MIX_POOL,
+        GNum::Add(..) | GNum::Sub(..) | GNum::Scale(..) | GNum::Mul(..) => MIX_POOL,
         // min/max stays on its arguments' scale so thresholds are meaningful.
         GNum::Min(a, _) | GNum::Max(a, _) => pool_for(&GNum::Q(*a)),
+        // ratios cluster around O(1); RATIO_POOL spans the interesting band.
+        GNum::Ratio(..) => RATIO_POOL,
     }
 }
 
@@ -446,16 +467,34 @@ fn arb_leaf(ndefs: usize) -> BoxedStrategy<GCond> {
         prop_oneof![
             6 => arb_cmp(),
             1 => arb_band(),
+            1 => arb_wholedr(),
         ]
         .boxed()
     } else {
         prop_oneof![
             6 => arb_cmp(),
             1 => arb_band(),
+            1 => arb_wholedr(),
             2 => (0u8..8).prop_map(GCond::Def),
         ]
         .boxed()
     }
+}
+
+/// OPEN-1 leaf: `dR(jets, eles) ⋈ c`.
+fn arb_wholedr() -> impl Strategy<Value = GCond> {
+    (
+        prop_oneof![
+            3 => Just(GRel::Gt),
+            3 => Just(GRel::Lt),
+            2 => Just(GRel::Ge),
+            2 => Just(GRel::Le),
+            1 => Just(GRel::Eq),
+            1 => Just(GRel::Ne),
+        ],
+        proptest::sample::select(DR_POOL),
+    )
+        .prop_map(|(r, k)| GCond::WholeDR(r, k))
 }
 
 /// A condition of bounded depth; `ndefs` enables `Def` leaves.

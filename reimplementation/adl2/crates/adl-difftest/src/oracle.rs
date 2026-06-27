@@ -169,6 +169,33 @@ pub struct Summary {
     pub empty_rb: EmptyStatus,
 }
 
+impl Summary {
+    /// Metamorphic consistency between two renderings of the same case.
+    /// Every soundness-bearing fact must match exactly — DISJOINT, EMPTY,
+    /// and the subset flags are all UNSAT-derived and deterministic. The ONE
+    /// tolerated difference is PROVEN OVERLAPPING vs POSSIBLY OVERLAPPING:
+    /// whether an overlap's witness is *realized* is a property of the
+    /// heuristic event builder (witness.rs — "soundness never depends on the
+    /// builder"), so it can legitimately differ with the solver's model /
+    /// region order. POSSIBLY is the sound downgrade of PROVEN here; the
+    /// strict interpreter-membership check in the battery remains the real net.
+    #[must_use]
+    pub fn consistent(&self, other: &Summary) -> bool {
+        let overlapping = |k: VerdictKind| {
+            matches!(
+                k,
+                VerdictKind::ProvenOverlapping | VerdictKind::PossiblyOverlapping
+            )
+        };
+        let kind_ok = self.kind == other.kind || (overlapping(self.kind) && overlapping(other.kind));
+        kind_ok
+            && self.ra_in_rb == other.ra_in_rb
+            && self.rb_in_ra == other.rb_in_ra
+            && self.empty_ra == other.empty_ra
+            && self.empty_rb == other.empty_rb
+    }
+}
+
 /// Extract the normalized summary (regions keyed by name, pair oriented
 /// RA→RB regardless of declaration order).
 ///

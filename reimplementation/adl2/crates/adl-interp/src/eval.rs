@@ -1664,10 +1664,6 @@ impl<'h, 'e> Ev<'h, 'e> {
             } => (*kind, *a, *b),
             _ => return Ok(None),
         };
-        if matches!(op, CmpOp::Eq | CmpOp::Ne | CmpOp::ApproxEq) {
-            return Ok(None);
-        }
-        let forall = matches!(op, CmpOp::Gt | CmpOp::Ge);
         // A non-value threshold makes the comparison false (§4.4).
         let c = match self.num(other, elem)? {
             Ok(v) => v,
@@ -1675,32 +1671,53 @@ impl<'h, 'e> Ev<'h, 'e> {
         };
         let na = self.materialize(a)?.len();
         let nb = self.materialize(b)?.len();
-        if na == 0 || nb == 0 {
-            return Ok(Some(forall)); // ∀ vacuous-true / ∃ false over ∅
-        }
-        for i in 0..na {
-            for j in 0..nb {
-                let pa = ParticleRef::Elem {
-                    coll: a,
-                    index: ElemIndex::FromFront(i as u32),
-                };
-                let pb = ParticleRef::Elem {
-                    coll: b,
-                    index: ElemIndex::FromFront(j as u32),
-                };
-                let holds = match self.angular(kind, &pa, &pb, span, elem)? {
-                    Ok(d) => compare(op, d, c),
-                    Err(_) => false, // missing / non-finite pair ⇒ false
-                };
-                if forall && !holds {
-                    return Ok(Some(false));
+        let pair = |this: &mut Self, i: usize, j: usize| -> EvalResult<Result<f64, NonValue>> {
+            let pa = ParticleRef::Elem {
+                coll: a,
+                index: ElemIndex::FromFront(i as u32),
+            };
+            let pb = ParticleRef::Elem {
+                coll: b,
+                index: ElemIndex::FromFront(j as u32),
+            };
+            this.angular(kind, &pa, &pb, span, elem)
+        };
+        match op {
+            // Separation (∀) / proximity (∃): short-circuit. A missing /
+            // non-finite pair counts as false; empty product is ∀-true / ∃-false.
+            CmpOp::Gt | CmpOp::Ge | CmpOp::Lt | CmpOp::Le => {
+                let forall = matches!(op, CmpOp::Gt | CmpOp::Ge);
+                if na == 0 || nb == 0 {
+                    return Ok(Some(forall));
                 }
-                if !forall && holds {
-                    return Ok(Some(true));
+                for i in 0..na {
+                    for j in 0..nb {
+                        let holds = matches!(pair(self, i, j)?, Ok(d) if compare(op, d, c));
+                        if forall && !holds {
+                            return Ok(Some(false));
+                        }
+                        if !forall && holds {
+                            return Ok(Some(true));
+                        }
+                    }
                 }
+                Ok(Some(forall))
+            }
+            // `==`/`!=`: the shared opaque quantity is the MIN pairwise dR, so
+            // compare that. A non-finite pair is not a real separation (skip);
+            // an empty / all-missing product leaves min = +∞.
+            CmpOp::Eq | CmpOp::Ne | CmpOp::ApproxEq => {
+                let mut min = f64::INFINITY;
+                for i in 0..na {
+                    for j in 0..nb {
+                        if let Ok(d) = pair(self, i, j)? {
+                            min = min.min(d);
+                        }
+                    }
+                }
+                Ok(Some(compare(op, min, c)))
             }
         }
-        Ok(Some(forall)) // ∀: all held ⇒ true; ∃: none held ⇒ false
     }
 
     /// The `AngularSep { Whole, Whole }` quantity of `node`, if it is one.

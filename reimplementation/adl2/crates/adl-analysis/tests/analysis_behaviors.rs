@@ -67,6 +67,46 @@ region SR_y
     );
 }
 
+/// OPEN-1 (operator-scoped): `dR(A,B)` is the single min-pair separation, so
+/// separation thresholds decide soundly — `dR>5` (all pairs separated) and
+/// `dR<0.4` (some pair close) are PROVEN DISJOINT. But two regions whose only
+/// difference is a LOOSER separation threshold (`dR>0.4` vs `dR>1.0`) are
+/// subset/overlapping, NEVER disjoint (the kill event: a large all-separated
+/// event is in both).
+#[test]
+fn unindexed_angular_disjoint_and_no_false_disjoint() {
+    let ext = ExtDecls::legacy();
+    let base = "object jets\n  take Jet\nobject eles\n  take Ele\n";
+    let dj = format!(
+        "{base}region RA\n  select dR(jets, eles) > 5.0\nregion RB\n  select dR(jets, eles) < 0.4\n"
+    );
+    let r = analyze_source(&dj, "open1_dj.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "dR>5 vs dR<0.4 must be disjoint, got {:?} ({})",
+        r.pairwise[0].kind,
+        r.pairwise[0].reason
+    );
+    let kill = format!(
+        "{base}region RA\n  select dR(jets, eles) > 0.4\nregion RB\n  select dR(jets, eles) > 1.0\n"
+    );
+    let r2 = analyze_source(&kill, "open1_kill.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r2.solver == "none" {
+        return;
+    }
+    assert_ne!(
+        r2.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "looser-vs-tighter separation must NOT be disjoint (subset), got {:?}",
+        r2.pairwise[0].kind
+    );
+}
+
 /// Back-index ORD: under pT-descending, a back element closer to the front
 /// has the higher pT (`pt(C[-2]) >= pt(C[-1])`). So `pt(jets[-1]) > 100` and
 /// `pt(jets[-2]) < 50` are PROVEN DISJOINT — pt([-2]) >= pt([-1]) > 100

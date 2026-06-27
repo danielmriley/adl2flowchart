@@ -517,6 +517,17 @@ fn enumerate_index_tuples(
     }
 }
 
+/// Swap the sides of a comparison operator (`a ⋈ b` ⇔ `b ⋈̄ a`).
+fn flip_cmp(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Gt => CmpOp::Lt,
+        CmpOp::Lt => CmpOp::Gt,
+        CmpOp::Ge => CmpOp::Le,
+        CmpOp::Le => CmpOp::Ge,
+        other => other,
+    }
+}
+
 fn compare(op: CmpOp, a: f64, b: f64) -> bool {
     match op {
         CmpOp::Gt => a > b,
@@ -873,11 +884,17 @@ impl<'h, 'e> Ev<'h, 'e> {
             // wins even when the other operand is a blocking Unknown (checked
             // first, before the Err -> Unknown arm). A blocking operand with
             // no soft non-value makes the comparison Unknown.
-            HKind::Cmp { op, lhs, rhs } => match (self.num3(lhs, elem), self.num3(rhs, elem)) {
-                (Ok(Err(_)), _) | (_, Ok(Err(_))) => Tri::False,
-                (Err(e), _) | (_, Err(e)) => Tri::Unknown(e),
-                (Ok(Ok(a)), Ok(Ok(b))) => Tri::from_bool(compare(*op, a, b)),
-            },
+            HKind::Cmp { op, lhs, rhs } => {
+                match self.angular_whole_cmp(*op, lhs, rhs, node.span, elem) {
+                    Ok(Some(r)) => Tri::from_bool(r),
+                    Err(e) => Tri::Unknown(e),
+                    Ok(None) => match (self.num3(lhs, elem), self.num3(rhs, elem)) {
+                        (Ok(Err(_)), _) | (_, Ok(Err(_))) => Tri::False,
+                        (Err(e), _) | (_, Err(e)) => Tri::Unknown(e),
+                        (Ok(Ok(a)), Ok(Ok(b))) => Tri::from_bool(compare(*op, a, b)),
+                    },
+                }
+            }
             HKind::Band { kind, expr, lo, hi } => match self.num3(expr, elem) {
                 Err(e) => Tri::Unknown(e),
                 Ok(Err(_)) => Tri::False,
@@ -1072,10 +1089,15 @@ impl<'h, 'e> Ev<'h, 'e> {
             }
             // §4.4: a soft non-value on either side makes the comparison
             // false — the event fails the cut.
-            HKind::Cmp { op, lhs, rhs } => match (self.num(lhs, elem)?, self.num(rhs, elem)?) {
-                (Ok(a), Ok(b)) => Ok(compare(*op, a, b)),
-                _ => Ok(false),
-            },
+            HKind::Cmp { op, lhs, rhs } => {
+                if let Some(r) = self.angular_whole_cmp(*op, lhs, rhs, node.span, elem)? {
+                    return Ok(r);
+                }
+                match (self.num(lhs, elem)?, self.num(rhs, elem)?) {
+                    (Ok(a), Ok(b)) => Ok(compare(*op, a, b)),
+                    _ => Ok(false),
+                }
+            }
             HKind::Band { kind, expr, lo, hi } => {
                 let Ok(v) = self.num(expr, elem)? else {
                     return Ok(false);
@@ -1608,6 +1630,94 @@ impl<'h, 'e> Ev<'h, 'e> {
                 (Err(nv), _) | (_, Err(nv)) => Err(nv),
             },
         })
+    }
+
+    /// OPEN-1 (operator-scoped ∀/∃): if `lhs ⋈ rhs` is an unindexed angular
+    /// separation over two WHOLE collections compared to a constant, evaluate
+    /// it by folding the FULL Cartesian product A×B — `∀` pairs for `>`/`≥`,
+    /// `∃` a pair for `<`/`≤`. A missing-element or non-finite pair counts as
+    /// false; an empty product is vacuously ∀-true / ∃-false. Returns `None`
+    /// for any other shape (caller falls through to the normal comparison) and
+    /// for `==`/`!=` (no monotone reading — matches the encoder's opaque
+    /// fall-through).
+    fn angular_whole_cmp(
+        &mut self,
+        op: CmpOp,
+        lhs: &'h HNode,
+        rhs: &'h HNode,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<Option<bool>> {
+        let (q, op, other) = if let Some(q) = self.whole_angular(lhs) {
+            (q, op, rhs)
+        } else if let Some(q) = self.whole_angular(rhs) {
+            (q, flip_cmp(op), lhs)
+        } else {
+            return Ok(None);
+        };
+        let (kind, a, b) = match self.it.hir.table.quantity(q) {
+            Quantity::AngularSep {
+                kind,
+                a: ParticleRef::Whole(a),
+                b: ParticleRef::Whole(b),
+                ..
+            } => (*kind, *a, *b),
+            _ => return Ok(None),
+        };
+        if matches!(op, CmpOp::Eq | CmpOp::Ne | CmpOp::ApproxEq) {
+            return Ok(None);
+        }
+        let forall = matches!(op, CmpOp::Gt | CmpOp::Ge);
+        // A non-value threshold makes the comparison false (§4.4).
+        let c = match self.num(other, elem)? {
+            Ok(v) => v,
+            Err(_) => return Ok(Some(false)),
+        };
+        let na = self.materialize(a)?.len();
+        let nb = self.materialize(b)?.len();
+        if na == 0 || nb == 0 {
+            return Ok(Some(forall)); // ∀ vacuous-true / ∃ false over ∅
+        }
+        for i in 0..na {
+            for j in 0..nb {
+                let pa = ParticleRef::Elem {
+                    coll: a,
+                    index: ElemIndex::FromFront(i as u32),
+                };
+                let pb = ParticleRef::Elem {
+                    coll: b,
+                    index: ElemIndex::FromFront(j as u32),
+                };
+                let holds = match self.angular(kind, &pa, &pb, span, elem)? {
+                    Ok(d) => compare(op, d, c),
+                    Err(_) => false, // missing / non-finite pair ⇒ false
+                };
+                if forall && !holds {
+                    return Ok(Some(false));
+                }
+                if !forall && holds {
+                    return Ok(Some(true));
+                }
+            }
+        }
+        Ok(Some(forall)) // ∀: all held ⇒ true; ∃: none held ⇒ false
+    }
+
+    /// The `AngularSep { Whole, Whole }` quantity of `node`, if it is one.
+    fn whole_angular(&self, node: &HNode) -> Option<QuantityId> {
+        if let HKind::Quantity(q) = &node.kind
+            && matches!(
+                self.it.hir.table.quantity(*q),
+                Quantity::AngularSep {
+                    a: ParticleRef::Whole(_),
+                    b: ParticleRef::Whole(_),
+                    ..
+                }
+            )
+        {
+            return Some(*q);
+        }
+        None
     }
 
     fn angles(

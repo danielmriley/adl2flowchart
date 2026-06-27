@@ -274,6 +274,29 @@ fn back_index_addresses_from_the_end() {
     assert!(!passes(&r("jets[-5].pt > 0"), "r", STD));
 }
 
+/// OPEN-1 operator-scoped: an unindexed angular cut `dR(A,B) ⋈ c` folds the
+/// full A×B product — `∀` pairs for `>`/`≥`, `∃` a pair for `<`/`≤`. STD
+/// jet×electron pairs all have dR in roughly [0.8, 5]; none below 0.4.
+#[test]
+fn unindexed_angular_folds_over_pairs() {
+    let adl = "object jets\n  take Jet\nobject eles\n  take Ele\n";
+    let r = |cut: &str| format!("{adl}region r\n  select {cut}\n");
+    // ∀ separation: every pair > 0.4 holds; > 5 does not.
+    assert!(passes(&r("dR(jets, eles) > 0.4"), "r", STD));
+    assert!(!passes(&r("dR(jets, eles) > 5.0"), "r", STD));
+    // The cleaning idiom: reject if any close pair. No pair < 0.4, so kept;
+    // some pair < 5.0 exists, so rejected.
+    assert!(passes(&format!("{adl}region r\n  reject dR(jets, eles) < 0.4\n"), "r", STD));
+    assert!(!passes(&format!("{adl}region r\n  reject dR(jets, eles) < 5.0\n"), "r", STD));
+    // ∃ proximity: a pair < 5.0 exists; none < 0.4.
+    assert!(passes(&r("dR(jets, eles) < 5.0"), "r", STD));
+    assert!(!passes(&r("dR(jets, eles) < 0.4"), "r", STD));
+    // Empty product: ∀ vacuously true, ∃ false (no electrons in this event).
+    let no_ele = r#"{"Jet":[{"pt":50,"eta":0.0,"phi":0.0,"m":5}],"Electron":[],"MET":{"pt":80,"phi":0.4},"HT":210}"#;
+    assert!(passes(&r("dR(jets, eles) > 999"), "r", no_ele));
+    assert!(!passes(&r("dR(jets, eles) < 999"), "r", no_ele));
+}
+
 /// Scalar n-ary `min`/`max` folds its argument values (NOT a collection
 /// reducer); a missing-element argument is a non-value that makes the
 /// enclosing comparison false. STD jets pT: 100, 50, 40, 20.

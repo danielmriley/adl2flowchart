@@ -313,6 +313,62 @@ fn reduce_body_key(node: &HNode) -> Option<String> {
     })
 }
 
+/// Number of `Add`/`Sub` nodes anywhere in an arithmetic source tree
+/// (`Mul`/`Div`/`Pow` are not counted — only additive associativity and
+/// cancellation are the f64-faithfulness hazard).
+fn count_add_sub(node: &HNode) -> u32 {
+    match &node.kind {
+        HKind::Binary {
+            op: ArithOp::Add | ArithOp::Sub,
+            lhs,
+            rhs,
+        } => 1 + count_add_sub(lhs) + count_add_sub(rhs),
+        HKind::Binary { lhs, rhs, .. } => count_add_sub(lhs) + count_add_sub(rhs),
+        HKind::Neg(a) | HKind::Abs(a) => count_add_sub(a),
+        _ => 0,
+    }
+}
+
+/// Every numeric literal that is an operand of an `Add`/`Sub` must be dyadic
+/// (`fl(c) == c`), else folding it across the comparison is not f64-faithful:
+/// `MET + 0.1 > 0.3` folds to the exact atom `MET > 0.2`, but the interpreter
+/// computes `fl(MET + 0.1) > 0.3`, which diverges at the boundary.
+fn additive_consts_dyadic(node: &HNode) -> bool {
+    match &node.kind {
+        HKind::Binary {
+            op: ArithOp::Add | ArithOp::Sub,
+            lhs,
+            rhs,
+        } => {
+            for side in [lhs.as_ref(), rhs.as_ref()] {
+                if let HKind::Num(s) = &side.kind {
+                    match parse_rat(s) {
+                        Some(c) if c.is_dyadic() => {}
+                        _ => return false,
+                    }
+                }
+            }
+            additive_consts_dyadic(lhs) && additive_consts_dyadic(rhs)
+        }
+        HKind::Binary { lhs, rhs, .. } => {
+            additive_consts_dyadic(lhs) && additive_consts_dyadic(rhs)
+        }
+        HKind::Neg(a) | HKind::Abs(a) => additive_consts_dyadic(a),
+        _ => true,
+    }
+}
+
+/// Whether a comparison-operand source may be flattened to a shared exact
+/// linear atom (`Σcᵢqᵢ`) without the analyzer's exact value diverging from the
+/// interpreter's stepwise-f64 evaluation. Sound f64-faithfulness guard: at
+/// most one additive op AND no non-dyadic additive constant. A non-faithful
+/// source is routed to `intern_opaque_scalar` (structure-keyed) so two regions
+/// whose sources f64-evaluate differently never unify into a false PROVEN
+/// DISJOINT/SUBSET/EMPTY (the UNSAT side has no witness oracle).
+fn is_f64_faithful(node: &HNode) -> bool {
+    count_add_sub(node) <= 1 && additive_consts_dyadic(node)
+}
+
 /// Canonical text of a reducer's static slice (`None` ⇒ empty).
 fn slice_key(slice: Option<(u32, Option<u32>)>) -> String {
     match slice {
@@ -1283,8 +1339,8 @@ impl Encoder<'_> {
 
     fn cmp(&mut self, op: CmpOp, lhs: &HNode, rhs: &HNode, span: Span) -> Formula {
         let rel = rel_of(op);
-        let l = self.lin(lhs);
-        let r = self.lin(rhs);
+        let l = self.lin_guarded(lhs);
+        let r = self.lin_guarded(rhs);
         match (l, r) {
             (Ok(l), Ok(r)) => {
                 // l ⋈ r  ⇔  Σ terms ⋈ −k. Exact: rationals never overflow.
@@ -1389,7 +1445,7 @@ impl Encoder<'_> {
     /// dispatch (linear atom / ratio / abs / opaque / nested min-max). Mirrors
     /// [`Self::cmp`] with a constant right-hand side.
     fn cmp_node_const(&mut self, node: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
-        match self.lin(node) {
+        match self.lin_guarded(node) {
             Ok(l) => {
                 let k = &c - &l.k;
                 if let Some(f) = self.try_comb_existence(&l.terms, rel, &k, span) {
@@ -1500,7 +1556,10 @@ impl Encoder<'_> {
         let (Some(lo), Some(hi)) = (parse_rat(lo), parse_rat(hi)) else {
             return self.unknown(span, "non-finite numeric literal cannot construct an atom");
         };
-        let e = match self.lin(expr) {
+        // `lin_guarded` (not `lin`): a non-f64-faithful band expression
+        // (`MET+HT-HT [] lo hi`) must route to the opaque/per-bound path, not
+        // flatten — else the cancellation false-PROVEN resurfaces in bands.
+        let e = match self.lin_guarded(expr) {
             Ok(v) => v,
             // A non-linear band expression (`MET/HT [] lo hi`, `MCT ][ lo hi`)
             // is exactly its two bounds: `lo ≤ x ≤ hi` ⇔ `x ≥ lo ∧ x ≤ hi`,
@@ -1657,6 +1716,16 @@ impl Encoder<'_> {
     /// numerator/denominator so `MET / (HT^0.5) ⋈ c` reduces to the exact
     /// two-branch encoding over a single free quantity rather than dropping.
     fn lin_or_opaque(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
+        // A non-f64-faithful source (≥2 additive ops / non-dyadic additive
+        // constant) must NOT flatten even in a ratio operand — intern it whole
+        // as a structure-keyed opaque scalar so cancellation/reassociation
+        // can't fabricate a false PROVEN through the ratio path.
+        if !is_f64_faithful(node) {
+            return match self.intern_opaque_scalar(node) {
+                Some(q) => Ok(LinExpr::quantity(q)),
+                None => Err(LinErr::NonLinear("source not f64-faithful".to_owned())),
+            };
+        }
         match self.lin(node) {
             Ok(v) => Ok(v),
             Err(LinErr::NonLinear(why)) => match self.intern_opaque_scalar(node) {
@@ -1665,6 +1734,25 @@ impl Encoder<'_> {
             },
             Err(e) => Err(e),
         }
+    }
+
+    /// [`Self::lin`] for a TOP-LEVEL comparison operand, gated by the
+    /// f64-faithfulness guard: a source that is not [`is_f64_faithful`]
+    /// (multiple additive ops, or a non-dyadic additive constant) is refused
+    /// as `NonLinear` so `cmp`/`pattern` route it to `intern_opaque_scalar`
+    /// (structure-keyed) instead of flattening it into a shared linear atom.
+    /// This prevents two regions whose sources f64-evaluate differently — yet
+    /// canonicalize to the same `Σcᵢqᵢ` — from fabricating a false PROVEN
+    /// DISJOINT/SUBSET/EMPTY. NOT used for recursive sub-linearization, which
+    /// stays exact (the `0.5*HT` inside a faithful `MET + 0.5*HT` is fine).
+    fn lin_guarded(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
+        if !is_f64_faithful(node) {
+            return Err(LinErr::NonLinear(
+                "source not f64-faithful (multiple additive ops or non-dyadic additive constant)"
+                    .to_owned(),
+            ));
+        }
+        self.lin(node)
     }
 
     fn lin(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {

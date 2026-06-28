@@ -34,6 +34,10 @@ pub const DPHI_POOL: &[f64] = &[-3.0, -1.5, 0.0, 1.5, 3.0];
 pub const MIX_POOL: &[f64] = &[-100.0, -25.0, 0.0, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0];
 /// Constant multipliers.
 pub const SCALE_POOL: &[f64] = &[2.0, 0.5, -1.0];
+/// Additive constants for `q + c`: a mix of dyadic (exactly f64-representable,
+/// stay faithful) and non-dyadic (must route to opaque) values, to fuzz the
+/// constant-folding-across-comparison path.
+pub const CONST_POOL: &[f64] = &[0.5, 0.25, 2.0, 0.1, 0.3, 1.1];
 /// Thresholds for ratios (cluster around O(1); 0 exercises the sign branch).
 pub const RATIO_POOL: &[f64] = &[0.0, 0.5, 1.0, 2.0];
 /// Thresholds for unindexed `dR(A,B)` (OPEN-1); dR ≥ 0, so a negative one
@@ -73,6 +77,15 @@ pub enum GNum {
     /// `a * b` — a product of two quantities is non-linear, exercising the
     /// opaque-scalar interning path.
     Mul(GQuant, GQuant),
+    /// A three-term additive expression with explicit association/cancellation
+    /// (`assoc`: 0 `(a+b)+c`, 1 `a+(b+c)`, 2 `(a+b)-c`, 3 `a+b-b`-style cancel,
+    /// 4 commuted `c+b+a`). These are NOT f64-faithful → must route to opaque
+    /// (POSSIBLY), never a false PROVEN DISJOINT. The f64-faithfulness guard.
+    Sum3(GQuant, GQuant, GQuant, u8),
+    /// `q + c` with `c` from a pool of dyadic AND non-dyadic constants —
+    /// exercises constant-folding across the comparison (non-dyadic must route
+    /// to opaque; dyadic stays faithful linear).
+    QConst(GQuant, f64),
 }
 
 /// Comparison operator.
@@ -220,6 +233,17 @@ fn num_str(n: &GNum, ctx: &RenderCtx) -> String {
         GNum::Max(a, b) => format!("max({}, {})", quant_str(*a, ctx), quant_str(*b, ctx)),
         GNum::Ratio(a, b) => format!("{} / {}", quant_str(*a, ctx), quant_str(*b, ctx)),
         GNum::Mul(a, b) => format!("{} * {}", quant_str(*a, ctx), quant_str(*b, ctx)),
+        GNum::Sum3(a, b, c, assoc) => {
+            let (a, b, c) = (quant_str(*a, ctx), quant_str(*b, ctx), quant_str(*c, ctx));
+            match assoc % 5 {
+                0 => format!("({a} + {b}) + {c}"),
+                1 => format!("{a} + ({b} + {c})"),
+                2 => format!("({a} + {b}) - {c}"),
+                3 => format!("{a} + {b} - {b}"),
+                _ => format!("{c} + {b} + {a}"),
+            }
+        }
+        GNum::QConst(a, c) => format!("{} + {}", quant_str(*a, ctx), fmt_const(*c)),
     }
 }
 
@@ -393,6 +417,10 @@ fn arb_num() -> impl Strategy<Value = GNum> {
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Max(a, b)),
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Ratio(a, b)),
         1 => (arb_quant(), arb_quant()).prop_map(|(a, b)| GNum::Mul(a, b)),
+        2 => (arb_quant(), arb_quant(), arb_quant(), 0u8..5)
+            .prop_map(|(a, b, c, assoc)| GNum::Sum3(a, b, c, assoc)),
+        2 => (arb_quant(), proptest::sample::select(CONST_POOL))
+            .prop_map(|(q, c)| GNum::QConst(q, c)),
     ]
 }
 
@@ -415,11 +443,15 @@ pub fn pool_for(n: &GNum) -> &'static [f64] {
             GQuant::Size { .. } => SIZE_POOL,
             GQuant::DPhi => DPHI_POOL,
         },
-        GNum::Add(..) | GNum::Sub(..) | GNum::Scale(..) | GNum::Mul(..) => MIX_POOL,
+        GNum::Add(..) | GNum::Sub(..) | GNum::Scale(..) | GNum::Mul(..) | GNum::Sum3(..) => {
+            MIX_POOL
+        }
         // min/max stays on its arguments' scale so thresholds are meaningful.
         GNum::Min(a, _) | GNum::Max(a, _) => pool_for(&GNum::Q(*a)),
         // ratios cluster around O(1); RATIO_POOL spans the interesting band.
         GNum::Ratio(..) => RATIO_POOL,
+        // `q + c` compares on the quantity's own scale.
+        GNum::QConst(a, _) => pool_for(&GNum::Q(*a)),
     }
 }
 

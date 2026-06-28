@@ -167,6 +167,24 @@ impl Rat {
         self.0.is_one()
     }
 
+    /// True iff the reduced denominator is a power of two — i.e. the value is
+    /// exactly representable in binary floating point (`fl(self) == self`).
+    /// Used to decide whether folding an additive constant across a comparison
+    /// is f64-faithful: a dyadic constant moves across `⋈` without the
+    /// analyzer's exact value diverging from the interpreter's stepwise f64.
+    #[must_use]
+    pub fn is_dyadic(&self) -> bool {
+        let mut d = self.0.denom().clone();
+        if d.is_zero() {
+            return false;
+        }
+        let two = BigInt::from(2);
+        while (&d % &two).is_zero() {
+            d /= &two;
+        }
+        d.is_one()
+    }
+
     /// Render as a closed SMT-LIB2 `Real` term (exact: `(/ n.0 d.0)`).
     #[must_use]
     pub fn smt_real(&self) -> String {

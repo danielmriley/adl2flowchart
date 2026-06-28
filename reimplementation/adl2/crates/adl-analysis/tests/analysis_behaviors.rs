@@ -18,6 +18,71 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
     }
 }
 
+/// f64-faithfulness guard: a cut source that is not f64-faithful (≥2 additive
+/// ops, or a non-dyadic additive constant) is interned as a structure-keyed
+/// opaque quantity, so two regions whose sources f64-evaluate differently can
+/// no longer fabricate a false PROVEN DISJOINT. Each family below was a
+/// confirmed false PROVEN before the guard; all must now be POSSIBLY.
+#[test]
+fn f64_faithfulness_guard_blocks_false_disjoint() {
+    let ext = ExtDecls::legacy();
+    let jets = "object jets\n  take Jet\n";
+    let cases: &[(&str, &str)] = &[
+        // full cancellation
+        ("region RA\n  select MET + HT - HT > 76\nregion RB\n  select MET <= 76\n", "cancel"),
+        // reassociation (no cancellation, all coeff 1)
+        (&format!("{jets}region RA\n  select (MET + HT) + jets[0].pT > 100\nregion RB\n  select MET + (HT + jets[0].pT) <= 100\n"), "reassoc"),
+        // partial cancellation (coeff 0.5)
+        ("region RA\n  select MET + 0.5 * HT > 100\nregion RB\n  select (MET + HT) - 0.5 * HT <= 100\n", "partial"),
+        // commutation
+        (&format!("{jets}region RA\n  select MET + HT + jets[0].pT > 100\nregion RB\n  select jets[0].pT + HT + MET <= 100\n"), "commute"),
+        // non-dyadic additive constant folded across the comparison
+        ("region RA\n  select MET + 0.1 > 0.3\nregion RB\n  select MET <= 0.2\n", "constfold"),
+    ];
+    for (src, label) in cases {
+        let r = analyze_source(src, "guard.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        if r.solver == "none" {
+            eprintln!("SKIP: no solver");
+            return;
+        }
+        assert_ne!(
+            r.pairwise[0].kind,
+            VerdictKind::ProvenDisjoint,
+            "family `{label}` must NOT be PROVEN DISJOINT (f64-unfaithful), got {:?}",
+            r.pairwise[0].kind
+        );
+    }
+}
+
+/// The guard must NOT over-regress: f64-faithful sources (single quantity,
+/// same-structure sums, dyadic additive constants) keep their PROVEN verdicts.
+#[test]
+fn f64_faithfulness_guard_preserves_sound_disjoint() {
+    let ext = ExtDecls::legacy();
+    let sound: &[&str] = &[
+        // single quantity
+        "region RA\n  select MET > 400\nregion RB\n  select MET < 200\n",
+        // identical-structure sum in both regions (same f64 value → partition)
+        "region RA\n  select MET + HT > 400\nregion RB\n  select MET + HT < 200\n",
+        // dyadic additive constant (0.5 is exactly representable)
+        "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n",
+    ];
+    for src in sound {
+        let r = analyze_source(src, "sound.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        if r.solver == "none" {
+            eprintln!("SKIP: no solver");
+            return;
+        }
+        assert_eq!(
+            r.pairwise[0].kind,
+            VerdictKind::ProvenDisjoint,
+            "faithful source must stay PROVEN DISJOINT, got {:?} ({})",
+            r.pairwise[0].kind,
+            r.pairwise[0].reason
+        );
+    }
+}
+
 /// The realizer builds all-pass events (every base element passes every
 /// filter), so a model that NEEDS a partially-failing base collection
 /// cannot validate: the verdict must downgrade to POSSIBLY with an

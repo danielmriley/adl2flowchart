@@ -1,0 +1,12 @@
+# GOLDEN SR_lead SR_leadb OVERLAPPING
+# GROUND-TRUTH: SR_leadb adds btag>0 on the lead jet, so SR_leadb ⊆ SR_lead. In both: lead pt=150,btag=1. lead-only: pt=150,btag=0.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_lead
+  select pT(jets[0]) > 100
+
+region SR_leadb
+  select pT(jets[0]) > 100
+  select jets[0].btag > 0

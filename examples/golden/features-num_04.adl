@@ -1,0 +1,11 @@
+# GOLDEN R_sum_hi R_sum_lo DISJOINT
+# GROUND-TRUTH: same-structure sum MET+HT is one f64 value per event; MET+HT>400 and MET+HT<200 cannot both hold. Event MET=300,HT=200 (sum 500) is in R_sum_hi only; MET=50,HT=100 (sum 150) is in R_sum_lo only.
+object jets
+  take Jet
+  select pt > 30
+
+region R_sum_hi
+  select MET + HT > 400
+
+region R_sum_lo
+  select MET + HT < 200

@@ -1,0 +1,11 @@
+# GOLDEN-EMPTY Rcontra
+# GROUND-TRUTH: g is one filtered jet collection; Rcontra requires size(g)>=2 AND size(g)==0 simultaneously, which no integer count can satisfy. No event passes: {}, {2 jets}, and {1 jet} all fail. The tool reports Rcontra in EMPTY REGIONS (provably selects no events).
+# Contradictory size cuts on the same object make the region provably empty.
+
+object g
+  take Jet
+  select pt > 30
+
+region Rcontra
+  select size(g) >= 2
+  select size(g) == 0

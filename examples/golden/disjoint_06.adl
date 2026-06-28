@@ -1,0 +1,11 @@
+# GOLDEN lowRatio highRatio DISJOINT
+# GROUND-TRUTH: lowRatio needs MET/HT<0.2, highRatio needs MET/HT>0.8; with HT>=0 these cannot both hold. Event MET=10,HT=100 -> ratio 0.1 (low only); MET=90,HT=100 -> ratio 0.9 (high only).
+object jets
+  take Jet
+  select pt > 30
+
+region lowRatio
+  select MET / HT < 0.2
+
+region highRatio
+  select MET / HT > 0.8

@@ -1,0 +1,11 @@
+# GOLDEN R_rband_lo R_rband_hi DISJOINT
+# GROUND-TRUTH: MET/HT in [0.1,0.3] and MET/HT in [0.6,0.9] are non-overlapping bands of the same ratio. Event MET=20,HT=100 (ratio 0.2) is in R_rband_lo only; MET=70,HT=100 (ratio 0.7) is in R_rband_hi only.
+object jets
+  take Jet
+  select pt > 30
+
+region R_rband_lo
+  select MET / HT [] 0.1 0.3
+
+region R_rband_hi
+  select MET / HT [] 0.6 0.9

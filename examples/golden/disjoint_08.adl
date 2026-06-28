@@ -1,0 +1,17 @@
+# GOLDEN posCharge negCharge DISJOINT
+# GROUND-TRUTH: posCharge needs >=1 positive electron and 0 negative; negCharge needs >=1 negative and 0 positive. size(eleP) is [1,inf] in posCharge vs [0,0] in negCharge -> disjoint. Event with one e+ -> pos only; one e- -> neg only.
+object eleP
+  take Ele
+  select charge > 0
+
+object eleM
+  take Ele
+  select charge < 0
+
+region posCharge
+  select size(eleP) >= 1
+  select size(eleM) == 0
+
+region negCharge
+  select size(eleM) >= 1
+  select size(eleP) == 0

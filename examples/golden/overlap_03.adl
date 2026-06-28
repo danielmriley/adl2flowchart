@@ -1,0 +1,13 @@
+# GOLDEN SR_A SR_B OVERLAPPING
+# GROUND-TRUTH: two bands overlap on pt∈[200,300] and MET∈[200,300]. In both: pt=250,MET=250. A-only: pt=150,MET=150. B-only: pt=350,MET=350.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_A
+  select pT(jets[0]) [] 100 300
+  select MET [] 100 300
+
+region SR_B
+  select pT(jets[0]) [] 200 400
+  select MET [] 200 400

@@ -1,0 +1,11 @@
+# GOLDEN R_reassoc_a R_reassoc_b POSSIBLY
+# GROUND-TRUTH: (MET+HT)+0 and MET+(HT) are equal in real arithmetic, so R_reassoc_a ((MET+HT)+HT-HT>200) and R_reassoc_b (MET+HT>180) genuinely overlap (witness MET=300,HT=50: a-form=300+50=350>200 after the +HT-HT cancels, b-form=350>180 — both pass). The analyzer does not reassociate/cancel the extra HT terms, so it soundly returns the conservative POSSIBLY.
+object jets
+  take Jet
+  select pt > 30
+
+region R_reassoc_a
+  select MET + HT + HT - HT > 200
+
+region R_reassoc_b
+  select MET + HT > 180

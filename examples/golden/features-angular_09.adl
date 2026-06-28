@@ -1,0 +1,16 @@
+# GOLDEN RBandA RBandB POSSIBLY
+# GROUND-TRUTH: dR bands [0.4,2.0] and [1.0,3.0] overlap on [1.0,2.0].
+#   In both: {j0 eta0, j1 eta1.5}=dR1.5. RBandA-only: dR0.5. RBandB-only: dR2.5.
+#   Genuinely overlapping; analyzer cannot realize a dR witness so it reports POSSIBLY (sound).
+
+object jets
+  take Jet
+  select pt > 30
+
+region RBandA
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) [] 0.4 2.0
+
+region RBandB
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) [] 1.0 3.0

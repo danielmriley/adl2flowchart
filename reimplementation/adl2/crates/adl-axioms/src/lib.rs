@@ -603,6 +603,29 @@ impl Emit<'_> {
                 }
             }
         }
+        // Front-to-back ORD: relate a front-indexed element to a back-indexed
+        // one in the ONLY two cases where their relative order is fixed for
+        // every collection size — `pt(C[i]) >= pt(C[-k])` is sound iff
+        // `i + k <= max(i+1, k)`, i.e. iff `i == 0` OR `k == 1`. When both
+        // exist the front sits at position `i`, the back at `size-k`; under
+        // these guards `i <= size-k` always holds (equality when they alias at
+        // `size = i+k`), so the front pt dominates. For `i >= 1 && k >= 2` the
+        // positions can straddle (at `size = max(i+1, k)` the front element
+        // drops below the back one), flipping the sign — so those stay omitted.
+        let front = self.elem_pt_quantities(qs);
+        let back = self.elem_pt_back_quantities(qs);
+        for (coll, fidx) in &front {
+            let Some(bidx) = back.get(coll) else { continue };
+            for &(i, qi) in fidx {
+                for &(k, qk) in bidx {
+                    if i == 0 || k == 1 {
+                        let f = Self::atom(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
+                        let d = format!("{} >= {}", self.label(qi), self.label(qk));
+                        self.push(AxiomId::Ord, f, d);
+                    }
+                }
+            }
+        }
     }
 
     // SZ0: size(C) >= 0.

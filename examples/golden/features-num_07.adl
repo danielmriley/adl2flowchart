@@ -1,0 +1,11 @@
+# GOLDEN R_min_sub R_met_super OVERLAPPING
+# GROUND-TRUTH: min(MET,HT)>100 implies MET>100, hence MET>50, so R_min_sub is a subset of R_met_super. Witness in both: MET=200,HT=300. Superset-only: MET=80,HT=10.
+object jets
+  take Jet
+  select pt > 30
+
+region R_min_sub
+  select min(MET, HT) > 100
+
+region R_met_super
+  select MET > 50

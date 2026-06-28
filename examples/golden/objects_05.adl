@@ -1,0 +1,15 @@
+# GOLDEN Ra Rb OVERLAPPING
+# GROUND-TRUTH: j2 and j3 are both bare renames of Jet with no cuts, so they are identical collections; size(j2)==size(j3) always. Both regions are size(.)>=3, so they coincide exactly. Event {3 jets} passes both; {1 jet} passes neither. The tool reports PROVEN OVERLAPPING (mutual subset: the regions provably coincide).
+# Cutless renames are identity, so regions over them coincide.
+
+object j2
+  take Jet
+
+object j3
+  take Jet
+
+region Ra
+  select size(j2) >= 3
+
+region Rb
+  select size(j3) >= 3

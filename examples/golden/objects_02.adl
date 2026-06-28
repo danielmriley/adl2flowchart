@@ -1,0 +1,19 @@
+# GOLDEN Rb Rl DISJOINT
+# GROUND-TRUTH: bjets requires btag==1, lightjets requires btag==0 (complementary tags). Rb needs >=1 btagged and zero light; Rl needs >=1 light and zero btagged. Event {1 jet btag=1} in Rb only; {1 jet btag=0} in Rl only; an event with both a btagged and an untagged jet is in neither (each region vetoes the other collection).
+# Complementary btag filters make the regions mutually exclusive.
+
+object bjets
+  take Jet
+  select btag == 1
+
+object lightjets
+  take Jet
+  select btag == 0
+
+region Rb
+  select size(bjets) >= 1
+  select size(lightjets) == 0
+
+region Rl
+  select size(lightjets) >= 1
+  select size(bjets) == 0

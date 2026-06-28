@@ -1,0 +1,11 @@
+# GOLDEN highMET lowMET DISJOINT
+# GROUND-TRUTH: highMET needs MET>400, lowMET needs MET<200; (400,inf] and [-inf,200) cannot intersect. Event MET=450 -> highMET only; MET=150 -> lowMET only; no event in both.
+object jets
+  take Jet
+  select pt > 30
+
+region highMET
+  select MET > 400
+
+region lowMET
+  select MET < 200

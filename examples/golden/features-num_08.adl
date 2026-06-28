@@ -1,0 +1,9 @@
+# GOLDEN-EMPTY R_empty_ratio
+# GROUND-TRUTH: a single region requiring MET/HT>10 AND MET/HT<5 is contradictory for any MET,HT (HT>0); no event can satisfy both ratio cuts. No constructible event passes.
+object jets
+  take Jet
+  select pt > 30
+
+region R_empty_ratio
+  select MET / HT > 10
+  select MET / HT < 5

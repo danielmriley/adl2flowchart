@@ -1,0 +1,16 @@
+# GOLDEN SR_wide SR_mid OVERLAPPING
+# GOLDEN SR_mid SR_narrow OVERLAPPING
+# GOLDEN SR_wide SR_narrow OVERLAPPING
+# GROUND-TRUTH: nested MET bands narrow⊆mid⊆wide. In all three: MET=250. wide+mid only: MET=170. wide only: MET=120.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_wide
+  select MET [] 100 400
+
+region SR_mid
+  select MET [] 150 350
+
+region SR_narrow
+  select MET [] 200 300

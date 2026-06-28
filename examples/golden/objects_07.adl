@@ -1,0 +1,17 @@
+# GOLDEN Rb Rhard POSSIBLY
+# GROUND-TRUTH: bjets selects btag==1, hardjets selects pt>100 — independent properties of the same source jets. Rb needs a btagged jet, Rhard needs a hard jet; these can coexist or occur separately, and neither implies the other. Event {1 jet pt=150 btag=1} passes both (witness in both); {1 jet pt=150 btag=0} passes Rhard only; {1 jet pt=40 btag=1} passes Rb only. Genuinely overlapping, neither subset; tool reports the sound POSSIBLY OVERLAPPING.
+# Independent object filters on different properties give a true overlap (neither subset).
+
+object bjets
+  take Jet
+  select btag == 1
+
+object hardjets
+  take Jet
+  select pt > 100
+
+region Rb
+  select size(bjets) >= 1
+
+region Rhard
+  select size(hardjets) >= 1

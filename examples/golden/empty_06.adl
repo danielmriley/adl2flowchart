@@ -1,0 +1,12 @@
+# GOLDEN-EMPTY PTORDER
+# GROUND-TRUTH: collections are pT-descending, so jets[1].pt <= jets[0].pt always; requiring jets[1].pt > jets[0].pt is impossible. Any valid event (e.g. jets pt=[200,100]) has jets[1].pt <= jets[0].pt.
+object jets
+  take Jet
+  select pt > 30
+
+region OPEN
+  select size(jets) >= 2
+
+region PTORDER
+  select size(jets) >= 2
+  select jets[1].pt > jets[0].pt

@@ -1,0 +1,10 @@
+# GOLDEN-EMPTY PT_CONTRA
+# GROUND-TRUTH: the leading jet's pt cannot be both >100 and <50; no event passes. e.g. jets[0].pt=200 fails <50, =40 fails >100.
+object jets
+  take Jet
+  select pt > 30
+
+region PT_CONTRA
+  select size(jets) >= 1
+  select jets[0].pt > 100
+  select jets[0].pt < 50

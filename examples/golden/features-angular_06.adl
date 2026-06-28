@@ -1,0 +1,22 @@
+# GOLDEN RCleaned ROverlapReq DISJOINT
+# GROUND-TRUTH: the cleaning idiom. reject dR<0.4 fires exactly when select dR<0.4 passes
+#   (min pairwise dR), so the two regions are complementary on that predicate -> disjoint.
+#   In ROverlapReq: {jet eta0 phi0, ele eta0 phi0.1}=dR0.1. In RCleaned: same jet, ele eta2 (dR2).
+
+object jets
+  take Jet
+  select pt > 30
+
+object eles
+  take Ele
+  select pt > 20
+
+region RCleaned
+  select size(jets) >= 1
+  select size(eles) >= 1
+  reject dR(jets, eles) < 0.4
+
+region ROverlapReq
+  select size(jets) >= 1
+  select size(eles) >= 1
+  select dR(jets, eles) < 0.4

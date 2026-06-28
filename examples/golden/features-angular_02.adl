@@ -1,0 +1,22 @@
+# GOLDEN RGt RReject POSSIBLY
+# GROUND-TRUTH: RGt (dR>1.0) is a strict subset of RReject (reject dR<1.0, i.e. dR>=1.0).
+#   In both: {jet eta0 phi0, ele eta2 phi0}=dR2.
+#   In RReject only: {jet eta0 phi0, ele eta1 phi0}=dR1.0 (boundary). Genuinely overlapping.
+
+object jets
+  take Jet
+  select pt > 30
+
+object eles
+  take Ele
+  select pt > 20
+
+region RGt
+  select size(jets) >= 1
+  select size(eles) >= 1
+  select dR(jets, eles) > 1.0
+
+region RReject
+  select size(jets) >= 1
+  select size(eles) >= 1
+  reject dR(jets, eles) < 1.0

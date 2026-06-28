@@ -1,0 +1,19 @@
+# GOLDEN Rpos Rneg DISJOINT
+# GROUND-TRUTH: pos selects only q>0 electrons, neg only q<0; each region also vetoes the other object, so no event can have both a positive and (zero negatives) while also having a negative and zero positives. Event {Ele q=+1} is in Rpos only; {Ele q=-1} is in Rneg only; {Ele q=+1, q=-1} is in neither.
+# Disjoint object filters on charge make the two regions mutually exclusive.
+
+object pos
+  take Ele
+  select charge > 0
+
+object neg
+  take Ele
+  select charge < 0
+
+region Rpos
+  select size(pos) >= 1
+  select size(neg) == 0
+
+region Rneg
+  select size(neg) >= 1
+  select size(pos) == 0

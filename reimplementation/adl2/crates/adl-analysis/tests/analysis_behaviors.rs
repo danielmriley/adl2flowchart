@@ -2,10 +2,12 @@
 //! - witness re-validation DOWNGRADES an unrealizable model to POSSIBLY
 //!   and files an internal diagnostic (TESTING.md §3 — production
 //!   behavior, not test-only);
-//! - the whole 68-file corpus runs the no-solver analysis without
+//! - the whole 125-file corpus runs the no-solver analysis without
 //!   panics, deterministically (SPEC_ARCHITECTURE §9).
 
-use adl_analysis::{AnalysisOptions, FailOn, SolverChoice, VerdictKind, analyze_source};
+use adl_analysis::{
+    AnalysisOptions, EmptyStatus, FailOn, SolverChoice, VerdictKind, analyze_source,
+};
 use adl_sema::ExtDecls;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -202,6 +204,66 @@ region B
         "back-index ORD must prove disjoint, got {:?} ({})",
         r.pairwise[0].kind,
         r.pairwise[0].reason
+    );
+}
+
+/// Front-to-back ORD: under pT-descending order `jets[0].pT >= jets[-1].pT`,
+/// so a region demanding the LAST jet outrank the FIRST is empty. This fact
+/// is sound only because `i == 0 && k == 1` (the front/back order is fixed
+/// for every size); the analyzer emits it and proves the region vacuous.
+#[test]
+fn front_to_back_ord_proves_empty() {
+    let src = "\
+object jets
+  take Jet
+
+region IMPOSSIBLE
+  select size(jets) >= 2
+  select jets[-1].pT > jets[0].pT
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "f2b_empty.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let region = r.regions.iter().find(|x| x.name == "IMPOSSIBLE").expect("region present");
+    assert_eq!(
+        region.empty,
+        EmptyStatus::Proven,
+        "front-to-back ORD (jets[0] >= jets[-1]) must prove the region empty, got {:?}",
+        region.empty
+    );
+}
+
+/// SOUNDNESS GUARD: the front-to-back fact must NOT be emitted for `i >= 1 &&
+/// k >= 2`, where the front/back positions can straddle by size. `jets[1].pT >
+/// jets[-2].pT` is satisfiable (e.g. size 4 with a strict pT gap), so the
+/// region must stay NOT-proven-empty — emitting `pt(jets[-2]) >= pt(jets[1])`
+/// here would fabricate a false EMPTY.
+#[test]
+fn straddling_front_back_pair_is_not_proven_empty() {
+    let src = "\
+object jets
+  take Jet
+
+region MAYBE
+  select size(jets) >= 4
+  select jets[1].pT > jets[-2].pT
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "f2b_straddle.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let region = r.regions.iter().find(|x| x.name == "MAYBE").expect("region present");
+    assert_ne!(
+        region.empty,
+        EmptyStatus::Proven,
+        "i=1,k=2 positions straddle by size; proving this empty is unsound"
     );
 }
 
@@ -609,7 +671,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");
     let mut files: Vec<PathBuf> = walk(&dir);
     files.sort();
-    assert_eq!(files.len(), 68, "shared corpus has 68 ADL files");
+    assert_eq!(files.len(), 125, "shared corpus has 125 ADL files (68 base + 57 golden)");
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
     for path in &files {
@@ -642,7 +704,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 68);
+    assert_eq!(analyzed, 125);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {

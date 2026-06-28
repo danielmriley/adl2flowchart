@@ -1,0 +1,17 @@
+# GOLDEN-EMPTY REmpty
+# GOLDEN REmpty RSane DISJOINT
+# GROUND-TRUTH: dR(jets[0],jets[1]) cannot be both <0.5 and >3.0; REmpty selects no event.
+#   RSane (dR>3) is satisfiable: {j0 eta0, j1 eta4}=dR4. No event ever passes REmpty.
+
+object jets
+  take Jet
+  select pt > 30
+
+region REmpty
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) < 0.5
+  select dR(jets[0], jets[1]) > 3.0
+
+region RSane
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) > 3.0

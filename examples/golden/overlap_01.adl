@@ -1,0 +1,12 @@
+# GOLDEN SR_base SR_extra OVERLAPPING
+# GROUND-TRUTH: SR_extra adds MET>200 on top of SR_base's pt>100, so SR_extra ⊆ SR_base. Witness in both: jets[0].pt=150,MET=250. In SR_base only: jets[0].pt=150,MET=50.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_base
+  select pT(jets[0]) > 100
+
+region SR_extra
+  select pT(jets[0]) > 100
+  select MET > 200

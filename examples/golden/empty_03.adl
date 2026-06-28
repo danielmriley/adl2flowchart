@@ -1,0 +1,9 @@
+# GOLDEN-EMPTY SIZE_CONTRA
+# GROUND-TRUTH: the jet multiplicity cannot be both >=2 and ==0; no event passes. e.g. 3 jets fails ==0, 0 jets fails >=2.
+object jets
+  take Jet
+  select pt > 30
+
+region SIZE_CONTRA
+  select size(jets) >= 2
+  select size(jets) == 0

@@ -1,0 +1,12 @@
+# GOLDEN-EMPTY ANTIBANDCONTRA
+# GROUND-TRUTH: MET ][ 100 300 forces MET outside (100,300), but MET [] 150 250 forces it inside; no event satisfies both. e.g. MET=200 fails the anti-band, MET=350 fails the inner band.
+object jets
+  take Jet
+  select pt > 30
+
+region OPEN
+  select MET [] 150 250
+
+region ANTIBANDCONTRA
+  select MET ][ 100 300
+  select MET [] 150 250

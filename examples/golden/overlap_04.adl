@@ -1,0 +1,11 @@
+# GOLDEN SR_lo SR_hi OVERLAPPING
+# GROUND-TRUTH: closed [] bands share the boundary MET=200, so they touch and overlap there. In both: MET=200. lo-only: MET=150. hi-only: MET=250.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_lo
+  select MET [] 100 200
+
+region SR_hi
+  select MET [] 200 300

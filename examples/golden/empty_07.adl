@@ -1,0 +1,9 @@
+# GOLDEN-EMPTY SIZE_ANTIBAND_CONTRA
+# GROUND-TRUTH: size(jets) ][ 1 5 forces the count outside (1,5), but size(jets) [] 2 4 forces it inside; no integer count satisfies both. e.g. 3 jets fails the anti-band, 6 jets fails the inner band.
+object jets
+  take Jet
+  select pt > 30
+
+region SIZE_ANTIBAND_CONTRA
+  select size(jets) ][ 1 5
+  select size(jets) [] 2 4

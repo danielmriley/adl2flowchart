@@ -1,0 +1,16 @@
+# GOLDEN RSuperset RSubset OVERLAPPING
+# GROUND-TRUTH: RSubset = RSuperset (dR<2.0) plus size(jets)>=3, so RSubset is a strict subset.
+#   In both: 3 jets with j0,j1 dR1. In RSuperset only: 2 jets dR1. Provably overlapping (subset).
+
+object jets
+  take Jet
+  select pt > 30
+
+region RSuperset
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) < 2.0
+
+region RSubset
+  select size(jets) >= 2
+  select dR(jets[0], jets[1]) < 2.0
+  select size(jets) >= 3

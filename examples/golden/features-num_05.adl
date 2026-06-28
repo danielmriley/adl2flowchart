@@ -1,0 +1,11 @@
+# GOLDEN R_const_hi R_const_lo DISJOINT
+# GROUND-TRUTH: dyadic integer constant folds 100+100=200 and 50+50=100 are exact in f64; MET>200 and MET<100 are disjoint. Event MET=250 is in R_const_hi only; MET=80 is in R_const_lo only.
+object jets
+  take Jet
+  select pt > 30
+
+region R_const_hi
+  select MET > 100 + 100
+
+region R_const_lo
+  select MET < 50 + 50

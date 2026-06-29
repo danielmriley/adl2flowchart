@@ -17,7 +17,7 @@ mapfile -t files < <(find "$examples" -name '*.adl' | sort)
 count="${#files[@]}"
 echo "corpus_gate: found $count ADL files under $examples"
 
-expected=68
+expected=125
 if [[ "$count" -ne "$expected" ]]; then
     echo "corpus_gate: WARNING expected $expected corpus files, found $count" >&2
 fi

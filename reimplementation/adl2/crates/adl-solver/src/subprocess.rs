@@ -59,9 +59,10 @@ impl SubprocessSolver {
         Self::with_command("z3")
     }
 
-    /// Backend over an arbitrary SMT-LIB2 binary that accepts a script on
-    /// stdin (`z3 -in`-compatible invocation is used for `z3`; other
-    /// commands get the script as a temp-file-free stdin stream too).
+    /// Backend over an SMT-LIB2 binary invoked with z3's CLI flags — the
+    /// script is streamed on stdin (`-in`) with z3 soft/hard timeout flags
+    /// (`-t:`/`-T:`). Other solvers work only if they accept that exact
+    /// invocation; `z3()` is the supported entry point.
     #[must_use]
     pub fn with_command(cmd: impl Into<String>) -> Self {
         Self {

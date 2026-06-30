@@ -44,9 +44,9 @@ id_type!(
     "prop"
 );
 
-/// Element index within an ordered collection. 0-based (PHASE0 OPEN-3);
-/// `FromBack` is reserved — `[-n]` is diagnosed as `Unsupported` until
-/// OPEN-3 is resolved.
+/// Element index within an ordered collection. 0-based. `FromFront(i)` is
+/// `coll[i]`; `FromBack(k)` is `coll[-k]` (`[-1]` = last), resolved as an
+/// in-fragment element leaf guarded by `size >= k` (OPEN-3, resolved).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ElemIndex {
     FromFront(u32),

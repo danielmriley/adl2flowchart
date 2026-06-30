@@ -152,8 +152,9 @@ pub fn analyze_source(
     Ok(analyze_hir(&mut hir, src, ext, opts))
 }
 
-/// Analyze a resolved unit. Mutates only the quantity table (encoding
-/// and axiom emission intern helper quantities).
+/// Analyze a resolved unit. Mutates the HIR in place: `retag_opaque_externals`
+/// re-tags region-statement node fragments, and encoding plus axiom emission
+/// intern helper quantities into the quantity table.
 pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOptions) -> Report {
     encode::retag_opaque_externals(hir);
     let unit = encode::encode_unit(hir, src);

@@ -7,12 +7,17 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Native libz3 bindings are the PRIMARY backend (ADR-006). The SMT-LIB2
-# subprocess backend is always compiled (no linking burden) and is the
-# SECONDARY backend; CI runs one job with `--no-default-features` to
-# prove the subprocess configuration stands on its own.
-default = ["native"]
+# The SMT-LIB2 SUBPROCESS backend is the default: always compiled, no
+# linking burden, needs only a `z3` (or cvc5) binary on PATH at runtime.
+# `cargo build` therefore works on a stock machine with no libz3.
+#
+#   native  — in-process libz3 bindings (faster; needs system libz3, e.g.
+#             `apt install libz3-dev`). Opt in with `--features native`.
+#   bundled — `native` with libz3 built automatically from vendored z3
+#             source (no system install; needs a C++ toolchain + cmake).
+default = []
 native = ["dep:z3"]
+bundled = ["native", "z3/bundled"]
 
 [dependencies]
 adl-formula.workspace = true

@@ -29,15 +29,34 @@ tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
 
 ## Quick start
 
-Requirements: stable Rust (≥ 1.93). Optional but recommended: `libz3-dev`
-(native solver backend) or a `z3`/`cvc5` binary on PATH (subprocess
-backend). With no solver at all, verdicts degrade honestly to POSSIBLY.
+Requirements: stable Rust (≥ 1.93). The default build links **nothing** —
+it uses the SMT-LIB subprocess backend and needs only a solver *binary* on
+PATH at runtime: `apt install z3` (or `cvc5`). With no solver at all,
+verdicts degrade honestly to POSSIBLY.
 
 ```bash
 cd reimplementation/adl2
-cargo build --release
+cargo build --release           # no libz3 needed; subprocess backend
 alias smash2=$PWD/target/release/smash2
 ```
+
+**Solver backends.** The subprocess backend (default) shells out to the
+`z3` binary per check — zero link burden, the right default for a stock
+machine. For heavier workloads (e.g. the 100k-case property battery) the
+faster **in-process** backend is an opt-in:
+
+```bash
+# in-process libz3 — needs system libz3 (apt install libz3-dev):
+cargo build --release -p adl-cli --features native
+# in-process libz3, built automatically from vendored source (no system
+# libz3; needs a C++ toolchain + cmake):
+cargo build --release -p adl-cli --features bundled
+```
+
+Both backends are conformance-tested to return identical verdicts; the
+choice is purely performance. (Verdicts can still differ between *z3
+versions* on the SAT side — which witness a model returns — so pin one z3
+for reproducible witness output.)
 
 ### The subcommands
 
@@ -492,10 +511,11 @@ Build history: `BUILD_NOTES.md`, `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`,
 `PIPELINE_REPORT.md` (Phase 10 real-sample e2e).
 
 ```bash
-cargo test --workspace          # full battery (593 tests)
+cargo test --workspace          # full battery (593 tests, subprocess backend)
 scripts/corpus_gate.sh          # all 125 example files parse + resolve
 cargo test -p adl-analysis --test golden_regions # golden verdict corpus (needs a solver)
-cargo test -p adl-solver --no-default-features   # subprocess-backend job
+cargo test --workspace --features native         # same battery, in-process libz3 backend
+cargo test -p adl-difftest --features deep        # 100k-case property oracle (use --features native too)
 
 # env-gated oracles (need .venv-uproot on PATH; see BUILD_NOTES.md):
 ROOTFILE_REQUIRE_UPROOT=1 cargo test -p rootfile --test uproot_oracle

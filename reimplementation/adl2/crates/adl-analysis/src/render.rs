@@ -376,7 +376,40 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
         counts[3],
         counts[4]
     );
+    // In a merged/cross-file run (regions namespaced `file::region`) the
+    // summary above lumps intra-analysis SR pairs with the cross-analysis
+    // pairs that are the whole point of `--cross` — so call out the
+    // cross-file subset explicitly, or the headline reads as a cross-analysis
+    // result when every proof was intra-file.
+    if report.regions.iter().any(|r| r.name.contains("::")) {
+        let (cross, intra): (Vec<_>, Vec<_>) =
+            report.pairwise.iter().partition(|p| pair_is_cross(p));
+        let cd = cross.iter().filter(|p| p.kind == VerdictKind::ProvenDisjoint).count();
+        let co = cross
+            .iter()
+            .filter(|p| matches!(p.kind, VerdictKind::ProvenOverlapping | VerdictKind::CandidateOverlapping))
+            .count();
+        let _ = writeln!(
+            s,
+            "  cross-file: {} of {} pairs span two analyses ({} proven disjoint, {} overlapping/candidate); the other {} are intra-analysis",
+            cross.len(),
+            report.pairwise.len(),
+            cd,
+            co,
+            intra.len()
+        );
+    }
     fix_negative_zero(&s)
+}
+
+/// A pairwise verdict spans two different analyses iff its regions carry
+/// different `file::` namespaces (only merged/cross-file reports namespace
+/// region names; a single-file report never contains `::`).
+fn pair_is_cross(p: &PairReport) -> bool {
+    match (p.a.split_once("::"), p.b.split_once("::")) {
+        (Some((fa, _)), Some((fb, _))) => fa != fb,
+        _ => false,
+    }
 }
 
 fn render_findings(report: &Report, st: &Style, empty_regions: &[&str], s: &mut String) {

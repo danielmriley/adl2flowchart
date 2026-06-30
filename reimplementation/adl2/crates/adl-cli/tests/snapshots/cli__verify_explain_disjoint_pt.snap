@@ -1,5 +1,6 @@
 ---
 source: crates/adl-cli/tests/cli.rs
+assertion_line: 225
 expression: stdout(&out)
 ---
 ADL2 analysis report — disjoint_pt.adl
@@ -20,7 +21,7 @@ EPRED (1 instances; assumes: take = filter)
 IDOM (1 instances; assumes: ORD + SUB)
 
 == summary ==
-pairs: 1; proven disjoint: 1; proven overlapping: 0; possibly overlapping: 0; unknown: 0
+pairs: 1; proven disjoint: 1; proven overlapping: 0; candidate overlapping: 0; possibly overlapping: 0; unknown: 0
 
 == objects ==
   jets  jets <- JET  pt > 30  exact

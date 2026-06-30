@@ -61,6 +61,7 @@ impl Style {
         let code = match kind {
             VerdictKind::ProvenDisjoint => "32",
             VerdictKind::ProvenOverlapping => "31",
+            VerdictKind::CandidateOverlapping => "36",
             VerdictKind::PossiblyOverlapping => "33",
             VerdictKind::Unknown => "35",
         };
@@ -345,25 +346,32 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
         }
     }
 
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 5];
     for p in &report.pairwise {
         counts[match p.kind {
             VerdictKind::ProvenDisjoint => 0,
             VerdictKind::ProvenOverlapping => 1,
-            VerdictKind::PossiblyOverlapping => 2,
-            VerdictKind::Unknown => 3,
+            VerdictKind::CandidateOverlapping => 2,
+            VerdictKind::PossiblyOverlapping => 3,
+            VerdictKind::Unknown => 4,
         }] += 1;
     }
+    let candidate_note = if counts[2] > 0 {
+        format!(", {} candidate overlapping", counts[2])
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         s,
-        "\n{} {} pair{} — {} proven disjoint, {} proven overlapping, {} possibly overlapping, {} unknown",
+        "\n{} {} pair{} — {} proven disjoint, {} proven overlapping{}, {} possibly overlapping, {} unknown",
         st.head("summary:"),
         report.pairwise.len(),
         if report.pairwise.len() == 1 { "" } else { "s" },
         counts[0],
         counts[1],
-        counts[2],
-        counts[3]
+        candidate_note,
+        counts[3],
+        counts[4]
     );
     fix_negative_zero(&s)
 }
@@ -554,6 +562,7 @@ fn render_matrix(report: &Report, st: &Style, empty_set: &BTreeSet<&str>, s: &mu
                     'O'
                 }
             }
+            VerdictKind::CandidateOverlapping => 'c',
             VerdictKind::PossiblyOverlapping => '?',
             VerdictKind::Unknown => 'U',
         }
@@ -562,10 +571,11 @@ fn render_matrix(report: &Report, st: &Style, empty_set: &BTreeSet<&str>, s: &mu
     let _ = writeln!(s, "\n{}", st.head("== verdict matrix =="));
     let _ = writeln!(
         s,
-        "  {} disjoint   {} overlapping   {} subset (overlap)   {} possibly   {} unknown   {} empty region",
+        "  {} disjoint   {} overlapping   {} subset (overlap)   {} candidate (unvalidated)   {} possibly   {} unknown   {} empty region",
         st.letter('D'),
         st.letter('O'),
         st.letter('s'),
+        st.letter('c'),
         st.letter('?'),
         st.letter('U'),
         st.letter('E')

@@ -13,6 +13,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum VerdictKind {
     ProvenDisjoint,
     ProvenOverlapping,
+    /// A joint SAT model exists, but the overlap rests on an opaque
+    /// quantity the interpreter cannot decide, so the witness could not be
+    /// re-validated — a candidate overlap, NOT a proof. Distinct from
+    /// `ProvenOverlapping` so the "never emit a false PROVEN" contract is
+    /// never overclaimed; conservative for combination (a candidate that is
+    /// really empty blocks a merge rather than allowing a double-count).
+    CandidateOverlapping,
     PossiblyOverlapping,
     Unknown,
 }
@@ -23,6 +30,7 @@ impl VerdictKind {
         match self {
             VerdictKind::ProvenDisjoint => "PROVEN DISJOINT",
             VerdictKind::ProvenOverlapping => "PROVEN OVERLAPPING",
+            VerdictKind::CandidateOverlapping => "CANDIDATE OVERLAPPING",
             VerdictKind::PossiblyOverlapping => "POSSIBLY OVERLAPPING",
             VerdictKind::Unknown => "UNKNOWN",
         }
@@ -204,8 +212,14 @@ impl Report {
         let mut out = Vec::new();
         if fail_on.overlap {
             for p in &self.pairwise {
-                if p.kind == VerdictKind::ProvenOverlapping {
-                    out.push(format!("overlap: {} vs {}", p.a, p.b));
+                match p.kind {
+                    VerdictKind::ProvenOverlapping => {
+                        out.push(format!("overlap: {} vs {}", p.a, p.b));
+                    }
+                    VerdictKind::CandidateOverlapping => {
+                        out.push(format!("candidate overlap: {} vs {}", p.a, p.b));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -392,23 +406,25 @@ impl Report {
                 let _ = writeln!(s, "{d}");
             }
         }
-        let mut counts = (0usize, 0usize, 0usize, 0usize);
+        let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
         for p in &self.pairwise {
             match p.kind {
                 VerdictKind::ProvenDisjoint => counts.0 += 1,
                 VerdictKind::ProvenOverlapping => counts.1 += 1,
-                VerdictKind::PossiblyOverlapping => counts.2 += 1,
-                VerdictKind::Unknown => counts.3 += 1,
+                VerdictKind::CandidateOverlapping => counts.2 += 1,
+                VerdictKind::PossiblyOverlapping => counts.3 += 1,
+                VerdictKind::Unknown => counts.4 += 1,
             }
         }
         let _ = writeln!(
             s,
-            "\n== summary ==\npairs: {}; proven disjoint: {}; proven overlapping: {}; possibly overlapping: {}; unknown: {}",
+            "\n== summary ==\npairs: {}; proven disjoint: {}; proven overlapping: {}; candidate overlapping: {}; possibly overlapping: {}; unknown: {}",
             self.pairwise.len(),
             counts.0,
             counts.1,
             counts.2,
-            counts.3
+            counts.3,
+            counts.4
         );
         crate::render::fix_negative_zero(&s)
     }

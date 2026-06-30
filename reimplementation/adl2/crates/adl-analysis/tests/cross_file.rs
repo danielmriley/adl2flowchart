@@ -132,14 +132,15 @@ region SR3
         adl_analysis::analyze_source(src, "u", &ext, &opts()).expect("direct analysis");
     let merged = cross(&[("u", src)]);
 
-    let counts = |r: &Report| -> [usize; 4] {
-        let mut c = [0usize; 4];
+    let counts = |r: &Report| -> [usize; 5] {
+        let mut c = [0usize; 5];
         for p in &r.pairwise {
             let i = match p.kind {
                 VerdictKind::ProvenDisjoint => 0,
                 VerdictKind::ProvenOverlapping => 1,
-                VerdictKind::PossiblyOverlapping => 2,
-                VerdictKind::Unknown => 3,
+                VerdictKind::CandidateOverlapping => 2,
+                VerdictKind::PossiblyOverlapping => 3,
+                VerdictKind::Unknown => 4,
             };
             c[i] += 1;
         }

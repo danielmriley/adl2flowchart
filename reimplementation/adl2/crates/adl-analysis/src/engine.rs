@@ -592,9 +592,11 @@ impl Engine<'_> {
                     }
                     Some((model, Validation::Candidate(why))) => {
                         report.witness = witness_values(self.hir, &model, &combined);
-                        report.kind = VerdictKind::ProvenOverlapping;
+                        report.kind = VerdictKind::CandidateOverlapping;
                         report.reason = format!(
-                            "both region cut sets are satisfiable together ({OVERLAP_CAVEAT}); {why}"
+                            "a joint model exists but rests on an opaque quantity the \
+                             interpreter cannot decide, so the witness is a candidate, not \
+                             a proof ({OVERLAP_CAVEAT}); {why}"
                         );
                         report.witness_validated = Some(false);
                     }

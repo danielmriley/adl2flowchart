@@ -23,7 +23,7 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   compressednbnc0   28/28   yes    EMPTY — provably selects no events
 
 == verdict matrix ==
-  D disjoint   O overlapping   s subset (overlap)   ? possibly   U unknown   E empty region
+  D disjoint   O overlapping   s subset (overlap)   c candidate (unvalidated)   ? possibly   U unknown   E empty region
    1 noncompressed     ·
    2 noncompressedHT1  s  ·
    3 noncompressedHT2  s  O  ·

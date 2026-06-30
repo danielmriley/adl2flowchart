@@ -117,6 +117,21 @@ pub fn check_sound(run: &CaseRun) -> Result<(), String> {
                 ));
             }
         }
+        VerdictKind::CandidateOverlapping => {
+            // Not a proof — a joint model that rests on an opaque quantity the
+            // interpreter cannot decide (so witness_validated is Some(false)).
+            // It makes no PROVEN claim, so there is nothing to refute. The
+            // generator vocabulary is opaque-free, so this should be rare; if
+            // it ever appears with witness_validated == Some(true) the
+            // labelling is wrong (a validated overlap must be ProvenOverlapping).
+            if pair.witness_validated == Some(true) {
+                return Err(format!(
+                    "CANDIDATE OVERLAPPING but witness_validated = Some(true) — a \
+                     validated overlap must be labelled PROVEN OVERLAPPING (reason: {})",
+                    pair.reason
+                ));
+            }
+        }
         VerdictKind::PossiblyOverlapping | VerdictKind::Unknown => {}
     }
 
@@ -184,7 +199,9 @@ impl Summary {
         let overlapping = |k: VerdictKind| {
             matches!(
                 k,
-                VerdictKind::ProvenOverlapping | VerdictKind::PossiblyOverlapping
+                VerdictKind::ProvenOverlapping
+                    | VerdictKind::CandidateOverlapping
+                    | VerdictKind::PossiblyOverlapping
             )
         };
         let kind_ok = self.kind == other.kind || (overlapping(self.kind) && overlapping(other.kind));

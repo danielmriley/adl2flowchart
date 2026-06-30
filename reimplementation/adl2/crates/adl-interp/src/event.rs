@@ -602,4 +602,52 @@ mod tests {
         let err = parse(r#"{"weight": 1.0, "Weight": 2.0}"#).unwrap_err();
         assert!(matches!(err, EventError::Shape { .. }), "{err}");
     }
+
+    // SOUNDNESS FOUNDATION: the ORD/IDOM/EPRED over-approximation axioms are
+    // sound ONLY because the interpreter's own load path refuses any
+    // non-pT-descending collection (never re-sorts). These tests pin that
+    // refusal on `parse_event`/`read_jsonl` — the exact path the verdict
+    // oracle and `smash2 run` use (the ingest reader has separate coverage).
+    // Weakening this rejection would turn every ORD proof into a real false
+    // PROVEN DISJOINT/SUBSET/EMPTY while the rest of the suite stayed green.
+
+    #[test]
+    fn parse_event_rejects_ascending_collection() {
+        let err = parse(r#"{"Jet":[{"pt":30.0},{"pt":100.0}]}"#).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { collection, index, .. }
+                if collection.as_str() == "jet" && *index == 1),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_event_accepts_descending_collection() {
+        let ev = parse(r#"{"Jet":[{"pt":100.0},{"pt":30.0}]}"#).unwrap();
+        assert_eq!(ev.collections.get("jet").map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn parse_event_rejects_pt_gap_that_breaks_global_order() {
+        // The load-bearing subtlety: an object with no `pt` must NOT reset the
+        // running maximum, or `[pt=10, {no pt}, pt=100]` would slip through and
+        // c[0].pt >= c[2].pt (10 >= 100) — the axiom's claim — would be false.
+        let err = parse(r#"{"Jet":[{"pt":10.0},{"eta":0.5},{"pt":100.0}]}"#).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { collection, index, .. }
+                if collection.as_str() == "jet" && *index == 2),
+            "a pt gap must not reset the running max: {err}"
+        );
+    }
+
+    #[test]
+    fn read_jsonl_rejects_non_descending_on_the_oracle_path() {
+        let text = "{\"Jet\":[{\"pt\":100.0},{\"pt\":30.0}]}\n{\"Jet\":[{\"pt\":20.0},{\"pt\":80.0}]}\n";
+        let err = read_jsonl(text, &ExtDecls::legacy()).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { line, collection, index }
+                if *line == 2 && collection.as_str() == "jet" && *index == 1),
+            "the second event must be rejected at its real line: {err}"
+        );
+    }
 }

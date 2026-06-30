@@ -336,14 +336,17 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
     }
 
     if !report.internal_diagnostics.is_empty() {
+        // The default view keeps this to one discoverable line — the full
+        // entries (each embeds a rejected witness event) are screenfuls and
+        // belong in `--explain` / `--json`, not the headline report. Every
+        // one is a sound POSSIBLY downgrade; it never changes a verdict.
+        let n = report.internal_diagnostics.len();
         let _ = writeln!(
             s,
-            "\n{}",
-            st.head("== INTERNAL DIAGNOSTICS (bugs, please report) ==")
+            "\n{} {n} witness-validation diagnostic{} (POSSIBLY downgrades, no verdict changed) — see --explain or --json",
+            st.head("note:"),
+            if n == 1 { "" } else { "s" }
         );
-        for d in &report.internal_diagnostics {
-            let _ = writeln!(s, "  {d}");
-        }
     }
 
     let mut counts = [0usize; 5];

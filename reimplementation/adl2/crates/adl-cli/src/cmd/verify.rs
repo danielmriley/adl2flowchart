@@ -27,6 +27,20 @@ use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// When the user did NOT ask for `--no-solver` but no backend was found,
+/// every verdict silently capped at POSSIBLY — warn loudly on stderr so a
+/// physicist never reads an empty result as "found nothing".
+fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool) {
+    if !no_solver && report.solver == "none" {
+        eprintln!(
+            "{name}: WARNING — no SMT solver found, so only the solver-free interval checks ran; \
+             overlaps and any disjoint/empty beyond simple interval bounds cap at POSSIBLY. Put a \
+             `z3` or `cvc5` binary on PATH (e.g. `apt install z3`), or build with `--features \
+             native`. Pass `--no-solver` to acknowledge and silence this."
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     files: &[PathBuf],
@@ -73,6 +87,8 @@ pub fn run(
                 continue;
             }
         };
+
+        warn_if_no_solver(&name, &report, no_solver);
 
         if verbose {
             eprintln!(
@@ -167,6 +183,7 @@ fn run_cross(
     // bin labels are rendered from the HIR instead of sliced from source;
     // source-LINE numbers in the report are therefore not meaningful here.
     let report = analyze_hir(&mut merged, "", ext, opts);
+    warn_if_no_solver("cross", &report, opts.solver == SolverChoice::NoSolver);
 
     if verbose {
         eprintln!(

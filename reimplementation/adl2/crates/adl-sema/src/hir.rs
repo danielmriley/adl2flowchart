@@ -121,7 +121,10 @@ impl HNode {
         self.children().iter().any(|c| c.has_unsupported())
     }
 
-    fn children(&self) -> Vec<&HNode> {
+    /// The direct child predicate/expression nodes, for structural walks
+    /// (fragment checks, reconciliation's residual-binder scan).
+    #[must_use]
+    pub fn children(&self) -> Vec<&HNode> {
         match &self.kind {
             HKind::Neg(a) | HKind::Not(a) | HKind::Abs(a) => vec![a],
             HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => vec![lhs, rhs],

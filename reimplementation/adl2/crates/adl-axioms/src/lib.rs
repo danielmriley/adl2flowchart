@@ -27,10 +27,10 @@
 //! extension (missing element properties valued 0), which is what makes
 //! asserting them sound for UNSAT-direction proofs.
 
-use adl_formula::{LinAtom, QFormula, Rel};
+use adl_formula::{DiagTable, Formula, LinAtom, QFormula, Rel};
 use adl_sema::{
     AngKind, CombAxis, CombKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind,
-    HNode, Hir, ParticleRef, Quantity, QuantityId, QuantityTable, Rat, ScalarSource,
+    HNode, Hir, ParticleRef, Quantity, QuantityArg, QuantityId, QuantityTable, Rat, ScalarSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1074,6 +1074,130 @@ fn encode_elem_pred(
     encode_pred_exact(table, node, coll, index)
 }
 
+/// Reserved element index used ONLY by cross-collection reconciliation: it
+/// grounds every element-self property of a filter predicate onto ONE generic
+/// element `base[GENERIC_INDEX]`, so `pt`/`eta`/`btag` intern to the SAME
+/// [`QuantityId`] across two different predicates over the same base.
+/// `u32::MAX` is unreachable by any real element access, EPRED, or OPEN1
+/// expansion, so it can never collide with a concrete element quantity.
+pub const GENERIC_INDEX: u32 = u32::MAX;
+
+/// Encode a single-element filter predicate onto the generic element
+/// `base[index]` (pass `index = GENERIC_INDEX`) as an EXACT three-valued
+/// [`Formula`]. Opaque / non-linear conjuncts become [`Formula::Unknown`]
+/// (`.under()` → false, `.over()` → true) — NEVER dropped, NEVER defaulted to
+/// true — so the FULL superset predicate is honoured on the `.under()` side.
+/// Returns `None` (fail-closed: the whole reconciliation pair is NO-RELATION)
+/// only when the predicate references a residual composite binder / reduce
+/// element, which would make grounding onto one generic element unsound.
+///
+/// Unlike [`encode_elem_pred`] (which drops un-encodable top-level conjuncts —
+/// sound for EPRED's over-weakening, UNSOUND for a superset), this recurses
+/// `And`/`Or`/`Not` at the [`Formula`] level so only opaque *leaves* become
+/// `Unknown`.
+#[must_use]
+pub fn encode_elem_pred_generic(
+    table: &mut QuantityTable,
+    node: &HNode,
+    base: CollectionId,
+    index: u32,
+    diags: &mut DiagTable,
+) -> Option<Formula> {
+    if references_binder_or_reduce(table, node) {
+        return None;
+    }
+    Some(encode_pred_formula(table, node, base, index, diags))
+}
+
+fn encode_pred_formula(
+    table: &mut QuantityTable,
+    node: &HNode,
+    base: CollectionId,
+    index: u32,
+    diags: &mut DiagTable,
+) -> Formula {
+    if matches!(node.tag, Fragment::Unsupported(_)) {
+        return Formula::Unknown(diags.push(node.span, "opaque element-predicate conjunct"));
+    }
+    match &node.kind {
+        HKind::Bool(b) => {
+            if *b {
+                Formula::True
+            } else {
+                Formula::False
+            }
+        }
+        HKind::And(v) => Formula::And(
+            v.iter()
+                .map(|p| encode_pred_formula(table, p, base, index, diags))
+                .collect(),
+        ),
+        HKind::Or(v) => Formula::Or(
+            v.iter()
+                .map(|p| encode_pred_formula(table, p, base, index, diags))
+                .collect(),
+        ),
+        HKind::Not(a) => encode_pred_formula(table, a, base, index, diags).not(),
+        // Bottom out at the leaves so one opaque conjunct becomes `Unknown`
+        // without collapsing the whole predicate (encode_pred_exact returns
+        // None if ANY nested leaf is opaque).
+        HKind::Cmp { .. } | HKind::Band { .. } => match encode_pred_exact(table, node, base, index)
+        {
+            Some(qf) => lift_qformula(qf),
+            None => Formula::Unknown(
+                diags.push(node.span, "non-linear or opaque comparison in element predicate"),
+            ),
+        },
+        _ => Formula::Unknown(diags.push(node.span, "unsupported element-predicate shape")),
+    }
+}
+
+/// Lift an [`QFormula`] (Unknown/Dual-free by type) into a [`Formula`]. Total
+/// and exact.
+fn lift_qformula(q: QFormula) -> Formula {
+    match q {
+        QFormula::True => Formula::True,
+        QFormula::False => Formula::False,
+        QFormula::Atom(a) => Formula::Atom(a),
+        QFormula::And(v) => Formula::And(v.into_iter().map(lift_qformula).collect()),
+        QFormula::Or(v) => Formula::Or(v.into_iter().map(lift_qformula).collect()),
+    }
+}
+
+/// True if any quantity in `node` references a composite binder / reduce /
+/// this-element particle: such a predicate does not ground onto one generic
+/// element, so reconciliation must fail closed (NO-RELATION).
+fn references_binder_or_reduce(table: &QuantityTable, node: &HNode) -> bool {
+    fn p_bad(p: &ParticleRef) -> bool {
+        match p {
+            ParticleRef::Binder { .. } | ParticleRef::ReduceElem | ParticleRef::ThisElem => true,
+            ParticleRef::Sum(parts) => parts.iter().any(p_bad),
+            _ => false,
+        }
+    }
+    if let HKind::Quantity(q) = &node.kind {
+        match table.quantity(*q) {
+            Quantity::AngularSep { a, b, .. } => {
+                if p_bad(a) || p_bad(b) {
+                    return true;
+                }
+            }
+            Quantity::ExternalFn { args, .. } => {
+                if args
+                    .iter()
+                    .any(|a| matches!(a, QuantityArg::Particle(p) if p_bad(p)))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    node.children()
+        .iter()
+        .any(|c| references_binder_or_reduce(table, c))
+}
+
 fn encode_pred_exact(
     table: &mut QuantityTable,
     node: &HNode,
@@ -1334,5 +1458,89 @@ mod tests {
     #[test]
     fn pi_upper_strictly_covers_f64_pi() {
         const { assert!(PI_UPPER > std::f64::consts::PI) }
+    }
+}
+
+#[cfg(test)]
+mod recon_encoder_tests {
+    use super::*;
+    use adl_sema::Symbol;
+    use adl_syntax::ast::CmpOp;
+    use adl_syntax::span::Span;
+
+    #[test]
+    fn bool_leaves_encode_exactly() {
+        let mut t = QuantityTable::default();
+        let mut d = DiagTable::default();
+        let base = t.intern_collection(Collection::Base(Symbol(0)));
+        let yes = HNode::new(HKind::Bool(true), Span::default());
+        let no = HNode::new(HKind::Bool(false), Span::default());
+        assert_eq!(
+            encode_elem_pred_generic(&mut t, &yes, base, GENERIC_INDEX, &mut d),
+            Some(Formula::True)
+        );
+        assert_eq!(
+            encode_elem_pred_generic(&mut t, &no, base, GENERIC_INDEX, &mut d),
+            Some(Formula::False)
+        );
+    }
+
+    #[test]
+    fn opaque_conjunct_becomes_unknown_not_dropped() {
+        let mut t = QuantityTable::default();
+        let mut d = DiagTable::default();
+        let base = t.intern_collection(Collection::Base(Symbol(0)));
+        let node = HNode::new(
+            HKind::And(vec![
+                HNode::new(HKind::Bool(true), Span::default()),
+                HNode::unsupported(Span::default(), "opaque cut"),
+            ]),
+            Span::default(),
+        );
+        let f = encode_elem_pred_generic(&mut t, &node, base, GENERIC_INDEX, &mut d).unwrap();
+        // The opaque conjunct survives as Unknown (never dropped, never true),
+        // so `.under()` keeps a superset predicate honest.
+        assert!(!f.is_exact(), "opaque conjunct must survive as Unknown: {f:?}");
+        match f {
+            Formula::And(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[1], Formula::Unknown(_)));
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn residual_binder_fails_closed_to_none() {
+        let mut t = QuantityTable::default();
+        let mut d = DiagTable::default();
+        let base = t.intern_collection(Collection::Base(Symbol(0)));
+        // dR(binder, MET): a composite-binder particle cannot ground onto one
+        // generic element, so the whole pair must be NO-RELATION (None).
+        let q = t.intern_quantity(Quantity::AngularSep {
+            kind: AngKind::DR,
+            a: ParticleRef::Binder { coll: base, name: Symbol(1) },
+            b: ParticleRef::Met,
+            oriented: false,
+        });
+        let node = HNode::new(
+            HKind::Cmp {
+                op: CmpOp::Gt,
+                lhs: Box::new(HNode::new(HKind::Quantity(q), Span::default())),
+                rhs: Box::new(HNode::new(HKind::Num("0".to_owned()), Span::default())),
+            },
+            Span::default(),
+        );
+        assert_eq!(
+            encode_elem_pred_generic(&mut t, &node, base, GENERIC_INDEX, &mut d),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_node_is_not_flagged_as_binder() {
+        let t = QuantityTable::default();
+        let node = HNode::new(HKind::Bool(true), Span::default());
+        assert!(!references_binder_or_reduce(&t, &node));
     }
 }

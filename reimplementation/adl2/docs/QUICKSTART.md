@@ -11,12 +11,12 @@ Paths below are relative to `reimplementation/adl2/`. The example corpus is at
 
 ```bash
 cd reimplementation/adl2
-cargo build --release            # default: subprocess solver (uses a z3/cvc5 on PATH)
+cargo build --release            # default: subprocess solver (uses a z3 on PATH)
 alias smash2=$PWD/target/release/smash2
 ```
 
 The default build links no libz3 and uses the SMT-LIB subprocess backend
-(needs a `z3` or `cvc5` binary on `PATH` — `apt install z3`). For the faster
+(needs a `z3` binary on `PATH` — `apt install z3`). For the faster
 in-process libz3 backend add `--features native` (system libz3, `apt install
 libz3-dev`) or `--features bundled` (libz3 built from vendored source); see the
 README. With no solver at all, proofs degrade honestly to `POSSIBLY` — they

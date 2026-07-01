@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 # The SMT-LIB2 SUBPROCESS backend is the default: always compiled, no
-# linking burden, needs only a `z3` (or cvc5) binary on PATH at runtime.
+# linking burden, needs only a `z3` binary on PATH at runtime.
 # `cargo build` therefore works on a stock machine with no libz3.
 #
 #   native  — in-process libz3 bindings (faster; needs system libz3, e.g.

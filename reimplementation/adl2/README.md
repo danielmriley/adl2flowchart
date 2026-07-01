@@ -31,7 +31,7 @@ tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
 
 Requirements: stable Rust (≥ 1.93). The default build links **nothing** —
 it uses the SMT-LIB subprocess backend and needs only a solver *binary* on
-PATH at runtime: `apt install z3` (or `cvc5`). With no solver at all,
+PATH at runtime: `apt install z3`. With no solver at all,
 verdicts degrade honestly to POSSIBLY.
 
 ```bash

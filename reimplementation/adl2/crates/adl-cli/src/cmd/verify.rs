@@ -6,9 +6,12 @@
 //!
 //! Multiple files are each analyzed independently and reported in turn (a
 //! per-unit header in human mode, a JSON array in `--json`); a single file
-//! produces exactly the original byte-for-byte output. Cross-file region
-//! relations (the merged-table analysis) are a separate, planned step — see
-//! `MULTIFILE_PLAN.md`.
+//! produces exactly the original byte-for-byte output. A directory argument
+//! expands to its `*.adl` files (sorted, deduped against the other inputs).
+//! With `--cross`, all units are instead merged into one shared identity
+//! space and region relations are proven ACROSS files (regions reported as
+//! `<unit>::<region>`), including reconciliation-derived size facts between
+//! same-base filtered collections (XSUB/XEQ).
 //!
 //! The default report uses ANSI color only when stdout is a tty and
 //! `NO_COLOR` is unset, so piped/redirected output (and every
@@ -35,7 +38,7 @@ fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool)
         eprintln!(
             "{name}: WARNING — no SMT solver found, so only the solver-free interval checks ran; \
              overlaps and any disjoint/empty beyond simple interval bounds cap at POSSIBLY. Put a \
-             `z3` or `cvc5` binary on PATH (e.g. `apt install z3`), or build with `--features \
+             `z3` binary on PATH (e.g. `apt install z3`), or build with `--features \
              native`. Pass `--no-solver` to acknowledge and silence this."
         );
     }
@@ -44,13 +47,32 @@ fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool)
 /// Expand input paths: a directory contributes its `*.adl` files (sorted,
 /// deterministic); a file path is taken as-is. Lets `verify` (and especially
 /// `--cross`) accept a folder of analyses, not just an explicit list.
+///
+/// Duplicates are dropped (first occurrence wins, keyed on the canonical
+/// path): `verify --cross dir/ dir/x.adl` would otherwise merge the same
+/// unit twice, fabricating a self-pair that fires `--fail-on=overlap`.
 fn expand_adl_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
     let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut push_unique = |p: PathBuf, out: &mut Vec<PathBuf>| {
+        let key = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if seen.insert(key) {
+            out.push(p);
+        } else {
+            eprintln!("smash2: ignoring duplicate input {}", p.display());
+        }
+    };
     for p in inputs {
         if p.is_dir() {
-            let mut found: Vec<PathBuf> = std::fs::read_dir(p)
+            let entries = std::fs::read_dir(p)
                 .map_err(|e| CliError::Usage(format!("cannot read directory {}: {e}", p.display())))?
-                .filter_map(|e| e.ok().map(|e| e.path()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    CliError::Usage(format!("cannot read an entry of {}: {e}", p.display()))
+                })?;
+            let mut found: Vec<PathBuf> = entries
+                .into_iter()
+                .map(|e| e.path())
                 .filter(|q| q.extension().is_some_and(|x| x == "adl"))
                 .collect();
             found.sort();
@@ -60,9 +82,11 @@ fn expand_adl_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
                     p.display()
                 )));
             }
-            out.extend(found);
+            for f in found {
+                push_unique(f, &mut out);
+            }
         } else {
-            out.push(p.clone());
+            push_unique(p.clone(), &mut out);
         }
     }
     Ok(out)
@@ -80,7 +104,9 @@ pub fn run(
 ) -> Result<ExitCode, CliError> {
     // A directory argument contributes its `*.adl` files (sorted), so
     // `--cross analyses/` reconciles a whole folder as well as an explicit
-    // file list.
+    // file list. Remember whether a directory was given: the `--json` shape
+    // must not depend on how many files the folder happens to contain.
+    let had_dir_input = files.iter().any(|p| p.is_dir());
     let expanded = expand_adl_inputs(files)?;
     let files = expanded.as_slice();
     let fail_on = match fail_on {
@@ -172,7 +198,10 @@ pub fn run(
     }
 
     if json {
-        if multi {
+        // A directory input always yields the array form, even when the
+        // folder holds one file — a scripted consumer must not see the
+        // output shape flip with the folder's contents.
+        if multi || had_dir_input {
             println!("[{}]", json_reports.join(","));
         } else if let Some(j) = json_reports.first() {
             println!("{j}");

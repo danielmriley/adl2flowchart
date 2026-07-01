@@ -53,8 +53,12 @@ echo "files with nonzero exit: $fail   (baseline: 0)"
 Each `.out` ends with a line like:
 
 ```
-summary: 21 pairs — 0 proven disjoint, 21 proven overlapping, 0 possibly overlapping, 0 unknown
+summary: 21 pairs — 0 proven disjoint, 15 proven overlapping, 6 candidate overlapping, 0 possibly overlapping, 0 unknown
 ```
+
+(the `, N candidate overlapping` segment appears only when nonzero — an
+overlap whose witness the interpreter could not validate, its own tier
+since the CANDIDATE split; totals do not reconcile unless you count it)
 
 For solver backend / region / pair counts per file, add `--verbose` (writes to stderr):
 
@@ -69,14 +73,15 @@ Sum every per-file `summary:` line into corpus totals:
 ```bash
 OUT=/tmp/sweep_after
 grep -h '^summary:' "$OUT"/*.out \
-| grep -oE '[0-9]+ proven disjoint|[0-9]+ proven overlapping|[0-9]+ possibly overlapping|[0-9]+ unknown|[0-9]+ pairs?' \
+| grep -oE '[0-9]+ proven disjoint|[0-9]+ proven overlapping|[0-9]+ candidate overlapping|[0-9]+ possibly overlapping|[0-9]+ unknown|[0-9]+ pairs?' \
 | awk '
   /pair/                 {pairs+=$1}
   /proven disjoint/      {dis+=$1}
   /proven overlapping/   {ov+=$1}
+  /candidate overlapping/{cand+=$1}
   /possibly overlapping/ {pos+=$1}
   /unknown/              {unk+=$1}
-  END{printf "pairs=%d disjoint=%d proven_ov=%d possibly=%d unknown=%d\n",pairs,dis,ov,pos,unk}'
+  END{printf "pairs=%d disjoint=%d proven_ov=%d candidate=%d possibly=%d unknown=%d\n",pairs,dis,ov,cand,pos,unk}'
 ```
 
 Count files emitting an internal-bug section (header is exactly `== INTERNAL DIAGNOSTICS (bugs, please report) ==`):
@@ -133,6 +138,11 @@ comm -13 \
 ```
 
 ## Baseline numbers
+
+**STALE (2026-07-01): predates the CANDIDATE OVERLAPPING tier**, so the
+PROVEN OVERLAPPING row lumps candidates in and there is no candidate row;
+also predates the unresolved-base fail-close (review F1). Re-derive with
+the aggregation above before trusting any diff.
 
 Post the soundness fixes this session (native z3 backend, `solver=z3-native`). Treat as a diff target, not gospel — re-derive after any deliberate change:
 

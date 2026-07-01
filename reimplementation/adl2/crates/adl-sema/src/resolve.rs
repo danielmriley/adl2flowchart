@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 /// (usually the file name); `ext` is the ingested standard library.
 #[must_use]
 pub fn analyze(file: &ast::File, unit: &str, ext: &ExtDecls) -> Hir {
-    let mut r = Resolver::new(file, ext);
+    let mut r = Resolver::new(file, unit, ext);
     r.run();
     r.finish(unit)
 }
@@ -92,6 +92,10 @@ enum Target {
 
 struct Resolver<'a> {
     ext: &'a ExtDecls,
+    /// The analysis-unit label (usually the file name). Used to mint
+    /// unit-unique private base symbols for unresolvable object blocks, so
+    /// two files' unresolved same-named objects can never unify.
+    unit: &'a str,
     symbols: SymbolTable,
     table: QuantityTable,
     coll_names: Vec<Vec<Symbol>>,
@@ -125,7 +129,7 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(file: &'a ast::File, ext: &'a ExtDecls) -> Self {
+    fn new(file: &'a ast::File, unit: &'a str, ext: &'a ExtDecls) -> Self {
         let mut ast_objects = Vec::new();
         let mut ast_defines = Vec::new();
         let mut ast_regions = Vec::new();
@@ -155,6 +159,7 @@ impl<'a> Resolver<'a> {
         let def_state = vec![State::Pending; ast_defines.len()];
         Self {
             ext,
+            unit,
             symbols: SymbolTable::default(),
             table: QuantityTable::default(),
             coll_names: Vec::new(),
@@ -405,6 +410,23 @@ impl<'a> Resolver<'a> {
         self.intern_coll(Collection::Base(sym))
     }
 
+    /// A fail-closed base for an object block whose input could not be
+    /// resolved (unsupported take call, no take statement, take cycle). The
+    /// symbol is minted UNIT-UNIQUE (`<unit>::<name>#unresolved`) instead of
+    /// the block's own name: an ext-spelled name (`JETclean`) would otherwise
+    /// alias the genuine detector base — across files via case-insensitive
+    /// interning and reconciliation's ext-base gate, and across two files'
+    /// byte-identical unresolved blocks via structural interning — fabricating
+    /// identity (and PROVEN facts) for a collection whose real input was
+    /// dropped. `::`/`#` never appear in ext names, so the minted name can
+    /// match no detector object; the interpreter reads an absent collection as
+    /// empty, so runtime fails closed too.
+    fn unresolved_base(&mut self, name: &str) -> CollectionId {
+        let label = format!("{}::{}#unresolved", self.unit, name);
+        let sym = self.symbols.intern(&label);
+        self.intern_coll(Collection::Base(sym))
+    }
+
     fn resolve_object(&mut self, idx: usize) -> CollectionId {
         match &self.obj_state[idx] {
             State::Done(id) => return *id,
@@ -416,8 +438,7 @@ impl<'a> Resolver<'a> {
                     format!("objcycle:{}", name.to_ascii_lowercase()),
                     Diagnostic::error(span, format!("object take cycle involving `{name}`")),
                 );
-                let sym = self.symbols.intern(&name);
-                return self.intern_coll(Collection::Base(sym));
+                return self.unresolved_base(&name);
             }
             State::Pending => {}
         }
@@ -521,14 +542,27 @@ impl<'a> Resolver<'a> {
         let self_sym = self.symbols.intern(&obj.name.name);
         let combined = match sources.as_slice() {
             [] => {
+                // No usable source: the block's input is unknown, so fail
+                // closed onto a unit-unique private base (see
+                // `unresolved_base` — the block's own name would fabricate
+                // identity with a same-spelled detector base or with another
+                // file's equally-unresolved block).
+                let msg = match &unsupported_reason {
+                    Some(reason) => format!(
+                        "object `{}`: {reason}; its input is treated as an \
+                         unknown (empty) collection",
+                        obj.name.name
+                    ),
+                    None => format!("object `{}` has no take statement", obj.name.name),
+                };
                 self.warn_once(
                     format!("notake:{}", obj.name.name.to_ascii_lowercase()),
-                    Diagnostic::warning(
-                        obj.name.span,
-                        format!("object `{}` has no take statement", obj.name.name),
-                    ),
+                    Diagnostic::warning(obj.name.span, msg),
                 );
-                self.intern_coll(Collection::Base(self_sym))
+                if unsupported_reason.is_none() {
+                    unsupported_reason = Some("object has no take statement".to_owned());
+                }
+                self.unresolved_base(&obj.name.name)
             }
             [single] => *single,
             _ => self.intern_coll(Collection::Union(sources.clone())),

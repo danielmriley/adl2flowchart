@@ -483,3 +483,43 @@ fn sort_by_non_pt_key_does_not_alias() {
         Collection::Sorted { .. }
     ));
 }
+
+#[test]
+fn unresolvable_object_inputs_get_unit_unique_private_bases() {
+    // Soundness regression (review F1): an object whose input cannot be
+    // resolved (unsupported take call / no take / take cycle) must NOT fall
+    // back to a base named after the block itself — an ext spelling
+    // (`JETclean`) would fabricate identity with the genuine detector base
+    // across files. The fallback base is minted `<unit>::<name>#unresolved`.
+    for src in [
+        // unsupported take call (the dropped-re-clustering shape)
+        "object JETclean\n  take antikT(Jet, 0.4)\n  select pt > 100\n",
+        // no take at all
+        "object JETclean\n  select pt > 100\n",
+    ] {
+        let hir = analyze(src);
+        let coll = hir.collection_of("JETclean").unwrap();
+        let (base_sym, _) = hir
+            .table
+            .filter_chain(coll)
+            .expect("filtered chain over a base");
+        let label = hir.symbols.display(base_sym);
+        assert!(
+            label.starts_with("test.adl::") && label.contains("#unresolved"),
+            "fallback base must be unit-unique private, got `{label}` for:\n{src}"
+        );
+    }
+    // Take cycle: a resolve ERROR, and the fallback must still be private.
+    let hir =
+        analyze("object a\n  take b\n  select pt > 1\nobject b\n  take a\n  select pt > 2\n");
+    assert!(hir.diags.iter().any(|d| d.severity == Severity::Error));
+    for name in ["a", "b"] {
+        let coll = hir.collection_of(name).unwrap();
+        let (base_sym, _) = hir.table.filter_chain(coll).expect("chain over the fallback");
+        let label = hir.symbols.display(base_sym);
+        assert!(
+            label.contains("#unresolved"),
+            "cycle fallback must be private, got `{label}`"
+        );
+    }
+}

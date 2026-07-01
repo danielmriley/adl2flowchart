@@ -412,3 +412,34 @@ fn reconcile_skips_private_base_name_collision() {
         "builtin Jet base must reconcile hardjets subset cleanjets: {p:?}"
     );
 }
+
+#[test]
+fn reconcile_fails_closed_on_unresolved_take_fallback() {
+    // SOUNDNESS REGRESSION (review F1, reproduced false PROVEN DISJOINT): an
+    // object whose take is an unsupported call (`take antikT(...)`) — or that
+    // has no take at all — used to fall back to `Base(<its own name>)`;
+    // spelled like an ext object (`JETclean` is in ext_objs.txt) it
+    // fabricated identity with another file's GENUINE `take JETclean`, and
+    // reconciliation derived a size fact for a collection whose real input
+    // was dropped. The fallback base is now unit-unique private, so no
+    // relation may be derived and the pair stays POSSIBLY.
+    for a_src in [
+        "object JETclean\n  take antikT(Jet, 0.4)\n  select pt > 100\nregion sra\n  select size(JETclean) >= 4\n",
+        "object JETclean\n  select pt > 100\nregion sra\n  select size(JETclean) >= 4\n",
+    ] {
+        let r = cross_reconcile(&[
+            ("a", a_src),
+            (
+                "b",
+                "object cleanjets\n  take JETclean\n  select pt > 30\nregion srb\n  select size(cleanjets) <= 1\n",
+            ),
+        ]);
+        let p = pair(&r, "sra", "srb");
+        assert_ne!(
+            p.kind,
+            VerdictKind::ProvenDisjoint,
+            "fabricated base identity must not prove disjoint: {p:?}"
+        );
+        assert!(!p.subset_a_in_b && !p.subset_b_in_a, "{p:?}");
+    }
+}

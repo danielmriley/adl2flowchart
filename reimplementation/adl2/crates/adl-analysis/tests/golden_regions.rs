@@ -44,6 +44,7 @@ fn expected_kind(tok: &str) -> VerdictKind {
     match tok {
         "DISJOINT" => VerdictKind::ProvenDisjoint,
         "OVERLAPPING" => VerdictKind::ProvenOverlapping,
+        "CANDIDATE" => VerdictKind::CandidateOverlapping,
         "POSSIBLY" => VerdictKind::PossiblyOverlapping,
         other => panic!("unknown GOLDEN kind token: {other:?}"),
     }

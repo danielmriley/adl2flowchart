@@ -813,7 +813,11 @@ impl Encoder<'_> {
         let size_q = self.table.intern_quantity(Quantity::Size(source));
         let mut parts = Vec::new();
         for j in 0..n {
-            let abs = start.saturating_add(j);
+            // Clamp below u32::MAX — reserved as reconciliation's generic
+            // element index (adl_sema::MAX_SOURCE_ELEM_INDEX).
+            let abs = start
+                .saturating_add(j)
+                .min(adl_sema::MAX_SOURCE_ELEM_INDEX);
             let inst = self.subst_reduce(body, source, abs);
             let p = self.boolean(&inst);
             let idx = i64::from(abs);

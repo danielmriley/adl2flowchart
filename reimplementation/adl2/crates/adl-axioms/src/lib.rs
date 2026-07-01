@@ -694,6 +694,10 @@ impl Emit<'_> {
     }
 
     // SUB: size(F) <= size(P), single-source filtered only (NEVER unions).
+    // Built via `derived_size_le` — the ONE encoding of a size-refinement
+    // fact, shared with the engine's XSUB/XEQ emission and with the
+    // formula-equality dedup that keeps XSUB from re-asserting a
+    // SUB-covered pair.
     fn sub(&mut self, qs: &[QuantityId]) {
         for &q in qs {
             let Quantity::Size(c) = self.hir.table.quantity(q) else {
@@ -704,7 +708,7 @@ impl Emit<'_> {
             };
             let parent = *parent;
             let qp = self.hir.table.intern_quantity(Quantity::Size(parent));
-            let f = Self::atom(&[(1.0, q), (-1.0, qp)], Rel::Le, 0.0);
+            let f = derived_size_le(q, qp);
             let d = format!("{} <= {}", self.label(q), self.label(qp));
             self.push(AxiomId::Sub, f, d);
         }
@@ -1132,9 +1136,16 @@ fn encode_elem_pred(
 /// grounds every element-self property of a filter predicate onto ONE generic
 /// element `base[GENERIC_INDEX]`, so `pt`/`eta`/`btag` intern to the SAME
 /// [`QuantityId`] across two different predicates over the same base.
-/// `u32::MAX` is unreachable by any real element access, EPRED, or OPEN1
-/// expansion, so it can never collide with a concrete element quantity.
+/// Unreachable from source by construction: every resolver/encoder path that
+/// derives a front index clamps to [`adl_sema::MAX_SOURCE_ELEM_INDEX`]
+/// (strictly below), so no real element access, EPRED, or OPEN1 expansion can
+/// intern this id — the generic element provably carries no per-element
+/// axioms in the subset frames.
 pub const GENERIC_INDEX: u32 = u32::MAX;
+const _: () = assert!(
+    GENERIC_INDEX > adl_sema::MAX_SOURCE_ELEM_INDEX,
+    "the generic-element sentinel must sit above every source-reachable index"
+);
 
 /// Encode a single-element filter predicate onto the generic element
 /// `base[index]` (pass `index = GENERIC_INDEX`) as an EXACT three-valued

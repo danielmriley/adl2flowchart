@@ -2,7 +2,7 @@
 //! - witness re-validation DOWNGRADES an unrealizable model to POSSIBLY
 //!   and files an internal diagnostic (TESTING.md §3 — production
 //!   behavior, not test-only);
-//! - the whole 125-file corpus runs the no-solver analysis without
+//! - the whole 133-file corpus runs the no-solver analysis without
 //!   panics, deterministically (SPEC_ARCHITECTURE §9).
 
 use adl_analysis::{
@@ -672,7 +672,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");
     let mut files: Vec<PathBuf> = walk(&dir);
     files.sort();
-    assert_eq!(files.len(), 125, "shared corpus has 125 ADL files (68 base + 57 golden)");
+    assert_eq!(files.len(), 133, "shared corpus has 133 ADL files (68 base + 57 golden + 8 golden-cross)");
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
     for path in &files {
@@ -705,7 +705,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 125);
+    assert_eq!(analyzed, 133);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {
@@ -720,4 +720,45 @@ fn walk(dir: &PathBuf) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[test]
+fn validated_witness_rows_come_from_the_validated_event() {
+    // REGRESSION (review F2): the realizer's pT-descending normalization can
+    // permute which element sits at each index AFTER the solver model
+    // assigned values. The displayed rows used to come from the PRE-sort
+    // model, so a "validated" witness could show `JET[0].pt = 21` alongside
+    // `size(bigjets) = 1` (pt > 100) — a set the loader itself rejects.
+    // Rows are now read back from the validated event: with a pt>100 jet
+    // present, the leading jet's pt must exceed 100.
+    let src = "\
+object bigjets
+  take Jet
+  select pt > 100
+region RA
+  select size(Jet) >= 2
+  select pT(Jet[0]) > 20
+region RB
+  select size(Jet) >= 2
+  select size(bigjets) >= 1
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "u", &ext, &opts(SolverChoice::Auto)).expect("analyzes");
+    if r.solver == "none" {
+        eprintln!("skipping: no solver backend");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{p:?}");
+    assert_eq!(p.witness_validated, Some(true), "{p:?}");
+    let lead = p
+        .witness
+        .iter()
+        .find(|w| w.quantity == "JET[0].pt")
+        .expect("leading-jet row present");
+    assert!(
+        lead.value > 100.0,
+        "with a pt>100 jet in the event, the displayed leading jet must be it: {:?}",
+        p.witness
+    );
 }

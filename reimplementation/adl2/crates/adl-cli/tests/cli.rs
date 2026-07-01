@@ -1344,3 +1344,150 @@ fn parallel_reports_earliest_bad_line_deterministically() {
     let _ = std::fs::remove_file(adl);
     let _ = std::fs::remove_file(events);
 }
+
+// ---- directory expansion + --cross wiring (review F3/F5/F6/F16) ------------
+
+/// A fresh temp directory populated with the given (relative-name, contents)
+/// files; nested paths create their parent dirs.
+fn temp_dir_with(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("smash2_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    for (name, contents) in files {
+        let p = dir.join(name);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&p, contents).expect("write temp file");
+    }
+    dir
+}
+
+const TINY_REGION: &str = "region SR\n  select MET.pt > 100\n";
+
+#[test]
+fn verify_directory_expands_sorted_filtered_nonrecursive() {
+    let dir = temp_dir_with(
+        "direxp",
+        &[
+            ("b.adl", TINY_REGION),
+            ("a.adl", TINY_REGION),
+            ("notes.txt", "not adl"),
+            ("sub/c.adl", TINY_REGION),
+        ],
+    );
+    let out = run(&["verify", "--no-solver", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let s = stdout(&out);
+    let a = s.find("==== a.adl ====").expect("a.adl analyzed");
+    let b = s.find("==== b.adl ====").expect("b.adl analyzed");
+    assert!(a < b, "directory files must expand in sorted order:\n{s}");
+    assert!(!s.contains("c.adl"), "expansion is non-recursive:\n{s}");
+    assert!(!s.contains("notes.txt"), "only .adl files expand:\n{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_empty_directory_is_a_usage_error() {
+    let dir = temp_dir_with("diremp", &[("readme.txt", "no adl here")]);
+    let out = run(&["verify", "--no-solver", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no .adl files"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_dir_plus_member_file_dedups_and_does_not_self_pair() {
+    // REGRESSION (review F5): `dir/ dir/a.adl` used to analyze/merge a.adl
+    // twice; under --cross --fail-on=overlap the fabricated self-pair exited 4.
+    let dir = temp_dir_with("dirdup", &[("a.adl", TINY_REGION), ("b.adl", TINY_REGION)]);
+    let member = dir.join("a.adl");
+    let out = run(&[
+        "verify",
+        "--no-solver",
+        dir.to_str().unwrap(),
+        member.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("ignoring duplicate input"),
+        "{}",
+        stderr(&out)
+    );
+    let s = stdout(&out);
+    assert_eq!(
+        s.matches("==== a.adl ====").count(),
+        1,
+        "the member file must analyze once:\n{s}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--cross` must wire `reconcile = true` end to end: the keystone pair
+/// (`jets pt>100` needing >=3 vs `jets pt>30` allowing <=2 over the same
+/// base) proves DISJOINT only through a derived XSUB size fact, so this
+/// fails if the CLI ever stops setting the flag. Solver-dependent, so it
+/// skips (loudly) when no backend is available.
+#[test]
+fn cross_flag_wires_reconciliation_end_to_end() {
+    let dir = temp_dir_with(
+        "crossrec",
+        &[
+            (
+                "a.adl",
+                "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) >= 3\n",
+            ),
+            (
+                "b.adl",
+                "object jets\n  take Jet\n  select pt > 30\nregion RB\n  select size(jets) <= 2\n",
+            ),
+        ],
+    );
+    let out = run(&["verify", "--cross", dir.to_str().unwrap()]);
+    let s = stdout(&out);
+    if s.contains("solver: none") {
+        eprintln!("skipping: no solver backend on PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    assert!(
+        s.contains("PROVEN DISJOINT"),
+        "keystone pair must prove via the derived size fact:\n{s}"
+    );
+    assert!(s.contains("XSUB"), "axioms-used must cite XSUB:\n{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The CANDIDATE tier's wire format and `--fail-on=overlap` gating
+/// (review F16): an opaque-external overlap is `candidate_overlapping` in
+/// JSON, and the overlap gate fails closed on it (exit 4, `candidate
+/// overlap:` finding). Solver-dependent; skips without a backend.
+#[test]
+fn candidate_tier_json_value_and_fail_on_gate() {
+    let file = golden("or_unencodable_branch.adl");
+    let out = run(&["verify", "--json", file.to_str().unwrap()]);
+    let s = stdout(&out);
+    if s.contains("\"solver\": \"none\"") {
+        eprintln!("skipping: no solver backend on PATH");
+        return;
+    }
+    assert!(
+        s.contains("\"kind\": \"candidate_overlapping\""),
+        "candidate tier wire value must be pinned:\n{s}"
+    );
+    let gated = run(&[
+        "verify",
+        "--fail-on=overlap",
+        file.to_str().unwrap(),
+    ]);
+    assert_eq!(gated.status.code(), Some(4), "{}", stderr(&gated));
+    assert!(
+        stderr(&gated).contains("candidate overlap:"),
+        "the overlap gate must name the candidate finding: {}",
+        stderr(&gated)
+    );
+}

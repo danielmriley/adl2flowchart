@@ -147,3 +147,46 @@ fn ce6_folded_atom_properties_still_realize() {
     assert_eq!(pair.witness_validated, Some(true), "{}", pair.reason);
     check_sound(&run).unwrap();
 }
+
+#[test]
+fn check_sound_flags_mislabelled_validated_candidate() {
+    // Review F16: the oracle's CANDIDATE-consistency branch was unreachable
+    // by the opaque-free generator, so nothing pinned the labelling contract
+    // "a validated overlap must be PROVEN OVERLAPPING, never CANDIDATE".
+    // Feed it a synthetic mislabelled pair and assert it fires.
+    use adl_analysis::report::{PairReport, Report, SCHEMA_VERSION, VerdictKind};
+    use adl_difftest::oracle::{CaseRun, check_sound};
+    let pair = PairReport {
+        a: "RA".to_owned(),
+        b: "RB".to_owned(),
+        kind: VerdictKind::CandidateOverlapping,
+        reason: String::new(),
+        exact: true,
+        shared_dimensions: Vec::new(),
+        subset_a_in_b: false,
+        subset_b_in_a: false,
+        witness: Vec::new(),
+        witness_validated: Some(true),
+        core: Vec::new(),
+    };
+    let report = Report {
+        schema_version: SCHEMA_VERSION,
+        unit: "synthetic".to_owned(),
+        solver: "synthetic".to_owned(),
+        solver_degraded: None,
+        regions: Vec::new(),
+        pairwise: vec![pair],
+        bin_checks: Vec::new(),
+        axioms_used: Vec::new(),
+        internal_diagnostics: Vec::new(),
+    };
+    let run = CaseRun {
+        report,
+        passes: Vec::new(),
+    };
+    let err = check_sound(&run).expect_err("mislabelled candidate must be an oracle error");
+    assert!(
+        err.contains("CANDIDATE OVERLAPPING but witness_validated"),
+        "{err}"
+    );
+}

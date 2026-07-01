@@ -42,6 +42,12 @@ fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool)
              native`. Pass `--no-solver` to acknowledge and silence this."
         );
     }
+    // A solver was selected but could not actually run (e.g. the binary
+    // vanished after the probe): the silent symptom is every verdict
+    // degrading to UNKNOWN — warn exactly as loudly as no-solver-found.
+    if let Some(why) = &report.solver_degraded {
+        eprintln!("{name}: WARNING — {why}");
+    }
 }
 
 /// Expand input paths: a directory contributes its `*.adl` files (sorted,
@@ -269,7 +275,7 @@ fn run_cross(
         let src = read_file(file)?;
         let hir = analyze_str(&src, name, ext);
         if adl_syntax::diag::has_errors(&hir.diags) {
-            eprint!("{}", adl_syntax::diag::render(&src, &name, &hir.diags));
+            eprint!("{}", adl_syntax::diag::render(&src, name, &hir.diags));
             eprintln!("{name}: analysis did not run (resolve errors above)");
             return Ok(ExitCode::from(1));
         }

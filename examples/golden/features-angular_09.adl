@@ -1,7 +1,6 @@
 # GOLDEN RBandA RBandB OVERLAPPING
 # GROUND-TRUTH: dR bands [0.4,2.0] and [1.0,3.0] overlap on [1.0,2.0]; a witness with dR(jets[0],jets[1])=1.5 is in both. The realizer sets the jets' eta so the interpreter reproduces that dR, validating the overlap.
 #   In both: {j0 eta0, j1 eta1.5}=dR1.5. RBandA-only: dR0.5. RBandB-only: dR2.5.
-#   Genuinely overlapping; analyzer cannot realize a dR witness so it reports POSSIBLY (sound).
 
 object jets
   take Jet

@@ -465,7 +465,7 @@ fn json_export_carries_the_verdicts() {
     let r = run("disjoint_pt.adl");
     let json = r.to_json();
     assert!(json.contains("\"proven_disjoint\""), "{json}");
-    assert!(json.contains("\"schema_version\": 1"), "{json}");
+    assert!(json.contains("\"schema_version\": 2"), "{json}");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert!(parsed["pairwise"].is_array());
 }

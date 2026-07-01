@@ -332,7 +332,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn index_val(v: IndexVal) -> ElemIndex {
-        let n = u32::try_from(v.value).unwrap_or(u32::MAX);
+        // Clamp BELOW u32::MAX: the max value is reserved as reconciliation's
+        // generic-element sentinel and must be unreachable from source
+        // (`MAX_SOURCE_ELEM_INDEX`). The clamped index keeps its semantics —
+        // a free element behind an unsatisfiable-in-practice size guard.
+        let n = u32::try_from(v.value).map_or(crate::quantity::MAX_SOURCE_ELEM_INDEX, |n| {
+            n.min(crate::quantity::MAX_SOURCE_ELEM_INDEX)
+        });
         if v.neg {
             ElemIndex::FromBack(n)
         } else {
@@ -376,7 +382,12 @@ impl<'a> Resolver<'a> {
             }
         }
         match start.checked_add(i) {
-            Some(abs) => (source, ElemIndex::FromFront(abs)),
+            // Clamp below the reserved generic-element sentinel (see
+            // `index_val`); an astronomically-rebased index is equally free.
+            Some(abs) => (
+                source,
+                ElemIndex::FromFront(abs.min(crate::quantity::MAX_SOURCE_ELEM_INDEX)),
+            ),
             None => (coll, index),
         }
     }

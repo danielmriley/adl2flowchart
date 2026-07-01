@@ -523,3 +523,24 @@ fn unresolvable_object_inputs_get_unit_unique_private_bases() {
         );
     }
 }
+
+#[test]
+fn oversized_source_index_never_mints_the_generic_sentinel() {
+    // Soundness regression (review F12): `u32::MAX` is reserved as
+    // reconciliation's generic-element index, whose proofs quantify over an
+    // AXIOM-FREE element. A source index >= 2^32 (or exactly 4294967295)
+    // used to clamp onto it, handing the "free" generic element ORD/IDOM
+    // axioms. Source indices now cap at MAX_SOURCE_ELEM_INDEX.
+    use adl_sema::{ElemIndex, MAX_SOURCE_ELEM_INDEX, Quantity};
+    let hir = analyze(
+        "region SR\n  select pT(Jet[5000000000]) > 0\n  select pT(Jet[4294967295]) > 0\n",
+    );
+    let mut saw_clamped = false;
+    for q in hir.table.quantities() {
+        if let Quantity::ElemProp { index: ElemIndex::FromFront(n), .. } = q {
+            assert_ne!(*n, u32::MAX, "source index must never mint the generic sentinel");
+            saw_clamped |= *n == MAX_SOURCE_ELEM_INDEX;
+        }
+    }
+    assert!(saw_clamped, "the oversized index must clamp to MAX_SOURCE_ELEM_INDEX");
+}

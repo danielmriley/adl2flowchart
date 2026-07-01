@@ -41,6 +41,10 @@ pub(crate) struct Engine<'a> {
     /// which asserts the proven `size(A) <= size(B)` facts at the base frame
     /// before the pairwise loop.
     pub recon: Option<crate::reconcile::ReconEnc>,
+    /// Checks whose result was Unknown because the solver process could not
+    /// run at all (spawn/IO failure — e.g. the binary vanished after the
+    /// probe). Surfaced via [`Report::solver_degraded`] so the CLI warns.
+    pub spawn_failures: usize,
 }
 
 /// Bounded witness retry: how many distinct overlap models to try to
@@ -58,6 +62,16 @@ const WITNESS_EPS: f64 = 9.5367431640625e-7; // 2^-20
 /// A finite `f64` (axiom/hint/witness constant) as an exact `Rat`.
 fn rat(v: f64) -> Rat {
     Rat::from_decimal_f64(v).expect("finite constant")
+}
+
+/// Label for a collection-size quantity using the id-disambiguated
+/// `size(C3#jets)` form the rendered cut text uses (falls back to the plain
+/// quantity label for non-Size quantities).
+fn size_label(hir: &Hir, q: QuantityId) -> String {
+    match hir.table.quantity(q) {
+        Quantity::Size(c) => format!("size({})", adl_sema::collection_ref(hir, *c)),
+        _ => quantity_label(hir, q),
+    }
 }
 
 /// Snap every model value to the dyadic 2⁻²² grid (second-chance
@@ -286,6 +300,13 @@ impl Engine<'_> {
             schema_version: SCHEMA_VERSION,
             unit: self.unit_name.clone(),
             solver: self.solver_label.clone(),
+            solver_degraded: (self.spawn_failures > 0).then(|| {
+                format!(
+                    "{} solver check(s) could not run (the `{}` process failed to \
+                     spawn); affected verdicts degraded to UNKNOWN/POSSIBLY",
+                    self.spawn_failures, self.solver_label
+                )
+            }),
             regions: region_reports,
             pairwise,
             bin_checks,
@@ -295,7 +316,13 @@ impl Engine<'_> {
     }
 
     fn check(&mut self, timeout: Duration) -> Option<SatResult> {
-        self.solver.as_deref_mut().map(|s| s.check(timeout))
+        let r = self.solver.as_deref_mut().map(|s| s.check(timeout));
+        if let Some(SatResult::Unknown(reason)) = &r
+            && reason.contains("spawn")
+        {
+            self.spawn_failures += 1;
+        }
+        r
     }
 
     fn push(&mut self) {
@@ -485,8 +512,8 @@ impl Engine<'_> {
 
         // Subset checks are UNSAT-direction and unaffected by twin caps
         // (canonical query order; results mapped back to a/b).
-        let one_in_two = self.subset(&c1.overs, &c2.unders);
-        let two_in_one = self.subset(&c2.overs, &c1.unders);
+        let one_in_two = self.subset(c1.overs.iter().map(|(_, o)| o), &c2.unders);
+        let two_in_one = self.subset(c2.overs.iter().map(|(_, o)| o), &c1.unders);
         (report.subset_a_in_b, report.subset_b_in_a) = if a_first {
             (one_in_two, two_in_one)
         } else {
@@ -602,8 +629,10 @@ impl Engine<'_> {
                 }
                 self.pop();
                 match outcome {
-                    Some((model, Validation::Validated)) => {
-                        report.witness = witness_values(self.hir, &model, &combined);
+                    Some((model, Validation::Validated(json))) => {
+                        report.witness = validated_witness_values(
+                            self.hir, self.ext, interp, &json, &model, &combined,
+                        );
                         report.kind = VerdictKind::ProvenOverlapping;
                         report.reason = format!(
                             "both region cut sets are satisfiable together ({OVERLAP_CAVEAT})"
@@ -881,15 +910,22 @@ impl Engine<'_> {
         }
     }
 
-    /// `UNSAT(Ax ∧ sub⁺ ∧ ¬(sup⁻))` ⇒ sub ⊆ sup.
-    fn subset(&mut self, sub_overs: &[(AssertName, Over)], sup_unders: &[Under]) -> bool {
+    /// `UNSAT(Ax ∧ sub⁺ ∧ ¬(sup⁻))` ⇒ sub ⊆ sup. Assertions are unnamed —
+    /// no subset check reads an unsat core.
+    fn subset<'o>(
+        &mut self,
+        sub_overs: impl IntoIterator<Item = &'o Over>,
+        sup_unders: &[Under],
+    ) -> bool {
         if self.solver.is_none() {
             return false;
         }
         self.push();
-        self.assert_overs(sub_overs, false);
         let neg = Self::negated_under(sup_unders);
         if let Some(s) = self.solver.as_deref_mut() {
+            for o in sub_overs {
+                s.assert(o.qformula(), None);
+            }
             s.assert(&neg, None);
         }
         let result = self.check(self.timeout);
@@ -940,10 +976,15 @@ impl Engine<'_> {
                 }
                 let fact = derived_size_le(sub, sup);
                 let name = AssertName::new(format!("XR{k}"));
+                // Id-disambiguated labels (`size(C3#jets) <= size(C9#jets)`):
+                // in a merged unit the bare first-bound name is shared by
+                // both files' differently-cut `jets`, which would render the
+                // flagship cross-file explanation as the self-referential
+                // `size(jets) <= size(jets)` with the direction unrecoverable.
                 let statement = format!(
                     "{} <= {}",
-                    quantity_label(self.hir, sub),
-                    quantity_label(self.hir, sup)
+                    size_label(self.hir, sub),
+                    size_label(self.hir, sup)
                 );
                 if let Some(s) = self.solver.as_deref_mut() {
                     s.assert(&fact, Some(name.clone()));
@@ -978,9 +1019,8 @@ impl Engine<'_> {
         if !self.frame_sat(phi_a, phi_b) {
             return (false, false);
         }
-        let name = AssertName::new("XREL");
-        let a_in_b = self.subset(&[(name.clone(), phi_a.over())], &[phi_b.under()]);
-        let b_in_a = self.subset(&[(name, phi_b.over())], &[phi_a.under()]);
+        let a_in_b = self.subset([&phi_a.over()], &[phi_b.under()]);
+        let b_in_a = self.subset([&phi_b.over()], &[phi_a.under()]);
         (a_in_b, b_in_a)
     }
 
@@ -1004,10 +1044,11 @@ impl Engine<'_> {
 
     /// The `(sub_size, sup_size)` pairs already covered by an emitted SUB
     /// axiom, so reconciliation does not re-assert (or re-count) an intra-source
-    /// refinement it already proves structurally.
+    /// refinement it already proves structurally. Matching is by FORMULA
+    /// EQUALITY against `derived_size_le` (SUB builds through the same
+    /// function), so a change to the size-fact encoding can never silently
+    /// invert or miss the dedup.
     fn existing_size_le(&self) -> BTreeSet<(QuantityId, QuantityId)> {
-        let one = rat(1.0);
-        let neg_one = rat(-1.0);
         let mut out = BTreeSet::new();
         for inst in &self.axioms.instances {
             if inst.id != AxiomId::Sub {
@@ -1016,21 +1057,14 @@ impl Engine<'_> {
             let QFormula::Atom(a) = &inst.formula else {
                 continue;
             };
-            let terms = a.terms();
-            if terms.len() != 2 {
+            let qs: Vec<QuantityId> = a.terms().iter().map(|&(_, q)| q).collect();
+            if qs.len() != 2 {
                 continue;
             }
-            let mut sub = None;
-            let mut sup = None;
-            for (c, q) in terms {
-                if *c == one {
-                    sub = Some(*q);
-                } else if *c == neg_one {
-                    sup = Some(*q);
+            for (s, p) in [(qs[0], qs[1]), (qs[1], qs[0])] {
+                if inst.formula == derived_size_le(s, p) {
+                    out.insert((s, p));
                 }
-            }
-            if let (Some(s), Some(p)) = (sub, sup) {
-                out.insert((s, p));
             }
         }
         out
@@ -1133,6 +1167,63 @@ fn lookup_size(hir: &Hir, coll: adl_sema::CollectionId) -> Option<QuantityId> {
     hir.table.quantity_id(&Quantity::Size(coll))
 }
 
+/// Witness rows for a VALIDATED overlap, read back from the validated event
+/// itself (review F2): the realizer's pT-descending normalization can permute
+/// which element sits at each index AFTER the model assigned values, so a
+/// model row (`jets[0].pt = 21` beside a `pt > 100` filter) can describe an
+/// arrangement the loader would reject — while the report labels it
+/// "validated by interpreter". A quantity the interpreter cannot read back
+/// from the event (rare: mentioned only by a dropped statement) keeps the
+/// model value.
+fn validated_witness_values(
+    hir: &Hir,
+    ext: &ExtDecls,
+    interp: &Interp<'_>,
+    json: &str,
+    model: &Model,
+    mentioned: &BTreeSet<QuantityId>,
+) -> Vec<WitnessValue> {
+    let Ok(event) = adl_interp::parse_event(json, ext) else {
+        // Unreachable in practice: this exact JSON just passed the loader
+        // during validation.
+        return witness_values(hir, model, mentioned);
+    };
+    let value_of = |q: QuantityId| -> Option<f64> {
+        match interp.eval_quantity(q, &event) {
+            Ok(adl_interp::NumOutcome::Value(v)) => Some(v),
+            _ => model.get(q),
+        }
+    };
+    let mut rows: Vec<WitnessValue> = Vec::new();
+    let mut listed: BTreeSet<QuantityId> = BTreeSet::new();
+    for &q in mentioned {
+        if let Some(v) = value_of(q)
+            && listed.insert(q)
+        {
+            rows.push(WitnessValue {
+                quantity: quantity_label(hir, q),
+                value: v,
+                derived: false,
+            });
+        }
+    }
+    for &q in mentioned {
+        if let Quantity::ElemProp { coll, .. } = hir.table.quantity(q)
+            && let Some(sq) = lookup_size(hir, *coll)
+            && !listed.contains(&sq)
+            && let Some(v) = value_of(sq)
+        {
+            listed.insert(sq);
+            rows.push(WitnessValue {
+                quantity: quantity_label(hir, sq),
+                value: v,
+                derived: true,
+            });
+        }
+    }
+    rows
+}
+
 /// Witness values for the report: every mentioned quantity, plus the
 /// (axiom-derived) sizes of collections whose elements are mentioned.
 fn witness_values(hir: &Hir, model: &Model, mentioned: &BTreeSet<QuantityId>) -> Vec<WitnessValue> {
@@ -1165,4 +1256,150 @@ fn witness_values(hir: &Hir, model: &Model, mentioned: &BTreeSet<QuantityId>) ->
     }
     rows.sort_by(|a, b| a.quantity.cmp(&b.quantity));
     rows
+}
+
+#[cfg(test)]
+mod reconcile_solver_tests {
+    //! Scripted-solver coverage of `reconcile()`'s solver-outcome
+    //! classification (review F22): the Unknown-rejection surface
+    //! (`frame_sat` precheck, subset checks) and the SUB-covered dedup were
+    //! previously untestable — no test double implemented `Solver`, so an
+    //! Unknown could never be injected per-call.
+
+    use super::*;
+    use adl_axioms::AxiomInstance;
+    use adl_solver::QSort;
+    use std::collections::VecDeque;
+
+    /// Returns a canned `SatResult` per `check()` call, in order; panics if
+    /// the script is exhausted (a script/flow mismatch is a test bug).
+    struct Scripted {
+        seq: VecDeque<SatResult>,
+    }
+
+    impl Solver for Scripted {
+        fn declare(&mut self, _q: QuantityId, _sort: QSort) {}
+        fn push(&mut self) {}
+        fn pop(&mut self) {}
+        fn assert(&mut self, _f: &QFormula, _name: Option<AssertName>) {}
+        fn check(&mut self, _timeout: Duration) -> SatResult {
+            self.seq.pop_front().expect("script exhausted: unexpected check()")
+        }
+        fn model(&mut self) -> Option<Model> {
+            None
+        }
+        fn unsat_core(&mut self) -> Option<Vec<AssertName>> {
+            None
+        }
+        fn backend_name(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    /// One reconciliation candidate (two same-base filtered jets), a scripted
+    /// solver, and the axiom set to dedup against — returns the per-id counts
+    /// reconcile() derived.
+    fn run_reconcile(
+        script: Vec<SatResult>,
+        axioms_of: impl Fn(&crate::reconcile::ReconEnc) -> AxiomSet,
+    ) -> BTreeMap<&'static str, usize> {
+        let src = "object a\n  take Jet\n  select pt > 100\n\
+                   object b\n  take Jet\n  select pt > 30\n\
+                   region RA\n  select size(a) >= 1\n\
+                   region RB\n  select size(b) >= 1\n";
+        let ext = ExtDecls::legacy();
+        let mut hir = adl_sema::analyze_str(src, "t", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags), "{:?}", hir.diags);
+        let unit = crate::encode::encode_unit(&mut hir, src);
+        let recon = crate::reconcile::build(&mut hir, &ext);
+        assert_eq!(recon.candidates.len(), 1, "exactly the (a, b) candidate");
+        let axioms = axioms_of(&recon);
+        let mut engine = Engine {
+            hir: &hir,
+            ext: &ext,
+            unit: &unit,
+            axioms: &axioms,
+            solver: Some(Box::new(Scripted { seq: script.into() })),
+            solver_label: "scripted".to_owned(),
+            timeout: Duration::from_secs(1),
+            unit_name: "t".to_owned(),
+            recon: Some(recon),
+            spawn_failures: 0,
+        };
+        let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
+        engine.reconcile(&mut origins)
+    }
+
+    fn no_axioms(_: &crate::reconcile::ReconEnc) -> AxiomSet {
+        AxiomSet::default()
+    }
+
+    #[test]
+    fn unknown_at_the_frame_precheck_derives_nothing() {
+        // Unknown is NOT "consistent": trusting a later UNSAT over an
+        // undecided frame could fabricate a vacuous refinement.
+        let counts = run_reconcile(
+            vec![SatResult::Unknown("timeout".to_owned())],
+            no_axioms,
+        );
+        assert!(counts.is_empty(), "{counts:?}");
+    }
+
+    #[test]
+    fn unsat_frame_derives_nothing() {
+        let counts = run_reconcile(vec![SatResult::Unsat], no_axioms);
+        assert!(counts.is_empty(), "{counts:?}");
+    }
+
+    #[test]
+    fn unknown_on_a_subset_check_is_not_a_proof() {
+        // frame SAT, then both subset checks Unknown: no direction proven.
+        let counts = run_reconcile(
+            vec![
+                SatResult::Sat,
+                SatResult::Unknown("timeout".to_owned()),
+                SatResult::Unknown("timeout".to_owned()),
+            ],
+            no_axioms,
+        );
+        assert!(counts.is_empty(), "{counts:?}");
+    }
+
+    #[test]
+    fn one_unsat_direction_is_xsub_two_are_xeq() {
+        let counts = run_reconcile(
+            vec![SatResult::Sat, SatResult::Unsat, SatResult::Sat],
+            no_axioms,
+        );
+        assert_eq!(counts.get("XSUB"), Some(&1), "{counts:?}");
+        assert_eq!(counts.get("XEQ"), None, "{counts:?}");
+
+        let counts = run_reconcile(
+            vec![SatResult::Sat, SatResult::Unsat, SatResult::Unsat],
+            no_axioms,
+        );
+        assert_eq!(counts.get("XEQ"), Some(&2), "both equality directions");
+        assert_eq!(counts.get("XSUB"), None, "{counts:?}");
+    }
+
+    #[test]
+    fn sub_covered_pair_is_not_reasserted() {
+        // The refinement direction proven below is already covered by an
+        // emitted SUB fact over the same size ids: reconcile must skip it
+        // (no double assertion, no count) — pins `existing_size_le`.
+        let counts = run_reconcile(
+            vec![SatResult::Sat, SatResult::Unsat, SatResult::Sat],
+            |recon| {
+                let c = &recon.candidates[0];
+                AxiomSet {
+                    instances: vec![AxiomInstance {
+                        id: AxiomId::Sub,
+                        formula: derived_size_le(c.size_a, c.size_b),
+                        description: "size(a) <= size(b)".to_owned(),
+                    }],
+                }
+            },
+        );
+        assert!(counts.is_empty(), "SUB-covered refinement must dedup: {counts:?}");
+    }
 }

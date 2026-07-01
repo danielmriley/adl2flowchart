@@ -340,6 +340,23 @@ impl<'h> Interp<'h> {
         })
     }
 
+    /// Evaluate a single interned quantity on `event` — no expression node
+    /// needed, so callers can read back model-mentioned quantities from a
+    /// realized witness event. Soft failures come back as
+    /// [`NumOutcome::NonValue`].
+    ///
+    /// # Errors
+    /// Returns an [`EvalError`] for out-of-fragment quantities or missing
+    /// event-level data.
+    pub fn eval_quantity(&self, q: QuantityId, event: &Event) -> EvalResult<NumOutcome> {
+        Ok(
+            match Ev::new(self, event).quantity(q, Span::default(), None)? {
+                Ok(v) => NumOutcome::Value(v),
+                Err(nv) => NumOutcome::NonValue(nv),
+            },
+        )
+    }
+
     /// Materialize a named collection for `event` (object filtering with
     /// order preserved, union concatenation).
     ///

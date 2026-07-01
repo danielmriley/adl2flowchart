@@ -188,6 +188,15 @@ pub fn render_node(hir: &Hir, node: &crate::hir::HNode) -> String {
     render_ctx(hir).node(node)
 }
 
+/// Canonical id-disambiguated reference to a collection (`C3#jets`) — the
+/// same form the rendered cut text uses. A bare first-bound name is NOT
+/// unique in a merged unit (two files' differently-cut `jets` share it), so
+/// any derived-fact statement placed next to cut text must use this form.
+#[must_use]
+pub fn collection_ref(hir: &Hir, id: CollectionId) -> String {
+    render_ctx(hir).coll(id)
+}
+
 /// Deterministic quantity-table dump: collections (id order), element
 /// predicates (id order), quantities (sorted by canonical render).
 #[must_use]

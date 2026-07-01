@@ -215,6 +215,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         timeout: opts.timeout,
         unit_name,
         recon,
+        spawn_failures: 0,
     };
     engine.run()
 }

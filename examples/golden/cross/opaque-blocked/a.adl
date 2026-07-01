@@ -1,0 +1,14 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RB POSSIBLY
+# GROUND-TRUTH: both files cut pt>30, but each adds a DIFFERENT opaque
+# external conjunct (aplanarity / sphericity). Proving either refinement
+# direction would need the opaque superset conjunct to follow from the
+# sub side — it cannot (opaque under-approximates to false, never
+# dropped) — so reconciliation must fail closed and the size-contradiction
+# pair stays POSSIBLY. This is the deliberate precision pin: if it flips
+# to DISJOINT, an opaque conjunct was dropped somewhere (unsound).
+object jets
+  take Jet
+  select pt > 30
+  select aplanarity(jets) > 0.1
+region RA
+  select size(jets) >= 3

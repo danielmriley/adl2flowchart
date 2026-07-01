@@ -6,7 +6,13 @@
 use serde::Serialize;
 
 /// Bumped on any breaking schema change.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v2: pairwise `kind` gained `"candidate_overlapping"` (a SAT overlap whose
+/// witness the interpreter could not validate). Under v1 such a pair was
+/// reported `"proven_overlapping"`, so a consumer summing proven overlaps
+/// reads different totals across the change — a meaning change, hence the
+/// bump. Treat `kind` as an open set going forward.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +170,13 @@ pub struct Report {
     pub schema_version: u32,
     pub unit: String,
     pub solver: String,
+    /// Set when a solver WAS selected but its checks failed to run (e.g. the
+    /// `z3` binary vanished between the probe and use): verdicts silently
+    /// degraded to UNKNOWN/POSSIBLY, and the CLI must warn as loudly as it
+    /// does for no-solver-found. Absent in healthy runs (and omitted from
+    /// JSON), so existing consumers are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_degraded: Option<String>,
     pub regions: Vec<RegionReport>,
     pub pairwise: Vec<PairReport>,
     pub bin_checks: Vec<BinCheckReport>,

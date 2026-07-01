@@ -468,3 +468,45 @@ fn colliding_unit_names_stay_distinguishable_and_classify_cross() {
         "cross/intra split must count real unit identity:\n{out}"
     );
 }
+
+#[test]
+fn reconcile_xeq_fires_both_directions_on_equivalent_chains() {
+    // REGRESSION (review F7 — the XEQ arm had zero coverage): two files
+    // filter `Jet` with logically-equivalent but byte-distinct chains
+    // (`pt > 30` vs `pt > 20; pt > 30`), so BOTH refinement directions
+    // prove and the engine emits the paired XEQ size facts. Each direction
+    // is observable as a PROVEN DISJOINT that needs exactly that
+    // orientation; the axioms-used report must count XEQ.
+    let r = cross_reconcile(&[
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 30\n\
+             region RA1\n  select size(jets) >= 3\nregion RA2\n  select size(jets) <= 2\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 20\n  select pt > 30\n\
+             region RB1\n  select size(jets) <= 2\nregion RB2\n  select size(jets) >= 3\n",
+        ),
+    ]);
+    // size(A) <= size(B): RA1 (A >= 3) vs RB1 (B <= 2) disjoint.
+    assert_eq!(
+        pair(&r, "RA1", "RB1").kind,
+        VerdictKind::ProvenDisjoint,
+        "{:?}",
+        pair(&r, "RA1", "RB1")
+    );
+    // size(B) <= size(A): RA2 (A <= 2) vs RB2 (B >= 3) disjoint.
+    assert_eq!(
+        pair(&r, "RA2", "RB2").kind,
+        VerdictKind::ProvenDisjoint,
+        "{:?}",
+        pair(&r, "RA2", "RB2")
+    );
+    let xeq = r
+        .axioms_used
+        .iter()
+        .find(|a| a.id == "XEQ")
+        .expect("axioms-used must report XEQ");
+    assert_eq!(xeq.instances, 2, "both directions of the equality: {xeq:?}");
+}

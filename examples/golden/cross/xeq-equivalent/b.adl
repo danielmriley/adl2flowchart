@@ -1,0 +1,8 @@
+object jets
+  take Jet
+  select pt > 20
+  select pt > 30
+region RB1
+  select size(jets) <= 2
+region RB2
+  select size(jets) >= 3

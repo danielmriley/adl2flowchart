@@ -45,6 +45,14 @@ id_type!(
 );
 
 /// Element index within an ordered collection. 0-based. `FromFront(i)` is
+/// Largest front index a SOURCE expression can resolve to: `u32::MAX`
+/// itself is reserved as reconciliation's generic-element sentinel
+/// (`adl_axioms::GENERIC_INDEX`), whose soundness rests on the generic
+/// element receiving NO per-element axioms — a source index clamped onto it
+/// (`Jet[5000000000]`) would void that. Every resolver/encoder path that
+/// derives a `FromFront` index from source must clamp to this.
+pub const MAX_SOURCE_ELEM_INDEX: u32 = u32::MAX - 1;
+
 /// `coll[i]`; `FromBack(k)` is `coll[-k]` (`[-1]` = last), resolved as an
 /// in-fragment element leaf guarded by `size >= k` (OPEN-3, resolved).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

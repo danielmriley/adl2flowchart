@@ -1,0 +1,15 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RB CANDIDATE
+# GROUND-TRUTH: the regions overlap on the shared MET.pt dimension
+# (>150 satisfies both), but RA also cuts an opaque external CALL
+# (aplanarity(jets) — interned as a free quantity, no reference
+# interpretation) that the interpreter cannot evaluate, so the witness can
+# never validate: the overlap is reported as CANDIDATE, not PROVEN. If
+# this flips to PROVEN OVERLAPPING, an opaque quantity was treated as
+# decided.
+object jets
+  take Jet
+region RA
+  select MET.pt > 100
+  select aplanarity(jets) > 0.1
+region RB
+  select MET.pt > 150

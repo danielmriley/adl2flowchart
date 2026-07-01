@@ -1,0 +1,13 @@
+# GOLDEN-CROSS a.adl::RA1 b.adl::RB1 DISJOINT
+# GOLDEN-CROSS a.adl::RA2 b.adl::RB2 DISJOINT
+# GROUND-TRUTH: pt>30 and (pt>20 then pt>30) select the same jets, so the
+# sizes are provably EQUAL (XEQ, both refinement directions). Each pin
+# needs one orientation of the equality: RA1 (>=3) vs RB1 (<=2) needs
+# |A| <= |B|; RA2 (<=2) vs RB2 (>=3) needs |B| <= |A|.
+object jets
+  take Jet
+  select pt > 30
+region RA1
+  select size(jets) >= 3
+region RA2
+  select size(jets) <= 2

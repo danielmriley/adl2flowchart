@@ -34,8 +34,13 @@ pub(crate) const MAX_REALIZED_F: f64 = MAX_REALIZED as f64;
 /// Outcome of witness re-validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Validation {
-    /// The interpreter accepted the synthetic event in both regions.
-    Validated,
+    /// The interpreter accepted the synthetic event in both regions. Carries
+    /// the FINAL event JSON (post pT-descending normalization, post
+    /// missing-data patching): displayed witness rows must be read back from
+    /// this artifact, not from the solver model — the normalization can
+    /// permute which element sits at each index after the model assigned
+    /// values, so model rows can describe an arrangement the loader rejects.
+    Validated(String),
     /// The interpreter cannot evaluate an opaque quantity; the witness
     /// remains a candidate (reason recorded).
     Candidate(String),
@@ -116,7 +121,7 @@ pub fn validate_witness(
         }
         return match opaque {
             Some(why) => Validation::Candidate(why),
-            None => Validation::Validated,
+            None => Validation::Validated(json),
         };
     }
     Validation::Rejected("witness event patching did not converge".to_owned())
@@ -693,13 +698,47 @@ fn realize_angulars(
     }
 }
 
+/// Choose `x` so the interpreter's `|x - other|` reproduces `v` BIT-EXACTLY
+/// where an f64 grid point exists (review F13): `fl(other + v) - other` is
+/// inexact for ~a quarter of typical (eta, dR) pairs, and a one-ulp miss
+/// rejects a boundary-forced witness (equality atoms, touching bands). Runs
+/// a short fix-point on the `other + v` side, then — the `+`-side x-grid ulp
+/// can be coarser than the dEta-target's — the `other - v` side, keeping
+/// whichever round-trips exactly (else the best `+`-side effort; validation
+/// decides).
+fn eta_for_exact_gap(other: f64, v: f64) -> f64 {
+    let fixpoint = |start: f64| -> f64 {
+        let mut x = start;
+        for _ in 0..4 {
+            let got = (x - other).abs();
+            if got == v || !(v - got).is_finite() {
+                break;
+            }
+            x = if x >= other { x + (v - got) } else { x - (v - got) };
+        }
+        x
+    };
+    let plus = fixpoint(other + v);
+    if (plus - other).abs() == v {
+        return plus;
+    }
+    let minus = fixpoint(other - v);
+    if (minus - other).abs() == v {
+        return minus;
+    }
+    plus
+}
+
 /// Realize a target `dR = v` (`v >= 0`) between two object anchors by filling
 /// their free `eta`/`phi` so the interpreter's `hypot(dEta, wrap(dPhi))`
-/// reproduces `v`: force `dPhi = 0` (equal `phi`) and `|dEta| = v`, since
-/// `hypot(v, 0) = v` and `wrap(0) = 0` are exact. Only OBJECT anchors carry a
-/// pseudorapidity (MET has none), and only UNSET components are written — a
-/// value already pinned (a stored property, or a prior angular realization) is
-/// left alone and validation remains the safety net (a bad guess only
+/// reproduces `v`. Preferred plane: `dPhi = 0` (equal `phi`) and `|dEta| = v`
+/// (`hypot(v, 0) = v` and `wrap(0) = 0` are exact). When BOTH etas are
+/// already pinned (e.g. a dEta cut realized first), the remainder goes
+/// through the phi plane instead: `wrap(dPhi) = sqrt(v² − dEta²)` (review
+/// F14 — the old code returned, so every dEta-pinned dR witness rejected and
+/// exhausted its retries). Only OBJECT anchors carry a pseudorapidity (MET
+/// has none), and only UNSET components are written — a value already pinned
+/// is left alone and validation remains the safety net (a bad guess only
 /// downgrades to POSSIBLY, never lies).
 fn realize_dr(
     v: f64,
@@ -726,14 +765,6 @@ fn realize_dr(
     let (Some(phi_a), Some(phi_b)) = (get(base_a, *ia, phi_key), get(base_b, *ib, phi_key)) else {
         return;
     };
-    // Force dPhi = 0: pick a shared phi. Two already-pinned, differing phi
-    // cannot be made equal without clobbering — leave to validation.
-    let phi_target = match (phi_a, phi_b) {
-        (Some(pa), Some(pb)) if pa != pb => return,
-        (Some(pa), _) => pa,
-        (_, Some(pb)) => pb,
-        (None, None) => 0.0,
-    };
     let mut set = |base: &CollectionId, i: usize, key: &str, val: f64| {
         if let Some(objs) = built.get_mut(base)
             && let Some(o) = objs.get_mut(i)
@@ -741,11 +772,59 @@ fn realize_dr(
             o.insert(key.to_owned(), val);
         }
     };
-    // Set |dEta| = v by writing whichever eta is free; both pinned → validation.
+
+    // Both etas pinned: realize the remainder through the phi plane.
+    if let (Some(ea), Some(eb)) = (eta_a, eta_b) {
+        let de = ea - eb;
+        let rem2 = v.mul_add(v, -(de * de));
+        if rem2 < 0.0 {
+            return; // dR < |dEta|: unrealizable in this plane — validation decides
+        }
+        let dphi = rem2.sqrt();
+        if !dphi.is_finite() || dphi > std::f64::consts::PI {
+            return; // wrap(·) cannot produce it
+        }
+        let (free_base, free, pinned, pinned_is_a) = match (phi_a, phi_b) {
+            (Some(_), Some(_)) => return, // both pinned — validation decides
+            (Some(pa), None) => (base_b, *ib, pa, true),
+            (None, Some(pb)) => (base_a, *ia, pb, false),
+            (None, None) => {
+                set(base_b, *ib, phi_key, 0.0);
+                (base_a, *ia, 0.0, false)
+            }
+        };
+        // Short correction toward the interpreter's hypot on the REALIZED
+        // phi difference (both the sqrt and the `fl(pinned ± dphi)`
+        // round-trip are inexact; the interior ε-margin absorbs any
+        // residual, and validation still decides).
+        let mut val = if pinned_is_a { pinned - dphi } else { pinned + dphi };
+        for _ in 0..4 {
+            let d = if pinned_is_a { pinned - val } else { val - pinned };
+            let got = de.hypot(adl_interp::wrap_dphi(d));
+            if got == v || !(v - got).is_finite() || !(0.0..=std::f64::consts::PI).contains(&d) {
+                break;
+            }
+            val = if pinned_is_a { val - (v - got) } else { val + (v - got) };
+        }
+        set(free_base, free, phi_key, val);
+        return;
+    }
+
+    // dPhi = 0 plane: pick a shared phi. Two already-pinned, differing phi
+    // cannot be made equal without clobbering — leave to validation.
+    let phi_target = match (phi_a, phi_b) {
+        (Some(pa), Some(pb)) if pa != pb => return,
+        (Some(pa), _) => pa,
+        (_, Some(pb)) => pb,
+        (None, None) => 0.0,
+    };
+    // Set |dEta| = v by writing whichever eta is free (fix-point corrected —
+    // review F13: `fl(pinned ± v)` alone misses the target by an ulp on
+    // ~a quarter of non-dyadic boundaries).
     match (eta_a, eta_b) {
-        (Some(_), Some(_)) => return,
-        (None, Some(eb)) => set(base_a, *ia, eta_key, eb + v),
-        (Some(ea), None) => set(base_b, *ib, eta_key, ea - v),
+        (Some(_), Some(_)) => unreachable!("handled by the phi-plane branch"),
+        (None, Some(eb)) => set(base_a, *ia, eta_key, eta_for_exact_gap(eb, v)),
+        (Some(ea), None) => set(base_b, *ib, eta_key, eta_for_exact_gap(ea, v)),
         (None, None) => {
             set(base_b, *ib, eta_key, 0.0);
             set(base_a, *ia, eta_key, v);
@@ -927,4 +1006,145 @@ fn repair_prop(
         adl_syntax::ast::CmpOp::Ne | adl_syntax::ast::CmpOp::ApproxEq => k + 1.0,
     };
     obj.insert(key.to_owned(), v);
+}
+
+#[cfg(test)]
+mod realize_dr_tests {
+    //! Deterministic branch-matrix coverage for `realize_dr` (review F9 —
+    //! previously only the (None, None) happy path was pinned, and only
+    //! when z3's model happened to take that shape).
+
+    use super::{Loc, realize_dr};
+    use adl_sema::CollectionId;
+    use std::collections::BTreeMap;
+
+    const ETA: &str = "etaof";
+    const PHI: &str = "phiof";
+    const BASE: CollectionId = CollectionId(0);
+
+    fn built_with(
+        elems: &[&[(&str, f64)]],
+    ) -> BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>> {
+        let objs = elems
+            .iter()
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|&(k, v)| (k.to_owned(), v))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .collect();
+        BTreeMap::from([(BASE, objs)])
+    }
+
+    fn interp_dr(
+        built: &BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+        a: usize,
+        b: usize,
+    ) -> f64 {
+        let o = &built[&BASE];
+        let de = o[a][ETA] - o[b][ETA];
+        let dp = adl_interp::wrap_dphi(o[a][PHI] - o[b][PHI]);
+        de.hypot(dp)
+    }
+
+    fn realize(
+        v: f64,
+        built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+    ) {
+        realize_dr(v, &Loc::Obj(BASE, 0), &Loc::Obj(BASE, 1), ETA, PHI, built);
+    }
+
+    #[test]
+    fn both_free_is_exact() {
+        let mut b = built_with(&[&[], &[]]);
+        realize(1.5, &mut b);
+        assert_eq!(interp_dr(&b, 0, 1), 1.5);
+    }
+
+    #[test]
+    fn pinned_eta_round_trips_exactly_or_within_one_ulp() {
+        // Review F13: `fl(pinned ± v)` alone missed the model value on ~a
+        // quarter of non-dyadic boundary pairs, rejecting boundary-forced
+        // witnesses. The fix-point (trying both gap directions) must land
+        // the interpreter's dR EXACTLY where an f64 grid point exists — the
+        // documented repro (eta = 0.3, touching dR = 0.4 bands) — and within
+        // one ulp everywhere (some pairs, e.g. (2.4, 0.4), have NO exact
+        // grid point in either direction: the difference grid of both
+        // binades skips v; the ε-interior margin absorbs the residual).
+        for (eb, v, exact) in [
+            (0.3, 0.4, true),
+            (0.1, 0.2, true),
+            (2.4, 0.4, false),
+            (-1.7, 0.9, false),
+            (0.7, 0.05, false),
+        ] {
+            for pinned_a in [false, true] {
+                let mut b = if pinned_a {
+                    built_with(&[&[(ETA, eb)], &[]])
+                } else {
+                    built_with(&[&[], &[(ETA, eb)]])
+                };
+                realize(v, &mut b);
+                let got = interp_dr(&b, 0, 1);
+                if exact {
+                    assert_eq!(got, v, "eb={eb} v={v} pinned_a={pinned_a}");
+                } else {
+                    // One step of the DIFFERENCE grid: the x values live in
+                    // the |eb| ± v binade, so achievable |x − eb| step by
+                    // that binade's ulp, not v's.
+                    let grid = (eb.abs() + v) * f64::EPSILON;
+                    assert!(
+                        (got - v).abs() <= grid,
+                        "eb={eb} v={v} pinned_a={pinned_a}: got {got} (off by {}, grid {grid})",
+                        (got - v).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_etas_pinned_realizes_through_phi() {
+        // Review F14: a prior dEta realization pins both etas; the remainder
+        // must go through the phi plane instead of returning (which rejected
+        // every such witness and spammed INTERNAL diagnostics). The interior
+        // ε-margin is ~1e-6, so a 1e-9 residual is more than validated.
+        let mut b = built_with(&[&[(ETA, 0.8)], &[(ETA, 0.0)]]);
+        realize(1.7, &mut b);
+        assert!(
+            (interp_dr(&b, 0, 1) - 1.7).abs() < 1e-9,
+            "got {}",
+            interp_dr(&b, 0, 1)
+        );
+        // One phi already pinned: the free side absorbs the correction.
+        let mut b = built_with(&[&[(ETA, 0.5), (PHI, 1.0)], &[(ETA, 0.0)]]);
+        realize(1.3, &mut b);
+        assert!(
+            (interp_dr(&b, 0, 1) - 1.3).abs() < 1e-9,
+            "got {}",
+            interp_dr(&b, 0, 1)
+        );
+    }
+
+    #[test]
+    fn unrealizable_shapes_write_nothing() {
+        // dR below the pinned |dEta|: no phi assignment can shrink it.
+        let mut b = built_with(&[&[(ETA, 2.0)], &[(ETA, 0.0)]]);
+        let before = b.clone();
+        realize(1.0, &mut b);
+        assert_eq!(b, before, "dR < |dEta| must not fabricate a fill");
+        // Differing pinned phis on the dPhi=0 route: no clobber.
+        let mut b = built_with(&[&[(PHI, 0.0)], &[(ETA, 0.0), (PHI, 2.0)]]);
+        let before = b.clone();
+        realize(0.4, &mut b);
+        assert_eq!(b, before, "pinned differing phis must not be clobbered");
+        // Negative / non-finite targets: no write.
+        for bad in [-0.1, f64::NAN, f64::INFINITY] {
+            let mut b = built_with(&[&[], &[]]);
+            let before = b.clone();
+            realize(bad, &mut b);
+            assert_eq!(b, before, "target {bad} must not realize");
+        }
+    }
 }

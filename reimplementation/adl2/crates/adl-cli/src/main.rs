@@ -57,8 +57,9 @@ enum Command {
     },
     /// Full analysis: pairwise verdicts, vacuity, bins (legacy `smash -r`).
     Verify {
-        /// One or more ADL files. Each is analyzed independently (a per-unit
-        /// report); cross-file region relations are a separate, planned step.
+        /// One or more ADL files, or directories (each contributes its
+        /// `*.adl` files). Without `--cross` each file is analyzed
+        /// independently; with `--cross` they are merged (see below).
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Emit the versioned JSON report instead of the human report.
@@ -77,10 +78,10 @@ enum Command {
         /// `overlap`, `gap`, `empty`, `non-exact`.
         #[arg(long, value_name = "KINDS")]
         fail_on: Option<String>,
-        /// Merge all files into one shared identity space and analyze region
-        /// relations ACROSS files (the cross-analysis overlap matrix); regions
-        /// are reported as `<file>::<region>`. Without this, several files are
-        /// analyzed independently.
+        /// Merge all inputs (files and/or directories of `*.adl`) into one
+        /// shared identity space and analyze region relations ACROSS files
+        /// (the cross-analysis overlap matrix); regions are reported as
+        /// `<file>::<region>`. Without this, inputs are analyzed independently.
         #[arg(long)]
         cross: bool,
     },

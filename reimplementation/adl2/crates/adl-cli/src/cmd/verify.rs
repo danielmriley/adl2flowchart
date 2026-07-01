@@ -41,6 +41,33 @@ fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool)
     }
 }
 
+/// Expand input paths: a directory contributes its `*.adl` files (sorted,
+/// deterministic); a file path is taken as-is. Lets `verify` (and especially
+/// `--cross`) accept a folder of analyses, not just an explicit list.
+fn expand_adl_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
+    let mut out = Vec::new();
+    for p in inputs {
+        if p.is_dir() {
+            let mut found: Vec<PathBuf> = std::fs::read_dir(p)
+                .map_err(|e| CliError::Usage(format!("cannot read directory {}: {e}", p.display())))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|q| q.extension().is_some_and(|x| x == "adl"))
+                .collect();
+            found.sort();
+            if found.is_empty() {
+                return Err(CliError::Usage(format!(
+                    "no .adl files in directory {}",
+                    p.display()
+                )));
+            }
+            out.extend(found);
+        } else {
+            out.push(p.clone());
+        }
+    }
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     files: &[PathBuf],
@@ -51,6 +78,11 @@ pub fn run(
     verbose: bool,
     cross: bool,
 ) -> Result<ExitCode, CliError> {
+    // A directory argument contributes its `*.adl` files (sorted), so
+    // `--cross analyses/` reconciles a whole folder as well as an explicit
+    // file list.
+    let expanded = expand_adl_inputs(files)?;
+    let files = expanded.as_slice();
     let fail_on = match fail_on {
         Some(s) => FailOn::parse(s).map_err(CliError::Usage)?,
         None => FailOn::default(),

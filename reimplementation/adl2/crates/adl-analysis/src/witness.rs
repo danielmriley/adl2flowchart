@@ -514,6 +514,24 @@ fn build_event_json(
         }
     }
 
+    // -- phase 2.75: normalize each base to pT-descending --------------------
+    // The loader refuses any non-pT-descending collection (it never re-sorts),
+    // and a solver model can hand back an ascending/equal arrangement (padded
+    // out-of-range elements; ORD does not pin every slot). A STABLE sort by pt
+    // descending repairs exactly those otherwise-rejected events; a build that
+    // is already descending is unchanged (stable no-op), so no currently-valid
+    // witness is perturbed and validation stays the safety net.
+    {
+        let pt_key = ext.prop_canon("pt").0;
+        for objs in built.values_mut() {
+            objs.sort_by(|a, b| {
+                let pa = a.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
+                let pb = b.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
+                pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+
     // -- phase 3: serialize ---------------------------------------------------
     let mut root = Map::new();
     for (base, objs) in built {
@@ -592,13 +610,21 @@ fn realize_angulars(
         let Quantity::AngularSep { kind, a, b, .. } = hir.table.quantity(q) else {
             continue;
         };
+        let (Some(la), Some(lb)) = (loc_of(a), loc_of(b)) else {
+            continue;
+        };
+        if *kind == AngKind::DR {
+            // dR = hypot(dEta, wrap(dPhi)); realize the target v>=0 by forcing
+            // dPhi = 0 (equal phi) and |dEta| = v, since hypot(v, 0) = v exactly.
+            // Only fills UNSET components and only for object anchors (MET has no
+            // eta); anything already pinned is left to validation.
+            realize_dr(v, &la, &lb, &eta_key, &phi_key, built);
+            continue;
+        }
         let key = match kind {
             AngKind::DPhi => &phi_key,
             AngKind::DEta => &eta_key,
-            AngKind::DR => continue, // nonlinear; validation decides
-        };
-        let (Some(la), Some(lb)) = (loc_of(a), loc_of(b)) else {
-            continue;
+            AngKind::DR => unreachable!("dR handled above"),
         };
         if *kind == AngKind::DEta && (matches!(la, Loc::Met) || matches!(lb, Loc::Met)) {
             continue; // MET has no pseudorapidity
@@ -664,6 +690,72 @@ fn realize_angulars(
                 write(&la, correct(v, 0.0, false), built, met);
             }
         }
+    }
+}
+
+/// Realize a target `dR = v` (`v >= 0`) between two object anchors by filling
+/// their free `eta`/`phi` so the interpreter's `hypot(dEta, wrap(dPhi))`
+/// reproduces `v`: force `dPhi = 0` (equal `phi`) and `|dEta| = v`, since
+/// `hypot(v, 0) = v` and `wrap(0) = 0` are exact. Only OBJECT anchors carry a
+/// pseudorapidity (MET has none), and only UNSET components are written — a
+/// value already pinned (a stored property, or a prior angular realization) is
+/// left alone and validation remains the safety net (a bad guess only
+/// downgrades to POSSIBLY, never lies).
+fn realize_dr(
+    v: f64,
+    la: &Loc,
+    lb: &Loc,
+    eta_key: &str,
+    phi_key: &str,
+    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+) {
+    if !v.is_finite() || v < 0.0 {
+        return;
+    }
+    let (Loc::Obj(base_a, ia), Loc::Obj(base_b, ib)) = (la, lb) else {
+        return; // MET (or an unlocatable anchor) has no eta — validation decides
+    };
+    // `Some(None)` = the element exists but the component is unset (free);
+    // `None` = the element itself is absent (existence guard not taken).
+    let get = |base: &CollectionId, i: usize, key: &str| -> Option<Option<f64>> {
+        built.get(base)?.get(i).map(|o| o.get(key).copied())
+    };
+    let (Some(eta_a), Some(eta_b)) = (get(base_a, *ia, eta_key), get(base_b, *ib, eta_key)) else {
+        return;
+    };
+    let (Some(phi_a), Some(phi_b)) = (get(base_a, *ia, phi_key), get(base_b, *ib, phi_key)) else {
+        return;
+    };
+    // Force dPhi = 0: pick a shared phi. Two already-pinned, differing phi
+    // cannot be made equal without clobbering — leave to validation.
+    let phi_target = match (phi_a, phi_b) {
+        (Some(pa), Some(pb)) if pa != pb => return,
+        (Some(pa), _) => pa,
+        (_, Some(pb)) => pb,
+        (None, None) => 0.0,
+    };
+    let mut set = |base: &CollectionId, i: usize, key: &str, val: f64| {
+        if let Some(objs) = built.get_mut(base)
+            && let Some(o) = objs.get_mut(i)
+        {
+            o.insert(key.to_owned(), val);
+        }
+    };
+    // Set |dEta| = v by writing whichever eta is free; both pinned → validation.
+    match (eta_a, eta_b) {
+        (Some(_), Some(_)) => return,
+        (None, Some(eb)) => set(base_a, *ia, eta_key, eb + v),
+        (Some(ea), None) => set(base_b, *ib, eta_key, ea - v),
+        (None, None) => {
+            set(base_b, *ib, eta_key, 0.0);
+            set(base_a, *ia, eta_key, v);
+        }
+    }
+    if phi_a.is_none() {
+        set(base_a, *ia, phi_key, phi_target);
+    }
+    if phi_b.is_none() {
+        set(base_b, *ib, phi_key, phi_target);
     }
 }
 

@@ -236,13 +236,16 @@ fn cross_colliding_region_names_do_not_mask_witness_validation() {
     // re-validation must resolve by INDEX, not name — otherwise both regions
     // resolve to the first match, region B's decidable dR cut is never checked,
     // and a true POSSIBLY is promoted to a fabricated PROVEN OVERLAPPING.
-    // Region A: just MET>50. Region B: MET>50 AND dR(jet[0],jet[1])>0.4 (the
-    // witness realizer defaults the angular to 0, so B genuinely fails).
+    // Region A: just MET>50. Region B: MET>50 AND dR(jet[0],MET)>0.4 — a
+    // DECIDABLE cut the witness builder cannot realize (MET has no
+    // pseudorapidity, so there is no eta to separate jet[0] from), so B
+    // genuinely fails re-validation. (Object-vs-object dR IS realizable now, so
+    // the unrealizable anchor must be MET.)
     let r = cross(&[
         ("g", "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n"),
         (
             "g",
-            "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n  select dR(jet[0], jet[1]) > 0.4\n",
+            "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n  select dR(jet[0], MET) > 0.4\n",
         ),
     ]);
     assert_eq!(r.pairwise.len(), 1, "two regions → one pair");

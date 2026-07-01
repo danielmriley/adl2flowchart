@@ -6,7 +6,7 @@
 //! quantities are facts proven downstream (axioms/solver), never merges.
 
 use crate::intern::Symbol;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident, $prefix:literal) => {
@@ -423,5 +423,129 @@ impl QuantityTable {
             | Collection::Combination { .. }
             | Collection::CombProject { .. } => false,
         }
+    }
+
+    /// Flatten a **pure filter chain** into `(base symbol, predicates applied
+    /// on top, base-down)`. Returns `None` for anything that is not a `Base`
+    /// or a `Filtered` chain rooted (through more `Filtered`s) at a `Base` —
+    /// i.e. `Union`, `Sorted`, `Slice`, `Combination`, `CombProject`, or any
+    /// chain passing through one of them.
+    ///
+    /// This is the reconciliation counterpart of [`Self::pt_ordered`]: two
+    /// collections from different analyses are comparable for
+    /// IDENTICAL/REFINEMENT **only** when both flatten to the SAME base
+    /// symbol, so their membership predicates ground onto one shared generic
+    /// element. Non-filter and multi-source shapes are excluded here so no
+    /// derived subset fact can ever rest on them.
+    #[must_use]
+    pub fn filter_chain(&self, id: CollectionId) -> Option<(Symbol, Vec<ElemPredId>)> {
+        let mut preds = Vec::new();
+        let mut cur = id;
+        loop {
+            match self.collection(cur) {
+                Collection::Base(s) => {
+                    preds.reverse(); // base-down: the outermost filter is last
+                    return Some((*s, preds));
+                }
+                Collection::Filtered { parent, pred } => {
+                    preds.push(*pred);
+                    cur = *parent;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Candidate collection pairs for cross/intra reconciliation: **unordered
+    /// pairs of distinct `Filtered` collections that flatten to the same base
+    /// symbol** (via [`Self::filter_chain`]). Bare `Base`s are excluded (no
+    /// cuts to refine, and structurally identical bases already share an id),
+    /// as is every non-filter shape.
+    ///
+    /// Pure and side-effect-free: it emits no solver fact and changes no
+    /// verdict. The analysis engine consumes it, proves each pair's refinement
+    /// on the UNSAT (subset) side, and only then emits a derived size axiom —
+    /// so this enumeration cannot, by itself, fabricate a PROVEN. Iteration is
+    /// deterministic (base symbols in `BTreeMap` order, ids ascending).
+    #[must_use]
+    pub fn reconciliation_candidates(&self) -> Vec<(CollectionId, CollectionId)> {
+        let mut by_base: BTreeMap<Symbol, Vec<CollectionId>> = BTreeMap::new();
+        for (i, c) in self.colls.iter().enumerate() {
+            if !matches!(c, Collection::Filtered { .. }) {
+                continue;
+            }
+            let id = CollectionId(u32::try_from(i).expect("collection id overflow"));
+            if let Some((base, _)) = self.filter_chain(id) {
+                by_base.entry(base).or_default().push(id);
+            }
+        }
+        let mut out = Vec::new();
+        for ids in by_base.values() {
+            for a in 0..ids.len() {
+                for b in (a + 1)..ids.len() {
+                    out.push((ids[a], ids[b]));
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use super::*;
+
+    fn base(t: &mut QuantityTable, s: u32) -> CollectionId {
+        t.intern_collection(Collection::Base(Symbol(s)))
+    }
+    fn filt(t: &mut QuantityTable, parent: CollectionId, p: u32) -> CollectionId {
+        t.intern_collection(Collection::Filtered { parent, pred: ElemPredId(p) })
+    }
+
+    #[test]
+    fn filter_chain_flattens_base_down() {
+        let mut t = QuantityTable::default();
+        let b = base(&mut t, 7);
+        assert_eq!(t.filter_chain(b), Some((Symbol(7), vec![])));
+        let f1 = filt(&mut t, b, 0);
+        assert_eq!(t.filter_chain(f1), Some((Symbol(7), vec![ElemPredId(0)])));
+        let f2 = filt(&mut t, f1, 1);
+        // base-down: the inner filter comes first, the outermost last.
+        assert_eq!(
+            t.filter_chain(f2),
+            Some((Symbol(7), vec![ElemPredId(0), ElemPredId(1)]))
+        );
+    }
+
+    #[test]
+    fn filter_chain_none_for_non_filter_shapes() {
+        let mut t = QuantityTable::default();
+        let b = base(&mut t, 1);
+        let u = t.intern_collection(Collection::Union(vec![b]));
+        assert_eq!(t.filter_chain(u), None);
+        let sl = t.intern_collection(Collection::Slice { source: b, start: 0, end: Some(2) });
+        assert_eq!(t.filter_chain(sl), None);
+        // a filter rooted at a non-base (here a slice) is excluded too: a
+        // derived subset fact must never rest on a re-ordered/sliced source.
+        let f_over_slice = filt(&mut t, sl, 5);
+        assert_eq!(t.filter_chain(f_over_slice), None);
+    }
+
+    #[test]
+    fn candidates_are_same_base_filtered_pairs_only() {
+        let mut t = QuantityTable::default();
+        let jet = base(&mut t, 1);
+        let ele = base(&mut t, 2);
+        let jet_a = filt(&mut t, jet, 0); // jets pt>30
+        let jet_b = filt(&mut t, jet, 1); // jets pt>25
+        let ele_a = filt(&mut t, ele, 0); // different base
+        let _bare = base(&mut t, 3); // bare base: no cuts to refine, excluded
+        let _slice = t.intern_collection(Collection::Slice { source: jet, start: 0, end: None });
+        let cands = t.reconciliation_candidates();
+        // Only the two same-base jet filters pair (both directions handled by
+        // the prover, so one unordered pair); the lone ele filter has no
+        // partner; bare bases and non-filter shapes never appear.
+        assert_eq!(cands, vec![(jet_a, jet_b)]);
+        assert!(!cands.iter().any(|&(a, b)| a == ele_a || b == ele_a));
     }
 }

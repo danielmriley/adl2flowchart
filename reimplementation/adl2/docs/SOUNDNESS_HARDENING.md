@@ -128,8 +128,11 @@ counterexamples).
 
 Final audit verdict: **SOUND** — no validate check can emit a false PROVEN.
 549 tests pass; clippy clean workspace-wide; both solver backends pass
-conformance. Two residual LOW, non-soundness items remain (deferred hardening):
-opaque-external *candidate* overlaps are labeled/aggregated as PROVEN
-OVERLAPPING (the spec-sanctioned opaque-free caveat — a trust/label concern),
-and the subprocess backend hardcodes z3 CLI flags (unreachable from the product
-CLI, fails safe to Unknown).
+conformance. Residual items at audit time, updated since:
+- ~~opaque-external *candidate* overlaps are labeled/aggregated as PROVEN
+  OVERLAPPING~~ — **RESOLVED**: they are now a distinct CANDIDATE
+  OVERLAPPING tier (matrix letter `c`, JSON `candidate_overlapping`,
+  `witness_validated = false`); PROVEN OVERLAPPING additionally requires
+  interpreter re-validation of the realized witness.
+- the subprocess backend hardcodes z3 CLI flags (fails safe to Unknown;
+  only z3 is probed — cvc5 is not supported).

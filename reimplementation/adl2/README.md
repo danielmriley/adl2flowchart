@@ -81,14 +81,24 @@ smash2 verify --no-solver analysis.adl              # interval heuristic only
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
 smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
 smash2 verify --cross a.adl b.adl                   # merged unit: cross-FILE overlap matrix
+smash2 verify --cross analyses/                     # a directory expands to its *.adl files
 ```
 
-Without `--cross`, several files are each analyzed on their own — a per-unit
-report in human mode, a JSON array under `--json`. With `--cross` the files
-are merged into one analysis unit and regions are namespaced `file::region`
-(same-named regions across files are never falsely unified), producing the
-sound cross-analysis overlap matrix — the identity model was built for
-exactly this (design notes in [`MULTIFILE_PLAN.md`](MULTIFILE_PLAN.md)).
+A directory argument contributes its `*.adl` files (sorted, non-recursive,
+deduped against the other inputs). Without `--cross`, several files are
+each analyzed on their own — a per-unit report in human mode, a JSON array
+under `--json` (also whenever a directory was given, regardless of its
+file count). With `--cross` the files are merged into one analysis unit
+and regions are namespaced `file::region` (same-named regions across files
+are never falsely unified; colliding basenames are qualified by path),
+producing the sound cross-analysis overlap matrix — the identity model was
+built for exactly this (design notes in
+[`MULTIFILE_PLAN.md`](MULTIFILE_PLAN.md)). Cross runs additionally
+reconcile same-base filtered collections across files: when one file's
+element predicate provably implies the other's, the derived
+`size(A) ≤ size(B)` fact (axiom XSUB, or XEQ for both directions) links
+the two analyses' object counts — under the documented residual
+assumption that the same detector-base name means the same input.
 
 Per region: encoding coverage with named dropped cuts, vacuity check.
 Per pair: PROVEN DISJOINT / PROVEN OVERLAPPING (with witness) / PROVEN
@@ -139,16 +149,19 @@ fragment status, and derived size facts (subset of parent, union bounds).
 | Verdict | Claim | Sound because |
 |---|---|---|
 | PROVEN DISJOINT | no event can pass both regions | checked on an over-approximation of each region: if even the supersets cannot intersect, the regions cannot |
-| PROVEN OVERLAPPING | a concrete event candidate passes both | checked on under-approximations; the witness satisfies fully-encoded real cuts and is re-validated by the interpreter |
+| PROVEN OVERLAPPING | a concrete event passes both | checked on under-approximations; the realized witness event is accepted by the reference interpreter in both regions (`witness_validated = true`) |
+| CANDIDATE OVERLAPPING (matrix letter `c`) | a joint model exists, but it rests on an opaque quantity the interpreter cannot decide — **not a proof of overlap** | the unvalidated tier is reported separately instead of overclaiming PROVEN; conservative for combination studies |
 | PROVEN SUBSET A⊆B | every event passing A passes B | UNSAT(A⁺ ∧ ¬B⁻) |
 | region EMPTY | the region's cuts contradict physical axioms | UNSAT(R⁺ ∧ axioms) |
 | POSSIBLY / UNKNOWN | no claim | — |
 
 Anything the tool cannot encode faithfully becomes an explicit `Unknown`
 with a reason you can read in the report — it can weaken a verdict to
-POSSIBLY, never flip it. PROVEN OVERLAPPING is always printed with its
-model caveat: the witness is a candidate in the per-event scalar
-fragment, not a simulated event.
+POSSIBLY, never flip it. Overlap verdicts are always printed with their
+model caveat; a PROVEN OVERLAPPING witness's displayed values are read
+back from the interpreter-validated event. **CI note:**
+`--fail-on=overlap` fires on both PROVEN and CANDIDATE OVERLAPPING
+(fail-closed — an unvalidated candidate may still be a real overlap).
 
 ---
 

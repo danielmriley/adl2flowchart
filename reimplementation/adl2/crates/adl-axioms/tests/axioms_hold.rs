@@ -191,9 +191,16 @@ fn every_axiom_holds_on_generated_physical_events() {
     let qs = all_quantities(&hir);
     let axioms = emit_axioms(&mut hir, &ext, &qs);
 
-    // The vocabulary must exercise the FULL catalog.
+    // The vocabulary must exercise the FULL emitter catalog. XSUB/XEQ are the
+    // exception: they are not produced by `emit_axioms` at all but DERIVED by
+    // the analysis engine (`Engine::reconcile`) when it proves a cross/intra
+    // collection refinement, so no vocabulary can make `emit_axioms` yield
+    // them — their soundness is covered by the cross-file reconciliation tests.
     let used = axioms.ids_used();
     for id in AxiomId::ALL {
+        if matches!(id, AxiomId::Xsub | AxiomId::Xeq) {
+            continue;
+        }
         assert!(used.contains(&id), "vocabulary must emit at least one {id}");
     }
 

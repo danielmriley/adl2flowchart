@@ -16,6 +16,7 @@
 pub mod encode;
 mod engine;
 pub mod interval;
+mod reconcile;
 mod render;
 pub mod report;
 pub mod witness;
@@ -58,6 +59,12 @@ pub struct AnalysisOptions {
     /// Per-check solver timeout.
     pub timeout: Duration,
     pub fail_on: FailOn,
+    /// Prove cross/intra-collection refinements (IDENTICAL / A⊆B) and assert
+    /// the derived size facts. Set ONLY by an explicit `verify --cross` run
+    /// (owner decision: reconciliation is an opt-in cross-analysis feature);
+    /// off for single-file analysis, where structural interning already
+    /// relates same-source collections.
+    pub reconcile: bool,
 }
 
 impl Default for AnalysisOptions {
@@ -66,6 +73,7 @@ impl Default for AnalysisOptions {
             solver: SolverChoice::Auto,
             timeout: Duration::from_secs(10),
             fail_on: FailOn::default(),
+            reconcile: false,
         }
     }
 }
@@ -190,6 +198,11 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         let _ = hir.table.intern_quantity(Quantity::Size(c));
     }
 
+    // Build the reconciliation encoding while the table is still mutable
+    // (interns the shared generic-element quantities). Only in an explicit
+    // cross run; otherwise same-source collections already share ids.
+    let recon = opts.reconcile.then(|| reconcile::build(hir, ext));
+
     let unit_name = hir.unit.clone();
     let (solver, solver_label) = make_solver(opts.solver);
     let engine = engine::Engine {
@@ -201,6 +214,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         solver_label,
         timeout: opts.timeout,
         unit_name,
+        recon,
     };
     engine.run()
 }

@@ -17,6 +17,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         solver,
         timeout: Duration::from_secs(20),
         fail_on: FailOn::default(),
+        reconcile: false,
     }
 }
 

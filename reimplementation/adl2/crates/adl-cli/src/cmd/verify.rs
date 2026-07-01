@@ -214,7 +214,13 @@ fn run_cross(
     // No single source spans a merged unit (the empty `src`), so cut text and
     // bin labels are rendered from the HIR instead of sliced from source;
     // source-LINE numbers in the report are therefore not meaningful here.
-    let report = analyze_hir(&mut merged, "", ext, opts);
+    // Reconciliation (cross-collection refinement → derived size facts) is a
+    // cross-analysis feature, enabled only on this explicit path.
+    let opts = AnalysisOptions {
+        reconcile: true,
+        ..opts.clone()
+    };
+    let report = analyze_hir(&mut merged, "", ext, &opts);
     warn_if_no_solver("cross", &report, opts.solver == SolverChoice::NoSolver);
 
     if verbose {

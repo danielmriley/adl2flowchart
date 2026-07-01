@@ -19,7 +19,7 @@ use crate::report::{
     RegionReport, Report, SCHEMA_VERSION, VerdictKind, WitnessValue,
 };
 use crate::witness::{Validation, validate_witness};
-use adl_axioms::{AxiomSet, catalog_entry, quantity_label, twin_pairs};
+use adl_axioms::{AxiomId, AxiomSet, catalog_entry, derived_size_le, quantity_label, twin_pairs};
 use adl_formula::{Over, QFormula, Under};
 use adl_interp::Interp;
 use adl_sema::{ElemIndex, ExtDecls, Hir, Quantity, QuantityId, Rat};
@@ -36,6 +36,11 @@ pub(crate) struct Engine<'a> {
     pub solver_label: String,
     pub timeout: Duration,
     pub unit_name: String,
+    /// Cross/intra-collection reconciliation encoding, present only in an
+    /// explicit `verify --cross` run. Consumed once by [`Self::reconcile`],
+    /// which asserts the proven `size(A) <= size(B)` facts at the base frame
+    /// before the pairwise loop.
+    pub recon: Option<crate::reconcile::ReconEnc>,
 }
 
 /// Bounded witness retry: how many distinct overlap models to try to
@@ -160,6 +165,12 @@ impl Engine<'_> {
                     crate::encode::formula_quantities(f, &mut all_q);
                 }
             }
+            // Reconciliation grounds each candidate predicate onto a shared
+            // generic base element; those helper quantities (and the candidate
+            // sizes) must be declared before the subset frames assert them.
+            if let Some(recon) = self.recon.as_ref() {
+                all_q.extend(recon.quantities());
+            }
             for &q in &all_q {
                 let sort = match self.hir.table.quantity(q) {
                     Quantity::Size(_) => QSort::Int,
@@ -171,6 +182,12 @@ impl Engine<'_> {
                 s.assert(&inst.formula, Some(AssertName::new(format!("AX{i}"))));
             }
         }
+
+        // Cross/intra reconciliation: prove each candidate pair's refinement
+        // and assert the derived size facts at the base frame (persistent for
+        // every pairwise push/pop below). Runs after the base axioms so the
+        // proofs see them, and before the pairwise loop so the sizes relate.
+        let recon_counts = self.reconcile(&mut origins);
 
         // Per-region projections + interval maps.
         let ctxs: Vec<RegionCtx> = self
@@ -246,6 +263,9 @@ impl Engine<'_> {
         let mut axiom_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
         for inst in &self.axioms.instances {
             *axiom_counts.entry(inst.id.as_str()).or_insert(0) += 1;
+        }
+        for (id, n) in recon_counts {
+            *axiom_counts.entry(id).or_insert(0) += n;
         }
         let axioms_used = adl_axioms::AxiomId::ALL
             .into_iter()
@@ -875,6 +895,145 @@ impl Engine<'_> {
         let result = self.check(self.timeout);
         self.pop();
         matches!(result, Some(SatResult::Unsat))
+    }
+
+    /// Prove cross/intra collection refinements and assert the derived
+    /// `size(A) <= size(B)` (XSUB) / `size(A) = size(B)` (XEQ) facts at the
+    /// current (base) frame. Returns per-id instance counts for the axioms-used
+    /// report. Sound because a fact is asserted ONLY when the subset prover
+    /// reports UNSAT for the corresponding element-predicate implication over a
+    /// shared base element (see XSUB catalog row); a fact already covered by an
+    /// intra-source SUB axiom is skipped (no double count).
+    fn reconcile(
+        &mut self,
+        origins: &mut BTreeMap<AssertName, CoreItem>,
+    ) -> BTreeMap<&'static str, usize> {
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let Some(recon) = self.recon.take() else {
+            return counts;
+        };
+        if self.solver.is_none() || recon.is_empty() {
+            return counts;
+        }
+        let existing = self.existing_size_le();
+        let mut k = 0usize;
+        for cand in &recon.candidates {
+            let (a_in_b, b_in_a) = self.prove_pred_implies(&cand.phi_a, &cand.phi_b);
+            // Directions to emit, as (sub_size, sup_size, catalog id).
+            let facts: &[(QuantityId, QuantityId, AxiomId)] = if a_in_b && b_in_a {
+                &[
+                    (cand.size_a, cand.size_b, AxiomId::Xeq),
+                    (cand.size_b, cand.size_a, AxiomId::Xeq),
+                ]
+            } else if a_in_b {
+                &[(cand.size_a, cand.size_b, AxiomId::Xsub)]
+            } else if b_in_a {
+                &[(cand.size_b, cand.size_a, AxiomId::Xsub)]
+            } else {
+                &[]
+            };
+            for &(sub, sup, id) in facts {
+                // A collection is trivially its own size; an intra-source
+                // SUB fact already carries this refinement.
+                if sub == sup || existing.contains(&(sub, sup)) {
+                    continue;
+                }
+                let fact = derived_size_le(sub, sup);
+                let name = AssertName::new(format!("XR{k}"));
+                let statement = format!(
+                    "{} <= {}",
+                    quantity_label(self.hir, sub),
+                    quantity_label(self.hir, sup)
+                );
+                if let Some(s) = self.solver.as_deref_mut() {
+                    s.assert(&fact, Some(name.clone()));
+                }
+                origins.insert(
+                    name,
+                    CoreItem::Axiom {
+                        id: id.as_str().to_owned(),
+                        statement,
+                    },
+                );
+                *counts.entry(id.as_str()).or_insert(0) += 1;
+                k += 1;
+            }
+        }
+        counts
+    }
+
+    /// Read the refinement directions `(A ⊆ B, B ⊆ A)` for two element
+    /// predicates grounded on one shared base element. Precheck rejects a
+    /// degenerate frame (the two under-approximations cannot co-hold, or the
+    /// solver is unsure) BEFORE trusting either UNSAT — so a vacuous or flaky
+    /// answer never yields a fact. Direction is read SOLELY from the two
+    /// [`Self::subset`] booleans: the sub side uses `.over()` (dropping an
+    /// un-encodable conjunct only weakens it — sound), the sup side uses
+    /// `.under()` (an opaque conjunct becomes false, never dropped).
+    fn prove_pred_implies(
+        &mut self,
+        phi_a: &adl_formula::Formula,
+        phi_b: &adl_formula::Formula,
+    ) -> (bool, bool) {
+        if !self.frame_sat(phi_a, phi_b) {
+            return (false, false);
+        }
+        let name = AssertName::new("XREL");
+        let a_in_b = self.subset(&[(name.clone(), phi_a.over())], &[phi_b.under()]);
+        let b_in_a = self.subset(&[(name, phi_b.over())], &[phi_a.under()]);
+        (a_in_b, b_in_a)
+    }
+
+    /// Is the shared generic-element frame satisfiable with BOTH predicates'
+    /// under-approximations asserted? Guards `prove_pred_implies` against
+    /// emitting a fact from disjoint/degenerate predicates or a solver
+    /// `unknown` (both directions would otherwise read as a spurious IDENTICAL).
+    fn frame_sat(&mut self, phi_a: &adl_formula::Formula, phi_b: &adl_formula::Formula) -> bool {
+        if self.solver.is_none() {
+            return false;
+        }
+        self.push();
+        if let Some(s) = self.solver.as_deref_mut() {
+            s.assert(phi_a.under().qformula(), None);
+            s.assert(phi_b.under().qformula(), None);
+        }
+        let r = self.check(self.timeout);
+        self.pop();
+        matches!(r, Some(SatResult::Sat))
+    }
+
+    /// The `(sub_size, sup_size)` pairs already covered by an emitted SUB
+    /// axiom, so reconciliation does not re-assert (or re-count) an intra-source
+    /// refinement it already proves structurally.
+    fn existing_size_le(&self) -> BTreeSet<(QuantityId, QuantityId)> {
+        let one = rat(1.0);
+        let neg_one = rat(-1.0);
+        let mut out = BTreeSet::new();
+        for inst in &self.axioms.instances {
+            if inst.id != AxiomId::Sub {
+                continue;
+            }
+            let QFormula::Atom(a) = &inst.formula else {
+                continue;
+            };
+            let terms = a.terms();
+            if terms.len() != 2 {
+                continue;
+            }
+            let mut sub = None;
+            let mut sup = None;
+            for (c, q) in terms {
+                if *c == one {
+                    sub = Some(*q);
+                } else if *c == neg_one {
+                    sup = Some(*q);
+                }
+            }
+            if let (Some(s), Some(p)) = (sub, sup) {
+                out.insert((s, p));
+            }
+        }
+        out
     }
 
     fn bin_check(&mut self, set: &BinSetEnc, region_ctx: &RegionCtx) -> BinCheckReport {

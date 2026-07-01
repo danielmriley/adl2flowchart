@@ -58,6 +58,14 @@ pub enum AxiomId {
     Szperm,
     CombSize,
     Trig,
+    /// Derived cross/intra reconciliation fact: `size(A) <= size(B)` because
+    /// A's membership predicate provably implies B's (element-predicate
+    /// refinement proven on the subset side). See [`derived_size_le`].
+    Xsub,
+    /// Derived reconciliation fact: `size(A) = size(B)` (both refinement
+    /// directions proven — the two filtered collections select the same
+    /// elements of a shared base).
+    Xeq,
 }
 
 impl AxiomId {
@@ -78,11 +86,13 @@ impl AxiomId {
             AxiomId::Szperm => "SZPERM",
             AxiomId::CombSize => "COMBSIZE",
             AxiomId::Trig => "TRIG",
+            AxiomId::Xsub => "XSUB",
+            AxiomId::Xeq => "XEQ",
         }
     }
 
     /// All catalog ids, in catalog order.
-    pub const ALL: [AxiomId; 14] = [
+    pub const ALL: [AxiomId; 16] = [
         AxiomId::Ord,
         AxiomId::Sz0,
         AxiomId::Sub,
@@ -97,6 +107,8 @@ impl AxiomId {
         AxiomId::Szperm,
         AxiomId::CombSize,
         AxiomId::Trig,
+        AxiomId::Xsub,
+        AxiomId::Xeq,
     ];
 }
 
@@ -244,7 +256,49 @@ pub fn catalog() -> &'static [CatalogEntry] {
                             rational)",
             assumption: "none",
         },
+        CatalogEntry {
+            id: AxiomId::Xsub,
+            statement: "size(A) <= size(B) when A and B filter the SAME base collection and A's \
+                        element predicate provably implies B's (proven on the subset side over a \
+                        shared generic element)",
+            justification: "true of every physical event because the fact is emitted ONLY when the \
+                            solver reports UNSAT for (predA-over AND not predB-under) over one \
+                            shared base element: the WEAKEST reading of A's cut already forces the \
+                            STRONGEST reading of B's cut, so in ANY event every element A keeps B \
+                            keeps too, hence |A| <= |B|. An opaque conjunct in B's predicate is \
+                            under-approximated to false (never dropped), so it can only SUPPRESS \
+                            the fact, never fabricate it; a residual composite/reduce binder aborts \
+                            the pair (fail-closed)",
+            assumption: "same base name = same base input (documented cross-file residual)",
+        },
+        CatalogEntry {
+            id: AxiomId::Xeq,
+            statement: "size(A) = size(B) when A and B filter the same base and each element \
+                        predicate implies the other (both refinement directions proven)",
+            justification: "true of every physical event because both directions are the XSUB proof \
+                            run each way; each is individually sound (see XSUB), so their \
+                            conjunction size(A) <= size(B) <= size(A) holds in every event",
+            assumption: "same base name = same base input (documented cross-file residual)",
+        },
     ]
+}
+
+/// The canonical encoding of a derived size-refinement fact `size(sub) <=
+/// size(sup)`, used by the reconciliation engine. Kept here (beside the [`Sub`]
+/// axiom it mirrors — `Emit::sub`) so the SUB and XSUB size encodings can never
+/// drift apart. `sub` and `sup` MUST be DISTINCT [`Quantity::Size`] ids.
+///
+/// [`Sub`]: AxiomId::Sub
+#[must_use]
+pub fn derived_size_le(sub: QuantityId, sup: QuantityId) -> QFormula {
+    let one = Rat::from_decimal_f64(1.0).expect("finite");
+    let neg_one = Rat::from_decimal_f64(-1.0).expect("finite");
+    let zero = Rat::from_decimal_f64(0.0).expect("finite");
+    QFormula::Atom(LinAtom::new(
+        [(one, sub), (neg_one, sup)],
+        Rel::Le,
+        zero,
+    ))
 }
 
 /// Catalog row for `id`.
@@ -1103,10 +1157,35 @@ pub fn encode_elem_pred_generic(
     index: u32,
     diags: &mut DiagTable,
 ) -> Option<Formula> {
-    if references_binder_or_reduce(table, node) {
+    if references_binder_or_reduce(table, node) || references_concrete_peer(table, node) {
         return None;
     }
     Some(encode_pred_formula(table, node, base, index, diags))
+}
+
+/// True if `node` references a CONCRETE peer element of the base — an element
+/// at a fixed index (`Jet[1]`), an angular separation between such, or a
+/// collection size. The generic-element grounding is sound ONLY for the
+/// self-element (which enters as [`HKind::ElemSelfProp`], grounded to the
+/// generic index) plus constants and opaque leaves. A concrete peer instead
+/// keeps its SHARED analysis quantity id, and the base-frame ORD/IDOM/TWIN/
+/// TAG/EPRED and size axioms constraining that id hold only under a `size > k`
+/// guard the subset frame never replays; leaking one in fabricates a
+/// refinement (e.g. `select pt > pt(Jet[1])` + ORD ⇒ a false `size <=` fact).
+/// Reconciliation must fail closed. Opaque externals are NOT peers: they
+/// intern to a free quantity (no guarded axiom), so they stay live as Unknown.
+fn references_concrete_peer(table: &QuantityTable, node: &HNode) -> bool {
+    if let HKind::Quantity(q) = &node.kind {
+        match table.quantity(*q) {
+            Quantity::ElemProp { .. } | Quantity::AngularSep { .. } | Quantity::Size(_) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    node.children()
+        .iter()
+        .any(|c| references_concrete_peer(table, c))
 }
 
 fn encode_pred_formula(

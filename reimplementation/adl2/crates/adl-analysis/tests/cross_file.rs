@@ -443,3 +443,28 @@ fn reconcile_fails_closed_on_unresolved_take_fallback() {
         assert!(!p.subset_a_in_b && !p.subset_b_in_a, "{p:?}");
     }
 }
+
+#[test]
+fn colliding_unit_names_stay_distinguishable_and_classify_cross() {
+    // REGRESSION (review F3): units are named by file BASENAME, which can
+    // collide (`runA/atlas.adl` + `runB/atlas.adl`). The merge now qualifies
+    // later duplicates (`atlas.adl#2`), so region labels stay unique and the
+    // cross/intra split classifies on real unit identity — it used to report
+    // the exact inverse ("0 of N pairs span two analyses").
+    let r = cross(&[
+        ("atlas.adl", "region SRA\n  select MET.pt > 200\n"),
+        (
+            "atlas.adl",
+            "region SRA\n  select MET.pt > 100\nregion SRB\n  select MET.pt < 50\n",
+        ),
+    ]);
+    let names: Vec<&str> = r.regions.iter().map(|x| x.name.as_str()).collect();
+    assert_eq!(names.len(), 3);
+    let unique: std::collections::HashSet<&&str> = names.iter().collect();
+    assert_eq!(unique.len(), 3, "colliding unit names must be disambiguated: {names:?}");
+    let out = r.human_default(false);
+    assert!(
+        out.contains("cross-file: 2 of 3 pairs span two analyses"),
+        "cross/intra split must count real unit identity:\n{out}"
+    );
+}

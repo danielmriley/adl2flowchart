@@ -86,9 +86,26 @@ fn merge_hirs_inner(units: &[&Hir]) -> Hir {
         region_name_order: Vec::new(),
         histolist_regions: Vec::new(),
     };
+    // Unit names are only file basenames and can collide (case-insensitively,
+    // matching symbol interning). Colliding names would make two files'
+    // `<unit>::<region>` labels indistinguishable and invert the cross/intra
+    // pair classification — qualify later duplicates with their ordinal.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let unit_labels: Vec<String> = units
+        .iter()
+        .map(|h| {
+            let n = seen.entry(h.unit.to_ascii_lowercase()).or_insert(0);
+            *n += 1;
+            if *n == 1 {
+                h.unit.clone()
+            } else {
+                format!("{}#{n}", h.unit)
+            }
+        })
+        .collect();
     for (i, src) in units.iter().enumerate() {
         m.unit_ord = u32::try_from(i).expect("unit count overflow");
-        m.add_unit(src);
+        m.add_unit(src, &unit_labels[i]);
     }
     let unit = units
         .iter()
@@ -113,7 +130,7 @@ fn merge_hirs_inner(units: &[&Hir]) -> Hir {
 }
 
 impl Merger {
-    fn add_unit(&mut self, src: &Hir) {
+    fn add_unit(&mut self, src: &Hir, unit_label: &str) {
         let mut memo = Memo::default();
         // Region indices of this unit start here in the combined list, so
         // RegionPred/Inherit can be rebased.
@@ -125,7 +142,7 @@ impl Merger {
                 .map(|s| self.remap_stmt(src, &mut memo, region_base, s))
                 .collect();
             let orig = src.symbols.display(region.name);
-            let name = self.symbols.intern(&format!("{}::{orig}", src.unit));
+            let name = self.symbols.intern(&format!("{unit_label}::{orig}"));
             self.regions.push(HirRegion {
                 name,
                 stmts,

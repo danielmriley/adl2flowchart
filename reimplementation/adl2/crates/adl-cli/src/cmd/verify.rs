@@ -211,6 +211,41 @@ pub fn run(
     Ok(ExitCode::from(worst))
 }
 
+/// Unit labels for a cross-file run: the file basename, qualified with as
+/// many trailing path components as needed to tell colliding basenames
+/// apart (`runA/analysis.adl` vs `runB/analysis.adl`). Colliding labels
+/// would merge two different files' region namespaces into one — the
+/// regions table would list indistinguishable rows and the cross/intra
+/// summary would classify their pairs as intra-analysis. Comparison is
+/// case-insensitive to match symbol interning.
+fn unit_labels(files: &[PathBuf]) -> Vec<String> {
+    let suffix = |p: &PathBuf, k: usize| -> String {
+        let comps: Vec<String> = p
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        comps[comps.len().saturating_sub(k)..].join("/")
+    };
+    let mut labels: Vec<String> = files.iter().map(|p| unit_name(p)).collect();
+    let max_k = files.iter().map(|p| p.components().count()).max().unwrap_or(1);
+    for k in 2..=max_k {
+        let mut counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for l in &labels {
+            *counts.entry(l.to_ascii_lowercase()).or_insert(0) += 1;
+        }
+        if counts.values().all(|&c| c == 1) {
+            break;
+        }
+        for (i, p) in files.iter().enumerate() {
+            if counts[&labels[i].to_ascii_lowercase()] > 1 {
+                labels[i] = suffix(p, k);
+            }
+        }
+    }
+    labels
+}
+
 /// `--cross`: merge every unit into one shared identity space and analyze
 /// region relations across files (regions reported as `<file>::<region>`).
 /// Soundness comes from structural interning in `merge_hirs` — two quantities
@@ -225,11 +260,14 @@ fn run_cross(
     verbose: bool,
 ) -> Result<ExitCode, CliError> {
     // Resolve every unit; refuse if any has errors (merge needs clean units).
+    // Unit labels are basenames qualified only as far as needed to be unique,
+    // so region namespaces (and the resolver's unit-scoped private bases)
+    // never collide across same-named files.
+    let labels = unit_labels(files);
     let mut hirs = Vec::with_capacity(files.len());
-    for file in files {
+    for (file, name) in files.iter().zip(&labels) {
         let src = read_file(file)?;
-        let name = unit_name(file);
-        let hir = analyze_str(&src, &name, ext);
+        let hir = analyze_str(&src, name, ext);
         if adl_syntax::diag::has_errors(&hir.diags) {
             eprint!("{}", adl_syntax::diag::render(&src, &name, &hir.diags));
             eprintln!("{name}: analysis did not run (resolve errors above)");

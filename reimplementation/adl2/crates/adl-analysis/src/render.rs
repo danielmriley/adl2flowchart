@@ -405,9 +405,13 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
 
 /// A pairwise verdict spans two different analyses iff its regions carry
 /// different `file::` namespaces (only merged/cross-file reports namespace
-/// region names; a single-file report never contains `::`).
+/// region names; a single-file report never contains `::`). Split on the
+/// LAST `::`: an ADL region identifier can never contain a colon, but a
+/// unit label (a file path) can — `x::y.adl::SR` namespaces `SR` under
+/// `x::y.adl`. Merge disambiguates colliding unit labels, so equal prefixes
+/// really mean the same analysis.
 fn pair_is_cross(p: &PairReport) -> bool {
-    match (p.a.split_once("::"), p.b.split_once("::")) {
+    match (p.a.rsplit_once("::"), p.b.rsplit_once("::")) {
         (Some((fa, _)), Some((fb, _))) => fa != fb,
         _ => false,
     }

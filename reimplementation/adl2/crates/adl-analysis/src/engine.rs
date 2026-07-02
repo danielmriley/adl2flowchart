@@ -45,6 +45,11 @@ pub(crate) struct Engine<'a> {
     /// run at all (spawn/IO failure — e.g. the binary vanished after the
     /// probe). Surfaced via [`Report::solver_degraded`] so the CLI warns.
     pub spawn_failures: usize,
+    /// The sampling-gate battery (proof-system v2 Phase 1): deterministic
+    /// loader-valid events every UNSAT-side PROVEN verdict is refuted against
+    /// through the reference interpreter before being reported. Empty = gate
+    /// disabled.
+    pub gate_events: Vec<adl_interp::Event>,
 }
 
 /// Bounded witness retry: how many distinct overlap models to try to
@@ -226,9 +231,16 @@ impl Engine<'_> {
             .collect();
 
         // -- region reports (coverage + empty) -------------------------------
+        let mut gate_refutations = 0usize;
         let mut region_reports = Vec::new();
         for (r, ctx) in self.unit.regions.iter().zip(&ctxs) {
-            let (empty, empty_core) = self.region_empty(ctx, &origins);
+            let (mut empty, mut empty_core) = self.region_empty(ctx, &origins);
+            if empty == EmptyStatus::Proven
+                && self.gate_empty(r.idx, &interp, &mut internal, &mut gate_refutations)
+            {
+                empty = EmptyStatus::NotProven;
+                empty_core = Vec::new();
+            }
             region_reports.push(RegionReport {
                 name: r.name.clone(),
                 leaves_encoded: r.leaves_encoded,
@@ -253,7 +265,7 @@ impl Engine<'_> {
         let mut pairwise = Vec::new();
         for i in 0..self.unit.regions.len() {
             for j in i + 1..self.unit.regions.len() {
-                let pair = self.pair(
+                let mut pair = self.pair(
                     &self.unit.regions[i],
                     &self.unit.regions[j],
                     &ctxs[i],
@@ -261,6 +273,14 @@ impl Engine<'_> {
                     &origins,
                     &interp,
                     &mut internal,
+                );
+                self.gate_pair(
+                    &mut pair,
+                    self.unit.regions[i].idx,
+                    self.unit.regions[j].idx,
+                    &interp,
+                    &mut internal,
+                    &mut gate_refutations,
                 );
                 pairwise.push(pair);
             }
@@ -300,6 +320,10 @@ impl Engine<'_> {
             schema_version: SCHEMA_VERSION,
             unit: self.unit_name.clone(),
             solver: self.solver_label.clone(),
+            sampling: (!self.gate_events.is_empty()).then_some(crate::report::SamplingInfo {
+                events: self.gate_events.len(),
+                refutations: gate_refutations,
+            }),
             solver_degraded: (self.spawn_failures > 0).then(|| {
                 format!(
                     "{} solver check(s) could not run (the `{}` process failed to \
@@ -1024,6 +1048,98 @@ impl Engine<'_> {
         (a_in_b, b_in_a)
     }
 
+    /// Sampling gate (proof-system v2, Phase 1): refute an UNSAT-side pair
+    /// verdict against the battery through the reference interpreter. A
+    /// sampled event the interpreter passes through both regions of a
+    /// "proven disjoint" pair — or through `sub` but not `sup` of a proven
+    /// subset — is an internal contradiction: some encoder/axiom fact is
+    /// false on a real event. The verdict demotes (fail closed) and a bug
+    /// diagnostic is filed; interpreter errors carry no information.
+    #[allow(clippy::too_many_arguments)]
+    fn gate_pair(
+        &self,
+        report: &mut PairReport,
+        ia: usize,
+        ib: usize,
+        interp: &Interp<'_>,
+        internal: &mut Vec<String>,
+        refutations: &mut usize,
+    ) {
+        if self.gate_events.is_empty() {
+            return;
+        }
+        let memb = |idx: usize, e: &adl_interp::Event| {
+            interp.eval_region_membership_idx(idx, e).ok()
+        };
+        if report.kind == VerdictKind::ProvenDisjoint {
+            for e in &self.gate_events {
+                if memb(ia, e) == Some(true) && memb(ib, e) == Some(true) {
+                    *refutations += 1;
+                    internal.push(format!(
+                        "SAMPLING GATE refuted PROVEN DISJOINT for {} vs {}: a sampled \
+                         event passes both regions — an encoder/axiom fact is false on \
+                         a real event; verdict demoted",
+                        report.a, report.b
+                    ));
+                    report.kind = VerdictKind::PossiblyOverlapping;
+                    report.reason = "the sampling gate refuted a disjointness proof \
+                                     (internal contradiction, reported as a bug); capped \
+                                     at POSSIBLY"
+                        .to_owned();
+                    report.core.clear();
+                    break;
+                }
+            }
+        }
+        let mut gate_subset = |sub: usize, sup: usize, flag: &mut bool, label: &str| {
+            if !*flag {
+                return;
+            }
+            for e in &self.gate_events {
+                if memb(sub, e) == Some(true) && memb(sup, e) == Some(false) {
+                    *refutations += 1;
+                    *flag = false;
+                    internal.push(format!(
+                        "SAMPLING GATE refuted PROVEN SUBSET ({label}) for {} vs {}: a \
+                         sampled event is in the subset region but not the superset; \
+                         claim withdrawn",
+                        report.a, report.b
+                    ));
+                    break;
+                }
+            }
+        };
+        let (mut a_in_b, mut b_in_a) = (report.subset_a_in_b, report.subset_b_in_a);
+        gate_subset(ia, ib, &mut a_in_b, "a within b");
+        gate_subset(ib, ia, &mut b_in_a, "b within a");
+        report.subset_a_in_b = a_in_b;
+        report.subset_b_in_a = b_in_a;
+    }
+
+    /// Sampling gate for a proven-empty region: any sampled member refutes.
+    /// Returns true when refuted (the caller demotes to NotProven).
+    fn gate_empty(
+        &self,
+        idx: usize,
+        interp: &Interp<'_>,
+        internal: &mut Vec<String>,
+        refutations: &mut usize,
+    ) -> bool {
+        for e in &self.gate_events {
+            if interp.eval_region_membership_idx(idx, e).ok() == Some(true) {
+                *refutations += 1;
+                internal.push(format!(
+                    "SAMPLING GATE refuted REGION EMPTY for {}: a sampled event is a \
+                     member — an encoder/axiom fact is false on a real event; claim \
+                     withdrawn",
+                    self.hir.symbols.display(self.hir.regions[idx].name)
+                ));
+                return true;
+            }
+        }
+        false
+    }
+
     /// Is the shared generic-element frame satisfiable with BOTH predicates'
     /// under-approximations asserted? Guards `prove_pred_implies` against
     /// emitting a fact from disjoint/degenerate predicates or a solver
@@ -1325,6 +1441,7 @@ mod reconcile_solver_tests {
             unit_name: "t".to_owned(),
             recon: Some(recon),
             spawn_failures: 0,
+            gate_events: Vec::new(),
         };
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
         engine.reconcile(&mut origins)
@@ -1401,5 +1518,134 @@ mod reconcile_solver_tests {
             },
         );
         assert!(counts.is_empty(), "SUB-covered refinement must dedup: {counts:?}");
+    }
+}
+
+#[cfg(test)]
+mod sampling_gate_tests {
+    //! The production sampling gate (proof-system v2 Phase 1): a scripted
+    //! solver fabricates a false UNSAT — exactly what an encoder/axiom bug
+    //! looks like — and the gate must refute it against the battery through
+    //! the real interpreter, demote the verdict, and file the contradiction.
+
+    use super::*;
+    use adl_solver::QSort;
+    use std::collections::VecDeque;
+
+    struct Scripted {
+        seq: VecDeque<SatResult>,
+    }
+
+    impl Solver for Scripted {
+        fn declare(&mut self, _q: QuantityId, _sort: QSort) {}
+        fn push(&mut self) {}
+        fn pop(&mut self) {}
+        fn assert(&mut self, _f: &QFormula, _name: Option<AssertName>) {}
+        fn check(&mut self, _timeout: Duration) -> SatResult {
+            self.seq
+                .pop_front()
+                .unwrap_or(SatResult::Unknown("script exhausted".to_owned()))
+        }
+        fn model(&mut self) -> Option<Model> {
+            None
+        }
+        fn unsat_core(&mut self) -> Option<Vec<AssertName>> {
+            None
+        }
+        fn backend_name(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    fn run_gated(script: Vec<SatResult>, gate: usize) -> Report {
+        // Two regions that GENUINELY overlap on every event with MET > 100.
+        let src = "region RA\n  select MET > 100\nregion RB\n  select MET > 50\n";
+        let ext = ExtDecls::legacy();
+        let mut hir = adl_sema::analyze_str(src, "t", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags));
+        let unit = crate::encode::encode_unit(&mut hir, src);
+        let gate_events = if gate > 0 {
+            adl_interp::sample::battery(&ext, gate)
+        } else {
+            Vec::new()
+        };
+        let axioms = AxiomSet::default();
+        let engine = Engine {
+            hir: &hir,
+            ext: &ext,
+            unit: &unit,
+            axioms: &axioms,
+            solver: Some(Box::new(Scripted { seq: script.into() })),
+            solver_label: "scripted".to_owned(),
+            timeout: Duration::from_secs(1),
+            unit_name: "t".to_owned(),
+            recon: None,
+            spawn_failures: 0,
+            gate_events,
+        };
+        engine.run()
+    }
+
+    /// run() solver-call order for this unit: region_empty ×2, then the
+    /// pair's disjoint check. Unsat there fabricates PROVEN DISJOINT.
+    fn poison() -> Vec<SatResult> {
+        vec![SatResult::Sat, SatResult::Sat, SatResult::Unsat]
+    }
+
+    #[test]
+    fn gate_demotes_a_fabricated_disjoint() {
+        let r = run_gated(poison(), 64);
+        assert_eq!(
+            r.pairwise[0].kind,
+            VerdictKind::PossiblyOverlapping,
+            "{:?}",
+            r.pairwise[0]
+        );
+        assert!(
+            r.internal_diagnostics
+                .iter()
+                .any(|d| d.contains("SAMPLING GATE")),
+            "{:?}",
+            r.internal_diagnostics
+        );
+        let s = r.sampling.expect("gate accounting present");
+        assert_eq!(s.events, 64);
+        assert!(s.refutations >= 1);
+    }
+
+    #[test]
+    fn disabled_gate_ships_the_fabrication() {
+        // Documents WHY the gate exists: with sample_gate = 0 the same
+        // scripted bug sails through as PROVEN DISJOINT.
+        let r = run_gated(poison(), 0);
+        assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
+        assert!(r.sampling.is_none());
+    }
+
+    #[test]
+    fn gate_leaves_true_verdicts_alone() {
+        // Genuinely disjoint regions: no battery event can refute, so the
+        // (scripted) proof stands and nothing is filed.
+        let src = "region RA\n  select MET > 400\nregion RB\n  select MET < 200\n";
+        let ext = ExtDecls::legacy();
+        let mut hir = adl_sema::analyze_str(src, "t", &ext);
+        let unit = crate::encode::encode_unit(&mut hir, src);
+        let axioms = AxiomSet::default();
+        let engine = Engine {
+            hir: &hir,
+            ext: &ext,
+            unit: &unit,
+            axioms: &axioms,
+            solver: Some(Box::new(Scripted { seq: poison().into() })),
+            solver_label: "scripted".to_owned(),
+            timeout: Duration::from_secs(1),
+            unit_name: "t".to_owned(),
+            recon: None,
+            spawn_failures: 0,
+            gate_events: adl_interp::sample::battery(&ext, 64),
+        };
+        let r = engine.run();
+        assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
+        assert_eq!(r.sampling.unwrap().refutations, 0);
     }
 }

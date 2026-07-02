@@ -27,6 +27,7 @@ fn opts() -> AnalysisOptions {
         timeout: Duration::from_secs(30),
         fail_on: FailOn::default(),
         reconcile: false,
+        sample_gate: 64,
     }
 }
 

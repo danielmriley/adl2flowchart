@@ -85,6 +85,15 @@ impl CoreItem {
 }
 
 /// One witness value (quantity in source notation). `derived` marks
+/// Sampling-gate accounting (see [`Report::sampling`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SamplingInfo {
+    /// Battery size every UNSAT-side PROVEN verdict was checked against.
+    pub events: usize,
+    /// Verdicts the gate demoted (each is a filed internal contradiction).
+    pub refutations: usize,
+}
+
 /// values for quantities introduced by axioms rather than the regions'
 /// own cuts.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -177,6 +186,13 @@ pub struct Report {
     /// JSON), so existing consumers are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solver_degraded: Option<String>,
+    /// Sampling-gate accounting (proof-system v2 Phase 1): how many synthetic
+    /// events every UNSAT-side PROVEN verdict was refuted against, and how
+    /// many verdicts the gate demoted (each demotion also files an
+    /// internal-contradiction diagnostic — a refutation is an encoder/axiom
+    /// bug, not a user error). Absent when the gate is disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingInfo>,
     pub regions: Vec<RegionReport>,
     pub pairwise: Vec<PairReport>,
     pub bin_checks: Vec<BinCheckReport>,

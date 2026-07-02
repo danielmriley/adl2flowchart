@@ -174,6 +174,7 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         unit: "synthetic".to_owned(),
         solver: "synthetic".to_owned(),
         solver_degraded: None,
+        sampling: None,
         regions: Vec::new(),
         pairwise: vec![pair],
         bin_checks: Vec::new(),

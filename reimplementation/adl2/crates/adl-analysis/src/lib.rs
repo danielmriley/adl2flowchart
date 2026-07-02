@@ -65,6 +65,13 @@ pub struct AnalysisOptions {
     /// off for single-file analysis, where structural interning already
     /// relates same-source collections.
     pub reconcile: bool,
+    /// Sampling-gate battery size (proof-system v2 Phase 1): every UNSAT-side
+    /// PROVEN verdict (disjoint / empty / subset) is refuted against this many
+    /// deterministic synthetic events through the reference interpreter
+    /// before it is reported; a refutation demotes the verdict and files an
+    /// internal-contradiction diagnostic (an encoder/axiom bug, caught at
+    /// verdict time instead of shipped). `0` disables the gate.
+    pub sample_gate: usize,
 }
 
 impl Default for AnalysisOptions {
@@ -74,6 +81,7 @@ impl Default for AnalysisOptions {
             timeout: Duration::from_secs(10),
             fail_on: FailOn::default(),
             reconcile: false,
+            sample_gate: 64,
         }
     }
 }
@@ -205,6 +213,13 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
 
     let unit_name = hir.unit.clone();
     let (solver, solver_label) = make_solver(opts.solver);
+    // The sampling-gate battery is built once per run (deterministic; empty
+    // when the gate is disabled).
+    let gate_events = if opts.sample_gate > 0 {
+        adl_interp::sample::battery(ext, opts.sample_gate)
+    } else {
+        Vec::new()
+    };
     let engine = engine::Engine {
         hir,
         ext,
@@ -216,6 +231,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         unit_name,
         recon,
         spawn_failures: 0,
+        gate_events,
     };
     engine.run()
 }

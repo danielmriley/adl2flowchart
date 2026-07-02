@@ -6,6 +6,10 @@ expression: stdout(&out)
   "schema_version": 2,
   "unit": "disjoint_pt.adl",
   "solver": "none",
+  "sampling": {
+    "events": 64,
+    "refutations": 0
+  },
   "regions": [
     {
       "name": "SR_low",

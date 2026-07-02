@@ -3,7 +3,13 @@
 //! (a) every emitted instance of every catalog axiom HOLDS on every
 //!     adl-difftest generated physical event (under the canonical
 //!     pad-with-0 extension for out-of-range element variables — the
-//!     same extension that justifies asserting axioms in UNSAT proofs);
+//!     same extension that justifies asserting axioms in UNSAT proofs).
+//!     Because ALL instances are evaluated against ONE shared assignment
+//!     per event, this is also the JOINT-extension meta-test (v2 Phase 2 /
+//!     review T2): two axiom families demanding incompatible values for an
+//!     absent element's variable — the S3 false-PROVEN class — fail here,
+//!     provided the vocabulary reaches them (it now includes back-index
+//!     selects for exactly that reason);
 //! (b) the prohibited-axiom regressions stay rejected:
 //!     - "referencing C[i] implies size(C) > i" (false under guards —
 //!       removed in legacy after a false empty-region proof): all
@@ -66,8 +72,11 @@ region SR
   select size(muons) >= 0
   select pT(jets[0]) >= 0
   select pT(jets[2]) >= 0
+  select pT(jets[-1]) >= 0
+  select pT(jets[-2]) >= 0
   select pT(bjets[0]) >= 0
   select pT(bjets[1]) >= 0
+  select pT(bjets[-1]) >= 0
   select jets[0].btag >= 0
   select jets[1].m >= 0
   select MET.pT >= 0

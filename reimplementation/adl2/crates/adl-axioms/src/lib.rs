@@ -563,6 +563,44 @@ impl Emit<'_> {
         ))
     }
 
+    /// The definedness chokepoint for ELEMENT facts (proof-system v2
+    /// Phase 2 — partiality by construction): the fact is asserted only
+    /// where every element-dependent term exists, `Or(⋁ some element
+    /// absent, fact)`, with the existence floors read from the table's
+    /// single source ([`QuantityTable::existence_floor`] — the same floors
+    /// the formula encoder's leaf guards use, so the two sides can never
+    /// disagree about definedness). Stating an element fact any other way
+    /// re-opens the extension-conflict false-PROVEN class (review S3: two
+    /// axiom families demanding incompatible values for an ABSENT element's
+    /// free variable render the base frame unsatisfiable on real events).
+    /// Returns the guarded formula and the `size(C) > n ∧ … ⇒ ` description
+    /// prefix (empty when no term is element-dependent).
+    fn guarded(&mut self, terms: &[(f64, QuantityId)], rel: Rel, k: f64) -> (QFormula, String) {
+        let mut floors: BTreeMap<CollectionId, u32> = BTreeMap::new();
+        for &(_, q) in terms {
+            self.hir.table.existence_floor(q, &mut floors);
+        }
+        let fact = Self::atom(terms, rel, k);
+        if floors.is_empty() {
+            return (fact, String::new());
+        }
+        let mut parts: Vec<QFormula> = Vec::new();
+        let mut prefix = String::new();
+        for (coll, floor) in floors {
+            let sq = self.hir.table.intern_quantity(Quantity::Size(coll));
+            parts.push(Self::atom(&[(1.0, sq)], Rel::Le, f64::from(floor)));
+            prefix.push_str(&format!(
+                "size({}) > {floor} ∧ ",
+                collection_label(self.hir, coll)
+            ));
+        }
+        // The trailing "∧ " becomes the implication arrow.
+        prefix.truncate(prefix.len() - "∧ ".len());
+        prefix.push_str("⇒ ");
+        parts.push(fact);
+        (QFormula::Or(parts), prefix)
+    }
+
     fn label(&self, q: QuantityId) -> String {
         quantity_label(self.hir, q)
     }
@@ -631,6 +669,12 @@ impl Emit<'_> {
     }
 
     // ORD: pt(C[i]) >= pt(C[j]) for i < j (mentioned indices, same C).
+    // ALL three families are emitted through the `guarded` definedness
+    // chokepoint (v2 Phase 2): each fact is asserted only where both
+    // elements exist. Region atoms carry their own existence guards from
+    // the SAME floors, so any pair a region can actually distinguish keeps
+    // its ORD fact live — the guards cost no legitimate proof, and an
+    // extension conflict on absent elements (review S3) is unrepresentable.
     fn ord(&mut self, qs: &[QuantityId]) {
         for (_, idx) in self.elem_pt_quantities(qs) {
             for a in 0..idx.len() {
@@ -638,8 +682,8 @@ impl Emit<'_> {
                     let (i, qi) = idx[a];
                     let (j, qj) = idx[b];
                     if i < j {
-                        let f = Self::atom(&[(1.0, qi), (-1.0, qj)], Rel::Ge, 0.0);
-                        let d = format!("{} >= {}", self.label(qi), self.label(qj));
+                        let (f, g) = self.guarded(&[(1.0, qi), (-1.0, qj)], Rel::Ge, 0.0);
+                        let d = format!("{g}{} >= {}", self.label(qi), self.label(qj));
                         self.push(AxiomId::Ord, f, d);
                     }
                 }
@@ -647,28 +691,15 @@ impl Emit<'_> {
         }
         // Back-index ORD: a back element closer to the front has the higher
         // pt under pT-descending, i.e. `pt(C[-k2]) >= pt(C[-k1])` for k1 < k2
-        // ([-1] is the last/lowest). GUARDED by `size(C) <= k2-1`: the deeper
-        // leaf C[-k2] exists only when size >= k2; when it is absent it pads to
-        // 0 while the shallower C[-k1] can still hold a positive pt, so the bare
-        // fact `0 >= pt(C[-k1])` is FALSE on that physical event (and, joined
-        // with IDOM, fabricated a false PROVEN). The guard makes the fact
-        // vacuous exactly when the deep element is missing.
-        for (coll, idx) in self.elem_pt_back_quantities(qs) {
+        // ([-1] is the last/lowest).
+        for (_, idx) in self.elem_pt_back_quantities(qs) {
             for a in 0..idx.len() {
                 for b in a + 1..idx.len() {
                     let (k1, q1) = idx[a];
                     let (k2, q2) = idx[b];
                     if k1 < k2 {
-                        let size_q = self.hir.table.intern_quantity(Quantity::Size(coll));
-                        let guard = Self::atom(&[(1.0, size_q)], Rel::Le, f64::from(k2 - 1));
-                        let fact = Self::atom(&[(1.0, q2), (-1.0, q1)], Rel::Ge, 0.0);
-                        let f = QFormula::Or(vec![guard, fact]);
-                        let d = format!(
-                            "size({}) >= {k2} => {} >= {}",
-                            collection_label(self.hir, coll),
-                            self.label(q2),
-                            self.label(q1)
-                        );
+                        let (f, g) = self.guarded(&[(1.0, q2), (-1.0, q1)], Rel::Ge, 0.0);
+                        let d = format!("{g}{} >= {}", self.label(q2), self.label(q1));
                         self.push(AxiomId::Ord, f, d);
                     }
                 }
@@ -677,42 +708,21 @@ impl Emit<'_> {
         // Front-to-back ORD: relate a front-indexed element to a back-indexed
         // one in the ONLY two cases where their relative order is fixed for
         // every collection size — `pt(C[i]) >= pt(C[-k])` holds iff `i == 0`
-        // OR `k == 1`. When both exist the front sits at position `i`, the back
-        // at `size-k`, and in these cases `i <= size-k` (equality when they
-        // alias at `size = i+k`), so the front pt dominates. `i >= 1 && k >= 2`
-        // can straddle (at `size = max(i+1, k)` the front element drops below
-        // the back one), so those stay omitted.
-        //
-        // Pad consistency splits the two kept cases:
-        //  - `i == 0`: emitted UNCONDITIONALLY — the front element C[0] is
-        //    absent only when the collection is empty, which forces the back
-        //    element absent too, so both pad to 0 (0 >= 0 holds).
-        //  - `k == 1, i >= 1`: GUARDED by `size(C) <= i`. Here the guarded
-        //    front C[i] can be absent (pads to 0) while the back C[-1] still
-        //    holds a positive pt, so the bare fact `0 >= pt(C[-1])` is FALSE on
-        //    that event (and, joined with IDOM, fabricated a false PROVEN). The
-        //    guard makes the fact vacuous exactly when C[i] is missing.
+        // OR `k == 1`. When both exist the front sits at position `i`, the
+        // back at `size-k`, and in these cases `i <= size-k` (equality when
+        // they alias at `size = i+k`), so the front pt dominates. `i >= 1 &&
+        // k >= 2` can straddle (at `size = max(i+1, k)` the front element
+        // drops below the back one), so those stay omitted.
         let front = self.elem_pt_quantities(qs);
         let back = self.elem_pt_back_quantities(qs);
         for (coll, fidx) in &front {
             let Some(bidx) = back.get(coll) else { continue };
+            let _ = coll;
             for &(i, qi) in fidx {
                 for &(k, qk) in bidx {
-                    if i == 0 {
-                        let f = Self::atom(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
-                        let d = format!("{} >= {}", self.label(qi), self.label(qk));
-                        self.push(AxiomId::Ord, f, d);
-                    } else if k == 1 {
-                        let size_q = self.hir.table.intern_quantity(Quantity::Size(*coll));
-                        let guard = Self::atom(&[(1.0, size_q)], Rel::Le, f64::from(i));
-                        let fact = Self::atom(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
-                        let f = QFormula::Or(vec![guard, fact]);
-                        let d = format!(
-                            "size({}) > {i} => {} >= {}",
-                            collection_label(self.hir, *coll),
-                            self.label(qi),
-                            self.label(qk)
-                        );
+                    if i == 0 || k == 1 {
+                        let (f, g) = self.guarded(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
+                        let d = format!("{g}{} >= {}", self.label(qi), self.label(qk));
                         self.push(AxiomId::Ord, f, d);
                     }
                 }
@@ -961,8 +971,12 @@ impl Emit<'_> {
                     index: ElemIndex::FromFront(i),
                     prop: pt_prop,
                 });
-                let f = Self::atom(&[(1.0, qf), (-1.0, qp)], Rel::Le, 0.0);
-                let d = format!("{} <= {}", self.label(qf), self.label(qp));
+                // Through the definedness chokepoint (v2 Phase 2): IDOM is
+                // the axiom the unguarded F2B-ORD conflicted with (review
+                // S3) — both sides of that class now state facts only where
+                // the elements exist.
+                let (f, g) = self.guarded(&[(1.0, qf), (-1.0, qp)], Rel::Le, 0.0);
+                let d = format!("{g}{} <= {}", self.label(qf), self.label(qp));
                 self.push(AxiomId::Idom, f, d);
             }
         }
@@ -1696,8 +1710,14 @@ region SR
     }
 
     #[test]
-    fn front_to_back_i0_stays_unconditional() {
-        let (_hir, axioms) = emit_ord(ORD_SRC);
+    fn front_to_back_i0_is_guarded_like_every_element_fact() {
+        // v2 Phase 2: EVERY element fact goes through the definedness
+        // chokepoint — including i==0, which was previously left bare on the
+        // pad-0-consistency argument. Uniform guarding costs no legitimate
+        // proof (region atoms carry the same existence floors, so any pair a
+        // region can distinguish keeps the fact live) and makes unguarded
+        // element facts unrepresentable.
+        let (hir, axioms) = emit_ord(ORD_SRC);
         let inst = axioms
             .instances
             .iter()
@@ -1707,16 +1727,17 @@ region SR
                     && i.description.contains("jets[-1]")
             })
             .expect("front-to-back i==0 jets[0] >= jets[-1] must be emitted");
-        // The front element is absent only when the collection is empty, which
-        // forces the back element absent too (both pad to 0), so no guard.
+        let QFormula::Or(parts) = &inst.formula else {
+            panic!("i==0 front-to-back must be guarded: {:?}", inst.formula);
+        };
         assert!(
-            matches!(inst.formula, QFormula::Atom(_)),
-            "i==0 front-to-back must stay a bare fact: {:?}",
+            parts.iter().any(|p| is_size_guard(&hir, p)),
+            "one branch must be the existence guard: {:?}",
             inst.formula
         );
         assert!(
-            !inst.description.contains("=>"),
-            "i==0 description must not state a guard: {}",
+            inst.description.contains('⇒'),
+            "description states the guard: {}",
             inst.description
         );
     }

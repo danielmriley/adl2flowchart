@@ -433,6 +433,48 @@ impl QuantityTable {
         }
     }
 
+    /// Merge the element-existence requirement of `q` into `out` (per
+    /// collection, the greatest index floor): the guard `size(coll) >
+    /// out[coll]` makes every `coll[i]` / `coll[-k]` reference in `q`
+    /// defined. THE single source of definedness (proof-system v2 Phase 2 —
+    /// partiality by construction): the formula encoder's leaf guards and
+    /// the axiom emitters' guarded facts both derive from this, so the two
+    /// can never disagree about when an element exists. A front element
+    /// `[i]` exists iff `size > i`; a back element `[-k]` iff `size >= k`
+    /// (`size > k-1`); `[-0]` is degenerate (never exists) and imposes no
+    /// floor. Opaque `ExternalFn` quantities contribute nothing — their
+    /// missing-element behaviour is unknown and their values are already
+    /// declared free (SPEC_ANALYSIS §2).
+    pub fn existence_floor(&self, q: QuantityId, out: &mut BTreeMap<CollectionId, u32>) {
+        let mut need = |coll: CollectionId, i: u32| {
+            let e = out.entry(coll).or_insert(i);
+            *e = (*e).max(i);
+        };
+        let floor_need = |index: &ElemIndex| -> Option<u32> {
+            match index {
+                ElemIndex::FromFront(i) => Some(*i),
+                ElemIndex::FromBack(k) => k.checked_sub(1),
+            }
+        };
+        match self.quantity(q) {
+            Quantity::ElemProp { coll, index, .. } => {
+                if let Some(n) = floor_need(index) {
+                    need(*coll, n);
+                }
+            }
+            Quantity::AngularSep { a, b, .. } => {
+                for p in [a, b] {
+                    if let ParticleRef::Elem { coll, index } = p
+                        && let Some(n) = floor_need(index)
+                    {
+                        need(*coll, n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Flatten a **pure filter chain** into `(base symbol, predicates applied
     /// on top, base-down)`. Returns `None` for anything that is not a `Base`
     /// or a `Filtered` chain rooted (through more `Filtered`s) at a `Base` —

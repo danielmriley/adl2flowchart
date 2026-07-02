@@ -208,44 +208,13 @@ fn collect_collprops(node: &HNode, out: &mut BTreeSet<CollectionId>) {
     }
 }
 
-/// Element-existence requirements of one quantity: `coll[i].prop` and
-/// element-anchored angular separations require `size(coll) > i`.
-/// Opaque `ExternalFn` quantities contribute **nothing**: their
-/// missing-element behaviour is unknown, and the SPEC_ANALYSIS §2 model
-/// caveat already declares their values free.
+/// Element-existence requirements of one quantity, delegated to the SINGLE
+/// definedness source on the table ([`QuantityTable::existence_floor`],
+/// proof-system v2 Phase 2) — the axiom emitters' guarded facts read the
+/// same floors, so encoder and axioms can never disagree about when an
+/// element exists.
 fn quantity_existence(table: &QuantityTable, q: QuantityId, out: &mut BTreeMap<CollectionId, u32>) {
-    let mut need = |coll: CollectionId, i: u32| {
-        let e = out.entry(coll).or_insert(i);
-        *e = (*e).max(i);
-    };
-    // The guard emitted per collection is `size > out[coll]`. A front element
-    // `[i]` exists iff `size > i`; a back element `[-k]` iff `size >= k`, i.e.
-    // `size > k - 1`. Both reduce to a `size > N` threshold, and the per-coll
-    // max correctly conjoins them. `[-0]` is degenerate (never exists) and
-    // imposes no guard — sound, the interpreter fails the cut anyway.
-    let floor_need = |index: &ElemIndex| -> Option<u32> {
-        match index {
-            ElemIndex::FromFront(i) => Some(*i),
-            ElemIndex::FromBack(k) => k.checked_sub(1),
-        }
-    };
-    match table.quantity(q) {
-        Quantity::ElemProp { coll, index, .. } => {
-            if let Some(n) = floor_need(index) {
-                need(*coll, n);
-            }
-        }
-        Quantity::AngularSep { a, b, .. } => {
-            for p in [a, b] {
-                if let adl_sema::ParticleRef::Elem { coll, index } = p
-                    && let Some(n) = floor_need(index)
-                {
-                    need(*coll, n);
-                }
-            }
-        }
-        _ => {}
-    }
+    table.existence_floor(q, out);
 }
 
 /// Every quantity referenced under `node` (the leaf's own subtree).

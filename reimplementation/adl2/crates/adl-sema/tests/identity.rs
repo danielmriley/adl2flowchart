@@ -602,3 +602,45 @@ fn elem_context_externals_never_intern_shared_quantities() {
         hir.collection_of("bigB").unwrap()
     );
 }
+
+/// Proof-system v2 Phase 3 — render-injectivity enforcement. Element
+/// predicates (and opaque args) intern by canonical render, so the render
+/// must be INJECTIVE over everything allowed to share identity: two cuts
+/// differing in any semantically-relevant component must intern DIFFERENT
+/// predicates (else two physically different collections share a size
+/// variable — the review-S1 false-PROVEN class). Each pair below differs in
+/// exactly one component; a future render arm that discards its component
+/// fails here. (The converse — deliberate sharing — is the whitelist:
+/// identical resolved text, dR symmetry, sum commutativity, literal raw
+/// text; pinned by the tests above.)
+#[test]
+fn render_injectivity_differential_battery() {
+    let pairs: &[(&str, &str, &str)] = &[
+        ("literal value", "pt > 30", "pt > 31"),
+        ("literal raw text", "pt > 1", "pt > 1.0"),
+        ("property", "pt > 30", "eta > 30"),
+        ("relation", "pt > 30", "pt >= 30"),
+        ("comparison side", "pt > 30", "pt < 30"),
+        ("boolean connective", "pt > 30 and eta < 2", "pt > 30 or eta < 2"),
+        ("negation", "pt > 30", "not pt > 30"),
+        ("band kind", "pt [] 20 30", "pt ][ 20 30"),
+        ("band bound", "pt [] 20 30", "pt [] 20 31"),
+        ("ternary guard", "pt > 30 ? eta < 2 : m > 5", "pt > 40 ? eta < 2 : m > 5"),
+        ("ternary branch", "pt > 30 ? eta < 2 : m > 5", "pt > 30 ? eta < 1 : m > 5"),
+        ("abs presence", "eta < 2", "abs(eta) < 2"),
+        ("arith op", "pt + m > 30", "pt - m > 30"),
+        ("arith operand", "pt + m > 30", "pt + e > 30"),
+    ];
+    for (what, ca, cb) in pairs {
+        let src = format!(
+            "object xa\n  take Jet\n  select {ca}\nobject xb\n  take Jet\n  select {cb}\n"
+        );
+        let hir = analyze(&src);
+        let a = hir.collection_of("xa").unwrap();
+        let b = hir.collection_of("xb").unwrap();
+        assert_ne!(
+            a, b,
+            "cuts differing in {what} must intern distinct predicates: {ca:?} vs {cb:?}"
+        );
+    }
+}

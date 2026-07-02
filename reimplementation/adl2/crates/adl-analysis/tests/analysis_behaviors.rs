@@ -19,7 +19,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
-        certify: false,
+        certify: true,
     }
 }
 
@@ -798,8 +798,12 @@ fn certification_tiers_disjoint_verdicts() {
     assert_eq!(p.certified, Some(false), "{}", p.reason);
 
     // With certification OFF the same pair reports PROVEN (pre-Phase-4
-    // behavior, byte-stable) and carries no certified field.
-    let r = analyze_source(src, "i.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    // behavior) and carries no certified field.
+    let off_opts = AnalysisOptions {
+        certify: false,
+        ..opts(SolverChoice::Auto)
+    };
+    let r = analyze_source(src, "i.adl", &ext, &off_opts).expect("resolves");
     assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
     assert_eq!(r.pairwise[0].certified, None);
 }

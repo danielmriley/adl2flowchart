@@ -128,6 +128,33 @@ edges (SPEC_LANGUAGE divergence 5).
   by default. `--fail-on=overlap|gap|empty|non-exact` lets CI pipelines
   gate on physics findings explicitly.
 
+## 6b. Quantity-identity whitelist (normative, proof-system v2 Phase 3)
+
+Two syntactic references intern to one identity iff they denote the same
+per-event value. FALSE unification is a false-PROVEN factory (two
+different physical values sharing one solver variable let contradictory
+cuts prove UNSAT); false separation only loses precision. Identity keys
+are therefore FRESH BY DEFAULT, and sharing is a closed whitelist:
+
+- structural equality of fully-resolved, context-free terms (canonical
+  renders embed every interned id and raw literal — enforced by the
+  render-injectivity differential battery in `adl-sema/tests/identity.rs`);
+- `dR(a,b) = dR(b,a)` (metric symmetry; `dPhi`/`dEta` stay oriented);
+- four-vector `Sum` commutativity (Add-only flatten+sort);
+- numeric literals by RAW TEXT (never an f64 round-trip; `1` ≢ `1.0` —
+  sound separation);
+- cross-file: same structural term after per-unit opaque namespacing
+  (`merge_hirs`), plus the documented same-ext-base-name residual.
+
+Everything else fails closed: an `Unsupported` node (its render discards
+the differing substructure), any element-relative leaf (`this.prop`,
+`@elem.prop`, a binder in scalar position — renders discard the owning
+context), and a bare property name in element context poison the
+enclosing key — the construct becomes `Unsupported` and interns nothing
+(review S1/S2; `context_tainted` in resolve, second net in `lin_pred`).
+The IR census (`adl-sema/tests/ir_census.rs`) makes every new constructor
+answer the identity question at compile time.
+
 ## 7. Cross-file (forward design — Phase 8)
 
 `AnalysisUnit` per file; quantities scoped per unit. A `CrossLink` pass,

@@ -68,7 +68,8 @@ pub struct AnalysisOptions {
     /// Certify disjointness proofs via the independent exact-rational
     /// checker (adl-certify, v2 Phase 4): solver-UNSAT pairs whose core
     /// cannot be certified report CANDIDATE DISJOINT instead of PROVEN.
-    /// Off by default until the corpus certification rate is measured.
+    /// ON by default (measured 100% certification on the real corpus,
+    /// 255/255 solver-path proofs); disable with --no-certify for speed.
     pub certify: bool,
     /// Sampling-gate battery size (proof-system v2 Phase 1): every UNSAT-side
     /// PROVEN verdict (disjoint / empty / subset) is refuted against this many
@@ -87,7 +88,7 @@ impl Default for AnalysisOptions {
             fail_on: FailOn::default(),
             reconcile: false,
             sample_gate: 64,
-            certify: false,
+            certify: true,
         }
     }
 }

@@ -84,13 +84,12 @@ enum Command {
         /// `<file>::<region>`. Without this, inputs are analyzed independently.
         #[arg(long)]
         cross: bool,
-        /// Verify every disjointness proof through the independent
-        /// exact-rational certifier (adl-certify): a solver-UNSAT pair whose
-        /// unsat core cannot be certified reports CANDIDATE DISJOINT instead
-        /// of PROVEN DISJOINT, and certified pairs carry `certified: true`
-        /// in --json.
+        /// Skip the independent exact-rational certification of disjointness
+        /// proofs (on by default: solver-UNSAT pairs whose unsat core cannot
+        /// be certified report CANDIDATE DISJOINT, and certified pairs carry
+        /// certified: true in --json).
         #[arg(long)]
-        certify: bool,
+        no_certify: bool,
     },
     /// Evaluate regions over JSONL events: per-region pass/fail + bins.
     Run {
@@ -182,7 +181,7 @@ fn main() -> ExitCode {
             no_solver,
             fail_on,
             cross,
-            certify,
+            no_certify,
         } => cmd::verify::run(
             &files,
             json,
@@ -191,7 +190,7 @@ fn main() -> ExitCode {
             fail_on.as_deref(),
             verbose,
             cross,
-            certify,
+            !no_certify,
         ),
         Command::Run {
             file,

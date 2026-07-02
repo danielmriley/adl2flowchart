@@ -25,7 +25,12 @@
 //! solver's event model (SPEC_ANALYSIS §2). Every axiom here remains
 //! satisfiable on every physical event under the canonical pad-with-0
 //! extension (missing element properties valued 0), which is what makes
-//! asserting them sound for UNSAT-direction proofs.
+//! asserting them sound for UNSAT-direction proofs. Because that pad is 0,
+//! a fact relating a possibly-absent element to a present one can be
+//! violated (`0 >= pt(present)` is false), so the back-index ORD families
+//! (back-back and front-to-back with `k == 1, i >= 1`) are GUARDED by a
+//! `size(C) <= …` disjunct that goes vacuous exactly when the deep/guarded
+//! element is missing.
 
 use adl_formula::{DiagTable, Formula, LinAtom, QFormula, Rel};
 use adl_sema::{
@@ -135,7 +140,10 @@ pub fn catalog() -> &'static [CatalogEntry] {
     &[
         CatalogEntry {
             id: AxiomId::Ord,
-            statement: "pt(C[i]) >= pt(C[j]) for i < j, same base/filtered C",
+            statement: "pt(C[i]) >= pt(C[j]) for i < j (front-front, unconditional), same \
+                        base/filtered C; back-index families (back-back, and front-to-back with \
+                        k == 1, i >= 1) guarded by size(C) so they go vacuous when the deep \
+                        element is absent",
             justification: "true of every physical event because detector collections are \
                             delivered pT-descending and filtering preserves order",
             assumption: "collections pT-ordered",
@@ -639,19 +647,28 @@ impl Emit<'_> {
         }
         // Back-index ORD: a back element closer to the front has the higher
         // pt under pT-descending, i.e. `pt(C[-k2]) >= pt(C[-k1])` for k1 < k2
-        // ([-1] is the last/lowest). Sound UNCONDITIONALLY: when both exist
-        // (size >= k2) it is a true fact of every pT-descending event; when
-        // size < k2 the deeper leaf is free (only inside its dead size>k2-1
-        // guard), so the fact only relaxes. NO front-to-back cross fact is
-        // emitted (front/back positions alias at size = i + k).
-        for (_, idx) in self.elem_pt_back_quantities(qs) {
+        // ([-1] is the last/lowest). GUARDED by `size(C) <= k2-1`: the deeper
+        // leaf C[-k2] exists only when size >= k2; when it is absent it pads to
+        // 0 while the shallower C[-k1] can still hold a positive pt, so the bare
+        // fact `0 >= pt(C[-k1])` is FALSE on that physical event (and, joined
+        // with IDOM, fabricated a false PROVEN). The guard makes the fact
+        // vacuous exactly when the deep element is missing.
+        for (coll, idx) in self.elem_pt_back_quantities(qs) {
             for a in 0..idx.len() {
                 for b in a + 1..idx.len() {
                     let (k1, q1) = idx[a];
                     let (k2, q2) = idx[b];
                     if k1 < k2 {
-                        let f = Self::atom(&[(1.0, q2), (-1.0, q1)], Rel::Ge, 0.0);
-                        let d = format!("{} >= {}", self.label(q2), self.label(q1));
+                        let size_q = self.hir.table.intern_quantity(Quantity::Size(coll));
+                        let guard = Self::atom(&[(1.0, size_q)], Rel::Le, f64::from(k2 - 1));
+                        let fact = Self::atom(&[(1.0, q2), (-1.0, q1)], Rel::Ge, 0.0);
+                        let f = QFormula::Or(vec![guard, fact]);
+                        let d = format!(
+                            "size({}) >= {k2} => {} >= {}",
+                            collection_label(self.hir, coll),
+                            self.label(q2),
+                            self.label(q1)
+                        );
                         self.push(AxiomId::Ord, f, d);
                     }
                 }
@@ -659,22 +676,43 @@ impl Emit<'_> {
         }
         // Front-to-back ORD: relate a front-indexed element to a back-indexed
         // one in the ONLY two cases where their relative order is fixed for
-        // every collection size — `pt(C[i]) >= pt(C[-k])` is sound iff
-        // `i + k <= max(i+1, k)`, i.e. iff `i == 0` OR `k == 1`. When both
-        // exist the front sits at position `i`, the back at `size-k`; under
-        // these guards `i <= size-k` always holds (equality when they alias at
-        // `size = i+k`), so the front pt dominates. For `i >= 1 && k >= 2` the
-        // positions can straddle (at `size = max(i+1, k)` the front element
-        // drops below the back one), flipping the sign — so those stay omitted.
+        // every collection size — `pt(C[i]) >= pt(C[-k])` holds iff `i == 0`
+        // OR `k == 1`. When both exist the front sits at position `i`, the back
+        // at `size-k`, and in these cases `i <= size-k` (equality when they
+        // alias at `size = i+k`), so the front pt dominates. `i >= 1 && k >= 2`
+        // can straddle (at `size = max(i+1, k)` the front element drops below
+        // the back one), so those stay omitted.
+        //
+        // Pad consistency splits the two kept cases:
+        //  - `i == 0`: emitted UNCONDITIONALLY — the front element C[0] is
+        //    absent only when the collection is empty, which forces the back
+        //    element absent too, so both pad to 0 (0 >= 0 holds).
+        //  - `k == 1, i >= 1`: GUARDED by `size(C) <= i`. Here the guarded
+        //    front C[i] can be absent (pads to 0) while the back C[-1] still
+        //    holds a positive pt, so the bare fact `0 >= pt(C[-1])` is FALSE on
+        //    that event (and, joined with IDOM, fabricated a false PROVEN). The
+        //    guard makes the fact vacuous exactly when C[i] is missing.
         let front = self.elem_pt_quantities(qs);
         let back = self.elem_pt_back_quantities(qs);
         for (coll, fidx) in &front {
             let Some(bidx) = back.get(coll) else { continue };
             for &(i, qi) in fidx {
                 for &(k, qk) in bidx {
-                    if i == 0 || k == 1 {
+                    if i == 0 {
                         let f = Self::atom(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
                         let d = format!("{} >= {}", self.label(qi), self.label(qk));
+                        self.push(AxiomId::Ord, f, d);
+                    } else if k == 1 {
+                        let size_q = self.hir.table.intern_quantity(Quantity::Size(*coll));
+                        let guard = Self::atom(&[(1.0, size_q)], Rel::Le, f64::from(i));
+                        let fact = Self::atom(&[(1.0, qi), (-1.0, qk)], Rel::Ge, 0.0);
+                        let f = QFormula::Or(vec![guard, fact]);
+                        let d = format!(
+                            "size({}) > {i} => {} >= {}",
+                            collection_label(self.hir, *coll),
+                            self.label(qi),
+                            self.label(qk)
+                        );
                         self.push(AxiomId::Ord, f, d);
                     }
                 }
@@ -1471,10 +1509,33 @@ fn lin_pred(
                 k: Rat::zero(),
             })
         }
-        HKind::Quantity(q) => Some(PredLin {
-            terms: BTreeMap::from([(*q, Rat::one())]),
-            k: Rat::zero(),
-        }),
+        HKind::Quantity(q) => {
+            // Stopgap net until structural element keys (plan Phase 3): an
+            // opaque external whose args carry element-context text — an
+            // unsupported render, a `this.`/`@elem.` self-property, or any
+            // `@`-scoped leaf — interns to a quantity that silently aliases
+            // physically distinct per-element values across frames it does not
+            // belong to (soundness review S2). Reject those so they fall to the
+            // caller's opaque handling (EPRED drops the conjunct, reconciliation
+            // lifts it to Unknown). Externals over RESOLVED args (aplanarity
+            // over a Whole-collection Particle) carry no such string and still
+            // encode. The primary fix lands in adl-sema.
+            if let Quantity::ExternalFn { args, .. } = table.quantity(*q)
+                && args.iter().any(|a| {
+                    matches!(a, QuantityArg::Opaque(s)
+                        if s.contains("<unsupported:")
+                            || s.starts_with("this.")
+                            || s.starts_with("@elem.")
+                            || s.contains('@'))
+                })
+            {
+                return None;
+            }
+            Some(PredLin {
+                terms: BTreeMap::from([(*q, Rat::one())]),
+                k: Rat::zero(),
+            })
+        }
         HKind::Neg(a) => Some(lin_pred(table, a, coll, index)?.scale(&Rat::from_i64(-1))),
         HKind::Binary { op, lhs, rhs } => {
             let l = lin_pred(table, lhs, coll, index)?;
@@ -1524,6 +1585,7 @@ fn lin_pred(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adl_sema::analyze_str;
 
     #[test]
     fn crate_is_wired() {
@@ -1548,6 +1610,150 @@ mod tests {
     #[test]
     fn pi_upper_strictly_covers_f64_pi() {
         const { assert!(PI_UPPER > std::f64::consts::PI) }
+    }
+
+    fn emit_ord(src: &str) -> (Hir, AxiomSet) {
+        let ext = ExtDecls::legacy();
+        let mut hir = analyze_str(src, "ord_guard.adl", &ext);
+        assert!(
+            !adl_syntax::diag::has_errors(&hir.diags),
+            "source must resolve cleanly: {:#?}",
+            hir.diags
+        );
+        let n = hir.table.quantities().len();
+        let qs: BTreeSet<QuantityId> = (0..n)
+            .map(|i| QuantityId(u32::try_from(i).unwrap()))
+            .collect();
+        let axioms = emit_axioms(&mut hir, &ext, &qs);
+        (hir, axioms)
+    }
+
+    fn is_size_guard(hir: &Hir, f: &QFormula) -> bool {
+        matches!(f, QFormula::Atom(a)
+            if a.rel() == Rel::Le
+                && a.terms().len() == 1
+                && matches!(hir.table.quantity(a.terms()[0].1), Quantity::Size(_)))
+    }
+
+    // Front indices 0,1 and back indices 1,2 over a pT-ordered filtered
+    // collection: exercises all three ORD families in one emission.
+    const ORD_SRC: &str = "\
+object jets
+  take Jet
+  select pT > 30
+
+region SR
+  select jets[0].pT > 0
+  select jets[1].pT > 0
+  select jets[-1].pT > 0
+  select jets[-2].pT > 0
+";
+
+    #[test]
+    fn front_to_back_i1_k1_carries_size_guard() {
+        let (hir, axioms) = emit_ord(ORD_SRC);
+        let inst = axioms
+            .instances
+            .iter()
+            .find(|i| {
+                i.id == AxiomId::Ord
+                    && i.description.contains("jets[1]")
+                    && i.description.contains("jets[-1]")
+            })
+            .expect("guarded front-to-back jets[1] >= jets[-1] must be emitted");
+        let QFormula::Or(arms) = &inst.formula else {
+            panic!("F2B ORD (k==1, i>=1) must be guarded (Or): {:?}", inst.formula);
+        };
+        assert_eq!(arms.len(), 2, "{:?}", inst.formula);
+        assert!(
+            is_size_guard(&hir, &arms[0]),
+            "first arm must be the `size(jets) <= i` guard: {:?}",
+            arms[0]
+        );
+    }
+
+    #[test]
+    fn back_back_ord_carries_size_guard() {
+        let (hir, axioms) = emit_ord(ORD_SRC);
+        let inst = axioms
+            .instances
+            .iter()
+            .find(|i| {
+                i.id == AxiomId::Ord
+                    && i.description.contains("jets[-2]")
+                    && i.description.contains("jets[-1]")
+            })
+            .expect("back-back jets[-2] >= jets[-1] must be emitted");
+        let QFormula::Or(arms) = &inst.formula else {
+            panic!("back-back ORD must be guarded (Or): {:?}", inst.formula);
+        };
+        assert_eq!(arms.len(), 2, "{:?}", inst.formula);
+        assert!(
+            is_size_guard(&hir, &arms[0]),
+            "first arm must be the `size(jets) <= k2-1` guard: {:?}",
+            arms[0]
+        );
+    }
+
+    #[test]
+    fn front_to_back_i0_stays_unconditional() {
+        let (_hir, axioms) = emit_ord(ORD_SRC);
+        let inst = axioms
+            .instances
+            .iter()
+            .find(|i| {
+                i.id == AxiomId::Ord
+                    && i.description.contains("jets[0]")
+                    && i.description.contains("jets[-1]")
+            })
+            .expect("front-to-back i==0 jets[0] >= jets[-1] must be emitted");
+        // The front element is absent only when the collection is empty, which
+        // forces the back element absent too (both pad to 0), so no guard.
+        assert!(
+            matches!(inst.formula, QFormula::Atom(_)),
+            "i==0 front-to-back must stay a bare fact: {:?}",
+            inst.formula
+        );
+        assert!(
+            !inst.description.contains("=>"),
+            "i==0 description must not state a guard: {}",
+            inst.description
+        );
+    }
+
+    #[test]
+    fn object_cut_over_collapsed_external_yields_no_epred_conjunct() {
+        // `sqrt(this.pT)` is an opaque external over the element's OWN pt; it
+        // carries per-element context that cannot become a shared solver
+        // variable, so it must never enter an EPRED conjunct. The linear
+        // `pT > 30` sibling still encodes — only the collapsed external dies.
+        let src = "\
+object jets
+  take Jet
+  select pT > 30
+  select sqrt(this.pT) > 5
+
+region SR
+  select jets[0].pT > 0
+";
+        let (hir, axioms) = emit_ord(src);
+        let epreds: Vec<_> = axioms
+            .instances
+            .iter()
+            .filter(|i| i.id == AxiomId::Epred)
+            .collect();
+        assert!(!epreds.is_empty(), "jets is filtered and referenced at [0]");
+        for inst in epreds {
+            let mut qset = BTreeSet::new();
+            collect_quantities(&inst.formula, &mut qset);
+            for q in qset {
+                assert!(
+                    !matches!(hir.table.quantity(q), Quantity::ExternalFn { .. }),
+                    "sqrt(this.pT) must not leak into an EPRED conjunct: {:?}",
+                    inst.formula
+                );
+            }
+        }
     }
 }
 
@@ -1632,5 +1838,42 @@ mod recon_encoder_tests {
         let t = QuantityTable::default();
         let node = HNode::new(HKind::Bool(true), Span::default());
         assert!(!references_binder_or_reduce(&t, &node));
+    }
+
+    // Stopgap identity net (review S2): an external whose opaque arg carries
+    // element-context text may not enter a fact as a shared linear term.
+    #[test]
+    fn lin_pred_rejects_element_context_leaked_external() {
+        let mut t = QuantityTable::default();
+        let base = t.intern_collection(Collection::Base(Symbol(0)));
+        let leaf = |t: &mut QuantityTable, name: u32, arg: QuantityArg| {
+            let q = t.intern_quantity(Quantity::ExternalFn {
+                name: Symbol(name),
+                args: vec![arg],
+            });
+            HNode::new(HKind::Quantity(q), Span::default())
+        };
+
+        // `@elem.`, `this.`, an `@`-scoped leak, and an `<unsupported:` render
+        // all die.
+        for (name, s) in [
+            (1u32, "@elem.pt"),
+            (2, "this.pt"),
+            (3, "phi@2"),
+            (4, "<unsupported: unresolved `x`>"),
+        ] {
+            let node = leaf(&mut t, name, QuantityArg::Opaque(s.to_owned()));
+            assert!(
+                lin_pred(&mut t, &node, base, 0).is_none(),
+                "leaked arg {s:?} must be rejected"
+            );
+        }
+
+        // A RESOLVED-arg external (opaque scalar over a Whole collection) and a
+        // benign opaque path string still encode — only leaked context dies.
+        let resolved = leaf(&mut t, 5, QuantityArg::Collection(base));
+        assert!(lin_pred(&mut t, &resolved, base, 0).is_some());
+        let benign = leaf(&mut t, 6, QuantityArg::Opaque("weights.xml".to_owned()));
+        assert!(lin_pred(&mut t, &benign, base, 0).is_some());
     }
 }

@@ -544,3 +544,61 @@ fn oversized_source_index_never_mints_the_generic_sentinel() {
     }
     assert!(saw_clamped, "the oversized index must clamp to MAX_SOURCE_ELEM_INDEX");
 }
+
+#[test]
+fn unsupported_cuts_never_share_identity() {
+    // Soundness review S1: `<unsupported: reason>` renders discard the
+    // DIFFERING substructure, so two physically different cuts could intern
+    // one ElemPredId -> one CollectionId -> one size variable (reproduced
+    // false PROVEN DISJOINT on the corpus lepton-cleaning idiom). Unsupported
+    // predicates now always mint fresh ids.
+    let hir = analyze(
+        "object eles\n  take Ele\nobject muons\n  take Muo\n\
+         object cleanA\n  take Jet\n  reject any(dR(this, eles) < 0.2 and pt(eles) > 10)\n\
+         object cleanB\n  take Jet\n  reject any(dR(this, muons) < 0.4 and pt(muons) > 20)\n",
+    );
+    let a = hir.collection_of("cleanA").unwrap();
+    let b = hir.collection_of("cleanB").unwrap();
+    assert_ne!(a, b, "different unsupported cuts must not unify the collections");
+
+    // Identical FULLY-RESOLVED cuts still merge (the intended sharing).
+    let hir = analyze(
+        "object x1\n  take Jet\n  select pt > 30\nobject x2\n  take Jet\n  select pt > 30\n",
+    );
+    assert_eq!(
+        hir.collection_of("x1").unwrap(),
+        hir.collection_of("x2").unwrap(),
+        "identical resolved cuts keep structural sharing"
+    );
+}
+
+#[test]
+fn elem_context_externals_never_intern_shared_quantities() {
+    // Soundness review S2: `sqrt(pt)` inside two different object blocks used
+    // to intern ONE ExternalFn over the context-free key "this.pt"; EPRED
+    // then asserted contradictory facts about one shared solver variable
+    // (reproduced false PROVEN DISJOINT). Such calls now become Unsupported
+    // nodes and intern nothing.
+    let hir = analyze(
+        "object bigA\n  take Jet\n  select sqrt(pt) > 5\n\
+         object bigB\n  take Muo\n  select sqrt(pt) < 2\n",
+    );
+    use adl_sema::{Quantity, QuantityArg};
+    for q in hir.table.quantities() {
+        if let Quantity::ExternalFn { args, .. } = q {
+            for a in args {
+                if let QuantityArg::Opaque(s) = a {
+                    assert!(
+                        !s.contains("this.") && !s.contains("<unsupported:"),
+                        "context-dependent opaque key must not intern: {s:?}"
+                    );
+                }
+            }
+        }
+    }
+    // And the two blocks' collections stay distinct.
+    assert_ne!(
+        hir.collection_of("bigA").unwrap(),
+        hir.collection_of("bigB").unwrap()
+    );
+}

@@ -630,24 +630,41 @@ impl Encoder<'_> {
         if !inner.is_exact() {
             return inner;
         }
-        let mut qids = BTreeSet::new();
-        collect_quantities(node, &mut qids);
         let mut needs: BTreeMap<CollectionId, u32> = BTreeMap::new();
-        for q in qids {
-            quantity_existence(self.table, q, &mut needs);
-        }
+        Self::collect_existence(self.table, node, &mut needs);
         if needs.is_empty() {
             return inner;
         }
-        let mut parts: Vec<Formula> = needs
+        let mut parts = self.needs_guards(needs);
+        parts.push(inner);
+        fand(parts)
+    }
+
+    /// Merge the element-existence requirements of every quantity in `node`'s
+    /// subtree into `needs` (per collection, the greatest index): `size(c) >
+    /// needs[c]` is the guard that makes `c[i]`/`c[-k]` references defined.
+    fn collect_existence(
+        table: &QuantityTable,
+        node: &HNode,
+        needs: &mut BTreeMap<CollectionId, u32>,
+    ) {
+        let mut qids = BTreeSet::new();
+        collect_quantities(node, &mut qids);
+        for q in qids {
+            quantity_existence(table, q, needs);
+        }
+    }
+
+    /// Lower element-existence requirements to their `size(coll) > i` guard
+    /// atoms.
+    fn needs_guards(&mut self, needs: BTreeMap<CollectionId, u32>) -> Vec<Formula> {
+        needs
             .into_iter()
             .map(|(coll, i)| {
                 let sq = self.table.intern_quantity(Quantity::Size(coll));
                 self.simple_atom(sq, Rel::Gt, i64::from(i))
             })
-            .collect();
-        parts.push(inner);
-        fand(parts)
+            .collect()
     }
 
     fn leaf_inner(&mut self, node: &HNode) -> Formula {
@@ -871,6 +888,10 @@ impl Encoder<'_> {
             },
             HKind::And(v) => HKind::And(v.iter().map(|n| self.subst_reduce(n, coll, index)).collect()),
             HKind::Or(v) => HKind::Or(v.iter().map(|n| self.subst_reduce(n, coll, index)).collect()),
+            HKind::ScalarMinMax { kind, args } => HKind::ScalarMinMax {
+                kind: *kind,
+                args: args.iter().map(|a| self.subst_reduce(a, coll, index)).collect(),
+            },
             HKind::Band { kind, expr, lo, hi } => HKind::Band {
                 kind: *kind,
                 expr: Box::new(self.subst_reduce(expr, coll, index)),
@@ -972,6 +993,14 @@ impl Encoder<'_> {
             },
             HKind::And(v) => HKind::And(v.iter().map(|n| self.subst(n, coll, index)).collect()),
             HKind::Or(v) => HKind::Or(v.iter().map(|n| self.subst(n, coll, index)).collect()),
+            // Descend into min/max args so an unindexed `CollProp` of `coll`
+            // inside them resolves to `coll[index]` like any other operand;
+            // leaving it opaque re-triggers the OPEN-1 leaf expansion on the
+            // same collection without bound (unbounded recursion).
+            HKind::ScalarMinMax { kind, args } => HKind::ScalarMinMax {
+                kind: *kind,
+                args: args.iter().map(|a| self.subst(a, coll, index)).collect(),
+            },
             HKind::Band { kind, expr, lo, hi } => HKind::Band {
                 kind: *kind,
                 expr: Box::new(self.subst(expr, coll, index)),
@@ -1249,6 +1278,13 @@ impl Encoder<'_> {
             HKind::Or(v) => {
                 HKind::Or(v.iter().map(|n| self.subst_binders(n, members, parts, idx)).collect())
             }
+            HKind::ScalarMinMax { kind, args } => HKind::ScalarMinMax {
+                kind: *kind,
+                args: args
+                    .iter()
+                    .map(|a| self.subst_binders(a, members, parts, idx))
+                    .collect(),
+            },
             HKind::Band { kind, expr, lo, hi } => HKind::Band {
                 kind: *kind,
                 expr: Box::new(self.subst_binders(expr, members, parts, idx)),
@@ -1408,18 +1444,45 @@ impl Encoder<'_> {
                     (ReduceKind::Min, Rel::Gt | Rel::Ge) | (ReduceKind::Max, Rel::Lt | Rel::Le)
                 );
                 if or_branch || and_branch {
-                    let parts: Vec<Formula> = args
-                        .iter()
-                        .map(|a| self.cmp_node_const(a, rel, c.clone(), span))
-                        .collect();
+                    // Each arg's comparison recurses through the full machinery;
+                    // an arg that cannot be encoded exactly (a value-position
+                    // ternary, an opaque scalar) folds to a non-exact leaf.
+                    let mut parts: Vec<Formula> = Vec::with_capacity(args.len());
+                    let mut opaque: Vec<Formula> = Vec::new();
+                    let mut needs: BTreeMap<CollectionId, u32> = BTreeMap::new();
+                    for a in args {
+                        let f = self.cmp_node_const(a, rel, c.clone(), span);
+                        if f.is_exact() {
+                            // Only an exactly-encoded arg's element is a genuine
+                            // reference whose absence falsifies the comparison; an
+                            // opaque arg's own missing-element behaviour is unknown,
+                            // so its inner element quantities impose no guard.
+                            Self::collect_existence(self.table, a, &mut needs);
+                        } else {
+                            // An opaque arg's definedness decides a strict min/max
+                            // comparison, so conjoin its leaf at the AND level: the
+                            // under projection is then honestly false (an opaque
+                            // arg could be undefined), the over projection is
+                            // unchanged (Unknown → true). It also stays inside
+                            // `combined`, so the over side still admits it as the
+                            // ∃/∀ witness — dropping it there would wrongly shrink
+                            // the over projection.
+                            opaque.push(self.unknown(a.span, "scalar min/max argument is opaque"));
+                        }
+                        parts.push(f);
+                    }
                     let combined = if or_branch { forr(parts) } else { fand(parts) };
-                    // `min`/`max` is a value only when EVERY argument is — a
-                    // missing-element arg makes the interpreter's comparison
-                    // false. So conjoin the existence of all args OUTSIDE the
-                    // disjunction (the `Or` reading must not fire via a present
-                    // arg while another is absent). `guard_existence` collects
-                    // the args' element quantities (via `hnode_children`).
-                    self.guard_existence(side, combined)
+                    // `min`/`max` is a value only when EVERY arg is — a missing
+                    // element makes the interpreter's comparison false. These
+                    // element-existence guards are necessary conditions on BOTH
+                    // projections, so they hold UNCONDITIONALLY: the
+                    // `guard_existence` post-pass early-returns on the first opaque
+                    // arg, which would otherwise drop them and leak a bare element
+                    // atom into the under projection under NNF (`reject`/`not`).
+                    let mut conj = self.needs_guards(needs);
+                    conj.extend(opaque);
+                    conj.push(combined);
+                    fand(conj)
                 } else {
                     // `==`/`!=` have no monotone reading. Interning the whole
                     // min as an opaque free leaf would be sound for the UNSAT

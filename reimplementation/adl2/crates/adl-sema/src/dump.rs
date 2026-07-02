@@ -3,8 +3,13 @@
 //!
 //! Renders are also identity-relevant: element-predicate interning and
 //! `QuantityArg::Opaque` use the canonical render as their key, so every
-//! label embeds the structural id (`C3#jets`) — identical text always
-//! means identical resolution.
+//! label embeds the structural id (`C3#jets`). Identical text means
+//! identical resolution ONLY for fully-resolved, context-free nodes: an
+//! `<unsupported: …>` render discards the differing substructure and an
+//! element-relative render (`this.pt`, `@elem.pt`) discards the owning
+//! collection, so the resolver never uses a render containing either as a
+//! shared key (it fails closed to fresh identity — soundness review S1/S2;
+//! structural keys replace renders entirely in proof-system v2 Phase 3).
 
 use crate::hir::{HKind, HNode, Hir, HirRegionStmt};
 use crate::intern::{Symbol, SymbolTable};

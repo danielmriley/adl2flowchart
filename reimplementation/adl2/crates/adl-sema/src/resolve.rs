@@ -141,18 +141,44 @@ impl<'a> Resolver<'a> {
                 Section::Info(_) | Section::Table(_) | Section::CountsFormat(_) => {}
             }
         }
+        let mut dup_diags: Vec<Diagnostic> = Vec::new();
         let mut objects_by_key = HashMap::new();
         for (i, o) in ast_objects.iter().enumerate() {
-            // First binding wins; a duplicate is diagnosed when resolved.
-            objects_by_key
+            // First binding wins; the duplicate gets a warning below — every
+            // later reference silently means the FIRST definition, so a
+            // shadowing author would otherwise get verdicts about the wrong
+            // object with zero signal (soundness review S8).
+            if objects_by_key
                 .entry(o.name.name.to_ascii_lowercase())
-                .or_insert(i);
+                .or_insert(i)
+                != &i
+            {
+                dup_diags.push(Diagnostic::warning(
+                    o.name.span,
+                    format!(
+                        "duplicate object `{}`; the first definition wins and every \
+                         reference binds to it",
+                        o.name.name
+                    ),
+                ));
+            }
         }
         let mut defines_by_key = HashMap::new();
         for (i, d) in ast_defines.iter().enumerate() {
-            defines_by_key
+            if defines_by_key
                 .entry(d.name.name.to_ascii_lowercase())
-                .or_insert(i);
+                .or_insert(i)
+                != &i
+            {
+                dup_diags.push(Diagnostic::warning(
+                    d.name.span,
+                    format!(
+                        "duplicate define `{}`; the first definition wins and every \
+                         reference binds to it",
+                        d.name.name
+                    ),
+                ));
+            }
         }
         let obj_state = vec![State::Pending; ast_objects.len()];
         let obj_hir = vec![None; ast_objects.len()];
@@ -180,7 +206,7 @@ impl<'a> Resolver<'a> {
             pending_histos: Vec::new(),
             histos: Vec::new(),
             weights: Vec::new(),
-            diags: Vec::new(),
+            diags: dup_diags,
             warned_names: HashSet::new(),
         }
     }
@@ -670,15 +696,49 @@ impl<'a> Resolver<'a> {
         let source = exprs
             .iter()
             .find_map(|e| self.target_collection(e, ctx))?;
-        // Direction: an `ascend` identifier anywhere flips to ascending;
-        // everything else (including the common `descend`) is descending.
-        let dir = if exprs.iter().any(|e| {
-            matches!(e, Expr::Ident(id) if id.name.eq_ignore_ascii_case("ascend"))
-        }) {
-            SortDir::Ascend
-        } else {
-            SortDir::Descend
+        // Direction: recognized token families only. The old rule ("anything
+        // that is not `ascend` means descending") failed OPEN into the
+        // soundness-critical alias gate below — `ascending` (or any typo)
+        // silently meant Descend, aliased to the pT-descending source, and
+        // ORD then proved orderings false under the written intent (review
+        // S7). Unrecognized trailing identifiers now fail the gate CLOSED.
+        let dir_token = |name: &str| -> Option<SortDir> {
+            match name.to_ascii_lowercase().as_str() {
+                "ascend" | "ascending" | "asc" => Some(SortDir::Ascend),
+                "descend" | "descending" | "desc" => Some(SortDir::Descend),
+                _ => None,
+            }
         };
+        let mut dir: Option<SortDir> = None;
+        for e in &exprs {
+            if let Expr::Ident(id) = e
+                && let Some(d) = dir_token(&id.name)
+            {
+                dir = Some(d);
+            }
+        }
+        // A bare trailing identifier that is neither a direction token nor a
+        // resolvable collection is almost certainly a misspelled direction.
+        let mut dir_suspect = false;
+        if dir.is_none()
+            && exprs.len() >= 2
+            && let Some(last @ Expr::Ident(id)) = exprs.last()
+            && self.target_collection(last, ctx).is_none()
+        {
+            dir_suspect = true;
+            self.warn_once(
+                format!("sortdir:{}", id.name.to_ascii_lowercase()),
+                Diagnostic::warning(
+                    id.span,
+                    format!(
+                        "unrecognized sort direction `{}` (write `ascend` or `descend`); \
+                         the sort is treated as opaque — no element-ordering facts",
+                        id.name
+                    ),
+                ),
+            );
+        }
+        let dir = dir.unwrap_or(SortDir::Descend);
         // Key: the first argument that is a single per-element property of the
         // source (`pt(coll)`), reduced to that `PropId`. Anything else stays
         // opaque so the analyzer never aliases a non-pt / unknown-key sort.
@@ -698,6 +758,7 @@ impl<'a> Resolver<'a> {
         // PROVEN via ORD on the UNSAT side with no witness net.
         let pt_key = self.ext.prop_canon("pt").0;
         let is_pt_desc = dir == SortDir::Descend
+            && !dir_suspect
             && matches!(&key, SortKey::Prop(p) if self.table.prop_key(*p) == pt_key);
         if is_pt_desc && self.table.pt_ordered(source, &pt_key) {
             return Some(source);
@@ -895,11 +956,23 @@ impl<'a> Resolver<'a> {
     }
 
     fn intern_elem_pred(&mut self, node: HNode) -> ElemPredId {
-        let render = self.render_node(&node);
-        if let Some(&id) = self.elem_pred_ids.get(&render) {
+        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
+        // An Unsupported node renders as `<unsupported: reason>` — the
+        // DIFFERING sub-expression is discarded and replaced by a (often
+        // generic) reason string, so two physically different cuts can render
+        // identically. Sharing an id would unify their filtered collections
+        // (and sizes) — a reproduced false-PROVEN factory (soundness review
+        // S1). Fail closed: such predicates always get a fresh, never-shared
+        // id. Fully-resolved identical cuts keep merging via the render key.
+        if node.has_unsupported() {
+            let render = self.render_node(&node);
+            self.elem_preds.push(ElemPred { node, render });
             return id;
         }
-        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
+        let render = self.render_node(&node);
+        if let Some(&prev) = self.elem_pred_ids.get(&render) {
+            return prev;
+        }
         self.elem_pred_ids.insert(render.clone(), id);
         self.elem_preds.push(ElemPred { node, render });
         id
@@ -959,13 +1032,18 @@ impl<'a> Resolver<'a> {
         let region = self.ast_regions[idx];
         let ctx = Ctx::default();
         let mut stmts = Vec::new();
+        // Set once a region-level `sort` is seen; subsequent element-indexed
+        // statements leave the checked fragment (see `sort_cascade`).
+        let mut sort_seen = false;
         for stmt in &region.stmts {
             match stmt {
                 RegionStmt::Cut { cond, .. } => {
-                    stmts.push(HirRegionStmt::Select(self.resolve_expr(cond, &ctx)));
+                    let node = self.resolve_expr(cond, &ctx);
+                    stmts.push(HirRegionStmt::Select(self.sort_cascade(sort_seen, node)));
                 }
                 RegionStmt::Reject { cond, .. } => {
-                    stmts.push(HirRegionStmt::Reject(self.resolve_expr(cond, &ctx)));
+                    let node = self.resolve_expr(cond, &ctx);
+                    stmts.push(HirRegionStmt::Reject(self.sort_cascade(sort_seen, node)));
                 }
                 RegionStmt::RegionRef(id) => {
                     let key = id.name.to_ascii_lowercase();
@@ -1002,17 +1080,19 @@ impl<'a> Resolver<'a> {
                     let label = label.as_ref().map(|l| l.value.clone());
                     match body {
                         BinBody::Boundaries { var, edges } => {
+                            let var = self.resolve_expr(var, &ctx);
                             stmts.push(HirRegionStmt::Bin {
                                 label,
-                                var: self.resolve_expr(var, &ctx),
+                                var: self.sort_cascade(sort_seen, var),
                                 edges: edges.iter().map(ast::NumLit::canon).collect(),
                                 span: *span,
                             });
                         }
                         BinBody::Cond(cond) => {
+                            let cond = self.resolve_expr(cond, &ctx);
                             stmts.push(HirRegionStmt::BinCond {
                                 label,
-                                cond: self.resolve_expr(cond, &ctx),
+                                cond: self.sort_cascade(sort_seen, cond),
                                 span: *span,
                             });
                         }
@@ -1052,11 +1132,14 @@ impl<'a> Resolver<'a> {
                     stmts.push(Self::non_membership("counts", *span));
                 }
                 RegionStmt::TypeTag { span, .. } => stmts.push(Self::non_membership("type", *span)),
-                RegionStmt::Sort { span, .. } => stmts.push(HirRegionStmt::NonMembership {
-                    kind: "sort",
-                    tag: Fragment::unsupported("`sort` is outside the checked fragment"),
-                    span: *span,
-                }),
+                RegionStmt::Sort { span, .. } => {
+                    sort_seen = true;
+                    stmts.push(HirRegionStmt::NonMembership {
+                        kind: "sort",
+                        tag: Fragment::unsupported("`sort` is outside the checked fragment"),
+                        span: *span,
+                    });
+                }
             }
         }
         let name = self.symbols.intern(&region.name.name);
@@ -1068,9 +1151,23 @@ impl<'a> Resolver<'a> {
         self.region_name_order.push(name);
         self.histolist_regions
             .push(region.keyword == RegionKw::HistoList);
-        self.regions_by_key
+        if self
+            .regions_by_key
             .entry(region.name.name.to_ascii_lowercase())
-            .or_insert(idx);
+            .or_insert(idx)
+            != &idx
+        {
+            // Later references (`Inherit`/`RegionPred`) bind to the FIRST
+            // region of this name; the report will also show two
+            // indistinguishable rows (review S8).
+            self.diags.push(Diagnostic::warning(
+                region.name.span,
+                format!(
+                    "duplicate region `{}`; references bind to the first definition",
+                    region.name.name
+                ),
+            ));
+        }
     }
 
     fn non_membership(kind: &'static str, span: Span) -> HirRegionStmt {
@@ -1079,6 +1176,54 @@ impl<'a> Resolver<'a> {
             tag: Fragment::InFragment,
             span,
         }
+    }
+
+    /// True if `node` mentions an element-indexed quantity (an `ElemProp`, an
+    /// angular separation anchored on an indexed element, or an external over
+    /// one) — exactly the quantities a region-level `sort` re-binds. Used by
+    /// the sort cascade: encoding such a statement as if the canonical
+    /// (pT-descending) element order still applied lets the base-frame ORD
+    /// axioms contradict cuts that are satisfiable under the re-sorted order
+    /// (soundness review S4 — reproduced false PROVEN EMPTY/DISJOINT).
+    fn mentions_indexed_element(&self, node: &HNode) -> bool {
+        if let HKind::Quantity(q) = &node.kind {
+            let is_elem = |p: &ParticleRef| matches!(p, ParticleRef::Elem { .. });
+            match self.table.quantity(*q) {
+                Quantity::ElemProp { .. } => return true,
+                Quantity::AngularSep { a, b, .. } => {
+                    if is_elem(a) || is_elem(b) {
+                        return true;
+                    }
+                }
+                Quantity::ExternalFn { args, .. } => {
+                    if args
+                        .iter()
+                        .any(|a| matches!(a, QuantityArg::Particle(p) if is_elem(p)))
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        node.children()
+            .iter()
+            .any(|c| self.mentions_indexed_element(c))
+    }
+
+    /// Apply the region-`sort` cascade: after a `sort` statement, any
+    /// membership statement referencing element-indexed quantities is outside
+    /// the checked fragment (the sort re-bound what `coll[i]` denotes; the
+    /// proof-system v2 plan Phase 5 replaces this taint with real re-sort
+    /// semantics).
+    fn sort_cascade(&self, sort_seen: bool, mut node: HNode) -> HNode {
+        if sort_seen && self.mentions_indexed_element(&node) {
+            node.tag = Fragment::unsupported(
+                "follows a region-level `sort`, which re-binds element indices \
+                 (outside the checked fragment)",
+            );
+        }
+        node
     }
 
     /// Classify a `histo` argument list (PLAN Phase 9 / SPEC_EVENT_PIPELINE
@@ -1770,7 +1915,19 @@ impl<'a> Resolver<'a> {
         }
         // Multi-argument braced property ({a b}m): opaque external fn.
         let name = self.symbols.intern(&prop.name);
-        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let qargs: Option<Vec<QuantityArg>> =
+            args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let Some(qargs) = qargs else {
+            // Context-tainted argument: no shared identity (see
+            // `context_tainted`); the property access stays opaque.
+            return HNode::unsupported(
+                span,
+                format!(
+                    "braced property `{}` over an element-context argument (no shared identity)",
+                    prop.name
+                ),
+            );
+        };
         let q = self
             .table
             .intern_quantity(Quantity::ExternalFn { name, args: qargs });
@@ -1818,7 +1975,17 @@ impl<'a> Resolver<'a> {
                 // Not a typed target (e.g. `{jets[0] jets[1]}m` handled by
                 // caller; arbitrary expressions stay opaque).
                 let name = self.symbols.intern(&prop.name);
-                let arg = self.opaque_arg(target_expr, ctx);
+                let Some(arg) = self.opaque_arg(target_expr, ctx) else {
+                    // Context-tainted target: no shared identity (see
+                    // `context_tainted`).
+                    return HNode::unsupported(
+                        span,
+                        format!(
+                            "property `{}` over an element-context target (no shared identity)",
+                            prop.name
+                        ),
+                    );
+                };
                 let q = self.table.intern_quantity(Quantity::ExternalFn {
                     name,
                     args: vec![arg],
@@ -2176,7 +2343,20 @@ impl<'a> Resolver<'a> {
 
         let declared = self.ext.is_function(&name.name) || self.ext.is_property(&name.name);
         let fname = self.symbols.intern(&name.name);
-        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let qargs: Option<Vec<QuantityArg>> =
+            args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        // A context-tainted argument (element-relative or unsupported — see
+        // `context_tainted`) must not intern an ExternalFn identity at all:
+        // the call stays an opaque conjunct with no shared solver variable.
+        let Some(qargs) = qargs else {
+            return HNode::unsupported(
+                span,
+                format!(
+                    "call `{}` over an element-context argument (no shared identity)",
+                    name.name
+                ),
+            );
+        };
         let q = self.table.intern_quantity(Quantity::ExternalFn {
             name: fname,
             args: qargs,
@@ -2210,18 +2390,51 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn quantity_arg(&mut self, arg: &Arg, ctx: &Ctx) -> QuantityArg {
+    /// True if `node` cannot serve as a context-free identity key for an
+    /// opaque external argument: it contains an Unsupported node (whose
+    /// render discards the DIFFERING substructure behind a reason string) or
+    /// an element-relative leaf (`this.prop` / `@elem.prop`, whose render
+    /// discards the OWNING collection). Interning such a key would unify
+    /// physically different per-element values across object blocks — a
+    /// reproduced false-PROVEN factory (soundness review S2: every block's
+    /// `dR(<own element>, X)` collapsed to one solver variable). Callers must
+    /// fail closed (the enclosing call becomes Unsupported) instead of
+    /// interning. Structural keys (proof-system v2, Phase 3) replace this.
+    fn context_tainted(node: &HNode) -> bool {
+        if node.has_unsupported() {
+            return true;
+        }
+        matches!(node.kind, HKind::ElemSelfProp(_) | HKind::ReduceProp(_))
+            || node.children().iter().any(|c| Self::context_tainted(c))
+    }
+
+    /// `None` = the argument is context-tainted (see [`Self::context_tainted`])
+    /// and the enclosing call must fail closed rather than intern an identity.
+    fn quantity_arg(&mut self, arg: &Arg, ctx: &Ctx) -> Option<QuantityArg> {
         match arg {
-            Arg::Str(s) => QuantityArg::Opaque(format!("{:?}", s.value)),
-            Arg::Path(p) => QuantityArg::Opaque(p.value.clone()),
+            Arg::Str(s) => Some(QuantityArg::Opaque(format!("{:?}", s.value))),
+            Arg::Path(p) => Some(QuantityArg::Opaque(p.value.clone())),
             Arg::Expr(e) => {
                 if let Expr::Num(n) = e.as_ref() {
-                    return QuantityArg::Num(n.canon());
+                    return Some(QuantityArg::Num(n.canon()));
+                }
+                // A bare PROPERTY name inside an object-block cut means the
+                // implicit element's property (`sqrt(pt)` = sqrt of THIS
+                // element's pt). Target resolution would instead fall back to
+                // an unknown-collection private base named `pt` — one SHARED
+                // identity for every block's differently-meant argument, the
+                // third route into review S2's false PROVEN (beside the
+                // elem-self and binder renders). Fail closed like the others.
+                if let Expr::Ident(id) = e.as_ref()
+                    && ctx.elem_source.is_some()
+                    && self.ext.is_property(&id.name)
+                {
+                    return None;
                 }
                 match self.resolve_target(e, ctx) {
-                    Target::Met => return QuantityArg::Particle(ParticleRef::Met),
-                    Target::Coll(c) => return QuantityArg::Collection(c),
-                    Target::Particle(p) => return QuantityArg::Particle(p),
+                    Target::Met => return Some(QuantityArg::Particle(ParticleRef::Met)),
+                    Target::Coll(c) => return Some(QuantityArg::Collection(c)),
+                    Target::Particle(p) => return Some(QuantityArg::Particle(p)),
                     Target::ElemSelf | Target::None => {}
                 }
                 self.opaque_arg(e, ctx)
@@ -2230,22 +2443,25 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve an expression argument to the most precise `QuantityArg`.
-    fn opaque_arg(&mut self, e: &Expr, ctx: &Ctx) -> QuantityArg {
+    /// `None` = context-tainted (the caller fails closed).
+    fn opaque_arg(&mut self, e: &Expr, ctx: &Ctx) -> Option<QuantityArg> {
         if let Expr::ParticleList { items, .. } = e {
-            let parts: Vec<String> = items
-                .iter()
-                .map(|item| {
-                    let node = self.resolve_expr(item, ctx);
-                    self.render_node(&node)
-                })
-                .collect();
-            return QuantityArg::Opaque(format!("[{}]", parts.join(" ")));
+            let mut parts: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let node = self.resolve_expr(item, ctx);
+                if Self::context_tainted(&node) {
+                    return None;
+                }
+                parts.push(self.render_node(&node));
+            }
+            return Some(QuantityArg::Opaque(format!("[{}]", parts.join(" "))));
         }
         let node = self.resolve_expr(e, ctx);
         match node.kind {
-            HKind::Quantity(q) if node.tag.is_in_fragment() => QuantityArg::Quantity(q),
-            HKind::CollProp { coll, prop } => QuantityArg::CollProp { coll, prop },
-            _ => QuantityArg::Opaque(self.render_node(&node)),
+            HKind::Quantity(q) if node.tag.is_in_fragment() => Some(QuantityArg::Quantity(q)),
+            HKind::CollProp { coll, prop } => Some(QuantityArg::CollProp { coll, prop }),
+            _ if Self::context_tainted(&node) => None,
+            _ => Some(QuantityArg::Opaque(self.render_node(&node))),
         }
     }
 }

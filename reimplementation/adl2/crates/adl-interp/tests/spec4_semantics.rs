@@ -483,8 +483,28 @@ fn bare_boolean_define_is_select_sugar() {
 /// §5: out-of-fragment region statements (`sort`) raise a diagnosed
 /// evaluation error — never a silent no-op.
 #[test]
-fn sort_statement_is_a_diagnosed_eval_error() {
-    let err = region_err("region r\n  select HT > 100\n  sort Jet.pt\n", "r", STD);
+fn sort_statement_semantics() {
+    // v2 Phase 5 (spec change, owner-approved): a RECOGNIZED region sort is
+    // a fold step — it re-binds the collection for subsequent statements to
+    // the re-sorted view, and the interpreter evaluates that view by
+    // actually re-sorting. `sort Jet.pt` (descending default) of the
+    // already-descending input is the identity, so membership just works.
+    assert!(passes(
+        "region r\n  select HT > 100\n  sort Jet.pt\n  select pT(Jet[0]) > 10\n",
+        "r",
+        STD
+    ));
+    // An ASCENDING sort re-binds Jet[0] to the softest jet (pt 20 in STD,
+    // vs 100 for the unsorted leader).
+    let softest = "region r\n  sort pt(Jet) ascend\n  select pT(Jet[0]) < 25\n";
+    assert!(passes(softest, "r", STD), "softest jet leads the ascending view");
+    // An UNRECOGNIZED sort shape stays fail-closed: subsequent
+    // element-indexed statements are a diagnosed evaluation error.
+    let err = region_err(
+        "region r\n  sort mystery stuff\n  select pT(Jet[0]) > 10\n",
+        "r",
+        STD,
+    );
     assert!(err.contains("sort"), "got: {err}");
 }
 

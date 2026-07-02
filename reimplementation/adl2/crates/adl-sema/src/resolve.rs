@@ -61,6 +61,16 @@ enum State<T> {
 /// Expression-resolution context.
 #[derive(Default, Clone)]
 struct Ctx {
+    /// Region-local sorted views (proof-system v2 Phase 5 — regions as
+    /// folds): a region-level `sort` statement re-binds what its collection
+    /// means for SUBSEQUENT statements of that region. Keyed by the
+    /// original collection id; every named reference resolving to a key is
+    /// replaced by its current view, so `jets[i]` after `sort pt(jets)
+    /// ascend` denotes the i-th element of the re-sorted sequence — for the
+    /// encoder (a distinct `Collection::Sorted` identity with no ORD unless
+    /// the alias gate proves the sort an identity) AND the interpreter
+    /// (which materializes `Sorted` by actually re-sorting).
+    sort_views: HashMap<CollectionId, CollectionId>,
     /// Inside an object block: the source collection being filtered.
     elem_source: Option<CollectionId>,
     /// Binder names meaning "this element" (single-binder take).
@@ -78,6 +88,24 @@ struct Ctx {
     /// name) denotes the *outer* filtered element as a particle
     /// ([`ParticleRef::ThisElem`]) rather than the implicit subject.
     this_as_particle: bool,
+}
+
+impl Ctx {
+    /// The current view of `c` under this context's region-local sorts,
+    /// chasing re-sort chains (`jets → sorted₁ → sorted₂`) so a name lookup
+    /// always lands on the NEWEST view. Bounded: a region can only add a
+    /// handful of sorts, and the map is insert-only per region.
+    fn view(&self, mut c: CollectionId) -> CollectionId {
+        let mut hops = 0;
+        while let Some(&next) = self.sort_views.get(&c) {
+            if next == c || hops > 16 {
+                break;
+            }
+            c = next;
+            hops += 1;
+        }
+        c
+    }
 }
 
 /// What an expression denotes when used as an object/particle argument.
@@ -766,6 +794,62 @@ impl<'a> Resolver<'a> {
         Some(self.intern_coll(Collection::Sorted { source, key, dir }))
     }
 
+    /// Recognize a region-level `sort` statement's raw text (proof-system v2
+    /// Phase 5): `prop(coll) [dir]`, `coll.prop [dir]`, or `prop courtesy
+    /// spellings thereof`. Returns the resolved `(source, key, dir)` for the
+    /// region-local sorted view, or `None` for any shape this recognizer
+    /// does not cover — the caller then falls back to the sound taint
+    /// cascade (subsequent element statements leave the checked fragment).
+    /// The direction token uses the same strict families as take-sorts;
+    /// absent means the documented Descend default.
+    fn parse_region_sort(
+        &mut self,
+        raw: &str,
+        ctx: &Ctx,
+    ) -> Option<(CollectionId, SortKey, SortDir)> {
+        let mut toks: Vec<&str> = raw.split_whitespace().collect();
+        let dir = match toks.last() {
+            Some(t) => match t.to_ascii_lowercase().as_str() {
+                "ascend" | "ascending" | "asc" => {
+                    toks.pop();
+                    SortDir::Ascend
+                }
+                "descend" | "descending" | "desc" => {
+                    toks.pop();
+                    SortDir::Descend
+                }
+                _ => SortDir::Descend,
+            },
+            None => return None,
+        };
+        let key_txt = toks.join("");
+        // `prop(coll)` or `coll.prop` — both must name a real property and a
+        // resolvable collection; anything else is not this recognizer's job.
+        let (prop_name, coll_name) = if let Some(open) = key_txt.find('(') {
+            let close = key_txt.rfind(')')?;
+            (key_txt.get(..open)?, key_txt.get(open + 1..close)?)
+        } else if let Some(dot) = key_txt.find('.') {
+            (key_txt.get(dot + 1..)?, key_txt.get(..dot)?)
+        } else {
+            return None;
+        };
+        if !self.ext.is_property(prop_name) || coll_name.is_empty() {
+            return None;
+        }
+        // Resolve the collection THROUGH any existing view so a second sort
+        // of the same name re-sorts the current view (sequential fold).
+        let ident = ast::Ident {
+            name: coll_name.to_owned(),
+            span: Span::default(),
+        };
+        let source = match self.resolve_target(&Expr::Ident(ident), ctx) {
+            Target::Coll(c) => c,
+            _ => return None,
+        };
+        let p = self.intern_prop(prop_name);
+        Some((source, SortKey::Prop(p), dir))
+    }
+
     /// The per-element property a sort key reduces to, when the key argument is
     /// `prop(source)` / `source.prop` over the sorted collection (so the
     /// interpreter can re-sort by it). `None` for any other key.
@@ -1030,10 +1114,11 @@ impl<'a> Resolver<'a> {
 
     fn resolve_region(&mut self, idx: usize) {
         let region = self.ast_regions[idx];
-        let ctx = Ctx::default();
+        let mut ctx = Ctx::default();
         let mut stmts = Vec::new();
-        // Set once a region-level `sort` is seen; subsequent element-indexed
-        // statements leave the checked fragment (see `sort_cascade`).
+        // Set only when a region-level `sort` could NOT be lowered to a
+        // sorted view; subsequent element-indexed statements then leave the
+        // checked fragment (see `sort_cascade`).
         let mut sort_seen = false;
         for stmt in &region.stmts {
             match stmt {
@@ -1132,13 +1217,41 @@ impl<'a> Resolver<'a> {
                     stmts.push(Self::non_membership("counts", *span));
                 }
                 RegionStmt::TypeTag { span, .. } => stmts.push(Self::non_membership("type", *span)),
-                RegionStmt::Sort { span, .. } => {
-                    sort_seen = true;
-                    stmts.push(HirRegionStmt::NonMembership {
-                        kind: "sort",
-                        tag: Fragment::unsupported("`sort` is outside the checked fragment"),
-                        span: *span,
-                    });
+                RegionStmt::Sort { raw, span } => {
+                    if let Some((source, key, dir)) = self.parse_region_sort(raw, &ctx) {
+                        // v2 Phase 5 (regions as folds): the sort's EFFECT is
+                        // re-binding what its collection means for subsequent
+                        // statements — a region-local `Sorted` view. The
+                        // encoder gets a distinct identity with no ORD facts
+                        // (unless the P2 alias gate proves the sort is the
+                        // identity permutation), and the interpreter
+                        // materializes the view by actually re-sorting, so
+                        // both sides carry the SAME semantics.
+                        let pt_key = self.ext.prop_canon("pt").0;
+                        let is_pt_desc = dir == SortDir::Descend
+                            && matches!(&key, SortKey::Prop(p)
+                                if self.table.prop_key(*p) == pt_key);
+                        let view = if is_pt_desc && self.table.pt_ordered(source, &pt_key) {
+                            source
+                        } else {
+                            self.intern_coll(Collection::Sorted { source, key, dir })
+                        };
+                        if view != source {
+                            ctx.sort_views.insert(source, view);
+                        }
+                        stmts.push(Self::non_membership("sort", *span));
+                    } else {
+                        // Unrecognized sort shape: fail closed — subsequent
+                        // element-indexed statements leave the fragment.
+                        sort_seen = true;
+                        stmts.push(HirRegionStmt::NonMembership {
+                            kind: "sort",
+                            tag: Fragment::unsupported(
+                                "`sort` shape outside the lowered fragment",
+                            ),
+                            span: *span,
+                        });
+                    }
                 }
             }
         }
@@ -1356,7 +1469,7 @@ impl<'a> Resolver<'a> {
                     return if self.is_met_coll(c) {
                         Target::Met
                     } else {
-                        Target::Coll(c)
+                        Target::Coll(ctx.view(c))
                     };
                 }
                 if let Some(&didx) = self.defines_by_key.get(&key) {
@@ -1389,7 +1502,7 @@ impl<'a> Resolver<'a> {
                     if ctx.reduce_coll == Some(c) {
                         return Target::Particle(ParticleRef::ReduceElem);
                     }
-                    return Target::Coll(c);
+                    return Target::Coll(ctx.view(c));
                 }
                 Target::None
             }

@@ -2,7 +2,7 @@
 //! - witness re-validation DOWNGRADES an unrealizable model to POSSIBLY
 //!   and files an internal diagnostic (TESTING.md §3 — production
 //!   behavior, not test-only);
-//! - the whole 133-file corpus runs the no-solver analysis without
+//! - the whole 134-file corpus runs the no-solver analysis without
 //!   panics, deterministically (SPEC_ARCHITECTURE §9).
 
 use adl_analysis::{
@@ -673,7 +673,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");
     let mut files: Vec<PathBuf> = walk(&dir);
     files.sort();
-    assert_eq!(files.len(), 133, "shared corpus has 133 ADL files (68 base + 57 golden + 8 golden-cross)");
+    assert_eq!(files.len(), 134, "shared corpus has 134 ADL files (68 base + 58 golden + 8 golden-cross)");
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
     for path in &files {
@@ -706,7 +706,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 133);
+    assert_eq!(analyzed, 134);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {

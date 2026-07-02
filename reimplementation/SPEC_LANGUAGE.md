@@ -139,8 +139,19 @@ histo-arg       = signed-num | condition
 print-stmt      = "print" arg-list ;
 save-stmt       = "save" ident ident arg-list ;
 counts-stmt     = "counts" ident { signed-num | ident | "+" | "-" | "+-" } ;
-sort-stmt       = "sort" (* consumed to end of statement;
-                            always an Unsupported node *) ;
+sort-stmt       = "sort" (* consumed to end of statement *) ;
+(* Region-level sort semantics (proof-system v2 Phase 5, owner-approved):
+   a recognized `sort prop(coll) [ascend|descend]` (or `coll.prop` form)
+   RE-BINDS `coll` for the region's SUBSEQUENT statements to the
+   re-sorted view — `coll[i]` then means the i-th element of the sorted
+   sequence, matching CutLang's operational behavior. Both tools carry
+   the same lowering: the verifier gets a distinct Sorted identity (no
+   ordering facts unless the sort is provably the identity permutation —
+   descending-pT of an already-pT-descending source), the interpreter
+   materializes the view by actually re-sorting. Statements BEFORE the
+   sort keep the original binding. Any unrecognized sort shape falls
+   back to fail-closed: subsequent element-indexed statements of that
+   region leave the checked fragment. *)
 ```
 `region-stmt` additionally includes `print-stmt` and `sort-stmt`.
 A bare `ident` region statement must resolve (in sema) to a prior region

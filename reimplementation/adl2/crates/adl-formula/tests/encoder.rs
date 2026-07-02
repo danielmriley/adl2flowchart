@@ -544,7 +544,9 @@ fn undeclared_function_encodes_as_unknown() {
 
 #[test]
 fn unsupported_statement_contributes_unknown_conjunct() {
-    let (enc, hir) = encode("region SR\n  select MET > 100\n  sort Jet.pt\n", 0);
+    // An UNRECOGNIZED sort shape stays outside the lowered fragment (v2
+    // Phase 5 lowers only the recognized prop(coll)/coll.prop forms).
+    let (enc, hir) = encode("region SR\n  select MET > 100\n  sort mystery stuff\n", 0);
     let met = met_q(&hir);
     let Formula::And(parts) = &enc.formula else {
         panic!("expected And, got {:?}", enc.formula);
@@ -553,6 +555,17 @@ fn unsupported_statement_contributes_unknown_conjunct() {
     assert_eq!(parts[0], atom1(met, Rel::Gt, 100.0));
     assert!(matches!(parts[1], Formula::Unknown(_)));
     assert!(!enc.is_exact());
+}
+
+#[test]
+fn recognized_sort_lowers_without_unknown() {
+    // v2 Phase 5: `sort Jet.pt` (descending default) of the pT-ordered
+    // input is the identity permutation — the region encodes exactly, with
+    // no Unknown hedge and no re-bound quantities.
+    let (enc, hir) = encode("region SR\n  select MET > 100\n  sort Jet.pt\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(enc.formula, atom1(met, Rel::Gt, 100.0));
+    assert!(enc.is_exact());
 }
 
 // ---- non-finite constants --------------------------------------------------

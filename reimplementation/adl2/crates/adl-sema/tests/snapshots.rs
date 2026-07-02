@@ -121,7 +121,7 @@ fn corpus_smoke_and_determinism() {
     let mut paths = Vec::new();
     collect_adl(&dir, &mut paths);
     paths.sort();
-    assert_eq!(paths.len(), 133, "expected the 133-file corpus (68 base + 57 golden + 8 golden-cross)");
+    assert_eq!(paths.len(), 134, "expected the 134-file corpus (68 base + 58 golden + 8 golden-cross)");
     for path in paths {
         let a = analyze_file(&path);
         let errors: Vec<_> = a

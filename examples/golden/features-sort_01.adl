@@ -1,0 +1,28 @@
+# GOLDEN SRhi SRlo DISJOINT
+# GOLDEN SRasc SRlo POSSIBLY
+# GROUND-TRUTH (v2 Phase 5 — region sort as a fold): a region-level
+# descending-pT sort of an already-pT-descending source is the identity
+# permutation, so SRhi/SRlo's jets[0].pt is the SAME quantity and the
+# cuts >100 / <50 are PROVEN DISJOINT. An ASCENDING sort re-binds
+# jets[0] to the SOFTEST jet — a DIFFERENT quantity that must never
+# unify with the base view: SRasc (softest > 100 means ALL jets > 100)
+# genuinely excludes SRlo (hardest < 50 means ALL < 50) on nonempty
+# events, but the sorted view is deliberately opaque to the prover, so
+# the pin is the fail-closed POSSIBLY (flipping this pin to DISJOINT
+# requires real sorted-element reasoning, not an identity collapse).
+
+object jets
+  take Jet
+  select pt > 20
+
+region SRhi
+  sort pt(jets) descend
+  select jets[0].pt > 100
+
+region SRlo
+  sort pt(jets) descend
+  select jets[0].pt < 50
+
+region SRasc
+  sort pt(jets) ascend
+  select jets[0].pt > 100

@@ -17,6 +17,7 @@ fn opts() -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        certify: false,
     }
 }
 
@@ -151,7 +152,7 @@ region SR3
                 VerdictKind::ProvenOverlapping => 1,
                 VerdictKind::CandidateOverlapping => 2,
                 VerdictKind::PossiblyOverlapping => 3,
-                VerdictKind::Unknown => 4,
+                VerdictKind::Unknown | VerdictKind::CandidateDisjoint => 4,
             };
             c[i] += 1;
         }

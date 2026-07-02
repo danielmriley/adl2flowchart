@@ -3,7 +3,7 @@ source: crates/adl-cli/tests/cli.rs
 expression: stdout(&out)
 ---
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "unit": "disjoint_pt.adl",
   "solver": "none",
   "sampling": {

@@ -65,6 +65,11 @@ pub struct AnalysisOptions {
     /// off for single-file analysis, where structural interning already
     /// relates same-source collections.
     pub reconcile: bool,
+    /// Certify disjointness proofs via the independent exact-rational
+    /// checker (adl-certify, v2 Phase 4): solver-UNSAT pairs whose core
+    /// cannot be certified report CANDIDATE DISJOINT instead of PROVEN.
+    /// Off by default until the corpus certification rate is measured.
+    pub certify: bool,
     /// Sampling-gate battery size (proof-system v2 Phase 1): every UNSAT-side
     /// PROVEN verdict (disjoint / empty / subset) is refuted against this many
     /// deterministic synthetic events through the reference interpreter
@@ -82,6 +87,7 @@ impl Default for AnalysisOptions {
             fail_on: FailOn::default(),
             reconcile: false,
             sample_gate: 64,
+            certify: false,
         }
     }
 }
@@ -232,6 +238,8 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         recon,
         spawn_failures: 0,
         gate_events,
+        certify: opts.certify,
+        recon_facts: Vec::new(),
     };
     engine.run()
 }

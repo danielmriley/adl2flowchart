@@ -27,6 +27,7 @@ fn opts() -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: true,
         sample_gate: 64,
+        certify: false,
     }
 }
 

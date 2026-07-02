@@ -19,6 +19,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        certify: false,
     }
 }
 
@@ -762,4 +763,43 @@ region RB
         "with a pt>100 jet in the event, the displayed leading jet must be it: {:?}",
         p.witness
     );
+}
+
+/// Proof-system v2 Phase 4: `--certify` verifies every disjointness UNSAT
+/// through the independent exact-rational checker.
+#[test]
+fn certification_tiers_disjoint_verdicts() {
+    let ext = ExtDecls::legacy();
+    let certify_opts = AnalysisOptions {
+        certify: true,
+        ..opts(SolverChoice::Auto)
+    };
+    // A SOLVER-proven disjointness certifies: the Farkas combination of the
+    // two size cuts with the SUB axiom (2 <= size(bjets) <= size(jets) <= 1)
+    // is real-infeasible, so PROVEN + certified = true. (Interval-layer
+    // proofs return before the solver and honestly carry certified = None.)
+    let src = "object jets\n  take Jet\n  select pt > 30\nobject bjets\n  take jets\n  select btag == 1\nregion RA\n  select size(bjets) >= 2\nregion RB\n  select size(jets) <= 1\n";
+    let r = analyze_source(src, "c.adl", &ext, &certify_opts).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver");
+        return;
+    }
+    assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint, "{:?}", r.pairwise[0]);
+    assert_eq!(r.pairwise[0].certified, Some(true), "{:?}", r.pairwise[0].reason);
+
+    // An INTEGRALITY-ONLY disjointness (size > 1 ∧ size < 2 is int-empty but
+    // real-feasible at 1.5) cannot be certified under the real relaxation:
+    // the pair reports CANDIDATE DISJOINT — a non-claim, exactly mirroring
+    // the overlap side's candidate tier.
+    let src = "object jets\n  take Jet\nregion RA\n  select size(jets) > 1\nregion RB\n  select size(jets) < 2\n";
+    let r = analyze_source(src, "i.adl", &ext, &certify_opts).expect("resolves");
+    let p = &r.pairwise[0];
+    assert_eq!(p.kind, VerdictKind::CandidateDisjoint, "{:?}", p);
+    assert_eq!(p.certified, Some(false), "{}", p.reason);
+
+    // With certification OFF the same pair reports PROVEN (pre-Phase-4
+    // behavior, byte-stable) and carries no certified field.
+    let r = analyze_source(src, "i.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
+    assert_eq!(r.pairwise[0].certified, None);
 }

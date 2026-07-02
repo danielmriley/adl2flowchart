@@ -167,6 +167,7 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         subset_b_in_a: false,
         witness: Vec::new(),
         witness_validated: Some(true),
+        certified: None,
         core: Vec::new(),
     };
     let report = Report {

@@ -20,6 +20,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        certify: false,
     }
 }
 

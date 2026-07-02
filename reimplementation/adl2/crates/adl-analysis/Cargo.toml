@@ -16,6 +16,7 @@ bundled = ["adl-solver/bundled"]
 [dependencies]
 adl-axioms.workspace = true
 adl-formula.workspace = true
+adl-certify.workspace = true
 adl-interp.workspace = true
 adl-sema.workspace = true
 # Direct path dep (not workspace-inherited): workspace inheritance cannot

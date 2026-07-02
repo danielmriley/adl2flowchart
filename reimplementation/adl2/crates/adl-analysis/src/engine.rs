@@ -50,6 +50,14 @@ pub(crate) struct Engine<'a> {
     /// through the reference interpreter before being reported. Empty = gate
     /// disabled.
     pub gate_events: Vec<adl_interp::Event>,
+    /// Certify disjointness proofs through the independent exact-rational
+    /// checker (`adl-certify`, proof-system v2 Phase 4): solver-UNSAT pairs
+    /// whose core cannot be certified demote to CANDIDATE DISJOINT.
+    pub certify: bool,
+    /// The reconciliation facts asserted at the persistent frame, retained by
+    /// name so a certified core containing an `XR{k}` member can map it back
+    /// to its formula.
+    pub recon_facts: Vec<(AssertName, QFormula)>,
 }
 
 /// Bounded witness retry: how many distinct overlap models to try to
@@ -477,6 +485,7 @@ impl Engine<'_> {
             subset_b_in_a: false,
             witness: Vec::new(),
             witness_validated: None,
+            certified: None,
             core: Vec::new(),
         };
 
@@ -525,10 +534,36 @@ impl Engine<'_> {
         self.assert_overs(&c2.overs, true);
         let disjoint_result = self.check(self.timeout);
         if matches!(disjoint_result, Some(SatResult::Unsat)) {
-            let items = self.core_items(origins);
+            // Fetch the core names ONCE: they feed both the human
+            // explanation and, under --certify, the certifier's checked set.
+            let core_names = self
+                .solver
+                .as_deref_mut()
+                .and_then(adl_solver::Solver::unsat_core);
+            let items: Vec<CoreItem> = core_names
+                .iter()
+                .flatten()
+                .filter_map(|n| origins.get(n).cloned())
+                .collect();
+            let certified = self.certify_disjoint(core_names.as_deref(), c1, c2);
             self.pop();
-            report.kind = VerdictKind::ProvenDisjoint;
-            report.reason = Self::core_reason(&items);
+            report.certified = certified;
+            if certified == Some(false) {
+                // Solver said UNSAT but the independent exact-rational
+                // certifier could not verify the proof: a candidate, not a
+                // claim (proof-system v2 Phase 4 — mirrors the overlap
+                // side's candidate tier).
+                report.kind = VerdictKind::CandidateDisjoint;
+                report.reason = format!(
+                    "solver reported UNSAT but the proof could not be independently \
+                     certified (budget, shape, or an integrality-only refutation); \
+                     candidate, not a claim — {}",
+                    Self::core_reason(&items)
+                );
+            } else {
+                report.kind = VerdictKind::ProvenDisjoint;
+                report.reason = Self::core_reason(&items);
+            }
             report.core = items;
             return report;
         }
@@ -1013,6 +1048,9 @@ impl Engine<'_> {
                 if let Some(s) = self.solver.as_deref_mut() {
                     s.assert(&fact, Some(name.clone()));
                 }
+                // Retained so a certified core containing this fact can map
+                // the name back to its formula (v2 Phase 4).
+                self.recon_facts.push((name.clone(), fact.clone()));
                 origins.insert(
                     name,
                     CoreItem::Axiom {
@@ -1046,6 +1084,52 @@ impl Engine<'_> {
         let a_in_b = self.subset([&phi_a.over()], &[phi_b.under()]);
         let b_in_a = self.subset([&phi_b.over()], &[phi_a.under()]);
         (a_in_b, b_in_a)
+    }
+
+    /// Certify a disjointness UNSAT through the independent exact-rational
+    /// checker (proof-system v2 Phase 4). `None` = certification off;
+    /// `Some(true)` = a replay-checked Farkas certificate verifies the core
+    /// (or the full frame when no core is available); `Some(false)` = the
+    /// proof could not be certified — the caller reports CANDIDATE DISJOINT.
+    /// Certifying the CORE ONLY is sound: UNSAT of a subset implies UNSAT of
+    /// the asserted superset. A core name that maps to no known formula
+    /// fails closed.
+    fn certify_disjoint(
+        &mut self,
+        core: Option<&[AssertName]>,
+        c1: &RegionCtx,
+        c2: &RegionCtx,
+    ) -> Option<bool> {
+        if !self.certify {
+            return None;
+        }
+        let mut fmap: BTreeMap<AssertName, QFormula> = BTreeMap::new();
+        for (n, o) in c1.overs.iter().chain(c2.overs.iter()) {
+            fmap.insert(n.clone(), o.qformula().clone());
+        }
+        for (i, inst) in self.axioms.instances.iter().enumerate() {
+            fmap.insert(AssertName::new(format!("AX{i}")), inst.formula.clone());
+        }
+        for (n, f) in &self.recon_facts {
+            fmap.insert(n.clone(), f.clone());
+        }
+        let formulas: Vec<QFormula> = match core {
+            Some(names) if !names.is_empty() => {
+                let mut v = Vec::with_capacity(names.len());
+                for n in names {
+                    match fmap.get(n) {
+                        Some(f) => v.push(f.clone()),
+                        None => return Some(false),
+                    }
+                }
+                v
+            }
+            _ => fmap.into_values().collect(),
+        };
+        match adl_certify::certify_unsat(&formulas, &adl_certify::Budget::default()) {
+            adl_certify::CertifyResult::Certified(_) => Some(true),
+            adl_certify::CertifyResult::Uncertified(_) => Some(false),
+        }
     }
 
     /// Sampling gate (proof-system v2, Phase 1): refute an UNSAT-side pair
@@ -1442,6 +1526,8 @@ mod reconcile_solver_tests {
             recon: Some(recon),
             spawn_failures: 0,
             gate_events: Vec::new(),
+            certify: false,
+            recon_facts: Vec::new(),
         };
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
         engine.reconcile(&mut origins)
@@ -1582,6 +1668,8 @@ mod sampling_gate_tests {
             recon: None,
             spawn_failures: 0,
             gate_events,
+            certify: false,
+            recon_facts: Vec::new(),
         };
         engine.run()
     }
@@ -1643,6 +1731,8 @@ mod sampling_gate_tests {
             recon: None,
             spawn_failures: 0,
             gate_events: adl_interp::sample::battery(&ext, 64),
+            certify: false,
+            recon_facts: Vec::new(),
         };
         let r = engine.run();
         assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);

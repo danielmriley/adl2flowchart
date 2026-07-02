@@ -107,6 +107,7 @@ pub fn run(
     fail_on: Option<&str>,
     verbose: bool,
     cross: bool,
+    certify: bool,
 ) -> Result<ExitCode, CliError> {
     // A directory argument contributes its `*.adl` files (sorted), so
     // `--cross analyses/` reconciles a whole folder as well as an explicit
@@ -127,6 +128,7 @@ pub fn run(
             SolverChoice::Auto
         },
         fail_on,
+        certify,
         ..AnalysisOptions::default()
     };
     if cross {

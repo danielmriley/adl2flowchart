@@ -34,6 +34,7 @@ fn run_with(file: &str, solver: SolverChoice) -> Report {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        certify: false,
     };
     analyze_source(&src, file, &ext, &opts)
         .unwrap_or_else(|e| panic!("{file} must parse/resolve cleanly:\n{e}"))
@@ -466,7 +467,7 @@ fn json_export_carries_the_verdicts() {
     let r = run("disjoint_pt.adl");
     let json = r.to_json();
     assert!(json.contains("\"proven_disjoint\""), "{json}");
-    assert!(json.contains("\"schema_version\": 2"), "{json}");
+    assert!(json.contains("\"schema_version\": 3"), "{json}");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert!(parsed["pairwise"].is_array());
 }

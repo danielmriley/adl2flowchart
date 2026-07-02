@@ -9,6 +9,7 @@ members = [
     "crates/adl-axioms",
     "crates/adl-solver",
     "crates/adl-analysis",
+    "crates/adl-certify",
     "crates/adl-viz",
     "crates/adl-difftest",
     "crates/adl-cli",
@@ -32,6 +33,7 @@ adl-formula = { path = "crates/adl-formula" }
 adl-axioms = { path = "crates/adl-axioms" }
 adl-solver = { path = "crates/adl-solver" }
 adl-analysis = { path = "crates/adl-analysis" }
+adl-certify = { path = "crates/adl-certify" }
 adl-viz = { path = "crates/adl-viz" }
 adl-difftest = { path = "crates/adl-difftest" }
 rootfile = { path = "crates/rootfile" }

@@ -105,6 +105,18 @@ pub fn check_sound(run: &CaseRun) -> Result<(), String> {
                 }
             }
         }
+        VerdictKind::CandidateDisjoint => {
+            // Not a claim — a solver-UNSAT the certifier could not verify.
+            // Consistency: the tier only exists when certification RAN and
+            // failed; a certified=true pair must never carry it.
+            if pair.certified != Some(false) {
+                return Err(format!(
+                    "CANDIDATE DISJOINT but certified = {:?} (the tier means \
+                     certification ran and could not verify; reason: {})",
+                    pair.certified, pair.reason
+                ));
+            }
+        }
         VerdictKind::ProvenOverlapping => {
             // The witness must have been re-validated through the
             // interpreter; the vocabulary has no opaque quantities, so

@@ -51,10 +51,13 @@ fn cross(units: &[(&str, &str)]) -> Report {
 fn pair<'a>(r: &'a Report, x: &str, y: &str) -> &'a PairReport {
     r.pairwise
         .iter()
-        .find(|p| {
-            (p.a.contains(x) && p.b.contains(y)) || (p.a.contains(y) && p.b.contains(x))
+        .find(|p| (p.a.contains(x) && p.b.contains(y)) || (p.a.contains(y) && p.b.contains(x)))
+        .unwrap_or_else(|| {
+            panic!(
+                "no pair {x}/{y} in {:?}",
+                r.pairwise.iter().map(|p| (&p.a, &p.b)).collect::<Vec<_>>()
+            )
         })
-        .unwrap_or_else(|| panic!("no pair {x}/{y} in {:?}", r.pairwise.iter().map(|p| (&p.a, &p.b)).collect::<Vec<_>>()))
 }
 
 #[test]
@@ -69,8 +72,8 @@ fn cross_proves_subset_and_disjoint_on_a_shared_quantity() {
     // MET>200 ⊆ MET>100 → overlapping with a subset relation pointing at hi.
     let p = pair(&r, "SRhi", "SRlo");
     assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{p:?}");
-    let hi_in_lo = (p.a.contains("SRhi") && p.subset_a_in_b)
-        || (p.b.contains("SRhi") && p.subset_b_in_a);
+    let hi_in_lo =
+        (p.a.contains("SRhi") && p.subset_a_in_b) || (p.b.contains("SRhi") && p.subset_b_in_a);
     assert!(hi_in_lo, "SRhi must be proven a subset of SRlo: {p:?}");
 
     // MET>200 vs MET<50 cannot both hold → proven disjoint across files.
@@ -140,8 +143,7 @@ region SR3
   select MET.pt > 50
 ";
     let ext = ExtDecls::legacy();
-    let direct =
-        adl_analysis::analyze_source(src, "u", &ext, &opts()).expect("direct analysis");
+    let direct = adl_analysis::analyze_source(src, "u", &ext, &opts()).expect("direct analysis");
     let merged = cross(&[("u", src)]);
 
     let counts = |r: &Report| -> [usize; 5] {
@@ -254,7 +256,10 @@ fn cross_colliding_region_names_do_not_mask_witness_validation() {
     // genuinely fails re-validation. (Object-vs-object dR IS realizable now, so
     // the unrealizable anchor must be MET.)
     let r = cross(&[
-        ("g", "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n"),
+        (
+            "g",
+            "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n",
+        ),
         (
             "g",
             "object jet\n  take Jet\nregion R\n  select MET.pt > 50\n  select dR(jet[0], MET) > 0.4\n",
@@ -275,12 +280,24 @@ fn cross_diagnostics_render_from_hir_not_empty_src() {
     // `src`, so cut text / bin labels must render from the HIR, not slice an
     // empty string (which produced blank cut text and `[?]` bin labels).
     let r = cross(&[
-        ("u", "region S\n  select MET.pt > 50\n  bin MET.pt 100 200\n"),
-        ("v", "region T\n  select MET.pt > 50\n  bin MET.pt 100 200\n"),
+        (
+            "u",
+            "region S\n  select MET.pt > 50\n  bin MET.pt 100 200\n",
+        ),
+        (
+            "v",
+            "region T\n  select MET.pt > 50\n  bin MET.pt 100 200\n",
+        ),
     ]);
     let out = r.human_default(false);
-    assert!(!out.contains("[?]"), "bin label must render from HIR, not '?':\n{out}");
-    assert!(out.contains("[MET.pt]"), "bin variable label expected:\n{out}");
+    assert!(
+        !out.contains("[?]"),
+        "bin label must render from HIR, not '?':\n{out}"
+    );
+    assert!(
+        out.contains("[MET.pt]"),
+        "bin variable label expected:\n{out}"
+    );
 }
 
 /// Cross-file analysis with reconciliation ENABLED, mirroring `verify --cross`.
@@ -307,8 +324,14 @@ fn reconcile_unlocks_disjoint_via_refinement() {
     // size(A_jets) <= size(B_jets). A needs >= 3 tight jets, B allows <= 2
     // loose jets: 3 <= size(A) <= size(B) <= 2 is UNSAT -> PROVEN DISJOINT.
     let units = &[
-        ("a", "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) >= 3\n"),
-        ("b", "object jets\n  take Jet\n  select pt > 30\nregion RB\n  select size(jets) <= 2\n"),
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) >= 3\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 30\nregion RB\n  select size(jets) <= 2\n",
+        ),
     ];
     // Without reconciliation the two sizes are independent -> POSSIBLY.
     assert_eq!(
@@ -333,8 +356,14 @@ fn reconcile_is_directional_no_false_proven() {
     // size(tight) <= size(loose), size(tight) <= 2, size(loose) >= 3 is
     // perfectly consistent (e.g. 0 and 5). It must NOT be proven disjoint.
     let units = &[
-        ("a", "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) <= 2\n"),
-        ("b", "object jets\n  take Jet\n  select pt > 30\nregion RB\n  select size(jets) >= 3\n"),
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) <= 2\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 30\nregion RB\n  select size(jets) >= 3\n",
+        ),
     ];
     assert_ne!(
         pair(&cross_reconcile(units), "RA", "RB").kind,
@@ -349,8 +378,14 @@ fn reconcile_opaque_superset_conjunct_fails_closed() {
     // false, so A `pt > 100` cannot be proven a subset of B `pt > 30 && btag`.
     // No size fact is derived, so nothing is proven disjoint (fail-closed).
     let units = &[
-        ("a", "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) >= 3\n"),
-        ("b", "object jets\n  take Jet\n  select pt > 30\n  select btag == 1\nregion RB\n  select size(jets) <= 2\n"),
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 100\nregion RA\n  select size(jets) >= 3\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 30\n  select btag == 1\nregion RB\n  select size(jets) <= 2\n",
+        ),
     ];
     assert_ne!(
         pair(&cross_reconcile(units), "RA", "RB").kind,
@@ -376,7 +411,11 @@ fn reconcile_fails_closed_on_concrete_peer_index() {
          region CARRIER\n  select pT(Jet[1]) > 0\n  select pT(Jet[2]) > 0\n\
          region SR\n  select size(A) >= 1\n  select size(B) < 1\n",
     )]);
-    let sr = r.regions.iter().find(|x| x.name.contains("SR")).expect("SR region");
+    let sr = r
+        .regions
+        .iter()
+        .find(|x| x.name.contains("SR"))
+        .expect("SR region");
     assert_ne!(
         sr.empty,
         EmptyStatus::Proven,
@@ -392,8 +431,14 @@ fn reconcile_skips_private_base_name_collision() {
     // NOT relate their sizes (no XSUB, no subset claim) — the "same base name =
     // same input" residual is honoured only for genuine ext detector objects.
     let r = cross_reconcile(&[
-        ("a", "object cleanjets\n  take PuppiJet\n  select pt > 30\nregion SRA\n  select size(cleanjets) >= 1\n"),
-        ("b", "object hardjets\n  take PuppiJet\n  select pt > 30\n  select pt < 200\nregion SRB\n  select size(hardjets) >= 1\n"),
+        (
+            "a",
+            "object cleanjets\n  take PuppiJet\n  select pt > 30\nregion SRA\n  select size(cleanjets) >= 1\n",
+        ),
+        (
+            "b",
+            "object hardjets\n  take PuppiJet\n  select pt > 30\n  select pt < 200\nregion SRB\n  select size(hardjets) >= 1\n",
+        ),
     ]);
     let p = pair(&r, "SRA", "SRB");
     assert!(
@@ -405,8 +450,14 @@ fn reconcile_skips_private_base_name_collision() {
     // Control: the SAME shapes over the builtin `Jet` base DO reconcile
     // (hardjets pt in (30,200) subset of cleanjets pt>30 -> subset claim).
     let r = cross_reconcile(&[
-        ("a", "object cleanjets\n  take Jet\n  select pt > 30\nregion SRA\n  select size(cleanjets) >= 1\n"),
-        ("b", "object hardjets\n  take Jet\n  select pt > 30\n  select pt < 200\nregion SRB\n  select size(hardjets) >= 1\n"),
+        (
+            "a",
+            "object cleanjets\n  take Jet\n  select pt > 30\nregion SRA\n  select size(cleanjets) >= 1\n",
+        ),
+        (
+            "b",
+            "object hardjets\n  take Jet\n  select pt > 30\n  select pt < 200\nregion SRB\n  select size(hardjets) >= 1\n",
+        ),
     ]);
     let p = pair(&r, "SRA", "SRB");
     assert!(
@@ -463,7 +514,11 @@ fn colliding_unit_names_stay_distinguishable_and_classify_cross() {
     let names: Vec<&str> = r.regions.iter().map(|x| x.name.as_str()).collect();
     assert_eq!(names.len(), 3);
     let unique: std::collections::HashSet<&&str> = names.iter().collect();
-    assert_eq!(unique.len(), 3, "colliding unit names must be disambiguated: {names:?}");
+    assert_eq!(
+        unique.len(),
+        3,
+        "colliding unit names must be disambiguated: {names:?}"
+    );
     let out = r.human_default(false);
     assert!(
         out.contains("cross-file: 2 of 3 pairs span two analyses"),
@@ -511,4 +566,52 @@ fn reconcile_xeq_fires_both_directions_on_equivalent_chains() {
         .find(|a| a.id == "XEQ")
         .expect("axioms-used must report XEQ");
     assert_eq!(xeq.instances, 2, "both directions of the equality: {xeq:?}");
+}
+
+#[test]
+fn reconcile_fires_through_abs_eta_cuts() {
+    // THE precision unlock (roadmap top item): the corpus-universal
+    // `abs(eta) < 2.4` jet cut used to encode opaque at the element level,
+    // so the superset predicate's `.under()` collapsed to false and every
+    // real-corpus refinement fail-closed to POSSIBLY. With the exact
+    // two-sided expansion, the keystone shape finally proves ON THE REAL
+    // IDIOM: pt>30 & |eta|<2.4 refines pt>25 & |eta|<2.4 over the shared
+    // base, XSUB links the sizes, and 3 <= |A| <= |B| <= 2 is absurd —
+    // certified, since certification is on by default.
+    let r = cross_reconcile(&[
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 30\n  select abs(eta) < 2.4\n\
+             region RA\n  select size(jets) >= 3\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 25\n  select abs(eta) < 2.4\n\
+             region RB\n  select size(jets) <= 2\n",
+        ),
+    ]);
+    let p = pair(&r, "RA", "RB");
+    assert_eq!(p.kind, VerdictKind::ProvenDisjoint, "{p:?}");
+    assert_eq!(p.certified, Some(true), "{}", p.reason);
+
+    // Direction still matters: DIFFERENT eta windows must not falsely
+    // relate — |eta|<2.4 does not imply |eta|<1.0, so the reverse-window
+    // pair stays unproven.
+    let r = cross_reconcile(&[
+        (
+            "a",
+            "object jets\n  take Jet\n  select pt > 30\n  select abs(eta) < 2.4\n\
+             region RA\n  select size(jets) >= 3\n",
+        ),
+        (
+            "b",
+            "object jets\n  take Jet\n  select pt > 25\n  select abs(eta) < 1.0\n\
+             region RB\n  select size(jets) <= 2\n",
+        ),
+    ]);
+    assert_ne!(
+        pair(&r, "RA", "RB").kind,
+        VerdictKind::ProvenDisjoint,
+        "a WIDER eta window is not a refinement of a narrower one"
+    );
 }

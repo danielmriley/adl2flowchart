@@ -34,7 +34,7 @@
 
 use adl_formula::{DiagTable, Formula, LinAtom, QFormula, Rel};
 use adl_sema::{
-    AngKind, CombAxis, CombKind, Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind,
+    AngKind, Collection, CollectionId, CombAxis, CombKind, ElemIndex, ExtDecls, Fragment, HKind,
     HNode, Hir, ParticleRef, Quantity, QuantityArg, QuantityId, QuantityTable, Rat, ScalarSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -302,11 +302,7 @@ pub fn derived_size_le(sub: QuantityId, sup: QuantityId) -> QFormula {
     let one = Rat::from_decimal_f64(1.0).expect("finite");
     let neg_one = Rat::from_decimal_f64(-1.0).expect("finite");
     let zero = Rat::from_decimal_f64(0.0).expect("finite");
-    QFormula::Atom(LinAtom::new(
-        [(one, sub), (neg_one, sup)],
-        Rel::Le,
-        zero,
-    ))
+    QFormula::Atom(LinAtom::new([(one, sub), (neg_one, sup)], Rel::Le, zero))
 }
 
 /// Catalog row for `id`.
@@ -1286,9 +1282,10 @@ fn encode_pred_formula(
         HKind::Cmp { .. } | HKind::Band { .. } => match encode_pred_exact(table, node, base, index)
         {
             Some(qf) => lift_qformula(qf),
-            None => Formula::Unknown(
-                diags.push(node.span, "non-linear or opaque comparison in element predicate"),
-            ),
+            None => Formula::Unknown(diags.push(
+                node.span,
+                "non-linear or opaque comparison in element predicate",
+            )),
         },
         _ => Formula::Unknown(diags.push(node.span, "unsupported element-predicate shape")),
     }
@@ -1385,6 +1382,23 @@ fn encode_pred_exact(
             if let Some(a) = clear_ratio(table, rhs, lhs, rel.flipped(), coll, index) {
                 return Some(a);
             }
+            // `|E| ⋈ c` — the exact two-sided expansion the main encoder's
+            // `abs_cmp` uses, mirrored at the element-predicate level so the
+            // corpus-universal `abs(eta) < 2.4` object cut encodes exactly
+            // for EPRED and reconciliation instead of failing opaque (the
+            // dominant reason cross-analysis reconciliation stayed sparse).
+            if let HKind::Abs(inner) = &lhs.kind
+                && let Some(r) = lin_pred(table, rhs, coll, index)
+                && r.terms.is_empty()
+            {
+                return abs_pred(table, inner, rel, &r.k, coll, index);
+            }
+            if let HKind::Abs(inner) = &rhs.kind
+                && let Some(l) = lin_pred(table, lhs, coll, index)
+                && l.terms.is_empty()
+            {
+                return abs_pred(table, inner, rel.flipped(), &l.k, coll, index);
+            }
             let l = lin_pred(table, lhs, coll, index)?;
             let r = lin_pred(table, rhs, coll, index)?;
             let diff = l.sub(&r);
@@ -1444,6 +1458,43 @@ impl PredLin {
     }
 }
 
+/// `|E| ⋈ c` over the implicit element, expanded exactly as the main
+/// encoder's `abs_cmp` (adl-formula) — the two implementations MUST agree,
+/// pinned by `abs_expansion_agrees_with_ground_truth` (the same 252-cell
+/// truth table both are correct against). A comparison against a
+/// negative constant is itself constant (`|E| >= 0`): without that fold,
+/// `|E| == c` (c<0) would encode SAT and `|E| != c` (c<0) as a two-point
+/// exclusion — both false-PROVEN factories. For `c >= 0` the expansion is
+/// the exact two-sided form with E's own constant `k` folded into the
+/// bounds.
+fn abs_pred(
+    table: &mut QuantityTable,
+    inner: &HNode,
+    rel: Rel,
+    c: &Rat,
+    coll: CollectionId,
+    index: u32,
+) -> Option<QFormula> {
+    if c.is_negative() {
+        return Some(match rel {
+            Rel::Lt | Rel::Le | Rel::Eq => QFormula::False,
+            Rel::Gt | Rel::Ge | Rel::Ne => QFormula::True,
+        });
+    }
+    let e = lin_pred(table, inner, coll, index)?;
+    let hi = c - &e.k;
+    let lo = &(-c) - &e.k;
+    let bound = |r: Rel, k: &Rat| lin_atom(e.terms.clone(), r, k.clone());
+    Some(match rel {
+        Rel::Lt => QFormula::And(vec![bound(Rel::Lt, &hi), bound(Rel::Gt, &lo)]),
+        Rel::Le => QFormula::And(vec![bound(Rel::Le, &hi), bound(Rel::Ge, &lo)]),
+        Rel::Gt => QFormula::Or(vec![bound(Rel::Gt, &hi), bound(Rel::Lt, &lo)]),
+        Rel::Ge => QFormula::Or(vec![bound(Rel::Ge, &hi), bound(Rel::Le, &lo)]),
+        Rel::Eq => QFormula::Or(vec![bound(Rel::Eq, &hi), bound(Rel::Eq, &lo)]),
+        Rel::Ne => QFormula::And(vec![bound(Rel::Ne, &hi), bound(Rel::Ne, &lo)]),
+    })
+}
+
 fn lin_atom(terms: BTreeMap<QuantityId, Rat>, rel: Rel, k: Rat) -> QFormula {
     if terms.is_empty() {
         return if rel.eval(&Rat::zero(), &k) {
@@ -1492,7 +1543,11 @@ fn clear_ratio(
     // L/d ⋈ R  ⇔  L ⋈ R·d  (relation flips when d < 0).
     let rd = r.scale(&d.k);
     let e = l.sub(&rd);
-    let rel = if d.k.is_negative() { rel.flipped() } else { rel };
+    let rel = if d.k.is_negative() {
+        rel.flipped()
+    } else {
+        rel
+    };
     let k = -&e.k;
     Some(lin_atom(e.terms, rel, k))
 }
@@ -1676,7 +1731,10 @@ region SR
             })
             .expect("guarded front-to-back jets[1] >= jets[-1] must be emitted");
         let QFormula::Or(arms) = &inst.formula else {
-            panic!("F2B ORD (k==1, i>=1) must be guarded (Or): {:?}", inst.formula);
+            panic!(
+                "F2B ORD (k==1, i>=1) must be guarded (Or): {:?}",
+                inst.formula
+            );
         };
         assert_eq!(arms.len(), 2, "{:?}", inst.formula);
         assert!(
@@ -1817,7 +1875,10 @@ mod recon_encoder_tests {
         let f = encode_elem_pred_generic(&mut t, &node, base, GENERIC_INDEX, &mut d).unwrap();
         // The opaque conjunct survives as Unknown (never dropped, never true),
         // so `.under()` keeps a superset predicate honest.
-        assert!(!f.is_exact(), "opaque conjunct must survive as Unknown: {f:?}");
+        assert!(
+            !f.is_exact(),
+            "opaque conjunct must survive as Unknown: {f:?}"
+        );
         match f {
             Formula::And(v) => {
                 assert_eq!(v.len(), 2);
@@ -1836,7 +1897,10 @@ mod recon_encoder_tests {
         // generic element, so the whole pair must be NO-RELATION (None).
         let q = t.intern_quantity(Quantity::AngularSep {
             kind: AngKind::DR,
-            a: ParticleRef::Binder { coll: base, name: Symbol(1) },
+            a: ParticleRef::Binder {
+                coll: base,
+                name: Symbol(1),
+            },
             b: ParticleRef::Met,
             oriented: false,
         });
@@ -1896,5 +1960,142 @@ mod recon_encoder_tests {
         assert!(lin_pred(&mut t, &resolved, base, 0).is_some());
         let benign = leaf(&mut t, 6, QuantityArg::Opaque("weights.xml".to_owned()));
         assert!(lin_pred(&mut t, &benign, base, 0).is_some());
+    }
+}
+
+#[cfg(test)]
+mod abs_pred_tests {
+    //! The `|E| ⋈ c` element-level expansion (the abs unlock): exactness,
+    //! agreement with f64 ground truth on a boundary grid, the negative-c
+    //! constant folds (each a false-PROVEN factory if omitted), and the
+    //! flipped `c ⋈ |E|` orientation.
+
+    use super::*;
+    use adl_sema::Symbol;
+    use adl_syntax::ast::CmpOp;
+    use adl_syntax::span::Span;
+
+    fn abs_cmp_node(t: &mut QuantityTable, op: CmpOp, c: &str, flipped: bool) -> HNode {
+        let p = t.intern_prop("etaof", "eta");
+        let abs = HNode::new(
+            HKind::Abs(Box::new(HNode::new(
+                HKind::ElemSelfProp(p),
+                Span::default(),
+            ))),
+            Span::default(),
+        );
+        let num = HNode::new(HKind::Num(c.to_owned()), Span::default());
+        let (lhs, rhs) = if flipped { (num, abs) } else { (abs, num) };
+        HNode::new(
+            HKind::Cmp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            Span::default(),
+        )
+    }
+
+    fn eval_q(f: &QFormula, q: QuantityId, v: f64) -> bool {
+        match f {
+            QFormula::True => true,
+            QFormula::False => false,
+            QFormula::And(parts) => parts.iter().all(|p| eval_q(p, q, v)),
+            QFormula::Or(parts) => parts.iter().any(|p| eval_q(p, q, v)),
+            QFormula::Atom(a) => {
+                assert_eq!(a.terms().len(), 1, "single-quantity atoms only");
+                assert_eq!(a.terms()[0].1, q, "one shared eta quantity expected");
+                let lhs = a.terms()[0].0.to_f64() * v;
+                let k = a.constant().to_f64();
+                match a.rel() {
+                    Rel::Lt => lhs < k,
+                    Rel::Le => lhs <= k,
+                    Rel::Gt => lhs > k,
+                    Rel::Ge => lhs >= k,
+                    Rel::Eq => lhs == k,
+                    Rel::Ne => lhs != k,
+                }
+            }
+        }
+    }
+
+    /// Every relation, positive/zero/negative constants, over a boundary
+    /// value grid: the encoded formula must agree with f64 `abs` ground
+    /// truth pointwise (the values are dyadic-exact or shared literals, so
+    /// f64 comparison is exact here).
+    #[test]
+    fn abs_expansion_agrees_with_ground_truth() {
+        let ops = [
+            CmpOp::Lt,
+            CmpOp::Le,
+            CmpOp::Gt,
+            CmpOp::Ge,
+            CmpOp::Eq,
+            CmpOp::Ne,
+        ];
+        let rels = [Rel::Lt, Rel::Le, Rel::Gt, Rel::Ge, Rel::Eq, Rel::Ne];
+        let values: [f64; 7] = [-3.0, -2.4, -1.0, 0.0, 1.0, 2.4, 3.0];
+        for (op, rel) in ops.iter().zip(rels) {
+            for (c_txt, c_val) in [("2.4", 2.4), ("0", 0.0), ("-1", -1.0)] {
+                for flipped in [false, true] {
+                    let mut t = QuantityTable::default();
+                    let base = t.intern_collection(Collection::Base(Symbol(0)));
+                    let node = abs_cmp_node(&mut t, *op, c_txt, flipped);
+                    let f = encode_pred_exact(&mut t, &node, base, 0)
+                        .unwrap_or_else(|| panic!("abs({op:?}, {c_txt}) must encode"));
+                    // The eta ElemProp is whatever lin_pred interned; read it
+                    // off the formula itself (constant folds carry no atom).
+                    fn first_q(f: &QFormula) -> Option<QuantityId> {
+                        match f {
+                            QFormula::Atom(a) => Some(a.terms()[0].1),
+                            QFormula::And(v) | QFormula::Or(v) => v.iter().find_map(first_q),
+                            _ => None,
+                        }
+                    }
+                    let q = first_q(&f).unwrap_or(QuantityId(0));
+                    for v in values {
+                        // `2.4` as a literal and as a bound share the exact
+                        // rational, so f64 equality is faithful on this grid.
+                        // The node is `|E| rel c` — or `c rel |E|` when
+                        // flipped, whose truth swaps the operand order.
+                        let (a, b) = if flipped {
+                            (c_val, v.abs())
+                        } else {
+                            (v.abs(), c_val)
+                        };
+                        let truth = match rel {
+                            Rel::Lt => a < b,
+                            Rel::Le => a <= b,
+                            Rel::Gt => a > b,
+                            Rel::Ge => a >= b,
+                            Rel::Eq => a == b,
+                            Rel::Ne => a != b,
+                        };
+                        assert_eq!(
+                            eval_q(&f, q, v),
+                            truth,
+                            "|{v}| {rel:?} {c_val} (flipped={flipped}): {f:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The reconciliation path (`encode_elem_pred_generic`) now encodes the
+    /// corpus-universal `abs(eta) < 2.4` EXACTLY — no Unknown hedge, so a
+    /// same-base refinement over abs-cut collections can finally prove.
+    #[test]
+    fn generic_encoder_handles_abs_exactly() {
+        let mut t = QuantityTable::default();
+        let mut d = DiagTable::default();
+        let base = t.intern_collection(Collection::Base(Symbol(0)));
+        let node = abs_cmp_node(&mut t, CmpOp::Lt, "2.4", false);
+        let f = encode_elem_pred_generic(&mut t, &node, base, GENERIC_INDEX, &mut d)
+            .expect("abs cut must ground onto the generic element");
+        assert!(
+            f.is_exact(),
+            "abs(eta) < 2.4 must encode with no Unknown: {f:?}"
+        );
     }
 }

@@ -34,18 +34,38 @@ fn f64_faithfulness_guard_blocks_false_disjoint() {
     let jets = "object jets\n  take Jet\n";
     let cases: &[(&str, &str)] = &[
         // full cancellation
-        ("region RA\n  select MET + HT - HT > 76\nregion RB\n  select MET <= 76\n", "cancel"),
+        (
+            "region RA\n  select MET + HT - HT > 76\nregion RB\n  select MET <= 76\n",
+            "cancel",
+        ),
         // reassociation (no cancellation, all coeff 1)
-        (&format!("{jets}region RA\n  select (MET + HT) + jets[0].pT > 100\nregion RB\n  select MET + (HT + jets[0].pT) <= 100\n"), "reassoc"),
+        (
+            &format!(
+                "{jets}region RA\n  select (MET + HT) + jets[0].pT > 100\nregion RB\n  select MET + (HT + jets[0].pT) <= 100\n"
+            ),
+            "reassoc",
+        ),
         // partial cancellation (coeff 0.5)
-        ("region RA\n  select MET + 0.5 * HT > 100\nregion RB\n  select (MET + HT) - 0.5 * HT <= 100\n", "partial"),
+        (
+            "region RA\n  select MET + 0.5 * HT > 100\nregion RB\n  select (MET + HT) - 0.5 * HT <= 100\n",
+            "partial",
+        ),
         // commutation
-        (&format!("{jets}region RA\n  select MET + HT + jets[0].pT > 100\nregion RB\n  select jets[0].pT + HT + MET <= 100\n"), "commute"),
+        (
+            &format!(
+                "{jets}region RA\n  select MET + HT + jets[0].pT > 100\nregion RB\n  select jets[0].pT + HT + MET <= 100\n"
+            ),
+            "commute",
+        ),
         // non-dyadic additive constant folded across the comparison
-        ("region RA\n  select MET + 0.1 > 0.3\nregion RB\n  select MET <= 0.2\n", "constfold"),
+        (
+            "region RA\n  select MET + 0.1 > 0.3\nregion RB\n  select MET <= 0.2\n",
+            "constfold",
+        ),
     ];
     for (src, label) in cases {
-        let r = analyze_source(src, "guard.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        let r =
+            analyze_source(src, "guard.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
         if r.solver == "none" {
             eprintln!("SKIP: no solver");
             return;
@@ -73,7 +93,8 @@ fn f64_faithfulness_guard_preserves_sound_disjoint() {
         "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n",
     ];
     for src in sound {
-        let r = analyze_source(src, "sound.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        let r =
+            analyze_source(src, "sound.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
         if r.solver == "none" {
             eprintln!("SKIP: no solver");
             return;
@@ -165,7 +186,8 @@ fn unindexed_angular_disjoint_and_no_false_disjoint() {
     let kill = format!(
         "{base}region RA\n  select dR(jets, eles) > 0.4\nregion RB\n  select dR(jets, eles) > 1.0\n"
     );
-    let r2 = analyze_source(&kill, "open1_kill.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    let r2 =
+        analyze_source(&kill, "open1_kill.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
     if r2.solver == "none" {
         return;
     }
@@ -231,7 +253,11 @@ region IMPOSSIBLE
         eprintln!("SKIP: no solver available");
         return;
     }
-    let region = r.regions.iter().find(|x| x.name == "IMPOSSIBLE").expect("region present");
+    let region = r
+        .regions
+        .iter()
+        .find(|x| x.name == "IMPOSSIBLE")
+        .expect("region present");
     assert_eq!(
         region.empty,
         EmptyStatus::Proven,
@@ -262,7 +288,11 @@ region MAYBE
         eprintln!("SKIP: no solver available");
         return;
     }
-    let region = r.regions.iter().find(|x| x.name == "MAYBE").expect("region present");
+    let region = r
+        .regions
+        .iter()
+        .find(|x| x.name == "MAYBE")
+        .expect("region present");
     assert_ne!(
         region.empty,
         EmptyStatus::Proven,
@@ -525,8 +555,13 @@ region SR_y
   select size(bjets) >= 0
 ";
     let ext = ExtDecls::legacy();
-    let r = analyze_source(src, "composite_overlap.adl", &ext, &opts(SolverChoice::Auto))
-        .expect("resolves cleanly");
+    let r = analyze_source(
+        src,
+        "composite_overlap.adl",
+        &ext,
+        &opts(SolverChoice::Auto),
+    )
+    .expect("resolves cleanly");
     if r.solver == "none" {
         eprintln!("SKIP: no solver available");
         return;
@@ -674,7 +709,11 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");
     let mut files: Vec<PathBuf> = walk(&dir);
     files.sort();
-    assert_eq!(files.len(), 134, "shared corpus has 134 ADL files (68 base + 58 golden + 8 golden-cross)");
+    assert_eq!(
+        files.len(),
+        136,
+        "shared corpus has 136 ADL files (68 base + 58 golden + 10 golden-cross)"
+    );
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
     for path in &files {
@@ -707,7 +746,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 134);
+    assert_eq!(analyzed, 136);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {
@@ -784,8 +823,18 @@ fn certification_tiers_disjoint_verdicts() {
         eprintln!("SKIP: no solver");
         return;
     }
-    assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint, "{:?}", r.pairwise[0]);
-    assert_eq!(r.pairwise[0].certified, Some(true), "{:?}", r.pairwise[0].reason);
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "{:?}",
+        r.pairwise[0]
+    );
+    assert_eq!(
+        r.pairwise[0].certified,
+        Some(true),
+        "{:?}",
+        r.pairwise[0].reason
+    );
 
     // An INTEGRALITY-ONLY disjointness (size > 1 ∧ size < 2 is int-empty but
     // real-feasible at 1.5) cannot be certified under the real relaxation:

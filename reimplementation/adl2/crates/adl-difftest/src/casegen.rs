@@ -259,7 +259,22 @@ pub enum GExtra {
     /// `object x{i} / take <T> b / select <min|max>(pt, MET) ⋈ c` — a
     /// ScalarMinMax over an UNINDEXED element prop (the implicit subject) and an
     /// event scalar; exercises the subst-into-ScalarMinMax arm (Phase-0.5).
-    MinCut { base: u8, is_max: bool, rel: GRel, c: f64 },
+    MinCut {
+        base: u8,
+        is_max: bool,
+        rel: GRel,
+        c: f64,
+    },
+    /// `object x{i} / take <T> b / select abs(eta) ⋈ c` (`c ⋈ abs(eta)` when
+    /// `flipped`) — the corpus-universal acceptance cut, exercising the exact
+    /// two-sided abs expansion in the element-predicate encoder, including
+    /// its negative-`c` constant folds (ETA_POOL carries negatives).
+    AbsCut {
+        base: u8,
+        flipped: bool,
+        rel: GRel,
+        c: f64,
+    },
     /// `object x{i} / take union(<slot0>, <slot1>)` — a union collection.
     Union,
     /// `object x{i} / take <slot>[start:end]` — a static slice.
@@ -448,7 +463,11 @@ pub fn cond_str(c: &GCond, defines: &[GCond], extras: &[GExtra], ctx: &RenderCtx
             let g = cond_str(g, defines, extras, ctx);
             let t = cond_str(t, defines, extras, ctx);
             match e {
-                Some(e) => format!("(({g}) ? ({}) : ({}))", t, cond_str(e, defines, extras, ctx)),
+                Some(e) => format!(
+                    "(({g}) ? ({}) : ({}))",
+                    t,
+                    cond_str(e, defines, extras, ctx)
+                ),
                 None => format!("(({g}) ? ({t}))"),
             }
         }
@@ -601,7 +620,25 @@ fn extra_block(i: usize, e: &GExtra, ctx: &RenderCtx, out: &mut String) {
         } => {
             let f = if *is_max { "max" } else { "min" };
             let _ = writeln!(out, "object {name}\n  take {} b", base_type(*base));
-            let _ = writeln!(out, "  select {f}(pt, MET) {} {}", rel.as_str(), fmt_const(*c));
+            let _ = writeln!(
+                out,
+                "  select {f}(pt, MET) {} {}",
+                rel.as_str(),
+                fmt_const(*c)
+            );
+        }
+        GExtra::AbsCut {
+            base,
+            flipped,
+            rel,
+            c,
+        } => {
+            let _ = writeln!(out, "object {name}\n  take {} b", base_type(*base));
+            if *flipped {
+                let _ = writeln!(out, "  select {} {} abs(eta)", fmt_const(*c), rel.as_str());
+            } else {
+                let _ = writeln!(out, "  select abs(eta) {} {}", rel.as_str(), fmt_const(*c));
+            }
         }
         GExtra::Union => {
             let _ = writeln!(
@@ -664,7 +701,16 @@ pub fn render(case: &GCase, ctx: &RenderCtx) -> String {
             region_block("RB", &case.b, None, Some("RA"), &case.defines, ex, ctx, out);
         }
         RbMode::PasteRa => {
-            region_block("RB", &case.b, Some(&case.a), None, &case.defines, ex, ctx, out);
+            region_block(
+                "RB",
+                &case.b,
+                Some(&case.a),
+                None,
+                &case.defines,
+                ex,
+                ctx,
+                out,
+            );
         }
     };
     if ctx.swap_regions {
@@ -782,6 +828,10 @@ fn arb_extra() -> impl Strategy<Value = GExtra> {
         // min/max over an unindexed element prop + event scalar (subst arm).
         2 => (0u8..2, any::<bool>(), arb_rel(), proptest::sample::select(PT_POOL))
             .prop_map(|(base, is_max, rel, c)| GExtra::MinCut { base, is_max, rel, c }),
+        // abs(eta) acceptance cut — the exact two-sided expansion (negative
+        // constants from ETA_POOL reach the fold arms).
+        2 => (0u8..2, any::<bool>(), arb_rel(), proptest::sample::select(ETA_POOL))
+            .prop_map(|(base, flipped, rel, c)| GExtra::AbsCut { base, flipped, rel, c }),
         2 => Just(GExtra::Union),
         2 => (0u8..2, 0u8..3, 0u8..2)
             .prop_map(|(base, start, end)| GExtra::Slice { base, start, end }),
@@ -1038,7 +1088,6 @@ pub fn arb_case_with_define() -> impl Strategy<Value = GCase> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1061,6 +1110,7 @@ mod tests {
         let cases = sample(arb_case(), 4000);
         let mut with_extras = 0usize;
         let (mut clean, mut mincut, mut union, mut slice, mut slicechain) = (0, 0, 0, 0, 0);
+        let mut abscut = 0;
         let (mut ternary, mut ordpair, mut extra_ref) = (0usize, 0usize, 0usize);
 
         fn cond_flags(c: &GCond, ternary: &mut usize, ordpair: &mut usize, extra_ref: &mut usize) {
@@ -1094,6 +1144,7 @@ mod tests {
                 match e {
                     GExtra::Clean { .. } => clean += 1,
                     GExtra::MinCut { .. } => mincut += 1,
+                    GExtra::AbsCut { .. } => abscut += 1,
                     GExtra::Union => union += 1,
                     GExtra::Slice { .. } => slice += 1,
                     GExtra::SliceChain { .. } => slicechain += 1,
@@ -1117,8 +1168,10 @@ mod tests {
             frac(with_extras)
         );
         // Every extra variant is reachable.
-        assert!(clean > 0 && mincut > 0 && union > 0 && slice > 0 && slicechain > 0,
-            "missing extra variant: clean={clean} mincut={mincut} union={union} slice={slice} slicechain={slicechain}");
+        assert!(
+            clean > 0 && mincut > 0 && abscut > 0 && union > 0 && slice > 0 && slicechain > 0,
+            "missing extra variant: clean={clean} mincut={mincut} abscut={abscut} union={union} slice={slice} slicechain={slicechain}"
+        );
         // Region-level new shapes appear.
         assert!(ternary > n / 50, "min/max-ternary too rare: {ternary}/{n}");
         assert!(ordpair > n / 50, "ord-pair too rare: {ordpair}/{n}");

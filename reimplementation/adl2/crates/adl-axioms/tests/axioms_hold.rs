@@ -32,6 +32,7 @@ const VOCAB: &str = "\
 object jets
   take Jet
   select pT > 30
+  select abs(eta) < 2.1
 
 object bjets
   take jets
@@ -401,7 +402,8 @@ region SR
 
     // Base-rooted filtered collection: ORD MUST still fire (no regression).
     assert!(
-        ord.iter().any(|d| d.contains("jets[0]") && d.contains("jets[1]")),
+        ord.iter()
+            .any(|d| d.contains("jets[0]") && d.contains("jets[1]")),
         "ORD must still constrain a base-rooted filtered collection: {ord:?}"
     );
     // Filtered-over-union: ORD MUST NOT fire.
@@ -536,7 +538,9 @@ region SR
 
     // The cartesian gets the `>= 1` lower bound.
     assert!(
-        combsize.iter().any(|d| d.contains(">= 1") && d.contains("emuCart")),
+        combsize
+            .iter()
+            .any(|d| d.contains(">= 1") && d.contains("emuCart")),
         "cartesian must get the all-nonempty lower bound: {combsize:?}"
     );
     // NEITHER disjoint composite gets a `>= 1` lower bound (only the
@@ -549,7 +553,9 @@ region SR
     );
     // The same-source disjoint gets its `size(C) < 2 => size(K) = 0` fact.
     assert!(
-        combsize.iter().any(|d| d.contains("< 2 =>") && d.contains("jjDisj")),
+        combsize
+            .iter()
+            .any(|d| d.contains("< 2 =>") && d.contains("jjDisj")),
         "same-source disjoint must get the size<2 zero fact: {combsize:?}"
     );
 }

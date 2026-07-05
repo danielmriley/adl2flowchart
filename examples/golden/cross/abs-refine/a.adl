@@ -1,0 +1,15 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RB DISJOINT
+# GROUND-TRUTH: both analyses use the corpus-universal acceptance idiom
+# `abs(eta) < 2.4`. The windows are IDENTICAL, and a's pt>30 refines b's
+# pt>25, so a's jets refine b's jets over the shared base Jet (XSUB):
+# size(a jets) <= size(b jets). RA wants >= 3 tight jets, RB allows <= 2
+# loose ones — 3 <= |A| <= |B| <= 2 is absurd in every event.
+# This pin is the abs-unlock keystone: before the exact two-sided abs
+# expansion the eta cut was element-opaque, the under-projection collapsed
+# to false, and this pair fail-closed to POSSIBLY.
+object jets
+  take Jet
+  select pt > 30
+  select abs(eta) < 2.4
+region RA
+  select size(jets) >= 3

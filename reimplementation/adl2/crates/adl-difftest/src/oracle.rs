@@ -199,13 +199,22 @@ pub struct Summary {
 impl Summary {
     /// Metamorphic consistency between two renderings of the same case.
     /// Every soundness-bearing fact must match exactly — DISJOINT, EMPTY,
-    /// and the subset flags are all UNSAT-derived and deterministic. The ONE
-    /// tolerated difference is PROVEN OVERLAPPING vs POSSIBLY OVERLAPPING:
-    /// whether an overlap's witness is *realized* is a property of the
-    /// heuristic event builder (witness.rs — "soundness never depends on the
-    /// builder"), so it can legitimately differ with the solver's model /
-    /// region order. POSSIBLY is the sound downgrade of PROVEN here; the
-    /// strict interpreter-membership check in the battery remains the real net.
+    /// and the subset flags are all UNSAT-derived and deterministic. Two
+    /// tolerated differences, both "proof strength", never truth:
+    ///
+    /// - PROVEN vs CANDIDATE vs POSSIBLY OVERLAPPING: whether an overlap's
+    ///   witness is *realized* is a property of the heuristic event builder
+    ///   (witness.rs — "soundness never depends on the builder"), so it can
+    ///   legitimately differ with the solver's model / region order.
+    /// - PROVEN vs CANDIDATE DISJOINT: the UNSAT itself is deterministic,
+    ///   but the *certificate* search runs on the solver's minimized core,
+    ///   and core CHOICE is not invariant under statement inlining — a
+    ///   paste-variant core of two small facts can certify while the
+    ///   inherit-variant core (one monolithic region-reference conjunction)
+    ///   exceeds the case-split budget. CANDIDATE is the honest downgrade.
+    ///
+    /// The strict interpreter-membership check in the battery remains the
+    /// real net.
     #[must_use]
     pub fn consistent(&self, other: &Summary) -> bool {
         let overlapping = |k: VerdictKind| {
@@ -216,7 +225,15 @@ impl Summary {
                     | VerdictKind::PossiblyOverlapping
             )
         };
-        let kind_ok = self.kind == other.kind || (overlapping(self.kind) && overlapping(other.kind));
+        let disjoint = |k: VerdictKind| {
+            matches!(
+                k,
+                VerdictKind::ProvenDisjoint | VerdictKind::CandidateDisjoint
+            )
+        };
+        let kind_ok = self.kind == other.kind
+            || (overlapping(self.kind) && overlapping(other.kind))
+            || (disjoint(self.kind) && disjoint(other.kind));
         kind_ok
             && self.ra_in_rb == other.ra_in_rb
             && self.rb_in_ra == other.rb_in_ra

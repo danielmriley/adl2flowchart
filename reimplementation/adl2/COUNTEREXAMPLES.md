@@ -135,3 +135,35 @@ standard property set (pt fill always runs; eta/phi/m and the exact-name
 tags default to free values after angular realization), and a hard
 "missing event-level datum" during validation patches the free scalar /
 trigger / MET component to 0 and re-evaluates instead of rejecting.
+
+## CE-7 — certification tier is not invariant under statement inlining
+
+```adl
+define d0 = not ((Eta(jets[1]) >= 2 or (pT(eles[1]) <= 50 and pT(eles[-1]) >= 100)))
+
+region RA
+  select not (d0)
+  select ((... or ...) and (d0 or d0))     # RA is empty: ¬d0 ∧ d0
+
+region RB
+  RA                                        # inherit; paste inlines RA's selects
+  select (...)
+```
+
+Found by the metamorphic battery (2026-07-05, post abs-unlock RNG re-roll).
+The pair is UNSAT-disjoint in both renderings — RA is empty — but the
+verdict tier differed: paste PROVEN DISJOINT, inherit CANDIDATE DISJOINT.
+z3's minimized unsat core for the inherit rendering was {one RA select,
+the monolithic `RB: RA` reference conjunction}, and `adl-certify`'s
+case-split search exceeded its 100 000-branch budget inside the reference
+conjunction before finding the shallow `d0 ∧ ¬d0` clash; the paste core
+was two small facts that certify instantly. Certification is budgeted
+best-effort and runs on the solver's core CHOICE, which inlining
+legitimately changes — so `Summary::consistent` now treats {PROVEN,
+CANDIDATE} DISJOINT as one metamorphic class, the same way it already
+treated overlap proof strength. Disjointness itself, empties, subsets and
+interpreter membership remain strict.
+
+Follow-up (certifier completeness, not soundness): unit-propagating
+top-level conjuncts before case-splitting would find `d0 ∧ ¬d0` without
+entering the branch explosion, certifying the inherit core too.

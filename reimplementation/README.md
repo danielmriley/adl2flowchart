@@ -1,9 +1,15 @@
 # ADL2 — from-scratch re-implementation of the ADL compiler/interpreter
 
-This folder is the specification and plan for a clean re-implementation of
-the ADL toolchain ("ADL2", working binary name `smash2`). It replaces
-nothing yet: the legacy `adl/` implementation stays in place as the
-reference oracle until the parity gate in [PLAN.md](PLAN.md) passes.
+This folder holds the specification and plan for a clean re-implementation
+of the ADL toolchain ("ADL2", working binary name `smash2`). The
+implementation now lives in [`adl2/`](adl2/) and is built and green through
+the parity gate; the legacy `adl/` tool is retained as the reference
+oracle. The documents here are the design contract the implementation was
+written against.
+
+> **To build and run `smash2`, and for the full feature reference, see
+> [`adl2/README.md`](adl2/README.md).** This document explains *why* the
+> re-implementation exists and the principles it holds to.
 
 ## Why a re-implementation
 

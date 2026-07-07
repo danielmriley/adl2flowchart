@@ -1,0 +1,13 @@
+# GOLDEN SR_central SR_wide OVERLAPPING
+# GROUND-TRUTH: |eta| bands [0,1.5] and [1.0,2.4] overlap on [1.0,1.5]. In both: eta=1.2. central-only: eta=0.5. wide-only: eta=2.0 (all pt=150).
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_central
+  select abs(eta(jets[0])) [] 0 1.5
+  select pT(jets[0]) > 100
+
+region SR_wide
+  select abs(eta(jets[0])) [] 1.0 2.4
+  select pT(jets[0]) > 100

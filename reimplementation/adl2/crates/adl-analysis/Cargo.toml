@@ -7,15 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Forwarded solver-backend feature: with `--no-default-features` the
-# analysis still builds and runs over the SMT-LIB subprocess backend (or
-# the interval-only no-solver degradation).
-default = ["native"]
+# Forwarded solver-backend features. Default is the SMT-LIB subprocess
+# backend (no link burden); `native`/`bundled` opt into in-process libz3.
+default = []
 native = ["adl-solver/native"]
+bundled = ["adl-solver/bundled"]
 
 [dependencies]
 adl-axioms.workspace = true
 adl-formula.workspace = true
+adl-certify.workspace = true
 adl-interp.workspace = true
 adl-sema.workspace = true
 # Direct path dep (not workspace-inherited): workspace inheritance cannot

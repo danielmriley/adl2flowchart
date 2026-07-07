@@ -14,12 +14,13 @@ use crate::dump::RenderCtx;
 use crate::ext::ExtDecls;
 use crate::hir::{
     ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
-    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec,
+    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec, ReduceKind,
 };
 use crate::intern::{Symbol, SymbolTable};
 use crate::quantity::{
-    AngKind, Collection, CollectionId, ElemIndex, ElemPredId, ParticleRef, PropId, Quantity,
-    QuantityArg, QuantityId, QuantityTable, ScalarSource,
+    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder, CompositeCandidate,
+    ElemIndex, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg, QuantityId, QuantityTable,
+    ScalarSource, SortDir, SortKey,
 };
 use adl_syntax::ast::{
     self, Arg, BinBody, BinOp, CmpOp, Expr, HistoArg, IndexVal, ObjectKw, ObjectStmt, RegionKw,
@@ -33,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 /// (usually the file name); `ext` is the ingested standard library.
 #[must_use]
 pub fn analyze(file: &ast::File, unit: &str, ext: &ExtDecls) -> Hir {
-    let mut r = Resolver::new(file, ext);
+    let mut r = Resolver::new(file, unit, ext);
     r.run();
     r.finish(unit)
 }
@@ -60,6 +61,16 @@ enum State<T> {
 /// Expression-resolution context.
 #[derive(Default, Clone)]
 struct Ctx {
+    /// Region-local sorted views (proof-system v2 Phase 5 — regions as
+    /// folds): a region-level `sort` statement re-binds what its collection
+    /// means for SUBSEQUENT statements of that region. Keyed by the
+    /// original collection id; every named reference resolving to a key is
+    /// replaced by its current view, so `jets[i]` after `sort pt(jets)
+    /// ascend` denotes the i-th element of the re-sorted sequence — for the
+    /// encoder (a distinct `Collection::Sorted` identity with no ORD unless
+    /// the alias gate proves the sort an identity) AND the interpreter
+    /// (which materializes `Sorted` by actually re-sorting).
+    sort_views: HashMap<CollectionId, CollectionId>,
     /// Inside an object block: the source collection being filtered.
     elem_source: Option<CollectionId>,
     /// Binder names meaning "this element" (single-binder take).
@@ -68,6 +79,33 @@ struct Ctx {
     binders: HashMap<String, ParticleRef>,
     /// Inside a `trigger` statement: bare names are trigger flags.
     in_trigger: bool,
+    /// Inside a reducer body, the iteration collection whose references
+    /// denote the current element (`X` in `any(pt(X) > 30)`); set on the
+    /// second resolve pass once the body's single plural collection is
+    /// known. Interpret-only (P1).
+    reduce_coll: Option<CollectionId>,
+    /// Inside a reducer body, `this` (and the enclosing object-block's own
+    /// name) denotes the *outer* filtered element as a particle
+    /// ([`ParticleRef::ThisElem`]) rather than the implicit subject.
+    this_as_particle: bool,
+}
+
+impl Ctx {
+    /// The current view of `c` under this context's region-local sorts,
+    /// chasing re-sort chains (`jets → sorted₁ → sorted₂`) so a name lookup
+    /// always lands on the NEWEST view. Bounded: a region can only add a
+    /// handful of sorts, and the map is insert-only per region.
+    fn view(&self, mut c: CollectionId) -> CollectionId {
+        let mut hops = 0;
+        while let Some(&next) = self.sort_views.get(&c) {
+            if next == c || hops > 16 {
+                break;
+            }
+            c = next;
+            hops += 1;
+        }
+        c
+    }
 }
 
 /// What an expression denotes when used as an object/particle argument.
@@ -82,6 +120,10 @@ enum Target {
 
 struct Resolver<'a> {
     ext: &'a ExtDecls,
+    /// The analysis-unit label (usually the file name). Used to mint
+    /// unit-unique private base symbols for unresolvable object blocks, so
+    /// two files' unresolved same-named objects can never unify.
+    unit: &'a str,
     symbols: SymbolTable,
     table: QuantityTable,
     coll_names: Vec<Vec<Symbol>>,
@@ -115,7 +157,7 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(file: &'a ast::File, ext: &'a ExtDecls) -> Self {
+    fn new(file: &'a ast::File, unit: &'a str, ext: &'a ExtDecls) -> Self {
         let mut ast_objects = Vec::new();
         let mut ast_defines = Vec::new();
         let mut ast_regions = Vec::new();
@@ -127,24 +169,51 @@ impl<'a> Resolver<'a> {
                 Section::Info(_) | Section::Table(_) | Section::CountsFormat(_) => {}
             }
         }
+        let mut dup_diags: Vec<Diagnostic> = Vec::new();
         let mut objects_by_key = HashMap::new();
         for (i, o) in ast_objects.iter().enumerate() {
-            // First binding wins; a duplicate is diagnosed when resolved.
-            objects_by_key
+            // First binding wins; the duplicate gets a warning below — every
+            // later reference silently means the FIRST definition, so a
+            // shadowing author would otherwise get verdicts about the wrong
+            // object with zero signal (soundness review S8).
+            if objects_by_key
                 .entry(o.name.name.to_ascii_lowercase())
-                .or_insert(i);
+                .or_insert(i)
+                != &i
+            {
+                dup_diags.push(Diagnostic::warning(
+                    o.name.span,
+                    format!(
+                        "duplicate object `{}`; the first definition wins and every \
+                         reference binds to it",
+                        o.name.name
+                    ),
+                ));
+            }
         }
         let mut defines_by_key = HashMap::new();
         for (i, d) in ast_defines.iter().enumerate() {
-            defines_by_key
+            if defines_by_key
                 .entry(d.name.name.to_ascii_lowercase())
-                .or_insert(i);
+                .or_insert(i)
+                != &i
+            {
+                dup_diags.push(Diagnostic::warning(
+                    d.name.span,
+                    format!(
+                        "duplicate define `{}`; the first definition wins and every \
+                         reference binds to it",
+                        d.name.name
+                    ),
+                ));
+            }
         }
         let obj_state = vec![State::Pending; ast_objects.len()];
         let obj_hir = vec![None; ast_objects.len()];
         let def_state = vec![State::Pending; ast_defines.len()];
         Self {
             ext,
+            unit,
             symbols: SymbolTable::default(),
             table: QuantityTable::default(),
             coll_names: Vec::new(),
@@ -165,7 +234,7 @@ impl<'a> Resolver<'a> {
             pending_histos: Vec::new(),
             histos: Vec::new(),
             weights: Vec::new(),
-            diags: Vec::new(),
+            diags: dup_diags,
             warned_names: HashSet::new(),
         }
     }
@@ -305,47 +374,75 @@ impl<'a> Resolver<'a> {
         HNode::new(HKind::Quantity(q), span)
     }
 
-    /// Wrap an interned quantity, tagging `Unsupported` if it involves a
-    /// reserved back-index (PHASE0 OPEN-3).
+    /// Wrap an interned quantity as a value node. Back-indexed elements
+    /// (`coll[-k]`, OPEN-3) are in-fragment: the interpreter resolves `[-k]`
+    /// to position `len - k`, and the encoder carries it as an interned
+    /// `ElemProp { index: FromBack(k) }` leaf — a free per-event value with
+    /// the existence guard `size(coll) >= k` (see `quantity_existence`) and
+    /// no front-element ordering axioms (ORD/IDOM/SUB match `FromFront` only,
+    /// so they soundly skip it).
     fn quantity_node(&self, q: QuantityId, span: Span) -> HNode {
-        let mut node = HNode::new(HKind::Quantity(q), span);
-        if self.quantity_uses_back_index(q) {
-            node.tag = Fragment::unsupported("negative index `[-n]` is reserved (OPEN-3)");
-        }
-        node
-    }
-
-    fn quantity_uses_back_index(&self, q: QuantityId) -> bool {
-        fn particle(p: &ParticleRef) -> bool {
-            matches!(
-                p,
-                ParticleRef::Elem {
-                    index: ElemIndex::FromBack(_),
-                    ..
-                }
-            )
-        }
-        match self.table.quantity(q) {
-            Quantity::ElemProp {
-                index: ElemIndex::FromBack(_),
-                ..
-            } => true,
-            Quantity::AngularSep { a, b, .. } => particle(a) || particle(b),
-            Quantity::ExternalFn { args, .. } => args.iter().any(|a| match a {
-                QuantityArg::Particle(p) => particle(p),
-                QuantityArg::Quantity(inner) => self.quantity_uses_back_index(*inner),
-                _ => false,
-            }),
-            _ => false,
-        }
+        HNode::new(HKind::Quantity(q), span)
     }
 
     fn index_val(v: IndexVal) -> ElemIndex {
-        let n = u32::try_from(v.value).unwrap_or(u32::MAX);
+        // Clamp BELOW u32::MAX: the max value is reserved as reconciliation's
+        // generic-element sentinel and must be unreachable from source
+        // (`MAX_SOURCE_ELEM_INDEX`). The clamped index keeps its semantics —
+        // a free element behind an unsatisfiable-in-practice size guard.
+        let n = u32::try_from(v.value).map_or(crate::quantity::MAX_SOURCE_ELEM_INDEX, |n| {
+            n.min(crate::quantity::MAX_SOURCE_ELEM_INDEX)
+        });
         if v.neg {
             ElemIndex::FromBack(n)
         } else {
             ElemIndex::FromFront(n)
+        }
+    }
+
+    /// Canonicalize indexed access into a static slice
+    /// `slice[a:b][i] → src[a+i]` (P2), so the access inherits the source's
+    /// ORD/IDOM/EPRED and cross-region identity. Sound **only** for concrete
+    /// `start` and an in-range front index:
+    ///
+    /// - concrete `end`, `i < end-start`: the slice's element `i` IS
+    ///   `src[start+i]` (half-open contiguity); rebase. Its existence guard
+    ///   `size(src) > start+i` is exactly the remaining condition (the slice
+    ///   upper bound `i < end-start` already holds statically).
+    /// - `end = None` (`[a:]`): any front index is potentially in-slice;
+    ///   rebase to `src[start+i]`.
+    /// - concrete `end`, `i >= end-start`: the element is **statically
+    ///   absent** from the slice; keep `slice[i]` so SZSLICE
+    ///   (`size(slice) ≤ end-start ≤ i`) makes its existence guard
+    ///   unsatisfiable — the access is a missing element (sound).
+    ///
+    /// A `FromBack` index is never rebased (reserved, OPEN-3). A non-slice
+    /// collection passes through unchanged.
+    fn rebase_slice_index(
+        &self,
+        coll: CollectionId,
+        index: ElemIndex,
+    ) -> (CollectionId, ElemIndex) {
+        let ElemIndex::FromFront(i) = index else {
+            return (coll, index);
+        };
+        let Collection::Slice { source, start, end } = *self.table.collection(coll) else {
+            return (coll, index);
+        };
+        if let Some(end) = end {
+            // Statically out of the slice ⇒ keep the (absent) slice element.
+            if i >= end.saturating_sub(start) {
+                return (coll, index);
+            }
+        }
+        match start.checked_add(i) {
+            // Clamp below the reserved generic-element sentinel (see
+            // `index_val`); an astronomically-rebased index is equally free.
+            Some(abs) => (
+                source,
+                ElemIndex::FromFront(abs.min(crate::quantity::MAX_SOURCE_ELEM_INDEX)),
+            ),
+            None => (coll, index),
         }
     }
 
@@ -378,6 +475,23 @@ impl<'a> Resolver<'a> {
         self.intern_coll(Collection::Base(sym))
     }
 
+    /// A fail-closed base for an object block whose input could not be
+    /// resolved (unsupported take call, no take statement, take cycle). The
+    /// symbol is minted UNIT-UNIQUE (`<unit>::<name>#unresolved`) instead of
+    /// the block's own name: an ext-spelled name (`JETclean`) would otherwise
+    /// alias the genuine detector base — across files via case-insensitive
+    /// interning and reconciliation's ext-base gate, and across two files'
+    /// byte-identical unresolved blocks via structural interning — fabricating
+    /// identity (and PROVEN facts) for a collection whose real input was
+    /// dropped. `::`/`#` never appear in ext names, so the minted name can
+    /// match no detector object; the interpreter reads an absent collection as
+    /// empty, so runtime fails closed too.
+    fn unresolved_base(&mut self, name: &str) -> CollectionId {
+        let label = format!("{}::{}#unresolved", self.unit, name);
+        let sym = self.symbols.intern(&label);
+        self.intern_coll(Collection::Base(sym))
+    }
+
     fn resolve_object(&mut self, idx: usize) -> CollectionId {
         match &self.obj_state[idx] {
             State::Done(id) => return *id,
@@ -389,8 +503,7 @@ impl<'a> Resolver<'a> {
                     format!("objcycle:{}", name.to_ascii_lowercase()),
                     Diagnostic::error(span, format!("object take cycle involving `{name}`")),
                 );
-                let sym = self.symbols.intern(&name);
-                return self.intern_coll(Collection::Base(sym));
+                return self.unresolved_base(&name);
             }
             State::Pending => {}
         }
@@ -398,11 +511,19 @@ impl<'a> Resolver<'a> {
         let obj = self.ast_objects[idx];
         let self_key = obj.name.name.to_ascii_lowercase();
 
+        // Combinatorial composite block (`take comb/disjoint/cartesian`, a
+        // multi-binder take, or the `composite` keyword): a collection of
+        // tuples with binder axes and an optional candidate. Resolved
+        // separately so its binder/candidate/per-tuple-cut model does not
+        // pollute the element-filter path.
+        if Self::is_composite_block(obj) {
+            return self.resolve_composite(idx);
+        }
+
         let mut sources: Vec<CollectionId> = Vec::new();
         let mut cuts: Vec<(bool, &Expr)> = Vec::new(); // (is_reject, cond)
         let mut ctx = Ctx::default();
         let mut alias_names: Vec<String> = Vec::new();
-        let mut comb_take = false;
         let mut unsupported_reason: Option<String> = None;
 
         for stmt in &obj.stmts {
@@ -435,25 +556,15 @@ impl<'a> Resolver<'a> {
                             })
                         }
                         TakeSource::Call { name, args } => {
-                            if name.name.eq_ignore_ascii_case("comb") {
-                                comb_take = true;
-                                let mut parts = Vec::new();
-                                for a in args {
-                                    if let Arg::Expr(e) = a
-                                        && let Some(c) = self.target_collection(e, &ctx)
-                                    {
-                                        parts.push(c);
-                                    }
-                                }
-                                unsupported_reason = Some(
-                                    "combinatorial composite (COMB) is outside the checked fragment"
-                                        .to_owned(),
-                                );
-                                if parts.is_empty() {
-                                    None
-                                } else {
-                                    Some(self.intern_coll(Collection::Combination { parts }))
-                                }
+                            if name.name.eq_ignore_ascii_case("sort") {
+                                // `sort(coll, key, dir)` is a re-sorted
+                                // permutation of `coll`: a distinct collection
+                                // whose element *set* is the source's, with the
+                                // key's per-index order. The interpreter
+                                // re-sorts; the analyzer never asserts an
+                                // index-ordering fact unless P2's exact
+                                // pt-descending alias gate fires (P1: opaque).
+                                self.resolve_sort_source(args, &ctx)
                             } else {
                                 unsupported_reason = Some(format!(
                                     "take source `{}(...)` is not supported",
@@ -462,25 +573,22 @@ impl<'a> Resolver<'a> {
                                 None
                             }
                         }
+                        // `take coll[2:]` / `take coll[:4]`: a sliced source.
+                        TakeSource::Expr(e) => {
+                            let src = self.target_collection(e, &ctx);
+                            if src.is_none() {
+                                unsupported_reason =
+                                    Some("slice take source is not a collection".to_owned());
+                            }
+                            src
+                        }
                     };
                     if let Some(src) = src {
-                        if binders.len() == 1 {
-                            ctx.elem_aliases
-                                .insert(binders[0].name.to_ascii_lowercase());
-                        } else {
-                            for b in binders {
-                                let name = self.symbols.intern(&b.name);
-                                ctx.binders.insert(
-                                    b.name.to_ascii_lowercase(),
-                                    ParticleRef::Binder { coll: src, name },
-                                );
-                            }
-                            if binders.len() > 1 {
-                                comb_take = true;
-                                unsupported_reason.get_or_insert_with(|| {
-                                    "multi-binder take (combinatorial block) is outside the checked fragment".to_owned()
-                                });
-                            }
+                        // Single-binder take (`take jets j`): the binder is the
+                        // implicit element. Multi-binder / composite takes never
+                        // reach here (dispatched to `resolve_composite`).
+                        if let Some(b) = binders.first() {
+                            ctx.elem_aliases.insert(b.name.to_ascii_lowercase());
                         }
                         sources.push(src);
                     }
@@ -490,36 +598,40 @@ impl<'a> Resolver<'a> {
                 }
                 ObjectStmt::Cut { cond, .. } => cuts.push((false, cond)),
                 ObjectStmt::Reject { cond, .. } => cuts.push((true, cond)),
+                // `Derived` only appears in composite blocks (handled by
+                // `resolve_composite`); ignore it defensively here.
+                ObjectStmt::Derived { .. } => {}
             }
         }
 
         let self_sym = self.symbols.intern(&obj.name.name);
         let combined = match sources.as_slice() {
             [] => {
+                // No usable source: the block's input is unknown, so fail
+                // closed onto a unit-unique private base (see
+                // `unresolved_base` — the block's own name would fabricate
+                // identity with a same-spelled detector base or with another
+                // file's equally-unresolved block).
+                let msg = match &unsupported_reason {
+                    Some(reason) => format!(
+                        "object `{}`: {reason}; its input is treated as an \
+                         unknown (empty) collection",
+                        obj.name.name
+                    ),
+                    None => format!("object `{}` has no take statement", obj.name.name),
+                };
                 self.warn_once(
                     format!("notake:{}", obj.name.name.to_ascii_lowercase()),
-                    Diagnostic::warning(
-                        obj.name.span,
-                        format!("object `{}` has no take statement", obj.name.name),
-                    ),
+                    Diagnostic::warning(obj.name.span, msg),
                 );
-                self.intern_coll(Collection::Base(self_sym))
+                if unsupported_reason.is_none() {
+                    unsupported_reason = Some("object has no take statement".to_owned());
+                }
+                self.unresolved_base(&obj.name.name)
             }
             [single] => *single,
-            _ => {
-                if obj.keyword == ObjectKw::Composite || comb_take {
-                    let parts = sources.clone();
-                    self.intern_coll(Collection::Combination { parts })
-                } else {
-                    self.intern_coll(Collection::Union(sources.clone()))
-                }
-            }
+            _ => self.intern_coll(Collection::Union(sources.clone())),
         };
-
-        if obj.keyword == ObjectKw::Composite && unsupported_reason.is_none() {
-            unsupported_reason =
-                Some("composite block semantics are outside the checked fragment".to_owned());
-        }
 
         let (coll, pure_alias_of) = if cuts.is_empty() {
             // No cuts: `object X take Y` is a pure rename — identity with
@@ -579,12 +691,372 @@ impl<'a> Resolver<'a> {
         coll
     }
 
+    /// A block is a combinatorial composite if it is declared `composite`, has
+    /// any `take comb/disjoint/cartesian(...)`, has a multi-binder take, or
+    /// declares a `candidate`/`derived` axis.
+    fn is_composite_block(obj: &ast::ObjectBlock) -> bool {
+        if obj.keyword == ObjectKw::Composite {
+            return true;
+        }
+        obj.stmts.iter().any(|s| match s {
+            ObjectStmt::Take {
+                source, binders, ..
+            } => {
+                binders.len() > 1
+                    || matches!(source, TakeSource::Call { name, .. }
+                        if matches!(name.name.to_ascii_lowercase().as_str(),
+                            "comb" | "disjoint" | "cartesian"))
+            }
+            ObjectStmt::Derived { .. } => true,
+            _ => false,
+        })
+    }
+
+    /// Resolve `sort(coll, key, dir)` as a take source into a
+    /// [`Collection::Sorted`]. The source is the first collection-valued
+    /// argument; the key is a per-element property when recognizable
+    /// (else opaque); the direction is `descend` unless `ascend` is written.
+    fn resolve_sort_source(&mut self, args: &[Arg], ctx: &Ctx) -> Option<CollectionId> {
+        let exprs: Vec<&Expr> = args
+            .iter()
+            .filter_map(|a| if let Arg::Expr(e) = a { Some(e.as_ref()) } else { None })
+            .collect();
+        let source = exprs
+            .iter()
+            .find_map(|e| self.target_collection(e, ctx))?;
+        // Direction: recognized token families only. The old rule ("anything
+        // that is not `ascend` means descending") failed OPEN into the
+        // soundness-critical alias gate below — `ascending` (or any typo)
+        // silently meant Descend, aliased to the pT-descending source, and
+        // ORD then proved orderings false under the written intent (review
+        // S7). Unrecognized trailing identifiers now fail the gate CLOSED.
+        let dir_token = |name: &str| -> Option<SortDir> {
+            match name.to_ascii_lowercase().as_str() {
+                "ascend" | "ascending" | "asc" => Some(SortDir::Ascend),
+                "descend" | "descending" | "desc" => Some(SortDir::Descend),
+                _ => None,
+            }
+        };
+        let mut dir: Option<SortDir> = None;
+        for e in &exprs {
+            if let Expr::Ident(id) = e
+                && let Some(d) = dir_token(&id.name)
+            {
+                dir = Some(d);
+            }
+        }
+        // A bare trailing identifier that is neither a direction token nor a
+        // resolvable collection is almost certainly a misspelled direction.
+        let mut dir_suspect = false;
+        if dir.is_none()
+            && exprs.len() >= 2
+            && let Some(last @ Expr::Ident(id)) = exprs.last()
+            && self.target_collection(last, ctx).is_none()
+        {
+            dir_suspect = true;
+            self.warn_once(
+                format!("sortdir:{}", id.name.to_ascii_lowercase()),
+                Diagnostic::warning(
+                    id.span,
+                    format!(
+                        "unrecognized sort direction `{}` (write `ascend` or `descend`); \
+                         the sort is treated as opaque — no element-ordering facts",
+                        id.name
+                    ),
+                ),
+            );
+        }
+        let dir = dir.unwrap_or(SortDir::Descend);
+        // Key: the first argument that is a single per-element property of the
+        // source (`pt(coll)`), reduced to that `PropId`. Anything else stays
+        // opaque so the analyzer never aliases a non-pt / unknown-key sort.
+        let key = self
+            .sort_prop_key(&exprs, source, ctx)
+            .map_or_else(|| SortKey::Opaque(self.sort_key_render(&exprs, ctx)), SortKey::Prop);
+        // SORT→ALIAS (P2, soundness-critical, plan §risk 1): a stable
+        // descending-pT sort of an already-pT-descending source is the
+        // IDENTITY permutation, so it canonicalizes to the source itself
+        // (exactly the `pure_alias_of` posture) and inherits ORD/IDOM/EPRED.
+        // Gated on the EXACT shape `key == Prop(pt) ∧ dir == Descend ∧
+        // pt_ordered(source)` via STRUCTURAL key-quantity equality (the pT
+        // PropId compared by canonical key, never a substring — the Bug-6 TAG
+        // lesson), defaulting to NO alias. Any other key/dir/source ⇒ an
+        // opaque `Sorted` carrying only SZPERM (size = size(source)) and
+        // `pt_ordered = false`. A single wrong match here fabricates a false
+        // PROVEN via ORD on the UNSAT side with no witness net.
+        let pt_key = self.ext.prop_canon("pt").0;
+        let is_pt_desc = dir == SortDir::Descend
+            && !dir_suspect
+            && matches!(&key, SortKey::Prop(p) if self.table.prop_key(*p) == pt_key);
+        if is_pt_desc && self.table.pt_ordered(source, &pt_key) {
+            return Some(source);
+        }
+        Some(self.intern_coll(Collection::Sorted { source, key, dir }))
+    }
+
+    /// Recognize a region-level `sort` statement's raw text (proof-system v2
+    /// Phase 5): `prop(coll) [dir]`, `coll.prop [dir]`, or `prop courtesy
+    /// spellings thereof`. Returns the resolved `(source, key, dir)` for the
+    /// region-local sorted view, or `None` for any shape this recognizer
+    /// does not cover — the caller then falls back to the sound taint
+    /// cascade (subsequent element statements leave the checked fragment).
+    /// The direction token uses the same strict families as take-sorts;
+    /// absent means the documented Descend default.
+    fn parse_region_sort(
+        &mut self,
+        raw: &str,
+        ctx: &Ctx,
+    ) -> Option<(CollectionId, SortKey, SortDir)> {
+        let mut toks: Vec<&str> = raw.split_whitespace().collect();
+        let dir = match toks.last() {
+            Some(t) => match t.to_ascii_lowercase().as_str() {
+                "ascend" | "ascending" | "asc" => {
+                    toks.pop();
+                    SortDir::Ascend
+                }
+                "descend" | "descending" | "desc" => {
+                    toks.pop();
+                    SortDir::Descend
+                }
+                _ => SortDir::Descend,
+            },
+            None => return None,
+        };
+        let key_txt = toks.join("");
+        // `prop(coll)` or `coll.prop` — both must name a real property and a
+        // resolvable collection; anything else is not this recognizer's job.
+        let (prop_name, coll_name) = if let Some(open) = key_txt.find('(') {
+            let close = key_txt.rfind(')')?;
+            (key_txt.get(..open)?, key_txt.get(open + 1..close)?)
+        } else if let Some(dot) = key_txt.find('.') {
+            (key_txt.get(dot + 1..)?, key_txt.get(..dot)?)
+        } else {
+            return None;
+        };
+        if !self.ext.is_property(prop_name) || coll_name.is_empty() {
+            return None;
+        }
+        // Resolve the collection THROUGH any existing view so a second sort
+        // of the same name re-sorts the current view (sequential fold).
+        let ident = ast::Ident {
+            name: coll_name.to_owned(),
+            span: Span::default(),
+        };
+        let source = match self.resolve_target(&Expr::Ident(ident), ctx) {
+            Target::Coll(c) => c,
+            _ => return None,
+        };
+        let p = self.intern_prop(prop_name);
+        Some((source, SortKey::Prop(p), dir))
+    }
+
+    /// The per-element property a sort key reduces to, when the key argument is
+    /// `prop(source)` / `source.prop` over the sorted collection (so the
+    /// interpreter can re-sort by it). `None` for any other key.
+    fn sort_prop_key(&mut self, exprs: &[&Expr], source: CollectionId, ctx: &Ctx) -> Option<PropId> {
+        for e in exprs {
+            // `pt(coll)` or `{coll}pt` or `coll.pt`: a CollProp over the source.
+            let node = self.resolve_expr(e, ctx);
+            if let HKind::CollProp { coll, prop } = node.kind
+                && coll == source
+            {
+                return Some(prop);
+            }
+        }
+        None
+    }
+
+    /// Canonical render of a sort key list (the opaque-key interning identity).
+    fn sort_key_render(&mut self, exprs: &[&Expr], ctx: &Ctx) -> String {
+        let parts: Vec<String> = exprs
+            .iter()
+            .map(|e| {
+                let n = self.resolve_expr(e, ctx);
+                self.render_node(&n)
+            })
+            .collect();
+        parts.join(",")
+    }
+
+    /// Resolve a combinatorial composite block (`take disjoint/cartesian/comb`,
+    /// a multi-binder take, or a `candidate` axis). USER ANSWER 4: per-tuple
+    /// `select`/`reject` filter the candidate collection; disjoint distinctness
+    /// is by kinematic value (handled by the interpreter).
+    fn resolve_composite(&mut self, idx: usize) -> CollectionId {
+        let obj = self.ast_objects[idx];
+        let self_sym = self.symbols.intern(&obj.name.name);
+
+        let mut members: Vec<CompositeBinder> = Vec::new();
+        let mut parts: Vec<CollectionId> = Vec::new();
+        let mut binders: HashMap<String, ParticleRef> = HashMap::new();
+        let mut kind = CombKind::Cartesian;
+        let mut candidate_decl: Option<(&ast::Ident, &Expr)> = None;
+        let mut cut_exprs: Vec<(bool, &Expr)> = Vec::new();
+
+        for stmt in &obj.stmts {
+            match stmt {
+                ObjectStmt::Take {
+                    source, binders: bs, ..
+                } => match source {
+                    // `take disjoint/cartesian/comb(src1 b1, src2 b2, ...)`.
+                    TakeSource::Call { name, args } => {
+                        kind = match name.name.to_ascii_lowercase().as_str() {
+                            "disjoint" => CombKind::Disjoint,
+                            _ => CombKind::Cartesian, // comb/cartesian
+                        };
+                        for a in args {
+                            if let Arg::Expr(e) = a
+                                && let Expr::ParticleList { items, .. } = e.as_ref()
+                                && let [src_e, ast::Expr::Ident(bind)] = items.as_slice()
+                                && let Some(src) = self.target_collection(src_e, &Ctx::default())
+                            {
+                                let bname = self.symbols.intern(&bind.name);
+                                binders.insert(
+                                    bind.name.to_ascii_lowercase(),
+                                    ParticleRef::Binder { coll: src, name: bname },
+                                );
+                                members.push(CompositeBinder { name: bname, source: src });
+                                parts.push(src);
+                            }
+                        }
+                    }
+                    // `take coll b1, b2` — multi-binder cartesian over one
+                    // source (possibly a sliced one, `take coll[2:] a, b`).
+                    TakeSource::Ident(_) | TakeSource::Union { .. } | TakeSource::Expr(_) => {
+                        let src = match source {
+                            TakeSource::Ident(id) => {
+                                self.resolve_collection_name(&id.name, id.span)
+                            }
+                            TakeSource::Union { members: ms, .. } => {
+                                let ids: Vec<CollectionId> = ms
+                                    .iter()
+                                    .map(|m| self.resolve_collection_name(&m.name, m.span))
+                                    .collect();
+                                match ids.as_slice() {
+                                    [single] => *single,
+                                    _ => self.intern_coll(Collection::Union(ids)),
+                                }
+                            }
+                            TakeSource::Expr(e) => match self.target_collection(e, &Ctx::default()) {
+                                Some(c) => c,
+                                None => continue, // not a collection ⇒ skip slot
+                            },
+                            TakeSource::Call { .. } => unreachable!(),
+                        };
+                        for b in bs {
+                            let bname = self.symbols.intern(&b.name);
+                            binders.insert(
+                                b.name.to_ascii_lowercase(),
+                                ParticleRef::Binder { coll: src, name: bname },
+                            );
+                            members.push(CompositeBinder { name: bname, source: src });
+                            parts.push(src);
+                        }
+                    }
+                },
+                ObjectStmt::Derived { name, body, .. } => {
+                    candidate_decl = Some((name, body));
+                }
+                ObjectStmt::Cut { cond, .. } => cut_exprs.push((false, cond)),
+                ObjectStmt::Reject { cond, .. } => cut_exprs.push((true, cond)),
+            }
+        }
+
+        // The binder environment for the candidate body and per-tuple cuts.
+        let comb_ctx = Ctx {
+            binders: binders.clone(),
+            ..Ctx::default()
+        };
+
+        // Candidate axis: `candidate ll = l1 + l2` becomes a `ParticleRef::Sum`
+        // over the tuple binders (the only supported candidate shape).
+        let candidate = candidate_decl.and_then(|(name, body)| {
+            match self.resolve_target(body, &comb_ctx) {
+                Target::Particle(p @ (ParticleRef::Sum(_) | ParticleRef::Binder { .. })) => {
+                    Some(CompositeCandidate {
+                        name: self.symbols.intern(&name.name),
+                        vector: p,
+                    })
+                }
+                _ => None,
+            }
+        });
+
+        // Per-tuple cuts may reference the candidate by name (`select mass(ll)`):
+        // bind it as a particle alongside the binders.
+        let mut cut_ctx = comb_ctx;
+        if let (Some((name, _)), Some(cand)) = (candidate_decl, &candidate) {
+            cut_ctx
+                .binders
+                .insert(name.name.to_ascii_lowercase(), cand.vector.clone());
+        }
+        // The block's own name inside its cuts means the implicit tuple
+        // (`select pdgID(OSdileptons) == 0`); treat it as an element alias so
+        // it never re-enters `resolve_object` (which would diagnose a spurious
+        // take cycle). The composite is Unsupported regardless.
+        cut_ctx
+            .elem_aliases
+            .insert(obj.name.name.to_ascii_lowercase());
+
+        // Per-tuple cuts: predicates over the tuple binders, interned exactly
+        // like an element predicate. They filter the candidate collection.
+        let cuts: Vec<ElemPredId> = cut_exprs
+            .iter()
+            .map(|(is_reject, cond)| {
+                let node = self.resolve_expr(cond, &cut_ctx);
+                let node = if *is_reject {
+                    let span = node.span;
+                    HNode::new(HKind::Not(Box::new(node)), span)
+                } else {
+                    node
+                };
+                self.intern_elem_pred(node)
+            })
+            .collect();
+
+        let coll = self.intern_coll(Collection::Combination {
+            parts,
+            kind,
+            members,
+            candidate,
+            cuts,
+        });
+        self.bind_coll_name(coll, &obj.name.name);
+
+        // The composite is interpret-only (P1): the analyzer keeps it opaque
+        // (size/existence-only lands in P2). Tag so the verifier treats any
+        // membership reference as Unknown rather than reasoning over tuples.
+        self.obj_hir[idx] = Some(HirObject {
+            name: self_sym,
+            coll,
+            pure_alias_of: None,
+            tag: Fragment::unsupported(
+                "combinatorial composite is outside the checked fragment (interpret-only, P1)",
+            ),
+            span: obj.span,
+        });
+        self.obj_state[idx] = State::Done(coll);
+        coll
+    }
+
     fn intern_elem_pred(&mut self, node: HNode) -> ElemPredId {
-        let render = self.render_node(&node);
-        if let Some(&id) = self.elem_pred_ids.get(&render) {
+        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
+        // An Unsupported node renders as `<unsupported: reason>` — the
+        // DIFFERING sub-expression is discarded and replaced by a (often
+        // generic) reason string, so two physically different cuts can render
+        // identically. Sharing an id would unify their filtered collections
+        // (and sizes) — a reproduced false-PROVEN factory (soundness review
+        // S1). Fail closed: such predicates always get a fresh, never-shared
+        // id. Fully-resolved identical cuts keep merging via the render key.
+        if node.has_unsupported() {
+            let render = self.render_node(&node);
+            self.elem_preds.push(ElemPred { node, render });
             return id;
         }
-        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
+        let render = self.render_node(&node);
+        if let Some(&prev) = self.elem_pred_ids.get(&render) {
+            return prev;
+        }
         self.elem_pred_ids.insert(render.clone(), id);
         self.elem_preds.push(ElemPred { node, render });
         id
@@ -642,15 +1114,21 @@ impl<'a> Resolver<'a> {
 
     fn resolve_region(&mut self, idx: usize) {
         let region = self.ast_regions[idx];
-        let ctx = Ctx::default();
+        let mut ctx = Ctx::default();
         let mut stmts = Vec::new();
+        // Set only when a region-level `sort` could NOT be lowered to a
+        // sorted view; subsequent element-indexed statements then leave the
+        // checked fragment (see `sort_cascade`).
+        let mut sort_seen = false;
         for stmt in &region.stmts {
             match stmt {
                 RegionStmt::Cut { cond, .. } => {
-                    stmts.push(HirRegionStmt::Select(self.resolve_expr(cond, &ctx)));
+                    let node = self.resolve_expr(cond, &ctx);
+                    stmts.push(HirRegionStmt::Select(self.sort_cascade(sort_seen, node)));
                 }
                 RegionStmt::Reject { cond, .. } => {
-                    stmts.push(HirRegionStmt::Reject(self.resolve_expr(cond, &ctx)));
+                    let node = self.resolve_expr(cond, &ctx);
+                    stmts.push(HirRegionStmt::Reject(self.sort_cascade(sort_seen, node)));
                 }
                 RegionStmt::RegionRef(id) => {
                     let key = id.name.to_ascii_lowercase();
@@ -687,17 +1165,19 @@ impl<'a> Resolver<'a> {
                     let label = label.as_ref().map(|l| l.value.clone());
                     match body {
                         BinBody::Boundaries { var, edges } => {
+                            let var = self.resolve_expr(var, &ctx);
                             stmts.push(HirRegionStmt::Bin {
                                 label,
-                                var: self.resolve_expr(var, &ctx),
+                                var: self.sort_cascade(sort_seen, var),
                                 edges: edges.iter().map(ast::NumLit::canon).collect(),
                                 span: *span,
                             });
                         }
                         BinBody::Cond(cond) => {
+                            let cond = self.resolve_expr(cond, &ctx);
                             stmts.push(HirRegionStmt::BinCond {
                                 label,
-                                cond: self.resolve_expr(cond, &ctx),
+                                cond: self.sort_cascade(sort_seen, cond),
                                 span: *span,
                             });
                         }
@@ -737,11 +1217,42 @@ impl<'a> Resolver<'a> {
                     stmts.push(Self::non_membership("counts", *span));
                 }
                 RegionStmt::TypeTag { span, .. } => stmts.push(Self::non_membership("type", *span)),
-                RegionStmt::Sort { span, .. } => stmts.push(HirRegionStmt::NonMembership {
-                    kind: "sort",
-                    tag: Fragment::unsupported("`sort` is outside the checked fragment"),
-                    span: *span,
-                }),
+                RegionStmt::Sort { raw, span } => {
+                    if let Some((source, key, dir)) = self.parse_region_sort(raw, &ctx) {
+                        // v2 Phase 5 (regions as folds): the sort's EFFECT is
+                        // re-binding what its collection means for subsequent
+                        // statements — a region-local `Sorted` view. The
+                        // encoder gets a distinct identity with no ORD facts
+                        // (unless the P2 alias gate proves the sort is the
+                        // identity permutation), and the interpreter
+                        // materializes the view by actually re-sorting, so
+                        // both sides carry the SAME semantics.
+                        let pt_key = self.ext.prop_canon("pt").0;
+                        let is_pt_desc = dir == SortDir::Descend
+                            && matches!(&key, SortKey::Prop(p)
+                                if self.table.prop_key(*p) == pt_key);
+                        let view = if is_pt_desc && self.table.pt_ordered(source, &pt_key) {
+                            source
+                        } else {
+                            self.intern_coll(Collection::Sorted { source, key, dir })
+                        };
+                        if view != source {
+                            ctx.sort_views.insert(source, view);
+                        }
+                        stmts.push(Self::non_membership("sort", *span));
+                    } else {
+                        // Unrecognized sort shape: fail closed — subsequent
+                        // element-indexed statements leave the fragment.
+                        sort_seen = true;
+                        stmts.push(HirRegionStmt::NonMembership {
+                            kind: "sort",
+                            tag: Fragment::unsupported(
+                                "`sort` shape outside the lowered fragment",
+                            ),
+                            span: *span,
+                        });
+                    }
+                }
             }
         }
         let name = self.symbols.intern(&region.name.name);
@@ -753,9 +1264,23 @@ impl<'a> Resolver<'a> {
         self.region_name_order.push(name);
         self.histolist_regions
             .push(region.keyword == RegionKw::HistoList);
-        self.regions_by_key
+        if self
+            .regions_by_key
             .entry(region.name.name.to_ascii_lowercase())
-            .or_insert(idx);
+            .or_insert(idx)
+            != &idx
+        {
+            // Later references (`Inherit`/`RegionPred`) bind to the FIRST
+            // region of this name; the report will also show two
+            // indistinguishable rows (review S8).
+            self.diags.push(Diagnostic::warning(
+                region.name.span,
+                format!(
+                    "duplicate region `{}`; references bind to the first definition",
+                    region.name.name
+                ),
+            ));
+        }
     }
 
     fn non_membership(kind: &'static str, span: Span) -> HirRegionStmt {
@@ -764,6 +1289,54 @@ impl<'a> Resolver<'a> {
             tag: Fragment::InFragment,
             span,
         }
+    }
+
+    /// True if `node` mentions an element-indexed quantity (an `ElemProp`, an
+    /// angular separation anchored on an indexed element, or an external over
+    /// one) — exactly the quantities a region-level `sort` re-binds. Used by
+    /// the sort cascade: encoding such a statement as if the canonical
+    /// (pT-descending) element order still applied lets the base-frame ORD
+    /// axioms contradict cuts that are satisfiable under the re-sorted order
+    /// (soundness review S4 — reproduced false PROVEN EMPTY/DISJOINT).
+    fn mentions_indexed_element(&self, node: &HNode) -> bool {
+        if let HKind::Quantity(q) = &node.kind {
+            let is_elem = |p: &ParticleRef| matches!(p, ParticleRef::Elem { .. });
+            match self.table.quantity(*q) {
+                Quantity::ElemProp { .. } => return true,
+                Quantity::AngularSep { a, b, .. } => {
+                    if is_elem(a) || is_elem(b) {
+                        return true;
+                    }
+                }
+                Quantity::ExternalFn { args, .. } => {
+                    if args
+                        .iter()
+                        .any(|a| matches!(a, QuantityArg::Particle(p) if is_elem(p)))
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        node.children()
+            .iter()
+            .any(|c| self.mentions_indexed_element(c))
+    }
+
+    /// Apply the region-`sort` cascade: after a `sort` statement, any
+    /// membership statement referencing element-indexed quantities is outside
+    /// the checked fragment (the sort re-bound what `coll[i]` denotes; the
+    /// proof-system v2 plan Phase 5 replaces this taint with real re-sort
+    /// semantics).
+    fn sort_cascade(&self, sort_seen: bool, mut node: HNode) -> HNode {
+        if sort_seen && self.mentions_indexed_element(&node) {
+            node.tag = Fragment::unsupported(
+                "follows a region-level `sort`, which re-binds element indices \
+                 (outside the checked fragment)",
+            );
+        }
+        node
     }
 
     /// Classify a `histo` argument list (PLAN Phase 9 / SPEC_EVENT_PIPELINE
@@ -877,7 +1450,12 @@ impl<'a> Resolver<'a> {
         match e {
             Expr::Ident(id) => {
                 let key = id.name.to_ascii_lowercase();
-                if ctx.elem_aliases.contains(&key) {
+                if ctx.elem_aliases.contains(&key) || (ctx.this_as_particle && key == "this") {
+                    // Inside a reducer body, the outer element is a particle
+                    // (`dR(this, X)`); elsewhere it is the implicit subject.
+                    if ctx.this_as_particle {
+                        return Target::Particle(ParticleRef::ThisElem);
+                    }
                     return Target::ElemSelf;
                 }
                 if let Some(p) = ctx.binders.get(&key) {
@@ -885,14 +1463,34 @@ impl<'a> Resolver<'a> {
                 }
                 if let Some(&oidx) = self.objects_by_key.get(&key) {
                     let c = self.resolve_object(oidx);
+                    if ctx.reduce_coll == Some(c) {
+                        return Target::Particle(ParticleRef::ReduceElem);
+                    }
                     return if self.is_met_coll(c) {
                         Target::Met
                     } else {
-                        Target::Coll(c)
+                        Target::Coll(ctx.view(c))
                     };
                 }
-                if self.defines_by_key.contains_key(&key) {
-                    return Target::None;
+                if let Some(&didx) = self.defines_by_key.get(&key) {
+                    // A define is a scope-free alias for its body expression.
+                    // Resolve THROUGH it to the body's target so an aliased
+                    // particle (`define leadjet = jets[0]`) makes
+                    // `f(leadjet)` and `f(jets[0])` the SAME quantity — else
+                    // they intern as two distinct opaque args and fabricate a
+                    // false PROVEN OVERLAPPING between contradictory cuts.
+                    // Resolve the body in the default (scope-free) context,
+                    // exactly as `resolve_define` does, and guard cycles.
+                    if matches!(self.def_state[didx], State::InProgress) {
+                        return Target::None;
+                    }
+                    let def = self.ast_defines[didx];
+                    let prev =
+                        std::mem::replace(&mut self.def_state[didx], State::InProgress);
+                    let body_ctx = Ctx::default();
+                    let target = self.resolve_target(&def.body, &body_ctx);
+                    self.def_state[didx] = prev;
+                    return target;
                 }
                 if self.ext.base_collection(&id.name).is_some()
                     && !self.ext.is_event_scalar(&id.name)
@@ -901,17 +1499,20 @@ impl<'a> Resolver<'a> {
                         return Target::Met;
                     }
                     let c = self.resolve_collection_name(&id.name, id.span);
-                    return Target::Coll(c);
+                    if ctx.reduce_coll == Some(c) {
+                        return Target::Particle(ParticleRef::ReduceElem);
+                    }
+                    return Target::Coll(ctx.view(c));
                 }
                 Target::None
             }
             Expr::Index { base, index, .. } | Expr::UnderscoreIndex { base, index, .. } => {
                 match self.resolve_target(base, ctx) {
                     Target::Met => Target::Met, // METLV_0 is the MET vector
-                    Target::Coll(c) => Target::Particle(ParticleRef::Elem {
-                        coll: c,
-                        index: Self::index_val(*index),
-                    }),
+                    Target::Coll(c) => {
+                        let (coll, index) = self.rebase_slice_index(c, Self::index_val(*index));
+                        Target::Particle(ParticleRef::Elem { coll, index })
+                    }
                     _ => Target::None,
                 }
             }
@@ -921,7 +1522,81 @@ impl<'a> Resolver<'a> {
                 t @ (Target::Particle(_) | Target::ElemSelf) => t,
                 Target::None => Target::None,
             },
+            // `coll[a:b]` — a contiguous sub-range; a new collection identity
+            // (USER ANSWER 3: ordered, element-indexable; never assumed
+            // pt-descending). `[-n]`-bounded slices stay unsupported (OPEN-3).
+            Expr::Slice { base, start, end, .. } => {
+                let Target::Coll(c) = self.resolve_target(base, ctx) else {
+                    return Target::None;
+                };
+                let bound = |v: &Option<IndexVal>| match v {
+                    Some(iv) if iv.neg => None, // back-index slice ⇒ unsupported
+                    Some(iv) => Some(Some(u32::try_from(iv.value).unwrap_or(u32::MAX))),
+                    None => Some(None),
+                };
+                let (Some(start_opt), Some(end_opt)) = (bound(start), bound(end)) else {
+                    return Target::None;
+                };
+                let id = self.intern_coll(Collection::Slice {
+                    source: c,
+                    start: start_opt.unwrap_or(0),
+                    end: end_opt,
+                });
+                Self::coll_or_reduce_elem(id, ctx)
+            }
+            // `X->axis` — projection of a composite onto a member or candidate
+            // axis (USER ANSWER 3: the projected collection is element-indexable).
+            Expr::Member { base, field, .. } => {
+                let Target::Coll(c) = self.resolve_target(base, ctx) else {
+                    return Target::None;
+                };
+                // Snapshot the axis names so the immutable table borrow ends
+                // before `intern_coll` mutates.
+                let (member_syms, cand_sym): (Vec<Symbol>, Option<Symbol>) =
+                    match self.table.collection(c) {
+                        Collection::Combination { members, candidate, .. } => (
+                            members.iter().map(|m| m.name).collect(),
+                            candidate.as_ref().map(|c| c.name),
+                        ),
+                        _ => return Target::None,
+                    };
+                let fkey = field.name.to_ascii_lowercase();
+                let axis = if let Some(&m) =
+                    member_syms.iter().find(|&&s| self.symbols.key(s) == fkey)
+                {
+                    CombAxis::Member(m)
+                } else if cand_sym.is_some_and(|s| self.symbols.key(s) == fkey) {
+                    CombAxis::Candidate(cand_sym.expect("checked"))
+                } else {
+                    return Target::None;
+                };
+                let id = self.intern_coll(Collection::CombProject { comb: c, axis });
+                Self::coll_or_reduce_elem(id, ctx)
+            }
+            // 4-vector sum (`l1 + l2`): both sides must denote particles. The
+            // result interns canonically (flattened, operand-sorted) so
+            // association and order do not create distinct identities.
+            Expr::Binary {
+                op: BinOp::Add,
+                lhs,
+                rhs,
+                ..
+            } => match (self.target_particle(lhs, ctx), self.target_particle(rhs, ctx)) {
+                (Some(a), Some(b)) => Target::Particle(ParticleRef::sum([a, b])),
+                _ => Target::None,
+            },
             _ => Target::None,
+        }
+    }
+
+    /// A collection target, demoted to the reducer iteration element when it
+    /// IS the reducer's iteration collection (`pt(eles[:2])` inside
+    /// `min(pt(eles[:2]))`, where `eles[:2]` is the iterated slice).
+    fn coll_or_reduce_elem(id: CollectionId, ctx: &Ctx) -> Target {
+        if ctx.reduce_coll == Some(id) {
+            Target::Particle(ParticleRef::ReduceElem)
+        } else {
+            Target::Coll(id)
         }
     }
 
@@ -958,8 +1633,65 @@ impl<'a> Resolver<'a> {
                 } else {
                     *op
                 };
+                // min/max → any/all desugar (P2 analyzer): a monotone
+                // comparison `max(e) > c` ⇔ `any(e > c)` (etc) becomes a
+                // boolean reducer, sharing ONE body with the interpreter
+                // (which evaluates the equivalent fold — no drift). Only the
+                // monotone pairings desugar; `==`/`!=` and anti-monotone keep
+                // the numeric Reduce (opaque ⇒ Unknown). Note `min`/`max` are
+                // never boolean, so this and the boolean hoists are disjoint.
+                // The min/max desugar runs AFTER both sides resolve (below),
+                // so it uniformly catches direct calls AND inlined-define
+                // reducers from one place — no syntactic special-case here.
+                //
+                // Boolean-reducer comparison hoist (P1, interpret-only):
+                // `any(<scalar>) ⋈ c` ⇒ `any over X of (<scalar> ⋈ c)`. Only
+                // fires when the reducer's body is a bare scalar; an
+                // already-boolean body (`any(pt(X) > 10)`) is left intact.
+                if let Some((kind, rargs, rspan)) = Self::as_boolean_reduce(lhs) {
+                    let other = self.resolve_expr(rhs, ctx);
+                    let hoist = move |_s: &mut Self, body: HNode| {
+                        let bspan = body.span;
+                        HNode::new(
+                            HKind::Cmp {
+                                op,
+                                lhs: Box::new(body),
+                                rhs: Box::new(other.clone()),
+                            },
+                            bspan,
+                        )
+                    };
+                    return self.resolve_reduce(kind, rargs, rspan, ctx, Some(&hoist));
+                }
+                if let Some((kind, rargs, rspan)) = Self::as_boolean_reduce(rhs) {
+                    let other = self.resolve_expr(lhs, ctx);
+                    let hoist = move |_s: &mut Self, body: HNode| {
+                        let bspan = body.span;
+                        HNode::new(
+                            HKind::Cmp {
+                                op,
+                                lhs: Box::new(other.clone()),
+                                rhs: Box::new(body),
+                            },
+                            bspan,
+                        )
+                    };
+                    return self.resolve_reduce(kind, rargs, rspan, ctx, Some(&hoist));
+                }
                 let lhs = self.resolve_expr(lhs, ctx);
                 let rhs = self.resolve_expr(rhs, ctx);
+                // Post-resolution min/max desugar: catches a numeric `min`/`max`
+                // reducer that arrived via an INLINED define (`define dphimin =
+                // min(...)`; `select dphimin > 0.4`), where the syntactic call
+                // is hidden behind an identifier. Same monotone-pairing rule,
+                // same shared body (the comparison is hoisted into the existing
+                // reducer body — no re-resolution, so it cannot drift).
+                if let Some(node) = self.desugar_minmax_node(&lhs, op, &rhs, *span) {
+                    return node;
+                }
+                if let Some(node) = self.desugar_minmax_node(&rhs, op.flipped(), &lhs, *span) {
+                    return node;
+                }
                 HNode::new(
                     HKind::Cmp {
                         op,
@@ -976,6 +1708,23 @@ impl<'a> Resolver<'a> {
                 hi,
                 span,
             } => {
+                // Boolean-reducer band hoist: `any(<scalar>) [] lo hi`.
+                if let Some((rkind, rargs, rspan)) = Self::as_boolean_reduce(expr) {
+                    let (bkind, lo, hi) = (*kind, lo.canon(), hi.canon());
+                    let hoist = move |_s: &mut Self, body: HNode| {
+                        let bspan = body.span;
+                        HNode::new(
+                            HKind::Band {
+                                kind: bkind,
+                                expr: Box::new(body),
+                                lo: lo.clone(),
+                                hi: hi.clone(),
+                            },
+                            bspan,
+                        )
+                    };
+                    return self.resolve_reduce(rkind, rargs, rspan, ctx, Some(&hoist));
+                }
                 let inner = self.resolve_expr(expr, ctx);
                 HNode::new(
                     HKind::Band {
@@ -1011,23 +1760,53 @@ impl<'a> Resolver<'a> {
             }
             Expr::Call { name, args, span } => self.resolve_call(name, args, *span, ctx),
             Expr::Dot { base, field, span } => self.resolve_dot(base, field, *span, ctx),
+            Expr::Member { base, field, span } => {
+                // `X->axis` projects a composite onto a member/candidate
+                // collection. In *value* position a bare projection is a
+                // collection used as a scalar — resolve to the projected id so
+                // `size`/index paths reuse it, but tag it unsupported-as-scalar.
+                match self.resolve_target(e, ctx) {
+                    Target::Coll(c) => {
+                        let mut node = HNode::new(HKind::CollValue(c), *span);
+                        node.tag =
+                            Fragment::unsupported("composite axis used as a scalar value");
+                        node
+                    }
+                    _ => {
+                        // Recurse for diagnostics; `field.name` keeps distinct
+                        // accesses (`->j1` vs `->j2`) rendering distinctly.
+                        let _ = self.resolve_expr(base, ctx);
+                        HNode::unsupported(
+                            *span,
+                            format!(
+                                "member access `->{}` of a composite candidate is outside the checked fragment",
+                                field.name
+                            ),
+                        )
+                    }
+                }
+            }
             Expr::Index { span, .. } | Expr::UnderscoreIndex { span, .. } => {
                 match self.resolve_target(e, ctx) {
                     Target::Met => self.met_scalar("pt", *span),
+                    // A bare indexed element used as a scalar means its `.pt`
+                    // magnitude — the same default MET takes, and the IDENTICAL
+                    // `ElemProp{pt}` quantity an explicit `jets[i].pt` produces
+                    // (one QuantityId, one ORD/IDOM/existence fact, one
+                    // interpreter `.pt` read), so encoder and interpreter stay
+                    // in lock-step. Front and back indices alike.
+                    Target::Particle(ParticleRef::Elem { coll, index }) => {
+                        let prop = self.intern_prop("pt");
+                        let q = self
+                            .table
+                            .intern_quantity(Quantity::ElemProp { coll, index, prop });
+                        self.quantity_node(q, *span)
+                    }
+                    // A whole-collection / composite-binder reference is a
+                    // genuine non-scalar (a 4-vector, not a magnitude).
                     Target::Particle(p) => {
-                        let back = matches!(
-                            p,
-                            ParticleRef::Elem {
-                                index: ElemIndex::FromBack(_),
-                                ..
-                            }
-                        );
                         let mut node = HNode::new(HKind::Particle(p), *span);
-                        node.tag = Fragment::unsupported(if back {
-                            "negative index `[-n]` is reserved (OPEN-3)"
-                        } else {
-                            "particle value used as a scalar"
-                        });
+                        node.tag = Fragment::unsupported("particle value used as a scalar");
                         node
                     }
                     _ => HNode::unsupported(*span, "unsupported indexed expression"),
@@ -1042,9 +1821,17 @@ impl<'a> Resolver<'a> {
                 }
                 _ => HNode::unsupported(*span, "unsupported `_` reference"),
             },
-            Expr::Slice { span, .. } => {
-                HNode::unsupported(*span, "slice expressions are outside the checked fragment")
-            }
+            Expr::Slice { span, .. } => match self.resolve_target(e, ctx) {
+                Target::Coll(c) => {
+                    let mut node = HNode::new(HKind::CollValue(c), *span);
+                    node.tag = Fragment::unsupported("slice collection used as a scalar value");
+                    node
+                }
+                _ => HNode::unsupported(
+                    *span,
+                    "slice expression is outside the checked fragment",
+                ),
+            },
             Expr::Braced { args, prop, span } => self.resolve_braced(args, prop, *span, ctx),
             Expr::ParticleList { span, .. } => HNode::unsupported(
                 *span,
@@ -1188,22 +1975,50 @@ impl<'a> Resolver<'a> {
                     .intern_quantity(Quantity::ElemProp { coll, index, prop });
                 self.quantity_node(q, span)
             }
-            Target::Particle(p @ ParticleRef::Binder { .. }) => {
-                let name = self.symbols.intern(&field.name);
-                let q = self.table.intern_quantity(Quantity::ExternalFn {
-                    name,
-                    args: vec![QuantityArg::Particle(p)],
-                });
-                let mut node = HNode::new(HKind::Quantity(q), span);
-                node.tag = Fragment::unsupported(
-                    "composite binder property is outside the checked fragment",
-                );
-                node
-            }
+            Target::Particle(
+                p @ (ParticleRef::ReduceElem
+                | ParticleRef::ThisElem
+                | ParticleRef::Sum(_)
+                | ParticleRef::Binder { .. }),
+            ) => self.reduce_particle_prop(p, &field.name, span),
             Target::Particle(ParticleRef::Met) | Target::None => HNode::unsupported(
                 span,
                 format!("property `.{}` on an unsupported base", field.name),
             ),
+        }
+    }
+
+    /// Property access on a reducer iteration element (`ReduceElem`), the
+    /// outer reducer element (`ThisElem`), a 4-vector sum, or a composite
+    /// binder. Interpret-only (P1): `ReduceElem` props become
+    /// [`HKind::ReduceProp`]; `ThisElem` props are the outer element's
+    /// [`HKind::ElemSelfProp`]; a `Sum`/`Binder` property interns as an opaque
+    /// getter (`InFragment` so `run` evaluates it via the 4-vector / binder
+    /// env), kept a free var for the analyzer.
+    fn reduce_particle_prop(&mut self, p: ParticleRef, prop_name: &str, span: Span) -> HNode {
+        match p {
+            ParticleRef::ReduceElem => {
+                let prop = self.intern_prop(prop_name);
+                HNode::new(HKind::ReduceProp(prop), span)
+            }
+            ParticleRef::ThisElem => {
+                let prop = self.intern_prop(prop_name);
+                HNode::new(HKind::ElemSelfProp(prop), span)
+            }
+            // 4-vector sum getter (`mass(l1+l2)`): interns as an opaque
+            // external function over the canonical sum. The interpreter
+            // computes the real Lorentz value; the analyzer keeps it as a
+            // free interned quantity (P1: no axiom — sound, just no
+            // cross-region cancellation leverage yet). Stays `InFragment` so
+            // `run` evaluates it instead of hard-erroring.
+            p => {
+                let name = self.symbols.intern(prop_name);
+                let q = self.table.intern_quantity(Quantity::ExternalFn {
+                    name,
+                    args: vec![QuantityArg::Particle(p)],
+                });
+                self.quantity_node(q, span)
+            }
         }
     }
 
@@ -1213,7 +2028,19 @@ impl<'a> Resolver<'a> {
         }
         // Multi-argument braced property ({a b}m): opaque external fn.
         let name = self.symbols.intern(&prop.name);
-        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let qargs: Option<Vec<QuantityArg>> =
+            args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let Some(qargs) = qargs else {
+            // Context-tainted argument: no shared identity (see
+            // `context_tainted`); the property access stays opaque.
+            return HNode::unsupported(
+                span,
+                format!(
+                    "braced property `{}` over an element-context argument (no shared identity)",
+                    prop.name
+                ),
+            );
+        };
         let q = self
             .table
             .intern_quantity(Quantity::ExternalFn { name, args: qargs });
@@ -1251,29 +2078,315 @@ impl<'a> Resolver<'a> {
                 });
                 self.quantity_node(q, span)
             }
-            Target::Particle(b @ ParticleRef::Binder { .. }) => {
-                let name = self.symbols.intern(&prop.name);
-                let q = self.table.intern_quantity(Quantity::ExternalFn {
-                    name,
-                    args: vec![QuantityArg::Particle(b)],
-                });
-                let mut node = HNode::new(HKind::Quantity(q), span);
-                node.tag = Fragment::unsupported(
-                    "composite binder property is outside the checked fragment",
-                );
-                node
-            }
+            Target::Particle(
+                p @ (ParticleRef::ReduceElem
+                | ParticleRef::ThisElem
+                | ParticleRef::Sum(_)
+                | ParticleRef::Binder { .. }),
+            ) => self.reduce_particle_prop(p, &prop.name, span),
             Target::Particle(ParticleRef::Met) | Target::None => {
                 // Not a typed target (e.g. `{jets[0] jets[1]}m` handled by
                 // caller; arbitrary expressions stay opaque).
                 let name = self.symbols.intern(&prop.name);
-                let arg = self.opaque_arg(target_expr, ctx);
+                let Some(arg) = self.opaque_arg(target_expr, ctx) else {
+                    // Context-tainted target: no shared identity (see
+                    // `context_tainted`).
+                    return HNode::unsupported(
+                        span,
+                        format!(
+                            "property `{}` over an element-context target (no shared identity)",
+                            prop.name
+                        ),
+                    );
+                };
                 let q = self.table.intern_quantity(Quantity::ExternalFn {
                     name,
                     args: vec![arg],
                 });
                 self.quantity_node(q, span)
             }
+        }
+    }
+
+    /// If `e` is a *boolean* reducer call (`any`/`all`), return its kind,
+    /// argument list and span — the operand a surrounding comparison/band
+    /// hoists into. Numeric reducers (`sum`/`min`/`max`) are NOT hoisted:
+    /// they evaluate to a number and the comparison applies to that number.
+    fn as_boolean_reduce(e: &Expr) -> Option<(ReduceKind, &[Arg], Span)> {
+        if let Expr::Call { name, args, span } = e {
+            let kind = Self::reduce_kind(&name.name.to_ascii_lowercase())?;
+            if kind.is_boolean() {
+                return Some((kind, args, *span));
+            }
+        }
+        None
+    }
+
+    /// The boolean reducer a `min`/`max(e) ⋈ c` comparison desugars to, for
+    /// the **monotone** pairings only (P2 analyzer desugar):
+    ///
+    /// - `max(e) > c` / `max(e) >= c`  ⇔ `any(e ⋈ c)`
+    /// - `max(e) < c` / `max(e) <= c`  ⇔ `all(e ⋈ c)`
+    /// - `min(e) < c` / `min(e) <= c`  ⇔ `any(e ⋈ c)`
+    /// - `min(e) > c` / `min(e) >= c`  ⇔ `all(e ⋈ c)`
+    ///
+    /// `==`/`!=` and the anti-monotone pairings return `None` (the numeric
+    /// fold stays opaque ⇒ Unknown — sound, just not desugared). `op` is the
+    /// relation applied with the reducer on the **left** (callers flip it
+    /// when the reducer is on the right).
+    fn minmax_desugar_kind(reduce: ReduceKind, op: CmpOp) -> Option<ReduceKind> {
+        use CmpOp::{Ge, Gt, Le, Lt};
+        match (reduce, op) {
+            (ReduceKind::Max, Gt | Ge) | (ReduceKind::Min, Lt | Le) => Some(ReduceKind::Any),
+            (ReduceKind::Max, Lt | Le) | (ReduceKind::Min, Gt | Ge) => Some(ReduceKind::All),
+            _ => None,
+        }
+    }
+
+    /// Desugar an already-resolved numeric `min`/`max` reducer compared
+    /// against `other` (`reduce_node <rule_op> other`) into the equivalent
+    /// boolean reducer, for the monotone pairings only. `rule_op` is the
+    /// relation **with the reducer on the left** (callers flip it for a
+    /// right-hand reducer). The comparison is hoisted into the existing
+    /// reducer body (`min(e) > c → all(e > c)`), reusing the SAME resolved
+    /// body so the interpreter and analyzer share one node — no drift.
+    ///
+    /// **Empty-collection boundary** (USER ANSWER 2: `min`/`max` over an
+    /// empty collection is a `NonValue`, i.e. the comparison is *false*).
+    /// `any` matches this for free (`any` over empty is false), but `all`
+    /// over empty is vacuously *true* — so an `All`-target desugar
+    /// (`min(e) > c`, `max(e) < c`) is conjoined with `size(coll) > 0` to
+    /// keep the empty case cut-false. `Any`-target desugars need no guard.
+    fn desugar_minmax_node(
+        &mut self,
+        reduce_node: &HNode,
+        rule_op: CmpOp,
+        other: &HNode,
+        span: Span,
+    ) -> Option<HNode> {
+        let HKind::Reduce {
+            kind: mkind,
+            coll,
+            body,
+            slice,
+        } = &reduce_node.kind
+        else {
+            return None;
+        };
+        if !matches!(mkind, ReduceKind::Min | ReduceKind::Max) {
+            return None;
+        }
+        let (coll, slice) = (*coll, *slice);
+        let dkind = Self::minmax_desugar_kind(*mkind, rule_op)?;
+        let bspan = body.span;
+        let cmp_body = HNode::new(
+            HKind::Cmp {
+                op: rule_op,
+                lhs: body.clone(),
+                rhs: Box::new(other.clone()),
+            },
+            bspan,
+        );
+        let mut reduce = HNode::new(
+            HKind::Reduce {
+                kind: dkind,
+                coll,
+                body: Box::new(cmp_body),
+                slice,
+            },
+            span,
+        );
+        reduce.tag = Fragment::InFragment;
+        // `all` is vacuously true on an empty collection, but min/max over an
+        // empty collection is cut-false — guard the All-target desugar so the
+        // empty case agrees with the numeric fold.
+        if dkind == ReduceKind::All {
+            let size_q = self.table.intern_quantity(Quantity::Size(coll));
+            let size_node = self.quantity_node(size_q, span);
+            let nonempty = HNode::new(
+                HKind::Cmp {
+                    op: CmpOp::Gt,
+                    lhs: Box::new(size_node),
+                    rhs: Box::new(HNode::new(HKind::Num("0".to_owned()), span)),
+                },
+                span,
+            );
+            return Some(HNode::new(HKind::And(vec![nonempty, reduce]), span));
+        }
+        Some(reduce)
+    }
+
+    /// Reducer kind for a call name, if any (`any`/`all`/`sum`/`min`/`max`).
+    fn reduce_kind(lc: &str) -> Option<ReduceKind> {
+        match lc {
+            "any" => Some(ReduceKind::Any),
+            "all" => Some(ReduceKind::All),
+            "sum" => Some(ReduceKind::Sum),
+            "min" => Some(ReduceKind::Min),
+            "max" => Some(ReduceKind::Max),
+            _ => None,
+        }
+    }
+
+    /// Resolve a reducer call (`any`/`all`/`sum`/`min`/`max`). Interpret-only
+    /// (P1): the iteration collection is the *single* plural collection
+    /// appearing in the body; a body with zero or more than one plural
+    /// occurrence (including a self-cross like `dR(leptons, leptons)`) is
+    /// `Unsupported`, which is sound. `cmp_hoist` carries the surrounding
+    /// comparison/band for a boolean reducer whose body is a bare scalar
+    /// (`any(dR(this, X)) < 0.4` ⇒ `any over X of dR(this, X) < 0.4`).
+    // The `cmp_hoist` closure is `&dyn Fn(&mut Self, HNode) -> HNode`; the
+    // alias form trips a higher-ranked-lifetime mismatch, so it is inlined.
+    #[allow(clippy::type_complexity)]
+    fn resolve_reduce(
+        &mut self,
+        kind: ReduceKind,
+        args: &[Arg],
+        span: Span,
+        ctx: &Ctx,
+        cmp_hoist: Option<&dyn Fn(&mut Self, HNode) -> HNode>,
+    ) -> HNode {
+        // Scalar n-ary `min`/`max`: two or more arguments is the minimum of
+        // scalar VALUES (`min(MTb0, MTb1)`), a different operator from the
+        // collection reducer. Build a value node (the enclosing comparison
+        // desugars it monotonically in the encoder); a bare-collection arg
+        // resolves to an Unsupported scalar and soundly poisons the node.
+        if matches!(kind, ReduceKind::Min | ReduceKind::Max) && args.len() >= 2 {
+            let nodes: Vec<HNode> = args
+                .iter()
+                .map(|a| match a {
+                    Arg::Expr(e) => self.resolve_expr(e, ctx),
+                    _ => HNode::unsupported(span, "min/max argument must be an expression"),
+                })
+                .collect();
+            return HNode::new(HKind::ScalarMinMax { kind, args: nodes }, span);
+        }
+        let [Arg::Expr(body_expr)] = args else {
+            return HNode::unsupported(
+                span,
+                format!("`{}` expects a single expression argument", kind.as_str()),
+            );
+        };
+        // Probe pass: resolve the body with `this` as the outer element so we
+        // can find the iteration collection without yet substituting it.
+        let probe_ctx = Ctx {
+            this_as_particle: true,
+            reduce_coll: None,
+            ..ctx.clone()
+        };
+        let probe = self.resolve_expr(body_expr, &probe_ctx);
+        // Every plural occurrence (NOT deduplicated): the body must reference
+        // exactly ONE collection exactly ONCE. Zero leaves nothing to iterate;
+        // a self-cross (`dR(leptons, leptons)`) or two distinct collections is
+        // a tuple iteration we do not model here ⇒ Unsupported (sound).
+        let mut occurrences = Vec::new();
+        self.collect_plural_colls(&probe, &mut occurrences);
+        if occurrences.len() != 1 {
+            return HNode::unsupported(
+                span,
+                format!(
+                    "`{}` body must reference exactly one collection once (found {} plural references)",
+                    kind.as_str(),
+                    occurrences.len()
+                ),
+            );
+        }
+        let coll = occurrences[0];
+        // Resolve pass: references to the iteration collection become the
+        // current element; `this` stays the outer element.
+        let body_ctx = Ctx {
+            this_as_particle: true,
+            reduce_coll: Some(coll),
+            ..ctx.clone()
+        };
+        let mut body = self.resolve_expr(body_expr, &body_ctx);
+
+        if kind.is_boolean() {
+            // Boolean reducers fold a predicate. A bare-scalar body hoists the
+            // surrounding comparison/band; an already-boolean body uses itself.
+            if !Self::is_boolean(&body) {
+                match cmp_hoist {
+                    Some(hoist) => body = hoist(self, body),
+                    None => {
+                        return HNode::unsupported(
+                            span,
+                            format!(
+                                "`{}` of a scalar needs a comparison (e.g. `{}(...) < c`)",
+                                kind.as_str(),
+                                kind.as_str()
+                            ),
+                        );
+                    }
+                }
+            }
+        } else if Self::is_boolean(&body) {
+            return HNode::unsupported(
+                span,
+                format!("`{}` expects a numeric body", kind.as_str()),
+            );
+        }
+
+        let mut node = HNode::new(
+            HKind::Reduce {
+                kind,
+                coll,
+                body: Box::new(body),
+                slice: None,
+            },
+            span,
+        );
+        // The body's own out-of-fragment leaves propagate via `has_unsupported`;
+        // the Reduce node itself is in-fragment for the interpreter (P1).
+        node.tag = Fragment::InFragment;
+        node
+    }
+
+    /// Collect every *plural* collection reference inside a resolved body
+    /// (`Whole(C)` particle args, `CollProp{C}`, `CollValue(C)`) — the
+    /// candidates for a reducer's iteration collection. Fixed references
+    /// (indexed elements, `size`, MET) are not collected.
+    fn collect_plural_colls(&self, node: &HNode, out: &mut Vec<CollectionId>) {
+        match &node.kind {
+            HKind::CollProp { coll, .. } | HKind::CollValue(coll) => out.push(*coll),
+            HKind::Quantity(q) => {
+                if let Quantity::AngularSep { a, b, .. } = self.table.quantity(*q) {
+                    if let ParticleRef::Whole(c) = a {
+                        out.push(*c);
+                    }
+                    if let ParticleRef::Whole(c) = b {
+                        out.push(*c);
+                    }
+                } else if let Quantity::ExternalFn { args, .. } = self.table.quantity(*q) {
+                    for arg in args {
+                        if let QuantityArg::Particle(ParticleRef::Whole(c))
+                        | QuantityArg::Collection(c)
+                        | QuantityArg::CollProp { coll: c, .. } = arg
+                        {
+                            out.push(*c);
+                        }
+                    }
+                }
+            }
+            HKind::Neg(a) | HKind::Not(a) | HKind::Abs(a) => self.collect_plural_colls(a, out),
+            HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => {
+                self.collect_plural_colls(lhs, out);
+                self.collect_plural_colls(rhs, out);
+            }
+            HKind::And(v) | HKind::Or(v) => {
+                for n in v {
+                    self.collect_plural_colls(n, out);
+                }
+            }
+            HKind::Band { expr, .. } => self.collect_plural_colls(expr, out),
+            HKind::Ternary { guard, then, els } => {
+                self.collect_plural_colls(guard, out);
+                self.collect_plural_colls(then, out);
+                if let Some(e) = els {
+                    self.collect_plural_colls(e, out);
+                }
+            }
+            HKind::Reduce { body, .. } => self.collect_plural_colls(body, out),
+            _ => {}
         }
     }
 
@@ -1285,6 +2398,10 @@ impl<'a> Resolver<'a> {
         {
             let inner = self.resolve_expr(e, ctx);
             return HNode::new(HKind::Abs(Box::new(inner)), span);
+        }
+
+        if let Some(kind) = Self::reduce_kind(&lc) {
+            return self.resolve_reduce(kind, args, span, ctx, None);
         }
 
         let ang = match lc.as_str() {
@@ -1339,7 +2456,20 @@ impl<'a> Resolver<'a> {
 
         let declared = self.ext.is_function(&name.name) || self.ext.is_property(&name.name);
         let fname = self.symbols.intern(&name.name);
-        let qargs: Vec<QuantityArg> = args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        let qargs: Option<Vec<QuantityArg>> =
+            args.iter().map(|a| self.quantity_arg(a, ctx)).collect();
+        // A context-tainted argument (element-relative or unsupported — see
+        // `context_tainted`) must not intern an ExternalFn identity at all:
+        // the call stays an opaque conjunct with no shared solver variable.
+        let Some(qargs) = qargs else {
+            return HNode::unsupported(
+                span,
+                format!(
+                    "call `{}` over an element-context argument (no shared identity)",
+                    name.name
+                ),
+            );
+        };
         let q = self.table.intern_quantity(Quantity::ExternalFn {
             name: fname,
             args: qargs,
@@ -1373,18 +2503,51 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn quantity_arg(&mut self, arg: &Arg, ctx: &Ctx) -> QuantityArg {
+    /// True if `node` cannot serve as a context-free identity key for an
+    /// opaque external argument: it contains an Unsupported node (whose
+    /// render discards the DIFFERING substructure behind a reason string) or
+    /// an element-relative leaf (`this.prop` / `@elem.prop`, whose render
+    /// discards the OWNING collection). Interning such a key would unify
+    /// physically different per-element values across object blocks — a
+    /// reproduced false-PROVEN factory (soundness review S2: every block's
+    /// `dR(<own element>, X)` collapsed to one solver variable). Callers must
+    /// fail closed (the enclosing call becomes Unsupported) instead of
+    /// interning. Structural keys (proof-system v2, Phase 3) replace this.
+    fn context_tainted(node: &HNode) -> bool {
+        if node.has_unsupported() {
+            return true;
+        }
+        matches!(node.kind, HKind::ElemSelfProp(_) | HKind::ReduceProp(_))
+            || node.children().iter().any(|c| Self::context_tainted(c))
+    }
+
+    /// `None` = the argument is context-tainted (see [`Self::context_tainted`])
+    /// and the enclosing call must fail closed rather than intern an identity.
+    fn quantity_arg(&mut self, arg: &Arg, ctx: &Ctx) -> Option<QuantityArg> {
         match arg {
-            Arg::Str(s) => QuantityArg::Opaque(format!("{:?}", s.value)),
-            Arg::Path(p) => QuantityArg::Opaque(p.value.clone()),
+            Arg::Str(s) => Some(QuantityArg::Opaque(format!("{:?}", s.value))),
+            Arg::Path(p) => Some(QuantityArg::Opaque(p.value.clone())),
             Arg::Expr(e) => {
                 if let Expr::Num(n) = e.as_ref() {
-                    return QuantityArg::Num(n.canon());
+                    return Some(QuantityArg::Num(n.canon()));
+                }
+                // A bare PROPERTY name inside an object-block cut means the
+                // implicit element's property (`sqrt(pt)` = sqrt of THIS
+                // element's pt). Target resolution would instead fall back to
+                // an unknown-collection private base named `pt` — one SHARED
+                // identity for every block's differently-meant argument, the
+                // third route into review S2's false PROVEN (beside the
+                // elem-self and binder renders). Fail closed like the others.
+                if let Expr::Ident(id) = e.as_ref()
+                    && ctx.elem_source.is_some()
+                    && self.ext.is_property(&id.name)
+                {
+                    return None;
                 }
                 match self.resolve_target(e, ctx) {
-                    Target::Met => return QuantityArg::Particle(ParticleRef::Met),
-                    Target::Coll(c) => return QuantityArg::Collection(c),
-                    Target::Particle(p) => return QuantityArg::Particle(p),
+                    Target::Met => return Some(QuantityArg::Particle(ParticleRef::Met)),
+                    Target::Coll(c) => return Some(QuantityArg::Collection(c)),
+                    Target::Particle(p) => return Some(QuantityArg::Particle(p)),
                     Target::ElemSelf | Target::None => {}
                 }
                 self.opaque_arg(e, ctx)
@@ -1393,22 +2556,25 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve an expression argument to the most precise `QuantityArg`.
-    fn opaque_arg(&mut self, e: &Expr, ctx: &Ctx) -> QuantityArg {
+    /// `None` = context-tainted (the caller fails closed).
+    fn opaque_arg(&mut self, e: &Expr, ctx: &Ctx) -> Option<QuantityArg> {
         if let Expr::ParticleList { items, .. } = e {
-            let parts: Vec<String> = items
-                .iter()
-                .map(|item| {
-                    let node = self.resolve_expr(item, ctx);
-                    self.render_node(&node)
-                })
-                .collect();
-            return QuantityArg::Opaque(format!("[{}]", parts.join(" ")));
+            let mut parts: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let node = self.resolve_expr(item, ctx);
+                if Self::context_tainted(&node) {
+                    return None;
+                }
+                parts.push(self.render_node(&node));
+            }
+            return Some(QuantityArg::Opaque(format!("[{}]", parts.join(" "))));
         }
         let node = self.resolve_expr(e, ctx);
         match node.kind {
-            HKind::Quantity(q) if node.tag.is_in_fragment() => QuantityArg::Quantity(q),
-            HKind::CollProp { coll, prop } => QuantityArg::CollProp { coll, prop },
-            _ => QuantityArg::Opaque(self.render_node(&node)),
+            HKind::Quantity(q) if node.tag.is_in_fragment() => Some(QuantityArg::Quantity(q)),
+            HKind::CollProp { coll, prop } => Some(QuantityArg::CollProp { coll, prop }),
+            _ if Self::context_tainted(&node) => None,
+            _ => Some(QuantityArg::Opaque(self.render_node(&node))),
         }
     }
 }

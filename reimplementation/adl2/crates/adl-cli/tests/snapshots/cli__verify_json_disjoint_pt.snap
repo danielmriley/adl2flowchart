@@ -3,9 +3,13 @@ source: crates/adl-cli/tests/cli.rs
 expression: stdout(&out)
 ---
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "unit": "disjoint_pt.adl",
   "solver": "none",
+  "sampling": {
+    "events": 64,
+    "refutations": 0
+  },
   "regions": [
     {
       "name": "SR_low",
@@ -64,7 +68,7 @@ expression: stdout(&out)
     },
     {
       "id": "NNEG",
-      "statement": "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external calls named exactly pt/m/mass/e/energy/dr (case-insensitive)",
+      "statement": "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)",
       "assumption": "none",
       "instances": 2
     },

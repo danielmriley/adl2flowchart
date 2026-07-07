@@ -1,0 +1,12 @@
+# GOLDEN-EMPTY BACKIDXORDER
+# GROUND-TRUTH: collections are pT-descending, so the last jet jets[-1].pt <= the first jet jets[0].pt always. Requiring jets[-1].pt > jets[0].pt is impossible. Any valid event (e.g. jets pt=[300,80]) has jets[-1].pt <= jets[0].pt. Proven via front-to-back ORD (pt(jets[0]) >= pt(jets[-1]), sound because i==0 and k==1).
+object jets
+  take Jet
+  select pt > 30
+
+region OPEN
+  select size(jets) >= 2
+
+region BACKIDXORDER
+  select size(jets) >= 2
+  select jets[-1].pt > jets[0].pt

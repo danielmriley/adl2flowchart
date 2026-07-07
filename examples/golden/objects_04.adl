@@ -1,0 +1,13 @@
+# GOLDEN Rlow Rhigh DISJOINT
+# GROUND-TRUTH: g is the same filtered jet collection in both regions; Rlow needs size(g)<=1, Rhigh needs size(g)>=2. A single integer count cannot be both <=1 and >=2. Event {1 jet pt=40} in Rlow only; {2 jets pt>=35} in Rhigh only; {} in Rlow only.
+# Opposite size cuts on the SAME object make the regions disjoint.
+
+object g
+  take Jet
+  select pt > 30
+
+region Rlow
+  select size(g) <= 1
+
+region Rhigh
+  select size(g) >= 2

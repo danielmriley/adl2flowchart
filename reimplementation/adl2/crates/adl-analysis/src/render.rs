@@ -61,6 +61,8 @@ impl Style {
         let code = match kind {
             VerdictKind::ProvenDisjoint => "32",
             VerdictKind::ProvenOverlapping => "31",
+            VerdictKind::CandidateOverlapping => "36",
+            VerdictKind::CandidateDisjoint => "36",
             VerdictKind::PossiblyOverlapping => "33",
             VerdictKind::Unknown => "35",
         };
@@ -71,6 +73,8 @@ impl Style {
             'D' => "32",
             'O' => "31",
             's' => "31",
+            'c' => "36",
+            'd' => "36",
             '?' => "33",
             'U' => "35",
             'E' => "36",
@@ -335,37 +339,90 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
     }
 
     if !report.internal_diagnostics.is_empty() {
+        // The default view keeps this to one discoverable line — the full
+        // entries (each embeds a rejected witness event) are screenfuls and
+        // belong in `--explain` / `--json`, not the headline report. Every
+        // one is a sound POSSIBLY downgrade; it never changes a verdict.
+        let n = report.internal_diagnostics.len();
         let _ = writeln!(
             s,
-            "\n{}",
-            st.head("== INTERNAL DIAGNOSTICS (bugs, please report) ==")
+            "\n{} {n} witness-validation diagnostic{} (POSSIBLY downgrades, no verdict changed) — see --explain or --json",
+            st.head("note:"),
+            if n == 1 { "" } else { "s" }
         );
-        for d in &report.internal_diagnostics {
-            let _ = writeln!(s, "  {d}");
-        }
     }
 
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 6];
     for p in &report.pairwise {
         counts[match p.kind {
             VerdictKind::ProvenDisjoint => 0,
             VerdictKind::ProvenOverlapping => 1,
-            VerdictKind::PossiblyOverlapping => 2,
-            VerdictKind::Unknown => 3,
+            VerdictKind::CandidateOverlapping => 2,
+            VerdictKind::PossiblyOverlapping => 3,
+            VerdictKind::Unknown => 4,
+            VerdictKind::CandidateDisjoint => 5,
         }] += 1;
+    }
+    let mut candidate_note = if counts[2] > 0 {
+        format!(", {} candidate overlapping", counts[2])
+    } else {
+        String::new()
+    };
+    // Only present when certification ran and left uncertified pairs, so
+    // pre-Phase-4 output stays byte-stable.
+    if counts[5] > 0 {
+        candidate_note.push_str(&format!(", {} candidate disjoint", counts[5]));
     }
     let _ = writeln!(
         s,
-        "\n{} {} pair{} — {} proven disjoint, {} proven overlapping, {} possibly overlapping, {} unknown",
+        "\n{} {} pair{} — {} proven disjoint, {} proven overlapping{}, {} possibly overlapping, {} unknown",
         st.head("summary:"),
         report.pairwise.len(),
         if report.pairwise.len() == 1 { "" } else { "s" },
         counts[0],
         counts[1],
-        counts[2],
-        counts[3]
+        candidate_note,
+        counts[3],
+        counts[4]
     );
+    // In a merged/cross-file run (regions namespaced `file::region`) the
+    // summary above lumps intra-analysis SR pairs with the cross-analysis
+    // pairs that are the whole point of `--cross` — so call out the
+    // cross-file subset explicitly, or the headline reads as a cross-analysis
+    // result when every proof was intra-file.
+    if report.regions.iter().any(|r| r.name.contains("::")) {
+        let (cross, intra): (Vec<_>, Vec<_>) =
+            report.pairwise.iter().partition(|p| pair_is_cross(p));
+        let cd = cross.iter().filter(|p| p.kind == VerdictKind::ProvenDisjoint).count();
+        let co = cross
+            .iter()
+            .filter(|p| matches!(p.kind, VerdictKind::ProvenOverlapping | VerdictKind::CandidateOverlapping))
+            .count();
+        let _ = writeln!(
+            s,
+            "  cross-file: {} of {} pairs span two analyses ({} proven disjoint, {} overlapping/candidate); the other {} are intra-analysis",
+            cross.len(),
+            report.pairwise.len(),
+            cd,
+            co,
+            intra.len()
+        );
+    }
     fix_negative_zero(&s)
+}
+
+/// A pairwise verdict spans two different analyses iff its regions carry
+/// different `file::` namespaces (only merged/cross-file reports namespace
+/// region names; a single-file report never contains `::`). Split on the
+/// LAST `::`: an ADL region identifier can never contain a colon, but a
+/// unit label (a file path) can — `x::y.adl::SR` namespaces `SR` under
+/// `x::y.adl`. Merge disambiguates colliding unit labels, so equal prefixes
+/// really mean the same analysis.
+fn pair_is_cross(p: &PairReport) -> bool {
+    match (p.a.rsplit_once("::"), p.b.rsplit_once("::")) {
+        (Some((fa, _)), Some((fb, _))) => fa != fb,
+        _ => false,
+    }
 }
 
 fn render_findings(report: &Report, st: &Style, empty_regions: &[&str], s: &mut String) {
@@ -554,18 +611,32 @@ fn render_matrix(report: &Report, st: &Style, empty_set: &BTreeSet<&str>, s: &mu
                     'O'
                 }
             }
+            VerdictKind::CandidateOverlapping => 'c',
+            VerdictKind::CandidateDisjoint => 'd',
             VerdictKind::PossiblyOverlapping => '?',
             VerdictKind::Unknown => 'U',
         }
     };
 
     let _ = writeln!(s, "\n{}", st.head("== verdict matrix =="));
+    // The candidate-disjoint legend entry appears only when the tier is
+    // present (certification runs), keeping default output byte-stable.
+    let cand_dis = if report
+        .pairwise
+        .iter()
+        .any(|p| p.kind == VerdictKind::CandidateDisjoint)
+    {
+        format!("   {} candidate disjoint (uncertified)", st.letter('d'))
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         s,
-        "  {} disjoint   {} overlapping   {} subset (overlap)   {} possibly   {} unknown   {} empty region",
+        "  {} disjoint   {} overlapping   {} subset (overlap)   {} candidate (unvalidated){cand_dis}   {} possibly   {} unknown   {} empty region",
         st.letter('D'),
         st.letter('O'),
         st.letter('s'),
+        st.letter('c'),
         st.letter('?'),
         st.letter('U'),
         st.letter('E')

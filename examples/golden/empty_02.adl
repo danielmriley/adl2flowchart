@@ -1,0 +1,9 @@
+# GOLDEN-EMPTY HT_BAND_CONTRA
+# GROUND-TRUTH: HT in band [0,10] forces HT<=10, contradicting HT>50; no event passes. e.g. HT=5 fails >50, HT=60 fails the band.
+object jets
+  take Jet
+  select pt > 30
+
+region HT_BAND_CONTRA
+  select HT [] 0 10
+  select HT > 50

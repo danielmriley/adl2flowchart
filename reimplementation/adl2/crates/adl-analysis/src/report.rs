@@ -6,13 +6,39 @@
 use serde::Serialize;
 
 /// Bumped on any breaking schema change.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v2: pairwise `kind` gained `"candidate_overlapping"` (a SAT overlap whose
+/// witness the interpreter could not validate). Under v1 such a pair was
+/// reported `"proven_overlapping"`, so a consumer summing proven overlaps
+/// reads different totals across the change — a meaning change, hence the
+/// bump. Treat `kind` as an open set going forward.
+///
+/// v3 (proof-system v2 Phase 4): `kind` gained `"candidate_disjoint"` (a
+/// solver-UNSAT disjointness the independent exact-rational certifier could
+/// not verify — only under `--certify`), and pairwise rows gained
+/// `certified` (true = an independently replay-checked Farkas certificate
+/// backs the disjointness; absent = certification did not run).
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerdictKind {
     ProvenDisjoint,
     ProvenOverlapping,
+    /// A joint SAT model exists, but the overlap rests on an opaque
+    /// quantity the interpreter cannot decide, so the witness could not be
+    /// re-validated — a candidate overlap, NOT a proof. Distinct from
+    /// `ProvenOverlapping` so the "never emit a false PROVEN" contract is
+    /// never overclaimed; conservative for combination (a candidate that is
+    /// really empty blocks a merge rather than allowing a double-count).
+    CandidateOverlapping,
+    /// The solver reported UNSAT for the disjointness query, but the
+    /// independent exact-rational certifier could not verify the proof
+    /// (budget, shape, or an integrality-only refutation under the real
+    /// relaxation) — a candidate, NOT a proof. Only produced under
+    /// `--certify` (proof-system v2 Phase 4): with certification off,
+    /// solver-UNSAT still reports PROVEN DISJOINT as before.
+    CandidateDisjoint,
     PossiblyOverlapping,
     Unknown,
 }
@@ -23,6 +49,8 @@ impl VerdictKind {
         match self {
             VerdictKind::ProvenDisjoint => "PROVEN DISJOINT",
             VerdictKind::ProvenOverlapping => "PROVEN OVERLAPPING",
+            VerdictKind::CandidateOverlapping => "CANDIDATE OVERLAPPING",
+            VerdictKind::CandidateDisjoint => "CANDIDATE DISJOINT",
             VerdictKind::PossiblyOverlapping => "POSSIBLY OVERLAPPING",
             VerdictKind::Unknown => "UNKNOWN",
         }
@@ -71,6 +99,15 @@ impl CoreItem {
 }
 
 /// One witness value (quantity in source notation). `derived` marks
+/// Sampling-gate accounting (see [`Report::sampling`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SamplingInfo {
+    /// Battery size every UNSAT-side PROVEN verdict was checked against.
+    pub events: usize,
+    /// Verdicts the gate demoted (each is a filed internal contradiction).
+    pub refutations: usize,
+}
+
 /// values for quantities introduced by axioms rather than the regions'
 /// own cuts.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -120,6 +157,15 @@ pub struct PairReport {
     /// verdict (opaque quantities) — the witness is a candidate only.
     /// `None`: no witness.
     pub witness_validated: Option<bool>,
+    /// UNSAT-side mirror of `witness_validated` (proof-system v2 Phase 4):
+    /// `Some(true)` = the disjointness proof was verified by the independent
+    /// exact-rational certifier (a replay-checked Farkas certificate over
+    /// the unsat core); `Some(false)` = certification ran and could not
+    /// verify it (the pair reports CANDIDATE DISJOINT); `None` =
+    /// certification did not run (`--certify` off, or the pair is not a
+    /// solver-UNSAT disjointness).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certified: Option<bool>,
     pub core: Vec<CoreItem>,
 }
 
@@ -156,6 +202,20 @@ pub struct Report {
     pub schema_version: u32,
     pub unit: String,
     pub solver: String,
+    /// Set when a solver WAS selected but its checks failed to run (e.g. the
+    /// `z3` binary vanished between the probe and use): verdicts silently
+    /// degraded to UNKNOWN/POSSIBLY, and the CLI must warn as loudly as it
+    /// does for no-solver-found. Absent in healthy runs (and omitted from
+    /// JSON), so existing consumers are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_degraded: Option<String>,
+    /// Sampling-gate accounting (proof-system v2 Phase 1): how many synthetic
+    /// events every UNSAT-side PROVEN verdict was refuted against, and how
+    /// many verdicts the gate demoted (each demotion also files an
+    /// internal-contradiction diagnostic — a refutation is an encoder/axiom
+    /// bug, not a user error). Absent when the gate is disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingInfo>,
     pub regions: Vec<RegionReport>,
     pub pairwise: Vec<PairReport>,
     pub bin_checks: Vec<BinCheckReport>,
@@ -204,8 +264,14 @@ impl Report {
         let mut out = Vec::new();
         if fail_on.overlap {
             for p in &self.pairwise {
-                if p.kind == VerdictKind::ProvenOverlapping {
-                    out.push(format!("overlap: {} vs {}", p.a, p.b));
+                match p.kind {
+                    VerdictKind::ProvenOverlapping => {
+                        out.push(format!("overlap: {} vs {}", p.a, p.b));
+                    }
+                    VerdictKind::CandidateOverlapping => {
+                        out.push(format!("candidate overlap: {} vs {}", p.a, p.b));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -392,23 +458,33 @@ impl Report {
                 let _ = writeln!(s, "{d}");
             }
         }
-        let mut counts = (0usize, 0usize, 0usize, 0usize);
+        let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         for p in &self.pairwise {
             match p.kind {
                 VerdictKind::ProvenDisjoint => counts.0 += 1,
                 VerdictKind::ProvenOverlapping => counts.1 += 1,
-                VerdictKind::PossiblyOverlapping => counts.2 += 1,
-                VerdictKind::Unknown => counts.3 += 1,
+                VerdictKind::CandidateOverlapping => counts.2 += 1,
+                VerdictKind::CandidateDisjoint => counts.3 += 1,
+                VerdictKind::PossiblyOverlapping => counts.4 += 1,
+                VerdictKind::Unknown => counts.5 += 1,
             }
         }
+        // The candidate-disjoint segment only appears when the tier exists
+        // (certification runs), keeping the pre-Phase-4 summary byte-stable.
+        let cand_dis = if counts.3 > 0 {
+            format!("; candidate disjoint: {}", counts.3)
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             s,
-            "\n== summary ==\npairs: {}; proven disjoint: {}; proven overlapping: {}; possibly overlapping: {}; unknown: {}",
+            "\n== summary ==\npairs: {}; proven disjoint: {}{cand_dis}; proven overlapping: {}; candidate overlapping: {}; possibly overlapping: {}; unknown: {}",
             self.pairwise.len(),
             counts.0,
             counts.1,
             counts.2,
-            counts.3
+            counts.4,
+            counts.5
         );
         crate::render::fix_negative_zero(&s)
     }

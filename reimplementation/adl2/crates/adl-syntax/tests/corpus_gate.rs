@@ -29,8 +29,8 @@ fn all_corpus_files_parse_with_zero_errors() {
     files.sort();
     assert_eq!(
         files.len(),
-        68,
-        "expected the 68-file corpus, got {}",
+        136,
+        "expected the 136-file corpus (68 base + 58 golden + 10 golden-cross), got {}",
         files.len()
     );
 

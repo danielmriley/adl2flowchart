@@ -63,15 +63,14 @@ pub struct InfoBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InfoLine {
     pub key: Ident,
-    pub items: Vec<InfoItem>,
+    /// Free-form metadata value: the raw rest of the line after the key,
+    /// trimmed. Never semantically analyzed, so kept as opaque text
+    /// (may contain URLs, arithmetic, punctuation; SPEC_LANGUAGE info-line).
+    pub value: String,
+    /// Span of the value text; empty (`key.span` collapsed) when there is
+    /// no value after the key.
+    pub value_span: Span,
     pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum InfoItem {
-    Ident(Ident),
-    Str(StrLit),
-    Num(NumLit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +157,15 @@ pub enum ObjectStmt {
         cond: Expr,
         span: Span,
     },
+    /// Derived candidate inside a composite block: `object <name> = <expr>`
+    /// (canonical) or `candidate <name> = <expr>` (NPS dialect synonym).
+    /// Both forms are equivalent; `keyword` records which was written.
+    Derived {
+        keyword: String,
+        name: Ident,
+        body: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +173,9 @@ pub enum TakeSource {
     Ident(Ident),
     Call { name: Ident, args: Vec<Arg> },
     Union { members: Vec<Ident>, span: Span },
+    /// A postfix collection expression as a take source (`take coll[2:]`,
+    /// `take coll[:4]`): the source is the sliced/indexed collection.
+    Expr(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +349,21 @@ impl CmpOp {
             CmpOp::ApproxEq => "~=",
         }
     }
+
+    /// The relation with operands swapped (`a ⋈ b` ⇔ `b flipped(⋈) a`):
+    /// `>`↔`<`, `>=`↔`<=`; `==`/`!=`/`~=` are symmetric.
+    #[must_use]
+    pub fn flipped(self) -> CmpOp {
+        match self {
+            CmpOp::Gt => CmpOp::Lt,
+            CmpOp::Lt => CmpOp::Gt,
+            CmpOp::Ge => CmpOp::Le,
+            CmpOp::Le => CmpOp::Ge,
+            CmpOp::Eq => CmpOp::Eq,
+            CmpOp::Ne => CmpOp::Ne,
+            CmpOp::ApproxEq => CmpOp::ApproxEq,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,6 +449,12 @@ pub enum Expr {
         field: Ident,
         span: Span,
     },
+    /// `base->field` — member access into a composite candidate.
+    Member {
+        base: Box<Expr>,
+        field: Ident,
+        span: Span,
+    },
     /// `base[i]` single-element index.
     Index {
         base: Box<Expr>,
@@ -483,6 +515,7 @@ impl Expr {
             | Expr::Ternary { span, .. }
             | Expr::Call { span, .. }
             | Expr::Dot { span, .. }
+            | Expr::Member { span, .. }
             | Expr::Index { span, .. }
             | Expr::Slice { span, .. }
             | Expr::UnderscoreIndex { span, .. }
@@ -501,6 +534,7 @@ impl Expr {
             self,
             Expr::Ident(_)
                 | Expr::Dot { .. }
+                | Expr::Member { .. }
                 | Expr::Index { .. }
                 | Expr::Slice { .. }
                 | Expr::UnderscoreIndex { .. }

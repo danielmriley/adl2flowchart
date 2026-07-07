@@ -6,75 +6,99 @@
 //! no-solver fallback; everything it cannot prove stays POSSIBLY).
 
 use adl_formula::{QFormula, Rel};
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 use std::collections::BTreeMap;
 
-/// A (possibly open) interval constraint on one quantity.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A (possibly open) interval constraint on one quantity, over exact
+/// rationals. `None` bounds are `±∞`. Bounds are EXACT (`k/c` as a rational),
+/// so the interval fast path is a precise — not merely sound — summary of the
+/// single-quantity atoms on the spine; no f64 rounding can shift a boundary.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Iv {
-    pub lo: f64,
+    pub lo: Option<Rat>,
     pub lo_strict: bool,
-    pub hi: f64,
+    pub hi: Option<Rat>,
     pub hi_strict: bool,
 }
 
-impl Default for Iv {
-    fn default() -> Self {
-        Self {
-            lo: f64::NEG_INFINITY,
-            lo_strict: false,
-            hi: f64::INFINITY,
-            hi_strict: false,
-        }
-    }
-}
-
 impl Iv {
-    fn tighten_lo(&mut self, v: f64, strict: bool) {
-        if v > self.lo || (v == self.lo && strict && !self.lo_strict) {
-            self.lo = v;
+    fn tighten_lo(&mut self, v: Rat, strict: bool) {
+        let better = match &self.lo {
+            None => true,
+            Some(cur) => v > *cur || (v == *cur && strict && !self.lo_strict),
+        };
+        if better {
             self.lo_strict = strict;
+            self.lo = Some(v);
         }
     }
 
-    fn tighten_hi(&mut self, v: f64, strict: bool) {
-        if v < self.hi || (v == self.hi && strict && !self.hi_strict) {
-            self.hi = v;
+    fn tighten_hi(&mut self, v: Rat, strict: bool) {
+        let better = match &self.hi {
+            None => true,
+            Some(cur) => v < *cur || (v == *cur && strict && !self.hi_strict),
+        };
+        if better {
             self.hi_strict = strict;
+            self.hi = Some(v);
         }
     }
 
     /// Is the interval itself empty?
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lo > self.hi || (self.lo == self.hi && (self.lo_strict || self.hi_strict))
+        match (&self.lo, &self.hi) {
+            (Some(lo), Some(hi)) => lo > hi || (lo == hi && (self.lo_strict || self.hi_strict)),
+            _ => false,
+        }
     }
 
     /// Do `self` and `other` fail to intersect?
     #[must_use]
     pub fn disjoint_from(&self, other: &Iv) -> bool {
-        let lo = if self.lo > other.lo {
-            (self.lo, self.lo_strict)
-        } else if other.lo > self.lo {
-            (other.lo, other.lo_strict)
-        } else {
-            (self.lo, self.lo_strict || other.lo_strict)
+        // Tighter lower bound: the GREATER value (None = −∞ is weakest).
+        let (lo, lo_strict): (Option<&Rat>, bool) = match (&self.lo, &other.lo) {
+            (None, None) => (None, false),
+            (Some(a), None) => (Some(a), self.lo_strict),
+            (None, Some(b)) => (Some(b), other.lo_strict),
+            (Some(a), Some(b)) => {
+                if a > b {
+                    (Some(a), self.lo_strict)
+                } else if b > a {
+                    (Some(b), other.lo_strict)
+                } else {
+                    (Some(a), self.lo_strict || other.lo_strict)
+                }
+            }
         };
-        let hi = if self.hi < other.hi {
-            (self.hi, self.hi_strict)
-        } else if other.hi < self.hi {
-            (other.hi, other.hi_strict)
-        } else {
-            (self.hi, self.hi_strict || other.hi_strict)
+        // Tighter upper bound: the LESSER value (None = +∞ is weakest).
+        let (hi, hi_strict): (Option<&Rat>, bool) = match (&self.hi, &other.hi) {
+            (None, None) => (None, false),
+            (Some(a), None) => (Some(a), self.hi_strict),
+            (None, Some(b)) => (Some(b), other.hi_strict),
+            (Some(a), Some(b)) => {
+                if a < b {
+                    (Some(a), self.hi_strict)
+                } else if b < a {
+                    (Some(b), other.hi_strict)
+                } else {
+                    (Some(a), self.hi_strict || other.hi_strict)
+                }
+            }
         };
-        lo.0 > hi.0 || (lo.0 == hi.0 && (lo.1 || hi.1))
+        match (lo, hi) {
+            (Some(lo), Some(hi)) => lo > hi || (lo == hi && (lo_strict || hi_strict)),
+            _ => false,
+        }
     }
 
     #[must_use]
     pub fn human(&self) -> String {
         let lo_b = if self.lo_strict { "(" } else { "[" };
         let hi_b = if self.hi_strict { ")" } else { "]" };
-        format!("{lo_b}{}, {}{hi_b}", self.lo, self.hi)
+        let lo = self.lo.as_ref().map_or("-inf".to_owned(), |r| r.to_f64().to_string());
+        let hi = self.hi.as_ref().map_or("inf".to_owned(), |r| r.to_f64().to_string());
+        format!("{lo_b}{lo}, {hi}{hi_b}")
     }
 }
 
@@ -107,14 +131,21 @@ impl IntervalMap {
             QFormula::Or(_) => {}
             QFormula::Atom(a) => {
                 let [(c, q)] = a.terms() else { return };
-                if *c == 0.0 {
+                if c.is_zero() {
                     return;
                 }
-                let bound = a.constant() / c;
-                if !bound.is_finite() {
+                // `c·q ⋈ k` ⇒ `q (⋈ or ⋈̄) k/c`, EXACT over rationals — the
+                // bound is the precise rational `k/c`, so no rounding can
+                // exclude a valid point (the old f64 nudge/subnormal guards are
+                // gone). The relation flips when `c < 0`.
+                let Some(bound) = a.constant().checked_div(c) else {
                     return;
-                }
-                let rel = if *c < 0.0 { a.rel().flipped() } else { a.rel() };
+                };
+                let rel = if c.is_negative() {
+                    a.rel().flipped()
+                } else {
+                    a.rel()
+                };
                 let iv = self.by_quantity.entry(*q).or_default();
                 match rel {
                     Rel::Lt => iv.tighten_hi(bound, true),
@@ -122,7 +153,7 @@ impl IntervalMap {
                     Rel::Gt => iv.tighten_lo(bound, true),
                     Rel::Ge => iv.tighten_lo(bound, false),
                     Rel::Eq => {
-                        iv.tighten_lo(bound, false);
+                        iv.tighten_lo(bound.clone(), false);
                         iv.tighten_hi(bound, false);
                     }
                     Rel::Ne => {}
@@ -155,7 +186,7 @@ impl IntervalMap {
             if let Some(b) = other.by_quantity.get(q)
                 && a.disjoint_from(b)
             {
-                return Some((*q, *a, *b));
+                return Some((*q, a.clone(), b.clone()));
             }
         }
         None
@@ -168,7 +199,11 @@ mod tests {
     use adl_formula::LinAtom;
 
     fn atom(q: u32, rel: Rel, k: f64) -> QFormula {
-        QFormula::Atom(LinAtom::single(QuantityId(q), rel, k).unwrap())
+        QFormula::Atom(LinAtom::single(
+            QuantityId(q),
+            rel,
+            Rat::from_decimal_f64(k).unwrap(),
+        ))
     }
 
     #[test]
@@ -206,11 +241,13 @@ mod tests {
     fn negative_coefficient_flips() {
         // -2 q <= -400  ⇔  q >= 200
         let mut a = IntervalMap::default();
-        a.add_over(&QFormula::Atom(
-            LinAtom::new([(-2.0, QuantityId(0))], Rel::Le, -400.0).unwrap(),
-        ));
-        let iv = a.by_quantity[&QuantityId(0)];
-        assert_eq!((iv.lo, iv.lo_strict), (200.0, false));
+        a.add_over(&QFormula::Atom(LinAtom::new(
+            [(Rat::from_i64(-2), QuantityId(0))],
+            Rel::Le,
+            Rat::from_i64(-400),
+        )));
+        let iv = &a.by_quantity[&QuantityId(0)];
+        assert_eq!((iv.lo.clone(), iv.lo_strict), (Some(Rat::from_i64(200)), false));
     }
 
     #[test]

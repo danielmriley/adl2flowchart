@@ -1,0 +1,12 @@
+# GOLDEN-EMPTY HTCONTRA
+# GROUND-TRUTH: a single HT value cannot be both >= 1000 and <= 300; no event satisfies both. e.g. HT=1500 fails <=300, HT=200 fails >=1000.
+object jets
+  take Jet
+  select pt > 30
+
+region OPEN
+  select HT > 300
+
+region HTCONTRA
+  select HT >= 1000
+  select HT <= 300

@@ -24,21 +24,26 @@ pub mod dump;
 pub mod ext;
 pub mod hir;
 pub mod intern;
+pub mod merge;
 pub mod objects;
 pub mod quantity;
+pub mod rat;
 pub mod resolve;
 
-pub use dump::{hir_dump, quantity_table_dump};
+pub use dump::{collection_ref, hir_dump, quantity_table_dump, render_node};
+pub use rat::{Rat, RatParts};
+pub use merge::merge_hirs;
 pub use objects::object_table;
 pub use ext::ExtDecls;
 pub use hir::{
     ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
-    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec,
+    HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec, ReduceKind,
 };
 pub use intern::{Symbol, SymbolTable};
 pub use quantity::{
-    AngKind, Collection, CollectionId, ElemIndex, ElemPredId, ParticleRef, PropId, Quantity,
-    QuantityArg, QuantityId, QuantityTable, ScalarSource,
+    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder, CompositeCandidate,
+    ElemIndex, ElemPredId, MAX_SOURCE_ELEM_INDEX, ParticleRef, PropId, Quantity, QuantityArg,
+    QuantityId, QuantityTable, ScalarSource, SortDir, SortKey,
 };
 pub use resolve::{analyze, analyze_str};
 

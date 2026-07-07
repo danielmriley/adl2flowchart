@@ -1,0 +1,18 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RN POSSIBLY
+# GROUND-TRUTH (fail-closed direction guard): a's |eta| < 2.4 window is
+# WIDER than narrowjets' |eta| < 1.0, and a's pt>30 is TIGHTER than
+# narrowjets' pt>25 — neither cut set implies the other, so no XSUB link
+# may fire and the size contradiction alone must not prove disjointness.
+# (Ground truth: 3 jets at |eta| ~ 2 satisfy RA while narrowjets is empty.)
+object jets
+  take Jet
+  select pt > 25
+  select abs(eta) < 2.4
+object narrowjets
+  take Jet
+  select pt > 25
+  select abs(eta) < 1.0
+region RB
+  select size(jets) <= 2
+region RN
+  select size(narrowjets) <= 2

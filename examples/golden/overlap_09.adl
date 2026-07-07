@@ -1,0 +1,12 @@
+# GOLDEN SR_metcut SR_ratio OVERLAPPING
+# GROUND-TRUTH: MET>200 and (MET/HT>0.5 ∧ MET>150) are jointly satisfiable. In both: MET=300,HT=400. metcut-only: MET=300,HT=1000 (ratio 0.3). ratio-only: MET=160,HT=100.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_metcut
+  select MET > 200
+
+region SR_ratio
+  select MET / HT > 0.5
+  select MET > 150

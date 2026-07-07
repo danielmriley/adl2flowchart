@@ -37,9 +37,22 @@ impl<'h> Labeler<'h> {
                 let parts: Vec<String> = parts.iter().map(|&p| self.collection(p)).collect();
                 format!("union({})", parts.join(", "))
             }
-            Collection::Combination { parts } => {
+            Collection::Combination { parts, .. } => {
                 let parts: Vec<String> = parts.iter().map(|&p| self.collection(p)).collect();
                 format!("comb({})", parts.join(", "))
+            }
+            Collection::Sorted { source, .. } => format!("sort({})", self.collection(*source)),
+            Collection::Slice { source, start, end } => match end {
+                Some(e) => format!("{}[{start}:{e}]", self.collection(*source)),
+                None => format!("{}[{start}:]", self.collection(*source)),
+            },
+            Collection::CombProject { comb, axis } => {
+                let field = match axis {
+                    adl_sema::CombAxis::Member(s) | adl_sema::CombAxis::Candidate(s) => {
+                        self.hir.symbols.display(*s).to_owned()
+                    }
+                };
+                format!("{}->{field}", self.collection(*comb))
             }
         }
     }
@@ -55,6 +68,12 @@ impl<'h> Labeler<'h> {
                     self.collection(*coll),
                     self.hir.symbols.display(*name)
                 )
+            }
+            ParticleRef::ThisElem => "this".to_owned(),
+            ParticleRef::ReduceElem => "elem".to_owned(),
+            ParticleRef::Sum(parts) => {
+                let parts: Vec<String> = parts.iter().map(|p| self.particle(p)).collect();
+                format!("({})", parts.join(" + "))
             }
         }
     }
@@ -116,6 +135,14 @@ impl<'h> Labeler<'h> {
             HKind::Bool(b) => b.to_string(),
             HKind::Quantity(q) => self.quantity(t.quantity(*q)),
             HKind::ElemSelfProp(p) => format!("this.{}", t.prop_display(*p)),
+            HKind::ReduceProp(p) => format!("elem.{}", t.prop_display(*p)),
+            HKind::Reduce { kind, coll, body, .. } => {
+                format!("{}({}: {})", kind.as_str(), self.collection(*coll), self.node(body))
+            }
+            HKind::ScalarMinMax { kind, args } => {
+                let inner: Vec<String> = args.iter().map(|a| self.node(a)).collect();
+                format!("{}({})", kind.as_str(), inner.join(", "))
+            }
             HKind::CollProp { coll, prop } => {
                 format!("{}[*].{}", self.collection(*coll), t.prop_display(*prop))
             }

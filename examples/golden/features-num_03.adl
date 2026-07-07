@@ -1,0 +1,13 @@
+# GOLDEN R_last_big R_second_small DISJOINT
+# GROUND-TRUTH: collections are pT-descending, so jets[-1] (lowest) <= jets[-2] (second-lowest). pt(jets[-1])>100 forces pt(jets[-2])>=100, contradicting pt(jets[-2])<50. Event jets pt=[300,200,150] is in R_last_big; pt=[300,40,30] is in R_second_small.
+object jets
+  take Jet
+  select pt > 30
+
+region R_last_big
+  select size(jets) >= 2
+  select pt(jets[-1]) > 100
+
+region R_second_small
+  select size(jets) >= 2
+  select pt(jets[-2]) < 50

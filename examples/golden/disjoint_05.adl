@@ -1,0 +1,11 @@
+# GOLDEN softLeadJet hardLeadJet DISJOINT
+# GROUND-TRUTH: softLeadJet needs jets[0].pt<100, hardLeadJet needs jets[0].pt>300; [-inf,100) vs (300,inf] disjoint. Event leading-jet pt=80 -> soft only; pt=400 -> hard only.
+object jets
+  take Jet
+  select pt > 30
+
+region softLeadJet
+  select jets[0].pt < 100
+
+region hardLeadJet
+  select jets[0].pt > 300

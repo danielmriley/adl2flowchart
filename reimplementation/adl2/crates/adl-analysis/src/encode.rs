@@ -249,7 +249,22 @@ pub fn encode_unit(hir: &mut Hir, src: &str) -> UnitEnc {
             if is_membership(stmt) {
                 let e = encode_synthetic(hir, vec![stmt.clone()], span);
                 let (line, _) = map.line_col(span.start);
-                let text = map.line_text(src, span.start).trim().to_owned();
+                // Source-line text, or — for a merged cross-file unit with no
+                // single `src` — the canonical HIR render of the cut, so the
+                // unsat-core explanation stays meaningful instead of blank.
+                let text = if src.is_empty() {
+                    match stmt {
+                        HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => {
+                            adl_sema::render_node(hir, n)
+                        }
+                        HirRegionStmt::Reject(n) => {
+                            format!("reject {}", adl_sema::render_node(hir, n))
+                        }
+                        _ => String::new(),
+                    }
+                } else {
+                    map.line_text(src, span.start).trim().to_owned()
+                };
                 coverage(&e.formula, &e.diags, &mut enc, &map);
                 formula_quantities(&e.formula, &mut enc.quantities);
                 enc.stmts.push(StmtEnc {
@@ -302,9 +317,12 @@ fn encode_boundary_bins(
     if edges.is_empty() {
         return None;
     }
+    // Bin variable label from source text, or — for a merged unit with no
+    // single `src` — the canonical HIR render (instead of a useless `?`).
     let variable = src
         .get(var.span.start as usize..var.span.end as usize)
-        .map_or_else(|| "?".to_owned(), |s| s.trim().to_owned());
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_else(|| adl_sema::render_node(hir, var));
     let num = |text: &str| HNode::new(HKind::Num(text.to_owned()), span);
     let cmp = |op: CmpOp, rhs: HNode| {
         HNode::new(

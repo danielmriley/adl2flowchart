@@ -147,3 +147,98 @@ fn ce6_folded_atom_properties_still_realize() {
     assert_eq!(pair.witness_validated, Some(true), "{}", pair.reason);
     check_sound(&run).unwrap();
 }
+
+#[test]
+fn check_sound_flags_mislabelled_validated_candidate() {
+    // Review F16: the oracle's CANDIDATE-consistency branch was unreachable
+    // by the opaque-free generator, so nothing pinned the labelling contract
+    // "a validated overlap must be PROVEN OVERLAPPING, never CANDIDATE".
+    // Feed it a synthetic mislabelled pair and assert it fires.
+    use adl_analysis::report::{PairReport, Report, SCHEMA_VERSION, VerdictKind};
+    use adl_difftest::oracle::{CaseRun, check_sound};
+    let pair = PairReport {
+        a: "RA".to_owned(),
+        b: "RB".to_owned(),
+        kind: VerdictKind::CandidateOverlapping,
+        reason: String::new(),
+        exact: true,
+        shared_dimensions: Vec::new(),
+        subset_a_in_b: false,
+        subset_b_in_a: false,
+        witness: Vec::new(),
+        witness_validated: Some(true),
+        certified: None,
+        core: Vec::new(),
+    };
+    let report = Report {
+        schema_version: SCHEMA_VERSION,
+        unit: "synthetic".to_owned(),
+        solver: "synthetic".to_owned(),
+        solver_degraded: None,
+        sampling: None,
+        regions: Vec::new(),
+        pairwise: vec![pair],
+        bin_checks: Vec::new(),
+        axioms_used: Vec::new(),
+        internal_diagnostics: Vec::new(),
+    };
+    let run = CaseRun {
+        report,
+        passes: Vec::new(),
+    };
+    let err = check_sound(&run).expect_err("mislabelled candidate must be an oracle error");
+    assert!(
+        err.contains("CANDIDATE OVERLAPPING but witness_validated"),
+        "{err}"
+    );
+}
+
+/// CE-7: verdict-stability. Inherit (`RB` = bare `RA` reference) vs paste
+/// (RA's statements inlined) flipped PROVEN DISJOINT to CANDIDATE DISJOINT:
+/// the UNSAT is deterministic, but z3's minimized core is not invariant
+/// under inlining — the inherit core was {one select, the monolithic RA
+/// reference conjunction} and the certificate search exceeded its case-split
+/// budget on it, while the paste core was two small facts (`d0 ∧ ¬d0`) that
+/// certify instantly. Certification strength is core-shape-dependent by
+/// design, so `Summary::consistent` treats {PROVEN, CANDIDATE} DISJOINT as
+/// one class — this pins both that equivalence and the still-strict facts
+/// (disjointness itself, empties, subsets).
+#[test]
+fn ce7_inherit_vs_paste_certification_tier_wobble() {
+    let define =
+        "define d0 = not ((Eta(jets[1]) >= 2 or (pT(eles[1]) <= 50 and pT(eles[-1]) >= 100)))\n\n";
+    let ra = "region RA\n  select not (d0)\n  \
+         select ((((pT(jets[0]) <= 100 and pT(jets[-1]) <= 0) or dPhi(jets[0], eles[0]) == -1.5) \
+         or (dPhi(jets[0], eles[0]) * size(jets) > 25 and MET < 50)) and (d0 or d0))\n\n";
+    let rb_extra = "  select ((MET + BTag(eles[1]) [] 0 25 and (size(eles) < 2 and \
+         min(dPhi(jets[0], eles[0]), Eta(eles[0])) < 3)) and (BTag(eles[-2]) != 1 and \
+         pT(eles[0]) + 1.1 != 100))\n";
+    let inherit = format!("{HEAD}{define}{ra}region RB\n  RA\n{rb_extra}");
+    let paste = {
+        let ra_body = ra
+            .trim_start_matches("region RA\n")
+            .trim_end_matches("\n\n");
+        format!("{HEAD}{define}{ra}region RB\n{ra_body}\n{rb_extra}")
+    };
+    let r1 = run(&inherit);
+    let r2 = run(&paste);
+    assert_eq!(r1.passes, r2.passes, "interpreter membership must not move");
+    let s1 = summary(&r1.report).unwrap();
+    let s2 = summary(&r2.report).unwrap();
+    // RA is empty (¬d0 ∧ d0), so the pair is UNSAT-disjoint in both
+    // renderings; only the certification tier may differ.
+    assert!(
+        matches!(
+            s1.kind,
+            VerdictKind::ProvenDisjoint | VerdictKind::CandidateDisjoint
+        ),
+        "{s1:?}"
+    );
+    assert_eq!(s1.empty_ra, EmptyStatus::Proven, "{s1:?}");
+    assert!(
+        s1.consistent(&s2),
+        "inherit vs paste must stay consistent:\n  {s1:?}\n  {s2:?}"
+    );
+    check_sound(&r1).unwrap();
+    check_sound(&r2).unwrap();
+}

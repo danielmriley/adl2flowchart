@@ -34,8 +34,13 @@ pub(crate) const MAX_REALIZED_F: f64 = MAX_REALIZED as f64;
 /// Outcome of witness re-validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Validation {
-    /// The interpreter accepted the synthetic event in both regions.
-    Validated,
+    /// The interpreter accepted the synthetic event in both regions. Carries
+    /// the FINAL event JSON (post pT-descending normalization, post
+    /// missing-data patching): displayed witness rows must be read back from
+    /// this artifact, not from the solver model — the normalization can
+    /// permute which element sits at each index after the model assigned
+    /// values, so model rows can describe an arrangement the loader rejects.
+    Validated(String),
     /// The interpreter cannot evaluate an opaque quantity; the witness
     /// remains a candidate (reason recorded).
     Candidate(String),
@@ -50,8 +55,8 @@ pub fn validate_witness(
     interp: &Interp<'_>,
     model: &Model,
     mentioned: &BTreeSet<QuantityId>,
-    region_a: &str,
-    region_b: &str,
+    region_a: usize,
+    region_b: usize,
 ) -> Validation {
     let json = match build_event_json(hir, ext, model, mentioned) {
         Ok(j) => j,
@@ -72,14 +77,22 @@ pub fn validate_witness(
         };
         let mut opaque: Option<String> = None;
         let mut missing: Option<String> = None;
-        for name in [region_a, region_b] {
-            match interp.eval_region_by_name(name, &event) {
+        for idx in [region_a, region_b] {
+            // Resolve by INDEX (not name): merged units can share a region
+            // name, and a name lookup returns the first match — masking the
+            // second region's cuts and fabricating a "validated" overlap.
+            let name = hir.symbols.display(hir.regions[idx].name);
+            // Non-short-circuiting membership: a decidable failing cut must be
+            // seen even when an opaque statement precedes it in source order,
+            // otherwise an unsatisfiable region is mistaken for an opaque
+            // "candidate" overlap and the pair is falsely PROVEN OVERLAPPING.
+            match interp.eval_region_membership_idx(idx, &event) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Validation::Rejected(format!(
                         "interpreter rejects the witness event in region {name} ({}); \
                          event: {json}",
-                        failing_stmts(hir, interp, name, &event)
+                        failing_stmts(hir, interp, idx, &event)
                     ));
                 }
                 Err(e) if e.reason.contains("no reference interpretation") => {
@@ -108,7 +121,7 @@ pub fn validate_witness(
         }
         return match opaque {
             Some(why) => Validation::Candidate(why),
-            None => Validation::Validated,
+            None => Validation::Validated(json),
         };
     }
     Validation::Rejected("witness event patching did not converge".to_owned())
@@ -159,11 +172,11 @@ fn patch_missing(json: &str, reason: &str) -> Option<String> {
 fn failing_stmts(
     hir: &Hir,
     interp: &Interp<'_>,
-    region: &str,
+    idx: usize,
     event: &adl_interp::Event,
 ) -> String {
     use adl_sema::HirRegionStmt;
-    let Some(r) = hir.region(region) else {
+    let Some(r) = hir.regions.get(idx) else {
         return "region not found".to_owned();
     };
     let mut out = Vec::new();
@@ -206,7 +219,13 @@ fn base_of(hir: &Hir, c: CollectionId) -> Option<CollectionId> {
     match hir.table.collection(c) {
         Collection::Base(_) => Some(c),
         Collection::Filtered { parent, .. } => base_of(hir, *parent),
-        Collection::Union(_) | Collection::Combination { .. } => None,
+        // A sort/slice shares its source's base (same element set / sub-range).
+        Collection::Sorted { source, .. } | Collection::Slice { source, .. } => {
+            base_of(hir, *source)
+        }
+        Collection::Union(_)
+        | Collection::Combination { .. }
+        | Collection::CombProject { .. } => None,
     }
 }
 
@@ -224,8 +243,46 @@ fn realizable(hir: &Hir, c: CollectionId, out: &mut BTreeSet<CollectionId>) -> R
             }
             Ok(())
         }
-        Collection::Combination { .. } => Err("combinatorial collection in witness".to_owned()),
+        // A sort/slice realizes through its source (the witness only needs the
+        // element set; the interpreter re-sorts/sub-ranges at validation).
+        Collection::Sorted { source, .. } | Collection::Slice { source, .. } => {
+            realizable(hir, *source, out)
+        }
+        // A composite realizes through its binder SOURCES (P3): build those
+        // base/filtered collections from the model, then let the interpreter
+        // enumerate the tuples and apply the per-tuple cuts during
+        // re-validation. The composite itself is never serialized directly.
+        // If the candidate/per-tuple cut depends on an opaque mass/pt, the
+        // interpreter reports "no reference interpretation" and the witness
+        // stays a Candidate — never a false Validated.
+        Collection::Combination { parts, .. } => {
+            for &p in parts {
+                realizable(hir, p, out)?;
+            }
+            Ok(())
+        }
+        Collection::CombProject { comb, .. } => realizable(hir, *comb, out),
     }
+}
+
+/// Base collections that feed a same-source `disjoint` composite (whose
+/// surviving pairs require kinematically-distinct elements, USER ANSWER 4).
+/// The realizer gives these per-index distinct `eta` so a disjoint pair can
+/// form; every other base keeps the unperturbed `eta = 0` default.
+fn disjoint_source_bases(hir: &Hir) -> BTreeSet<CollectionId> {
+    use adl_sema::CombKind;
+    let mut out = BTreeSet::new();
+    for c in hir.table.collections() {
+        if let Collection::Combination { parts, kind, .. } = c
+            && *kind == CombKind::Disjoint
+            && parts.len() >= 2
+            && parts.windows(2).all(|w| w[0] == w[1])
+            && let Some(b) = base_of(hir, parts[0])
+        {
+            out.insert(b);
+        }
+    }
+    out
 }
 
 fn build_event_json(
@@ -425,11 +482,22 @@ fn build_event_json(
     // -- phase 2.5: default the remaining standard properties ----------------
     // (free values; the formulas never constrained them — SPEC §4.1 says
     // objects carry them, and the interpreter soft-fails their absence.)
+    //
+    // For base collections that feed a same-source `disjoint` composite, the
+    // `eta` default is made per-index DISTINCT (`0.1 * index`) so the source
+    // elements are kinematically distinct (USER ANSWER 4): with all-equal
+    // eta/phi/m, the value-distinctness drop nulls every pair and
+    // `size(K) >= 1` can never validate, downgrading a sound overlap to
+    // POSSIBLY. The perturbation is SCOPED to disjoint-source bases so it
+    // does not churn unrelated witnesses; a free per-index eta only ever
+    // fills an UNSET value (a pinned/angular-realized eta wins), so it never
+    // makes a real member event rejected — validation remains the safety net.
+    let disjoint_source_bases = disjoint_source_bases(hir);
     {
         let eta_key = ext.prop_canon("eta").0;
         let phi_key = ext.prop_canon("phi").0;
         let m_key = ext.prop_canon("m").0;
-        let defaults: [(&str, f64); 6] = [
+        let const_defaults: [(&str, f64); 6] = [
             (&eta_key, 0.0),
             (&phi_key, 0.0),
             (&m_key, 0.0),
@@ -437,12 +505,35 @@ fn build_event_json(
             ("ctag", 0.0),
             ("tautag", 0.0),
         ];
-        for objs in built.values_mut() {
-            for o in objs {
-                for (k, v) in defaults {
+        for (base, objs) in built.iter_mut() {
+            let distinct_eta = disjoint_source_bases.contains(base);
+            for (i, o) in objs.iter_mut().enumerate() {
+                if distinct_eta {
+                    #[allow(clippy::cast_precision_loss)]
+                    o.entry(eta_key.clone()).or_insert(0.1 * i as f64);
+                }
+                for (k, v) in const_defaults {
                     o.entry(k.to_owned()).or_insert(v);
                 }
             }
+        }
+    }
+
+    // -- phase 2.75: normalize each base to pT-descending --------------------
+    // The loader refuses any non-pT-descending collection (it never re-sorts),
+    // and a solver model can hand back an ascending/equal arrangement (padded
+    // out-of-range elements; ORD does not pin every slot). A STABLE sort by pt
+    // descending repairs exactly those otherwise-rejected events; a build that
+    // is already descending is unchanged (stable no-op), so no currently-valid
+    // witness is perturbed and validation stays the safety net.
+    {
+        let pt_key = ext.prop_canon("pt").0;
+        for objs in built.values_mut() {
+            objs.sort_by(|a, b| {
+                let pa = a.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
+                let pb = b.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
+                pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
     }
 
@@ -524,13 +615,21 @@ fn realize_angulars(
         let Quantity::AngularSep { kind, a, b, .. } = hir.table.quantity(q) else {
             continue;
         };
+        let (Some(la), Some(lb)) = (loc_of(a), loc_of(b)) else {
+            continue;
+        };
+        if *kind == AngKind::DR {
+            // dR = hypot(dEta, wrap(dPhi)); realize the target v>=0 by forcing
+            // dPhi = 0 (equal phi) and |dEta| = v, since hypot(v, 0) = v exactly.
+            // Only fills UNSET components and only for object anchors (MET has no
+            // eta); anything already pinned is left to validation.
+            realize_dr(v, &la, &lb, &eta_key, &phi_key, built);
+            continue;
+        }
         let key = match kind {
             AngKind::DPhi => &phi_key,
             AngKind::DEta => &eta_key,
-            AngKind::DR => continue, // nonlinear; validation decides
-        };
-        let (Some(la), Some(lb)) = (loc_of(a), loc_of(b)) else {
-            continue;
+            AngKind::DR => unreachable!("dR handled above"),
         };
         if *kind == AngKind::DEta && (matches!(la, Loc::Met) || matches!(lb, Loc::Met)) {
             continue; // MET has no pseudorapidity
@@ -596,6 +695,146 @@ fn realize_angulars(
                 write(&la, correct(v, 0.0, false), built, met);
             }
         }
+    }
+}
+
+/// Choose `x` so the interpreter's `|x - other|` reproduces `v` BIT-EXACTLY
+/// where an f64 grid point exists (review F13): `fl(other + v) - other` is
+/// inexact for ~a quarter of typical (eta, dR) pairs, and a one-ulp miss
+/// rejects a boundary-forced witness (equality atoms, touching bands). Runs
+/// a short fix-point on the `other + v` side, then — the `+`-side x-grid ulp
+/// can be coarser than the dEta-target's — the `other - v` side, keeping
+/// whichever round-trips exactly (else the best `+`-side effort; validation
+/// decides).
+fn eta_for_exact_gap(other: f64, v: f64) -> f64 {
+    let fixpoint = |start: f64| -> f64 {
+        let mut x = start;
+        for _ in 0..4 {
+            let got = (x - other).abs();
+            if got == v || !(v - got).is_finite() {
+                break;
+            }
+            x = if x >= other { x + (v - got) } else { x - (v - got) };
+        }
+        x
+    };
+    let plus = fixpoint(other + v);
+    if (plus - other).abs() == v {
+        return plus;
+    }
+    let minus = fixpoint(other - v);
+    if (minus - other).abs() == v {
+        return minus;
+    }
+    plus
+}
+
+/// Realize a target `dR = v` (`v >= 0`) between two object anchors by filling
+/// their free `eta`/`phi` so the interpreter's `hypot(dEta, wrap(dPhi))`
+/// reproduces `v`. Preferred plane: `dPhi = 0` (equal `phi`) and `|dEta| = v`
+/// (`hypot(v, 0) = v` and `wrap(0) = 0` are exact). When BOTH etas are
+/// already pinned (e.g. a dEta cut realized first), the remainder goes
+/// through the phi plane instead: `wrap(dPhi) = sqrt(v² − dEta²)` (review
+/// F14 — the old code returned, so every dEta-pinned dR witness rejected and
+/// exhausted its retries). Only OBJECT anchors carry a pseudorapidity (MET
+/// has none), and only UNSET components are written — a value already pinned
+/// is left alone and validation remains the safety net (a bad guess only
+/// downgrades to POSSIBLY, never lies).
+fn realize_dr(
+    v: f64,
+    la: &Loc,
+    lb: &Loc,
+    eta_key: &str,
+    phi_key: &str,
+    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+) {
+    if !v.is_finite() || v < 0.0 {
+        return;
+    }
+    let (Loc::Obj(base_a, ia), Loc::Obj(base_b, ib)) = (la, lb) else {
+        return; // MET (or an unlocatable anchor) has no eta — validation decides
+    };
+    // `Some(None)` = the element exists but the component is unset (free);
+    // `None` = the element itself is absent (existence guard not taken).
+    let get = |base: &CollectionId, i: usize, key: &str| -> Option<Option<f64>> {
+        built.get(base)?.get(i).map(|o| o.get(key).copied())
+    };
+    let (Some(eta_a), Some(eta_b)) = (get(base_a, *ia, eta_key), get(base_b, *ib, eta_key)) else {
+        return;
+    };
+    let (Some(phi_a), Some(phi_b)) = (get(base_a, *ia, phi_key), get(base_b, *ib, phi_key)) else {
+        return;
+    };
+    let mut set = |base: &CollectionId, i: usize, key: &str, val: f64| {
+        if let Some(objs) = built.get_mut(base)
+            && let Some(o) = objs.get_mut(i)
+        {
+            o.insert(key.to_owned(), val);
+        }
+    };
+
+    // Both etas pinned: realize the remainder through the phi plane.
+    if let (Some(ea), Some(eb)) = (eta_a, eta_b) {
+        let de = ea - eb;
+        let rem2 = v.mul_add(v, -(de * de));
+        if rem2 < 0.0 {
+            return; // dR < |dEta|: unrealizable in this plane — validation decides
+        }
+        let dphi = rem2.sqrt();
+        if !dphi.is_finite() || dphi > std::f64::consts::PI {
+            return; // wrap(·) cannot produce it
+        }
+        let (free_base, free, pinned, pinned_is_a) = match (phi_a, phi_b) {
+            (Some(_), Some(_)) => return, // both pinned — validation decides
+            (Some(pa), None) => (base_b, *ib, pa, true),
+            (None, Some(pb)) => (base_a, *ia, pb, false),
+            (None, None) => {
+                set(base_b, *ib, phi_key, 0.0);
+                (base_a, *ia, 0.0, false)
+            }
+        };
+        // Short correction toward the interpreter's hypot on the REALIZED
+        // phi difference (both the sqrt and the `fl(pinned ± dphi)`
+        // round-trip are inexact; the interior ε-margin absorbs any
+        // residual, and validation still decides).
+        let mut val = if pinned_is_a { pinned - dphi } else { pinned + dphi };
+        for _ in 0..4 {
+            let d = if pinned_is_a { pinned - val } else { val - pinned };
+            let got = de.hypot(adl_interp::wrap_dphi(d));
+            if got == v || !(v - got).is_finite() || !(0.0..=std::f64::consts::PI).contains(&d) {
+                break;
+            }
+            val = if pinned_is_a { val - (v - got) } else { val + (v - got) };
+        }
+        set(free_base, free, phi_key, val);
+        return;
+    }
+
+    // dPhi = 0 plane: pick a shared phi. Two already-pinned, differing phi
+    // cannot be made equal without clobbering — leave to validation.
+    let phi_target = match (phi_a, phi_b) {
+        (Some(pa), Some(pb)) if pa != pb => return,
+        (Some(pa), _) => pa,
+        (_, Some(pb)) => pb,
+        (None, None) => 0.0,
+    };
+    // Set |dEta| = v by writing whichever eta is free (fix-point corrected —
+    // review F13: `fl(pinned ± v)` alone misses the target by an ulp on
+    // ~a quarter of non-dyadic boundaries).
+    match (eta_a, eta_b) {
+        (Some(_), Some(_)) => unreachable!("handled by the phi-plane branch"),
+        (None, Some(eb)) => set(base_a, *ia, eta_key, eta_for_exact_gap(eb, v)),
+        (Some(ea), None) => set(base_b, *ib, eta_key, eta_for_exact_gap(ea, v)),
+        (None, None) => {
+            set(base_b, *ib, eta_key, 0.0);
+            set(base_a, *ia, eta_key, v);
+        }
+    }
+    if phi_a.is_none() {
+        set(base_a, *ia, phi_key, phi_target);
+    }
+    if phi_b.is_none() {
+        set(base_b, *ib, phi_key, phi_target);
     }
 }
 
@@ -767,4 +1006,145 @@ fn repair_prop(
         adl_syntax::ast::CmpOp::Ne | adl_syntax::ast::CmpOp::ApproxEq => k + 1.0,
     };
     obj.insert(key.to_owned(), v);
+}
+
+#[cfg(test)]
+mod realize_dr_tests {
+    //! Deterministic branch-matrix coverage for `realize_dr` (review F9 —
+    //! previously only the (None, None) happy path was pinned, and only
+    //! when z3's model happened to take that shape).
+
+    use super::{Loc, realize_dr};
+    use adl_sema::CollectionId;
+    use std::collections::BTreeMap;
+
+    const ETA: &str = "etaof";
+    const PHI: &str = "phiof";
+    const BASE: CollectionId = CollectionId(0);
+
+    fn built_with(
+        elems: &[&[(&str, f64)]],
+    ) -> BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>> {
+        let objs = elems
+            .iter()
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|&(k, v)| (k.to_owned(), v))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .collect();
+        BTreeMap::from([(BASE, objs)])
+    }
+
+    fn interp_dr(
+        built: &BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+        a: usize,
+        b: usize,
+    ) -> f64 {
+        let o = &built[&BASE];
+        let de = o[a][ETA] - o[b][ETA];
+        let dp = adl_interp::wrap_dphi(o[a][PHI] - o[b][PHI]);
+        de.hypot(dp)
+    }
+
+    fn realize(
+        v: f64,
+        built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+    ) {
+        realize_dr(v, &Loc::Obj(BASE, 0), &Loc::Obj(BASE, 1), ETA, PHI, built);
+    }
+
+    #[test]
+    fn both_free_is_exact() {
+        let mut b = built_with(&[&[], &[]]);
+        realize(1.5, &mut b);
+        assert_eq!(interp_dr(&b, 0, 1), 1.5);
+    }
+
+    #[test]
+    fn pinned_eta_round_trips_exactly_or_within_one_ulp() {
+        // Review F13: `fl(pinned ± v)` alone missed the model value on ~a
+        // quarter of non-dyadic boundary pairs, rejecting boundary-forced
+        // witnesses. The fix-point (trying both gap directions) must land
+        // the interpreter's dR EXACTLY where an f64 grid point exists — the
+        // documented repro (eta = 0.3, touching dR = 0.4 bands) — and within
+        // one ulp everywhere (some pairs, e.g. (2.4, 0.4), have NO exact
+        // grid point in either direction: the difference grid of both
+        // binades skips v; the ε-interior margin absorbs the residual).
+        for (eb, v, exact) in [
+            (0.3, 0.4, true),
+            (0.1, 0.2, true),
+            (2.4, 0.4, false),
+            (-1.7, 0.9, false),
+            (0.7, 0.05, false),
+        ] {
+            for pinned_a in [false, true] {
+                let mut b = if pinned_a {
+                    built_with(&[&[(ETA, eb)], &[]])
+                } else {
+                    built_with(&[&[], &[(ETA, eb)]])
+                };
+                realize(v, &mut b);
+                let got = interp_dr(&b, 0, 1);
+                if exact {
+                    assert_eq!(got, v, "eb={eb} v={v} pinned_a={pinned_a}");
+                } else {
+                    // One step of the DIFFERENCE grid: the x values live in
+                    // the |eb| ± v binade, so achievable |x − eb| step by
+                    // that binade's ulp, not v's.
+                    let grid = (eb.abs() + v) * f64::EPSILON;
+                    assert!(
+                        (got - v).abs() <= grid,
+                        "eb={eb} v={v} pinned_a={pinned_a}: got {got} (off by {}, grid {grid})",
+                        (got - v).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_etas_pinned_realizes_through_phi() {
+        // Review F14: a prior dEta realization pins both etas; the remainder
+        // must go through the phi plane instead of returning (which rejected
+        // every such witness and spammed INTERNAL diagnostics). The interior
+        // ε-margin is ~1e-6, so a 1e-9 residual is more than validated.
+        let mut b = built_with(&[&[(ETA, 0.8)], &[(ETA, 0.0)]]);
+        realize(1.7, &mut b);
+        assert!(
+            (interp_dr(&b, 0, 1) - 1.7).abs() < 1e-9,
+            "got {}",
+            interp_dr(&b, 0, 1)
+        );
+        // One phi already pinned: the free side absorbs the correction.
+        let mut b = built_with(&[&[(ETA, 0.5), (PHI, 1.0)], &[(ETA, 0.0)]]);
+        realize(1.3, &mut b);
+        assert!(
+            (interp_dr(&b, 0, 1) - 1.3).abs() < 1e-9,
+            "got {}",
+            interp_dr(&b, 0, 1)
+        );
+    }
+
+    #[test]
+    fn unrealizable_shapes_write_nothing() {
+        // dR below the pinned |dEta|: no phi assignment can shrink it.
+        let mut b = built_with(&[&[(ETA, 2.0)], &[(ETA, 0.0)]]);
+        let before = b.clone();
+        realize(1.0, &mut b);
+        assert_eq!(b, before, "dR < |dEta| must not fabricate a fill");
+        // Differing pinned phis on the dPhi=0 route: no clobber.
+        let mut b = built_with(&[&[(PHI, 0.0)], &[(ETA, 0.0), (PHI, 2.0)]]);
+        let before = b.clone();
+        realize(0.4, &mut b);
+        assert_eq!(b, before, "pinned differing phis must not be clobbered");
+        // Negative / non-finite targets: no write.
+        for bad in [-0.1, f64::NAN, f64::INFINITY] {
+            let mut b = built_with(&[&[], &[]]);
+            let before = b.clone();
+            realize(bad, &mut b);
+            assert_eq!(b, before, "target {bad} must not realize");
+        }
+    }
 }

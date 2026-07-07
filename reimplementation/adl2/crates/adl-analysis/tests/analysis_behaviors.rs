@@ -2,10 +2,12 @@
 //! - witness re-validation DOWNGRADES an unrealizable model to POSSIBLY
 //!   and files an internal diagnostic (TESTING.md §3 — production
 //!   behavior, not test-only);
-//! - the whole 68-file corpus runs the no-solver analysis without
+//! - the whole 134-file corpus runs the no-solver analysis without
 //!   panics, deterministically (SPEC_ARCHITECTURE §9).
 
-use adl_analysis::{AnalysisOptions, FailOn, SolverChoice, VerdictKind, analyze_source};
+use adl_analysis::{
+    AnalysisOptions, EmptyStatus, FailOn, SolverChoice, VerdictKind, analyze_source,
+};
 use adl_sema::ExtDecls;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,6 +17,95 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         solver,
         timeout: Duration::from_secs(20),
         fail_on: FailOn::default(),
+        reconcile: false,
+        sample_gate: 64,
+        certify: true,
+    }
+}
+
+/// f64-faithfulness guard: a cut source that is not f64-faithful (≥2 additive
+/// ops, or a non-dyadic additive constant) is interned as a structure-keyed
+/// opaque quantity, so two regions whose sources f64-evaluate differently can
+/// no longer fabricate a false PROVEN DISJOINT. Each family below was a
+/// confirmed false PROVEN before the guard; all must now be POSSIBLY.
+#[test]
+fn f64_faithfulness_guard_blocks_false_disjoint() {
+    let ext = ExtDecls::legacy();
+    let jets = "object jets\n  take Jet\n";
+    let cases: &[(&str, &str)] = &[
+        // full cancellation
+        (
+            "region RA\n  select MET + HT - HT > 76\nregion RB\n  select MET <= 76\n",
+            "cancel",
+        ),
+        // reassociation (no cancellation, all coeff 1)
+        (
+            &format!(
+                "{jets}region RA\n  select (MET + HT) + jets[0].pT > 100\nregion RB\n  select MET + (HT + jets[0].pT) <= 100\n"
+            ),
+            "reassoc",
+        ),
+        // partial cancellation (coeff 0.5)
+        (
+            "region RA\n  select MET + 0.5 * HT > 100\nregion RB\n  select (MET + HT) - 0.5 * HT <= 100\n",
+            "partial",
+        ),
+        // commutation
+        (
+            &format!(
+                "{jets}region RA\n  select MET + HT + jets[0].pT > 100\nregion RB\n  select jets[0].pT + HT + MET <= 100\n"
+            ),
+            "commute",
+        ),
+        // non-dyadic additive constant folded across the comparison
+        (
+            "region RA\n  select MET + 0.1 > 0.3\nregion RB\n  select MET <= 0.2\n",
+            "constfold",
+        ),
+    ];
+    for (src, label) in cases {
+        let r =
+            analyze_source(src, "guard.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        if r.solver == "none" {
+            eprintln!("SKIP: no solver");
+            return;
+        }
+        assert_ne!(
+            r.pairwise[0].kind,
+            VerdictKind::ProvenDisjoint,
+            "family `{label}` must NOT be PROVEN DISJOINT (f64-unfaithful), got {:?}",
+            r.pairwise[0].kind
+        );
+    }
+}
+
+/// The guard must NOT over-regress: f64-faithful sources (single quantity,
+/// same-structure sums, dyadic additive constants) keep their PROVEN verdicts.
+#[test]
+fn f64_faithfulness_guard_preserves_sound_disjoint() {
+    let ext = ExtDecls::legacy();
+    let sound: &[&str] = &[
+        // single quantity
+        "region RA\n  select MET > 400\nregion RB\n  select MET < 200\n",
+        // identical-structure sum in both regions (same f64 value → partition)
+        "region RA\n  select MET + HT > 400\nregion RB\n  select MET + HT < 200\n",
+        // dyadic additive constant (0.5 is exactly representable)
+        "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n",
+    ];
+    for src in sound {
+        let r =
+            analyze_source(src, "sound.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        if r.solver == "none" {
+            eprintln!("SKIP: no solver");
+            return;
+        }
+        assert_eq!(
+            r.pairwise[0].kind,
+            VerdictKind::ProvenDisjoint,
+            "faithful source must stay PROVEN DISJOINT, got {:?} ({})",
+            r.pairwise[0].kind,
+            r.pairwise[0].reason
+        );
     }
 }
 
@@ -64,6 +155,297 @@ region SR_y
             .any(|d| d.contains("witness validation failed")),
         "internal-error diagnostic filed: {:?}",
         r.internal_diagnostics
+    );
+}
+
+/// OPEN-1 (operator-scoped): `dR(A,B)` is the single min-pair separation, so
+/// separation thresholds decide soundly — `dR>5` (all pairs separated) and
+/// `dR<0.4` (some pair close) are PROVEN DISJOINT. But two regions whose only
+/// difference is a LOOSER separation threshold (`dR>0.4` vs `dR>1.0`) are
+/// subset/overlapping, NEVER disjoint (the kill event: a large all-separated
+/// event is in both).
+#[test]
+fn unindexed_angular_disjoint_and_no_false_disjoint() {
+    let ext = ExtDecls::legacy();
+    let base = "object jets\n  take Jet\nobject eles\n  take Ele\n";
+    let dj = format!(
+        "{base}region RA\n  select dR(jets, eles) > 5.0\nregion RB\n  select dR(jets, eles) < 0.4\n"
+    );
+    let r = analyze_source(&dj, "open1_dj.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "dR>5 vs dR<0.4 must be disjoint, got {:?} ({})",
+        r.pairwise[0].kind,
+        r.pairwise[0].reason
+    );
+    let kill = format!(
+        "{base}region RA\n  select dR(jets, eles) > 0.4\nregion RB\n  select dR(jets, eles) > 1.0\n"
+    );
+    let r2 =
+        analyze_source(&kill, "open1_kill.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r2.solver == "none" {
+        return;
+    }
+    assert_ne!(
+        r2.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "looser-vs-tighter separation must NOT be disjoint (subset), got {:?}",
+        r2.pairwise[0].kind
+    );
+}
+
+/// Back-index ORD: under pT-descending, a back element closer to the front
+/// has the higher pT (`pt(C[-2]) >= pt(C[-1])`). So `pt(jets[-1]) > 100` and
+/// `pt(jets[-2]) < 50` are PROVEN DISJOINT — pt([-2]) >= pt([-1]) > 100
+/// contradicts pt([-2]) < 50. (The UNSAT/disjoint side is unaffected by the
+/// overlap cap.)
+#[test]
+fn back_index_ord_proves_disjoint() {
+    let src = "\
+object jets
+  take Jet
+
+region A
+  select jets[-1].pT > 100
+
+region B
+  select jets[-2].pT < 50
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "backidx_ord.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "back-index ORD must prove disjoint, got {:?} ({})",
+        r.pairwise[0].kind,
+        r.pairwise[0].reason
+    );
+}
+
+/// Front-to-back ORD: under pT-descending order `jets[0].pT >= jets[-1].pT`,
+/// so a region demanding the LAST jet outrank the FIRST is empty. This fact
+/// is sound only because `i == 0 && k == 1` (the front/back order is fixed
+/// for every size); the analyzer emits it and proves the region vacuous.
+#[test]
+fn front_to_back_ord_proves_empty() {
+    let src = "\
+object jets
+  take Jet
+
+region IMPOSSIBLE
+  select size(jets) >= 2
+  select jets[-1].pT > jets[0].pT
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "f2b_empty.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let region = r
+        .regions
+        .iter()
+        .find(|x| x.name == "IMPOSSIBLE")
+        .expect("region present");
+    assert_eq!(
+        region.empty,
+        EmptyStatus::Proven,
+        "front-to-back ORD (jets[0] >= jets[-1]) must prove the region empty, got {:?}",
+        region.empty
+    );
+}
+
+/// SOUNDNESS GUARD: the front-to-back fact must NOT be emitted for `i >= 1 &&
+/// k >= 2`, where the front/back positions can straddle by size. `jets[1].pT >
+/// jets[-2].pT` is satisfiable (e.g. size 4 with a strict pT gap), so the
+/// region must stay NOT-proven-empty — emitting `pt(jets[-2]) >= pt(jets[1])`
+/// here would fabricate a false EMPTY.
+#[test]
+fn straddling_front_back_pair_is_not_proven_empty() {
+    let src = "\
+object jets
+  take Jet
+
+region MAYBE
+  select size(jets) >= 4
+  select jets[1].pT > jets[-2].pT
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "f2b_straddle.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let region = r
+        .regions
+        .iter()
+        .find(|x| x.name == "MAYBE")
+        .expect("region present");
+    assert_ne!(
+        region.empty,
+        EmptyStatus::Proven,
+        "i=1,k=2 positions straddle by size; proving this empty is unsound"
+    );
+}
+
+/// A back-indexed element (`coll[-k]`) is a sound free leaf for the
+/// disjoint/subset (UNSAT) direction, but the witness builder cannot
+/// realize it, so an overlap (SAT) that depends on it caps at POSSIBLY
+/// rather than chase a model-dependent witness. These two regions overlap
+/// only on MET (both also gate on `jets[-1]`), so the verdict downgrades.
+#[test]
+fn back_index_overlap_caps_at_possibly() {
+    let src = "\
+object jets
+  take Jet
+
+region RA
+  select jets[-1].pT > 10
+  select MET > 50
+
+region RB
+  select jets[-1].pT > 10
+  select MET < 100
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "backidx_overlap.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::PossiblyOverlapping,
+        "back-index overlap must cap at POSSIBLY, got {:?} ({})",
+        p.kind,
+        p.reason
+    );
+    assert!(
+        p.reason.contains("back-indexed element"),
+        "reason should name the back-index cap: {}",
+        p.reason
+    );
+}
+
+/// EPRED soundness: an object filter `pt / d ⋈ c` must clear the constant
+/// denominator with EXACT coefficients, not fold the f64 reciprocal `1/d`
+/// (which asserts a predicate stronger than the truth). A jet with pt == 49
+/// is a genuine member of `{Jet : pt/49 >= 1}`, so the two regions below
+/// share the event pt == 49 — the analyzer must NOT prove either region
+/// empty nor the pair disjoint.
+#[test]
+fn epred_ratio_filter_does_not_fabricate_empty_or_disjoint() {
+    let src = "\
+object jets
+  take Jet
+  select pt / 49 >= 1
+
+region A
+  select jets[0].pt <= 49
+
+region B
+  select jets[0].pt >= 49
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "epred_ratio.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    for reg in &r.regions {
+        assert_ne!(
+            reg.empty,
+            adl_analysis::EmptyStatus::Proven,
+            "region {} falsely proven empty (pt=49 is a member)",
+            reg.name
+        );
+    }
+    let p = &r.pairwise[0];
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "regions share pt=49, must not be PROVEN DISJOINT: {}",
+        p.reason
+    );
+    assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{}", p.reason);
+}
+
+/// Encoder soundness: a coefficient that OVERFLOWS to non-finite (here
+/// `MAX + MAX`) puts the cut outside the linear fragment — the interpreter
+/// still evaluates it per-event and gets a finite result for small inputs.
+/// It must be Unknown, NOT constant-false; treating it as false would
+/// fabricate a PROVEN EMPTY (the cut `MAX*MET - (0 - MAX*MET) > 0` accepts
+/// MET = 0.1 in the interpreter).
+#[test]
+fn coefficient_overflow_is_unknown_not_empty() {
+    let big = format!("{:.1}", f64::MAX);
+    let src = format!(
+        "region A\n  select {big} * MET - (0 - {big} * MET) > 0\nregion B\n  select MET > 0\n"
+    );
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(&src, "overflow.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    let a = r
+        .regions
+        .iter()
+        .find(|reg| reg.name == "A")
+        .expect("region A");
+    assert_ne!(
+        a.empty,
+        adl_analysis::EmptyStatus::Proven,
+        "overflow cut must not be proven empty"
+    );
+}
+
+/// Identity soundness: a `define` that aliases a particle must make
+/// `f(alias)` and `f(literal)` the SAME opaque quantity. Otherwise the two
+/// intern as distinct free quantities and the solver finds a spurious model
+/// where one physical scalar takes two values — a false PROVEN OVERLAPPING
+/// between cuts that are decidably disjoint (`tagger(jets[0]) > 100` and
+/// `tagger(jets[0]) < 50`).
+#[test]
+fn define_aliased_opaque_arg_matches_the_literal() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+define leadjet = jets[0]
+region RA
+  select size(jets) >= 1
+  select tagger(jets[0]) > 100
+region RB
+  select size(jets) >= 1
+  select tagger(leadjet) < 50
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "alias.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "aliased opaque arg must intern identically to the literal (got {:?}: {})",
+        p.kind,
+        p.reason
     );
 }
 
@@ -144,12 +526,194 @@ fn opaque_pt_in_impossible_ratio_proves_region_empty() {
     assert_ne!(sane.empty, EmptyStatus::Proven, "control region stays live");
 }
 
+/// P3 Combination witness realizer: an overlap over a composite tuple count
+/// (`size(K->cand) >= 1`) must be REALIZED through the interpreter — the
+/// realizer builds the binder source collection, the interpreter materializes
+/// the disjoint combination and forms a value-distinct pair, then validates
+/// the overlap. Before P3 this hard-failed ("composite projection in witness")
+/// and downgraded to POSSIBLY.
+#[test]
+fn composite_overlap_witness_validates_through_the_interpreter() {
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+object bjets
+  take jets
+  select btag == 1
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+
+region SR_x
+  select size(dijet->jj) >= 1
+
+region SR_y
+  select size(dijet->jj) >= 1
+  select size(bjets) >= 0
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(
+        src,
+        "composite_overlap.adl",
+        &ext,
+        &opts(SolverChoice::Auto),
+    )
+    .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenOverlapping,
+        "composite overlap must validate, got {:?} ({})",
+        p.kind,
+        p.reason
+    );
+    assert_eq!(
+        p.witness_validated,
+        Some(true),
+        "the interpreter must validate the realized composite witness"
+    );
+    assert!(
+        r.internal_diagnostics.is_empty(),
+        "no internal diagnostic for a realizable composite: {:?}",
+        r.internal_diagnostics
+    );
+}
+
+/// The realizer NEVER fabricates a false Validated: when a composite region's
+/// membership depends on the candidate's opaque invariant mass (`mass(jj)`),
+/// the interpreter cannot evaluate it and the witness stays a CANDIDATE
+/// (verdict keeps its caveat / downgrades), never a false PROVEN OVERLAPPING.
+#[test]
+fn composite_opaque_mass_falls_to_candidate_not_false_validated() {
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+
+region SR_x
+  select size(dijet->jj) >= 1
+  select mass(dijet->jj[0]) > 50
+
+region SR_y
+  select size(dijet->jj) >= 1
+  select mass(dijet->jj[0]) < 200
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "composite_mass.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    // The opaque mass blocks a fully-validated overlap: the verdict must NOT
+    // be a clean PROVEN OVERLAPPING with witness_validated == Some(true).
+    assert_ne!(
+        p.witness_validated,
+        Some(true),
+        "an opaque candidate mass must NOT produce a validated witness: {}",
+        p.reason
+    );
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "the regions are not disjoint; mass(jj) is a free var: {}",
+        p.reason
+    );
+}
+
+/// SOUNDNESS-CRITICAL: two value-position numeric reducers over DIFFERENT
+/// collections (`sum(jets.pT)` vs `sum(eles.pT)`) are distinct free
+/// quantities — they share no band, so `sum(jets.pT) > 400` and
+/// `sum(eles.pT) <= 400` must NOT be PROVEN DISJOINT (an event can satisfy
+/// both). A false PROVEN here would mean the two reducers collided onto one
+/// quantity id.
+#[test]
+fn distinct_reducer_collections_are_not_proven_disjoint() {
+    let src = "\
+object jets
+  take Jet
+object eles
+  take Ele
+
+region SR_x
+  select sum(jets.pT) > 400
+
+region SR_y
+  select sum(eles.pT) <= 400
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "two_sums.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_ne!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "sum(jets.pT) and sum(eles.pT) are independent free vars; \
+         proving the pair disjoint fabricates a false PROVEN: {}",
+        p.reason
+    );
+}
+
+/// CAPABILITY: two regions whose bands sit on the SAME structurally-interned
+/// reducer (`define HT = sum(jets.pT)`; `HT > 400` vs `HT in [60,400]`) ARE
+/// PROVEN DISJOINT — the cancellation the fix restores (the interval engine
+/// sees one shared free var and proves `(400,inf]` ∩ `[60,400] = ∅`).
+#[test]
+fn shared_reducer_band_is_proven_disjoint() {
+    let src = "\
+object jets
+  take Jet
+define HT = sum(jets.pT)
+
+region SR_hi
+  select HT > 400
+
+region SR_lo
+  select HT [] 60 400
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "shared_ht.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves cleanly");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver available");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(
+        p.kind,
+        VerdictKind::ProvenDisjoint,
+        "a shared interned reducer must let the interval engine prove \
+         (400,inf] vs [60,400] disjoint: {}",
+        p.reason
+    );
+}
+
 #[test]
 fn corpus_runs_no_solver_analysis_deterministically() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples");
     let mut files: Vec<PathBuf> = walk(&dir);
     files.sort();
-    assert_eq!(files.len(), 68, "shared corpus has 68 ADL files");
+    assert_eq!(
+        files.len(),
+        136,
+        "shared corpus has 136 ADL files (68 base + 58 golden + 10 golden-cross)"
+    );
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
     for path in &files {
@@ -182,7 +746,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 68);
+    assert_eq!(analyzed, 136);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {
@@ -197,4 +761,98 @@ fn walk(dir: &PathBuf) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[test]
+fn validated_witness_rows_come_from_the_validated_event() {
+    // REGRESSION (review F2): the realizer's pT-descending normalization can
+    // permute which element sits at each index AFTER the solver model
+    // assigned values. The displayed rows used to come from the PRE-sort
+    // model, so a "validated" witness could show `JET[0].pt = 21` alongside
+    // `size(bigjets) = 1` (pt > 100) — a set the loader itself rejects.
+    // Rows are now read back from the validated event: with a pt>100 jet
+    // present, the leading jet's pt must exceed 100.
+    let src = "\
+object bigjets
+  take Jet
+  select pt > 100
+region RA
+  select size(Jet) >= 2
+  select pT(Jet[0]) > 20
+region RB
+  select size(Jet) >= 2
+  select size(bigjets) >= 1
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "u", &ext, &opts(SolverChoice::Auto)).expect("analyzes");
+    if r.solver == "none" {
+        eprintln!("skipping: no solver backend");
+        return;
+    }
+    let p = &r.pairwise[0];
+    assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{p:?}");
+    assert_eq!(p.witness_validated, Some(true), "{p:?}");
+    let lead = p
+        .witness
+        .iter()
+        .find(|w| w.quantity == "JET[0].pt")
+        .expect("leading-jet row present");
+    assert!(
+        lead.value > 100.0,
+        "with a pt>100 jet in the event, the displayed leading jet must be it: {:?}",
+        p.witness
+    );
+}
+
+/// Proof-system v2 Phase 4: `--certify` verifies every disjointness UNSAT
+/// through the independent exact-rational checker.
+#[test]
+fn certification_tiers_disjoint_verdicts() {
+    let ext = ExtDecls::legacy();
+    let certify_opts = AnalysisOptions {
+        certify: true,
+        ..opts(SolverChoice::Auto)
+    };
+    // A SOLVER-proven disjointness certifies: the Farkas combination of the
+    // two size cuts with the SUB axiom (2 <= size(bjets) <= size(jets) <= 1)
+    // is real-infeasible, so PROVEN + certified = true. (Interval-layer
+    // proofs return before the solver and honestly carry certified = None.)
+    let src = "object jets\n  take Jet\n  select pt > 30\nobject bjets\n  take jets\n  select btag == 1\nregion RA\n  select size(bjets) >= 2\nregion RB\n  select size(jets) <= 1\n";
+    let r = analyze_source(src, "c.adl", &ext, &certify_opts).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::ProvenDisjoint,
+        "{:?}",
+        r.pairwise[0]
+    );
+    assert_eq!(
+        r.pairwise[0].certified,
+        Some(true),
+        "{:?}",
+        r.pairwise[0].reason
+    );
+
+    // An INTEGRALITY-ONLY disjointness (size > 1 ∧ size < 2 is int-empty but
+    // real-feasible at 1.5) cannot be certified under the real relaxation:
+    // the pair reports CANDIDATE DISJOINT — a non-claim, exactly mirroring
+    // the overlap side's candidate tier.
+    let src = "object jets\n  take Jet\nregion RA\n  select size(jets) > 1\nregion RB\n  select size(jets) < 2\n";
+    let r = analyze_source(src, "i.adl", &ext, &certify_opts).expect("resolves");
+    let p = &r.pairwise[0];
+    assert_eq!(p.kind, VerdictKind::CandidateDisjoint, "{:?}", p);
+    assert_eq!(p.certified, Some(false), "{}", p.reason);
+
+    // With certification OFF the same pair reports PROVEN (pre-Phase-4
+    // behavior) and carries no certified field.
+    let off_opts = AnalysisOptions {
+        certify: false,
+        ..opts(SolverChoice::Auto)
+    };
+    let r = analyze_source(src, "i.adl", &ext, &off_opts).expect("resolves");
+    assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
+    assert_eq!(r.pairwise[0].certified, None);
 }

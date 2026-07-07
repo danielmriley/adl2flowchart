@@ -1,0 +1,11 @@
+# GOLDEN R_minmet_hi R_maxmet_lo DISJOINT
+# GROUND-TRUTH: min(MET,HT)>100 forces both MET>100 and HT>100; max(MET,HT)<50 forces both MET<50 and HT<50 — contradictory. Event MET=200,HT=300 is in R_minmet_hi only; MET=10,HT=20 is in R_maxmet_lo only.
+object jets
+  take Jet
+  select pt > 30
+
+region R_minmet_hi
+  select min(MET, HT) > 100
+
+region R_maxmet_lo
+  select max(MET, HT) < 50

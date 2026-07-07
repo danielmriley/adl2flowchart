@@ -213,6 +213,7 @@ pub enum TokKind {
     Bang,
     Comma,
     Dot,
+    Arrow, // `->`
     Underscore,
     Newline,
     Eof,

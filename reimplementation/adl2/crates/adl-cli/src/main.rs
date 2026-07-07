@@ -48,13 +48,20 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Print the canonical AST dump for each file to stdout.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         dump_ast: bool,
+        /// Emit diagnostics as a JSON array to stdout (machine-readable;
+        /// for editors / CI gating) instead of the human text report.
+        #[arg(long)]
+        json: bool,
     },
     /// Full analysis: pairwise verdicts, vacuity, bins (legacy `smash -r`).
     Verify {
-        /// The ADL file to analyze.
-        file: PathBuf,
+        /// One or more ADL files, or directories (each contributes its
+        /// `*.adl` files). Without `--cross` each file is analyzed
+        /// independently; with `--cross` they are merged (see below).
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
         /// Emit the versioned JSON report instead of the human report.
         #[arg(long)]
         json: bool,
@@ -71,6 +78,18 @@ enum Command {
         /// `overlap`, `gap`, `empty`, `non-exact`.
         #[arg(long, value_name = "KINDS")]
         fail_on: Option<String>,
+        /// Merge all inputs (files and/or directories of `*.adl`) into one
+        /// shared identity space and analyze region relations ACROSS files
+        /// (the cross-analysis overlap matrix); regions are reported as
+        /// `<file>::<region>`. Without this, inputs are analyzed independently.
+        #[arg(long)]
+        cross: bool,
+        /// Skip the independent exact-rational certification of disjointness
+        /// proofs (on by default: solver-UNSAT pairs whose unsat core cannot
+        /// be certified report CANDIDATE DISJOINT, and certified pairs carry
+        /// certified: true in --json).
+        #[arg(long)]
+        no_certify: bool,
     },
     /// Evaluate regions over JSONL events: per-region pass/fail + bins.
     Run {
@@ -150,14 +169,29 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let verbose = cli.verbose;
     let result = match cli.command {
-        Command::Check { files, dump_ast } => cmd::check::run(&files, verbose, dump_ast),
+        Command::Check {
+            files,
+            dump_ast,
+            json,
+        } => cmd::check::run(&files, verbose, dump_ast, json),
         Command::Verify {
-            file,
+            files,
             json,
             explain,
             no_solver,
             fail_on,
-        } => cmd::verify::run(&file, json, explain, no_solver, fail_on.as_deref(), verbose),
+            cross,
+            no_certify,
+        } => cmd::verify::run(
+            &files,
+            json,
+            explain,
+            no_solver,
+            fail_on.as_deref(),
+            verbose,
+            cross,
+            !no_certify,
+        ),
         Command::Run {
             file,
             events,

@@ -1,0 +1,15 @@
+# GOLDEN noBtag twoBtag DISJOINT
+# GROUND-TRUTH: noBtag needs size(bjets)==0, twoBtag needs size(bjets)>=2; intervals [0,0] vs [2,inf] disjoint. Event with 0 btagged jets -> noBtag only; 2 btagged -> twoBtag only.
+object jets
+  take Jet
+  select pt > 30
+
+object bjets
+  take jets
+  select btag == 1
+
+region noBtag
+  select size(bjets) == 0
+
+region twoBtag
+  select size(bjets) >= 2

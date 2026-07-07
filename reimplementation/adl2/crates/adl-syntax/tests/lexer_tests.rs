@@ -174,6 +174,33 @@ fn scientific_notation_is_an_error_with_help() {
 }
 
 #[test]
+fn subnormal_literal_is_an_error() {
+    // A decimal whose magnitude underflows into the subnormal range is
+    // rejected: the analyzer reasons in exact reals while the interpreter
+    // uses f64, and they diverge only there (a false-PROVEN source).
+    let lit = format!("0.{}1", "0".repeat(320));
+    let out = lex(&lit);
+    let err = out
+        .diags
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+        .expect("expected a lexical error for a subnormal literal");
+    assert!(err.message.contains("subnormal"), "{}", err.message);
+}
+
+#[test]
+fn underflow_to_zero_is_not_an_error() {
+    // A literal that underflows all the way to exactly 0.0 is representable
+    // and harmless — only the nonzero subnormal range is rejected.
+    let lit = format!("0.{}1", "0".repeat(400));
+    let out = lex(&lit);
+    assert!(
+        !out.diags.iter().any(|d| d.severity == Severity::Error),
+        "underflow-to-zero must not be a lexical error"
+    );
+}
+
+#[test]
 fn raw_number_text_is_preserved() {
     let toks = lex("7000.0").tokens;
     assert_eq!(toks[0].text, "7000.0");

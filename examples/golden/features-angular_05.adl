@@ -1,0 +1,15 @@
+# GOLDEN RNeedsThird RFewJets DISJOINT
+# GROUND-TRUTH: dR(jets[1],jets[2]) requires size(jets)>=3; RFewJets requires size(jets)<3.
+#   Size partition [3,inf) vs (-inf,3) is disjoint.
+#   In RNeedsThird: 3 jets with j1,j2 close (dR0.2). In RFewJets: 2 jets.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RNeedsThird
+  select size(jets) >= 3
+  select dR(jets[1], jets[2]) < 0.4
+
+region RFewJets
+  select size(jets) < 3

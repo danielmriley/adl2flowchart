@@ -1,0 +1,17 @@
+# GOLDEN binA binB DISJOINT
+# GOLDEN binB binC DISJOINT
+# GOLDEN binA binC DISJOINT
+# GROUND-TRUTH: HT partitioned into three non-overlapping bands [0,100],[100,300] open-low via >, >300. binA HT<=100, binB 100<HT<=300, binC HT>300. Mutually exclusive by HT value. Event HT=50->A, HT=200->B, HT=400->C.
+object jets
+  take Jet
+  select pt > 30
+
+region binA
+  select HT <= 100
+
+region binB
+  select HT > 100
+  select HT <= 300
+
+region binC
+  select HT > 300

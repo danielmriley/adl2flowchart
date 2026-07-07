@@ -9,7 +9,6 @@
 //! retrieval re-run the same script with the relevant getter appended
 //! (stateless, deterministic for a deterministic solver binary).
 
-use crate::num::rational_of;
 use crate::{AssertName, Model, QSort, SatResult, Solver};
 use adl_formula::{LinAtom, QFormula, Rel};
 use adl_sema::QuantityId;
@@ -60,9 +59,10 @@ impl SubprocessSolver {
         Self::with_command("z3")
     }
 
-    /// Backend over an arbitrary SMT-LIB2 binary that accepts a script on
-    /// stdin (`z3 -in`-compatible invocation is used for `z3`; other
-    /// commands get the script as a temp-file-free stdin stream too).
+    /// Backend over an SMT-LIB2 binary invoked with z3's CLI flags — the
+    /// script is streamed on stdin (`-in`) with z3 soft/hard timeout flags
+    /// (`-t:`/`-T:`). Other solvers work only if they accept that exact
+    /// invocation; `z3()` is the supported entry point.
     #[must_use]
     pub fn with_command(cmd: impl Into<String>) -> Self {
         Self {
@@ -89,16 +89,16 @@ impl SubprocessSolver {
 
     fn atom_smt(&mut self, a: &LinAtom) -> String {
         let mut terms = Vec::with_capacity(a.terms().len());
-        for &(c, q) in a.terms() {
-            self.decls.entry(q).or_insert(QSort::Real);
-            let var = match self.decls[&q] {
+        for (c, q) in a.terms() {
+            self.decls.entry(*q).or_insert(QSort::Real);
+            let var = match self.decls[q] {
                 QSort::Real => format!("q{}", q.0),
                 QSort::Int => format!("(to_real q{})", q.0),
             };
-            if c == 1.0 {
+            if c.is_one() {
                 terms.push(var);
             } else {
-                terms.push(format!("(* {} {var})", rational_of(c).smt_real()));
+                terms.push(format!("(* {} {var})", c.smt_real()));
             }
         }
         let lhs = match terms.len() {
@@ -106,7 +106,7 @@ impl SubprocessSolver {
             1 => terms.remove(0),
             _ => format!("(+ {})", terms.join(" ")),
         };
-        let rhs = rational_of(a.constant()).smt_real();
+        let rhs = a.constant().smt_real();
         match a.rel() {
             Rel::Lt => format!("(< {lhs} {rhs})"),
             Rel::Le => format!("(<= {lhs} {rhs})"),
@@ -217,6 +217,16 @@ impl SubprocessSolver {
                 first_error_line(output)
             ));
         }
+        // z3 reports an unsupported command by printing a bare `unsupported`
+        // line and then *continuing* — so the following `(check-sat)` answers
+        // a script with a silently-dropped command. Treat it as `Unknown`
+        // rather than trusting that answer: a dropped assert/declare could
+        // turn a real SAT into a spurious UNSAT (a fabricated PROVEN verdict).
+        if output.lines().any(|l| l.trim() == "unsupported") {
+            return SatResult::Unknown(
+                "solver reported an unsupported command (a command was dropped)".to_owned(),
+            );
+        }
         for line in output.lines() {
             match line.trim() {
                 "sat" => return SatResult::Sat,
@@ -319,8 +329,8 @@ impl Solver for SubprocessSolver {
         if output.contains("(error") {
             return None;
         }
-        // The core is the parenthesized list after the `unsat` line.
-        let core_text = output.split("unsat").nth(1)?;
+        // The core is the parenthesized list after the `unsat` answer line.
+        let core_text = after_answer_line(&output, "unsat")?;
         let open = core_text.find('(')?;
         let close = core_text[open..].find(')')? + open;
         let internals: Vec<&str> = core_text[open + 1..close].split_whitespace().collect();
@@ -417,10 +427,29 @@ fn sexp_num(s: &Sexp) -> Option<f64> {
     }
 }
 
+/// Text following the first line whose trimmed content is exactly `answer`
+/// (the check-sat reply). Anchoring on the whole answer line avoids the
+/// bare-substring hazard where `"unsat"` contains `"sat"`, or a declared name
+/// or comment contains either token, and a naive `split` cuts at the wrong
+/// place. A mis-cut here only ever weakens a result (a dropped model or core
+/// downgrades to POSSIBLY / drops an explanation), never strengthens it.
+fn after_answer_line<'a>(output: &'a str, answer: &str) -> Option<&'a str> {
+    let mut rest = output;
+    loop {
+        let nl = rest.find('\n')?;
+        let line = &rest[..nl];
+        let tail = &rest[nl + 1..];
+        if line.trim() == answer {
+            return Some(tail);
+        }
+        rest = tail;
+    }
+}
+
 /// Parse `((q0 v0) (q1 v1) …)` from a `(get-value …)` response (the text
 /// after the check-sat answer line).
 fn parse_get_value(output: &str) -> Option<Vec<(String, f64)>> {
-    let after = output.split("sat").nth(1)?;
+    let after = after_answer_line(output, "sat")?;
     let open = after.find('(')?;
     let toks = tokenize(&after[open..]);
     let mut pos = 0;
@@ -463,5 +492,36 @@ mod tests {
     fn error_output_is_unknown() {
         let r = SubprocessSolver::classify("(error \"line 3: unknown constant foo\")\nsat\n");
         assert!(matches!(r, SatResult::Unknown(_)), "{r:?}");
+    }
+
+    // #10: z3 prints a bare `unsupported` line then keeps going, so a later
+    // `sat`/`unsat` answers a script with a silently-dropped command. That
+    // must degrade to Unknown, never be trusted as a verdict.
+    #[test]
+    fn unsupported_command_is_unknown_not_the_answer() {
+        let r = SubprocessSolver::classify("unsupported\nunsat\n");
+        assert!(matches!(r, SatResult::Unknown(_)), "{r:?}");
+        let r = SubprocessSolver::classify("unsupported\nsat\n");
+        assert!(matches!(r, SatResult::Unknown(_)), "{r:?}");
+    }
+
+    // #12: the answer line is matched whole, so `unsat` (which contains the
+    // substring `sat`) does not get mis-cut by a naive `split("sat")`.
+    #[test]
+    fn answer_line_anchor_distinguishes_sat_from_unsat() {
+        // Value list after a genuine `sat` answer.
+        assert_eq!(
+            after_answer_line("sat\n((q0 1.0))\n", "sat"),
+            Some("((q0 1.0))\n")
+        );
+        // `unsat` line must NOT be treated as a `sat` answer line.
+        assert_eq!(after_answer_line("unsat\n(a b)\n", "sat"), None);
+        // The unsat core is taken from after the whole `unsat` line.
+        assert_eq!(after_answer_line("unsat\n(a b)\n", "unsat"), Some("(a b)\n"));
+        // A name containing `sat` on an earlier line is not a false anchor.
+        assert_eq!(
+            after_answer_line("; satellite\nsat\n((q0 2.0))\n", "sat"),
+            Some("((q0 2.0))\n")
+        );
     }
 }

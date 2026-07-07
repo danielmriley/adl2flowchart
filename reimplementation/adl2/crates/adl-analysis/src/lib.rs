@@ -16,6 +16,7 @@
 pub mod encode;
 mod engine;
 pub mod interval;
+mod reconcile;
 mod render;
 pub mod report;
 pub mod witness;
@@ -58,6 +59,25 @@ pub struct AnalysisOptions {
     /// Per-check solver timeout.
     pub timeout: Duration,
     pub fail_on: FailOn,
+    /// Prove cross/intra-collection refinements (IDENTICAL / A⊆B) and assert
+    /// the derived size facts. Set ONLY by an explicit `verify --cross` run
+    /// (owner decision: reconciliation is an opt-in cross-analysis feature);
+    /// off for single-file analysis, where structural interning already
+    /// relates same-source collections.
+    pub reconcile: bool,
+    /// Certify disjointness proofs via the independent exact-rational
+    /// checker (adl-certify, v2 Phase 4): solver-UNSAT pairs whose core
+    /// cannot be certified report CANDIDATE DISJOINT instead of PROVEN.
+    /// ON by default (measured 100% certification on the real corpus,
+    /// 255/255 solver-path proofs); disable with --no-certify for speed.
+    pub certify: bool,
+    /// Sampling-gate battery size (proof-system v2 Phase 1): every UNSAT-side
+    /// PROVEN verdict (disjoint / empty / subset) is refuted against this many
+    /// deterministic synthetic events through the reference interpreter
+    /// before it is reported; a refutation demotes the verdict and files an
+    /// internal-contradiction diagnostic (an encoder/axiom bug, caught at
+    /// verdict time instead of shipped). `0` disables the gate.
+    pub sample_gate: usize,
 }
 
 impl Default for AnalysisOptions {
@@ -66,6 +86,9 @@ impl Default for AnalysisOptions {
             solver: SolverChoice::Auto,
             timeout: Duration::from_secs(10),
             fail_on: FailOn::default(),
+            reconcile: false,
+            sample_gate: 64,
+            certify: true,
         }
     }
 }
@@ -152,8 +175,9 @@ pub fn analyze_source(
     Ok(analyze_hir(&mut hir, src, ext, opts))
 }
 
-/// Analyze a resolved unit. Mutates only the quantity table (encoding
-/// and axiom emission intern helper quantities).
+/// Analyze a resolved unit. Mutates the HIR in place: `retag_opaque_externals`
+/// re-tags region-statement node fragments, and encoding plus axiom emission
+/// intern helper quantities into the quantity table.
 pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOptions) -> Report {
     encode::retag_opaque_externals(hir);
     let unit = encode::encode_unit(hir, src);
@@ -189,8 +213,20 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         let _ = hir.table.intern_quantity(Quantity::Size(c));
     }
 
+    // Build the reconciliation encoding while the table is still mutable
+    // (interns the shared generic-element quantities). Only in an explicit
+    // cross run; otherwise same-source collections already share ids.
+    let recon = opts.reconcile.then(|| reconcile::build(hir, ext));
+
     let unit_name = hir.unit.clone();
     let (solver, solver_label) = make_solver(opts.solver);
+    // The sampling-gate battery is built once per run (deterministic; empty
+    // when the gate is disabled).
+    let gate_events = if opts.sample_gate > 0 {
+        adl_interp::sample::battery(ext, opts.sample_gate)
+    } else {
+        Vec::new()
+    };
     let engine = engine::Engine {
         hir,
         ext,
@@ -200,6 +236,11 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         solver_label,
         timeout: opts.timeout,
         unit_name,
+        recon,
+        spawn_failures: 0,
+        gate_events,
+        certify: opts.certify,
+        recon_facts: Vec::new(),
     };
     engine.run()
 }

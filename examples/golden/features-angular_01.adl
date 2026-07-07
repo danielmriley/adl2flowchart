@@ -1,0 +1,22 @@
+# GOLDEN RClose RFar DISJOINT
+# GROUND-TRUTH: dR(jets,eles) is min pairwise dR; [-inf,0.4) and (5,inf] cannot both hold.
+#   In: {jet eta0 phi0, ele eta0 phi0.1}=dR0.1 -> RClose only.
+#   In: {jet eta-2.5 phi-3, ele eta2.5 phi3}=dR5.01 -> RFar only. No event in both.
+
+object jets
+  take Jet
+  select pt > 30
+
+object eles
+  take Ele
+  select pt > 20
+
+region RClose
+  select size(jets) >= 1
+  select size(eles) >= 1
+  select dR(jets, eles) < 0.4
+
+region RFar
+  select size(jets) >= 1
+  select size(eles) >= 1
+  select dR(jets, eles) > 5

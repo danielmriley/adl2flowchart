@@ -56,11 +56,9 @@ impl Dumper {
                 let header = format!("Info name={} {}", info.name.name, self.at(info.span));
                 self.nested(&header, |d| {
                     for line in &info.lines {
-                        let items: Vec<String> = line.items.iter().map(info_item).collect();
                         d.line(&format!(
-                            "Line key={} items=[{}]",
-                            line.key.name,
-                            items.join(", ")
+                            "Line key={} value={:?}",
+                            line.key.name, line.value
                         ));
                     }
                 });
@@ -152,6 +150,9 @@ impl Dumper {
                         let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
                         let _ = write!(header, " src=union({})", names.join(","));
                     }
+                    TakeSource::Expr(_) => {
+                        let _ = write!(header, " src=expr");
+                    }
                 }
                 if !binders.is_empty() {
                     let names: Vec<&str> = binders.iter().map(|b| b.name.as_str()).collect();
@@ -183,6 +184,16 @@ impl Dumper {
             ObjectStmt::Reject { cond, span } => {
                 let header = format!("Reject {}", self.at(*span));
                 self.nested(&header, |d| d.expr(cond));
+            }
+            ObjectStmt::Derived {
+                keyword,
+                name,
+                body,
+                span,
+            } => {
+                let header =
+                    format!("Derived kw={keyword} name={} {}", name.name, self.at(*span));
+                self.nested(&header, |d| d.expr(body));
             }
         }
     }
@@ -376,6 +387,9 @@ impl Dumper {
             Expr::Dot { base, field, .. } => {
                 self.nested(&format!("Dot field={}", field.name), |d| d.expr(base));
             }
+            Expr::Member { base, field, .. } => {
+                self.nested(&format!("Member field={}", field.name), |d| d.expr(base));
+            }
             Expr::Index { base, index, .. } => {
                 self.nested(&format!("Index {}", index.canon()), |d| d.expr(base));
             }
@@ -411,13 +425,5 @@ impl Dumper {
             }
             Expr::Error(_) => self.line("Error"),
         }
-    }
-}
-
-fn info_item(item: &InfoItem) -> String {
-    match item {
-        InfoItem::Ident(id) => format!("id:{}", id.name),
-        InfoItem::Str(s) => format!("str:{:?}", s.value),
-        InfoItem::Num(n) => format!("num:{}", n.canon()),
     }
 }

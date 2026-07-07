@@ -105,6 +105,18 @@ pub fn check_sound(run: &CaseRun) -> Result<(), String> {
                 }
             }
         }
+        VerdictKind::CandidateDisjoint => {
+            // Not a claim — a solver-UNSAT the certifier could not verify.
+            // Consistency: the tier only exists when certification RAN and
+            // failed; a certified=true pair must never carry it.
+            if pair.certified != Some(false) {
+                return Err(format!(
+                    "CANDIDATE DISJOINT but certified = {:?} (the tier means \
+                     certification ran and could not verify; reason: {})",
+                    pair.certified, pair.reason
+                ));
+            }
+        }
         VerdictKind::ProvenOverlapping => {
             // The witness must have been re-validated through the
             // interpreter; the vocabulary has no opaque quantities, so
@@ -114,6 +126,21 @@ pub fn check_sound(run: &CaseRun) -> Result<(), String> {
                     "PROVEN OVERLAPPING but witness_validated = {:?} (witness must pass \
                      both regions via the interpreter; reason: {})",
                     pair.witness_validated, pair.reason
+                ));
+            }
+        }
+        VerdictKind::CandidateOverlapping => {
+            // Not a proof — a joint model that rests on an opaque quantity the
+            // interpreter cannot decide (so witness_validated is Some(false)).
+            // It makes no PROVEN claim, so there is nothing to refute. The
+            // generator vocabulary is opaque-free, so this should be rare; if
+            // it ever appears with witness_validated == Some(true) the
+            // labelling is wrong (a validated overlap must be ProvenOverlapping).
+            if pair.witness_validated == Some(true) {
+                return Err(format!(
+                    "CANDIDATE OVERLAPPING but witness_validated = Some(true) — a \
+                     validated overlap must be labelled PROVEN OVERLAPPING (reason: {})",
+                    pair.reason
                 ));
             }
         }
@@ -167,6 +194,52 @@ pub struct Summary {
     pub rb_in_ra: bool,
     pub empty_ra: EmptyStatus,
     pub empty_rb: EmptyStatus,
+}
+
+impl Summary {
+    /// Metamorphic consistency between two renderings of the same case.
+    /// Every soundness-bearing fact must match exactly — DISJOINT, EMPTY,
+    /// and the subset flags are all UNSAT-derived and deterministic. Two
+    /// tolerated differences, both "proof strength", never truth:
+    ///
+    /// - PROVEN vs CANDIDATE vs POSSIBLY OVERLAPPING: whether an overlap's
+    ///   witness is *realized* is a property of the heuristic event builder
+    ///   (witness.rs — "soundness never depends on the builder"), so it can
+    ///   legitimately differ with the solver's model / region order.
+    /// - PROVEN vs CANDIDATE DISJOINT: the UNSAT itself is deterministic,
+    ///   but the *certificate* search runs on the solver's minimized core,
+    ///   and core CHOICE is not invariant under statement inlining — a
+    ///   paste-variant core of two small facts can certify while the
+    ///   inherit-variant core (one monolithic region-reference conjunction)
+    ///   exceeds the case-split budget. CANDIDATE is the honest downgrade.
+    ///
+    /// The strict interpreter-membership check in the battery remains the
+    /// real net.
+    #[must_use]
+    pub fn consistent(&self, other: &Summary) -> bool {
+        let overlapping = |k: VerdictKind| {
+            matches!(
+                k,
+                VerdictKind::ProvenOverlapping
+                    | VerdictKind::CandidateOverlapping
+                    | VerdictKind::PossiblyOverlapping
+            )
+        };
+        let disjoint = |k: VerdictKind| {
+            matches!(
+                k,
+                VerdictKind::ProvenDisjoint | VerdictKind::CandidateDisjoint
+            )
+        };
+        let kind_ok = self.kind == other.kind
+            || (overlapping(self.kind) && overlapping(other.kind))
+            || (disjoint(self.kind) && disjoint(other.kind));
+        kind_ok
+            && self.ra_in_rb == other.ra_in_rb
+            && self.rb_in_ra == other.rb_in_ra
+            && self.empty_ra == other.empty_ra
+            && self.empty_rb == other.empty_rb
+    }
 }
 
 /// Extract the normalized summary (regions keyed by name, pair oriented

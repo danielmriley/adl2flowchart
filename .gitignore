@@ -20,3 +20,10 @@ docs/*.aux
 docs/*.log
 docs/*.out
 docs/*.toc
+
+# scratch ingest samples (committed fixtures live in reimplementation/adl2/crates/adl-ingest/fixtures)
+/samples/
+
+# generic analyze-adl outputs (regenerable; keep them out of commits)
+/analysis.md
+/report.md

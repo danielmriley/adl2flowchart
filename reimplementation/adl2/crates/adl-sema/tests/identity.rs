@@ -294,15 +294,85 @@ fn union_order_is_part_of_identity() {
 }
 
 #[test]
-fn negative_index_is_diagnosed_unsupported() {
+fn back_index_resolves_in_fragment_as_from_back() {
+    // OPEN-3 resolved: `jets[-1]` is the last element, interned as a proper
+    // `ElemProp { index: FromBack(1) }` and NOT flagged unsupported. It is a
+    // distinct quantity from the front element `jets[0]`.
     let hir = analyze(
         "object jets\n  take Jet\n\
-         region SR\n  select jets[-1].pT > 30\n",
+         region SR\n  select jets[0].pT > 100\n  select jets[-1].pT > 30\n",
     );
     let selects = select_nodes(&hir, "SR");
     assert!(
-        selects[0].has_unsupported(),
-        "[-n] must surface as Unsupported (OPEN-3)"
+        !selects[1].has_unsupported(),
+        "`jets[-1]` must be in-fragment now"
+    );
+    let backs: Vec<&Quantity> = hir
+        .table
+        .quantities()
+        .iter()
+        .filter(|q| {
+            matches!(
+                q,
+                Quantity::ElemProp {
+                    index: adl_sema::ElemIndex::FromBack(1),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(backs.len(), 1, "jets[-1].pt interns once as FromBack(1)");
+}
+
+#[test]
+fn scalar_min_max_resolves_in_fragment() {
+    // `min(a, b)` of two scalar arguments is the n-ary minimum, in-fragment as
+    // a ScalarMinMax node — NOT rejected as a malformed collection reducer.
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         region SR\n  select min(jets[0].pT, jets[1].pT) > 30\n",
+    );
+    let selects = select_nodes(&hir, "SR");
+    assert!(
+        !selects[0].has_unsupported(),
+        "scalar min must resolve in-fragment, got unsupported"
+    );
+}
+
+#[test]
+fn bare_indexed_element_as_scalar_defaults_to_pt() {
+    // A bare `jets[1]` in scalar position means `jets[1].pT` — it must be
+    // in-fragment AND intern to the SAME ElemProp the explicit `.pT` produces
+    // (uniqueness below proves the identity), not a fresh/opaque leaf.
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         region SR\n  select jets[1] > 30\n  select jets[1].pT > 30\n",
+    );
+    let selects = select_nodes(&hir, "SR");
+    assert!(
+        !selects[0].has_unsupported(),
+        "bare `jets[1]` must default to .pT, not stay unsupported"
+    );
+    // Both cuts reference `jets[1]`'s pt: exactly one ElemProp at FromFront(1)
+    // exists, so the bare form and the explicit `.pT` form share it.
+    let elem1: Vec<&Quantity> = hir
+        .table
+        .quantities()
+        .iter()
+        .filter(|q| {
+            matches!(
+                q,
+                Quantity::ElemProp {
+                    index: adl_sema::ElemIndex::FromFront(1),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        elem1.len(),
+        1,
+        "bare `jets[1]` and `jets[1].pT` share one ElemProp quantity"
     );
 }
 
@@ -334,4 +404,243 @@ fn region_used_as_predicate_inlines_prior_region() {
         sr2.stmts[0],
         HirRegionStmt::Inherit { region: 0, .. }
     ));
+}
+
+// ---- P2 sort -> alias (soundness-critical) -----------------------------
+
+#[test]
+fn descending_pt_sort_of_pt_ordered_source_aliases_to_source() {
+    // A stable descending-pT sort of a pT-descending source (base or
+    // filtered) is the identity permutation: it canonicalizes to the SOURCE
+    // collection id, so it inherits ORD/IDOM/EPRED and cross-region identity.
+    let hir = analyze(
+        "object jets\n  take Jet\n  select pT > 30\n\
+         object sjets\n  take sort(jets, pt(jets), descend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_eq!(sjets, jets, "descending-pt sort of an ordered source is an alias");
+    // No opaque Sorted collection was interned for this shape.
+    assert!(
+        !hir.table
+            .collections()
+            .iter()
+            .any(|c| matches!(c, Collection::Sorted { .. })),
+        "the aliased sort must not leave a distinct Sorted collection"
+    );
+}
+
+#[test]
+fn ascending_sort_does_not_alias_and_stays_opaque_sorted() {
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         object sjets\n  take sort(jets, pt(jets), ascend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_ne!(sjets, jets, "ascending sort is NOT the identity permutation");
+    assert!(
+        matches!(hir.table.collection(sjets), Collection::Sorted { .. }),
+        "ascending sort stays an opaque Sorted"
+    );
+    // pt_ordered must be false for it (no ORD/IDOM index facts).
+    let pt = ExtDecls::legacy().prop_canon("pt").0;
+    assert!(!hir.table.pt_ordered(sjets, &pt));
+}
+
+#[test]
+fn sort_over_union_does_not_alias() {
+    // The source is a union (not pT-descending), so even a descending-pT sort
+    // must NOT alias — the gravest false-PROVEN trap.
+    let hir = analyze(
+        "object eles\n  take Ele\n\
+         object muons\n  take Muo\n\
+         object leptons\n  take union(eles, muons)\n\
+         object sleptons\n  take sort(leptons, pt(leptons), descend)\n",
+    );
+    let leptons = hir.collection_of("leptons").unwrap();
+    let sleptons = hir.collection_of("sleptons").unwrap();
+    assert_ne!(sleptons, leptons, "sort over a union must not alias");
+    assert!(matches!(
+        hir.table.collection(sleptons),
+        Collection::Sorted { .. }
+    ));
+    let pt = ExtDecls::legacy().prop_canon("pt").0;
+    assert!(!hir.table.pt_ordered(sleptons, &pt));
+}
+
+#[test]
+fn sort_by_non_pt_key_does_not_alias() {
+    let hir = analyze(
+        "object jets\n  take Jet\n\
+         object sjets\n  take sort(jets, eta(jets), descend)\n",
+    );
+    let jets = hir.collection_of("jets").unwrap();
+    let sjets = hir.collection_of("sjets").unwrap();
+    assert_ne!(sjets, jets, "a non-pt sort key must not alias");
+    assert!(matches!(
+        hir.table.collection(sjets),
+        Collection::Sorted { .. }
+    ));
+}
+
+#[test]
+fn unresolvable_object_inputs_get_unit_unique_private_bases() {
+    // Soundness regression (review F1): an object whose input cannot be
+    // resolved (unsupported take call / no take / take cycle) must NOT fall
+    // back to a base named after the block itself — an ext spelling
+    // (`JETclean`) would fabricate identity with the genuine detector base
+    // across files. The fallback base is minted `<unit>::<name>#unresolved`.
+    for src in [
+        // unsupported take call (the dropped-re-clustering shape)
+        "object JETclean\n  take antikT(Jet, 0.4)\n  select pt > 100\n",
+        // no take at all
+        "object JETclean\n  select pt > 100\n",
+    ] {
+        let hir = analyze(src);
+        let coll = hir.collection_of("JETclean").unwrap();
+        let (base_sym, _) = hir
+            .table
+            .filter_chain(coll)
+            .expect("filtered chain over a base");
+        let label = hir.symbols.display(base_sym);
+        assert!(
+            label.starts_with("test.adl::") && label.contains("#unresolved"),
+            "fallback base must be unit-unique private, got `{label}` for:\n{src}"
+        );
+    }
+    // Take cycle: a resolve ERROR, and the fallback must still be private.
+    let hir =
+        analyze("object a\n  take b\n  select pt > 1\nobject b\n  take a\n  select pt > 2\n");
+    assert!(hir.diags.iter().any(|d| d.severity == Severity::Error));
+    for name in ["a", "b"] {
+        let coll = hir.collection_of(name).unwrap();
+        let (base_sym, _) = hir.table.filter_chain(coll).expect("chain over the fallback");
+        let label = hir.symbols.display(base_sym);
+        assert!(
+            label.contains("#unresolved"),
+            "cycle fallback must be private, got `{label}`"
+        );
+    }
+}
+
+#[test]
+fn oversized_source_index_never_mints_the_generic_sentinel() {
+    // Soundness regression (review F12): `u32::MAX` is reserved as
+    // reconciliation's generic-element index, whose proofs quantify over an
+    // AXIOM-FREE element. A source index >= 2^32 (or exactly 4294967295)
+    // used to clamp onto it, handing the "free" generic element ORD/IDOM
+    // axioms. Source indices now cap at MAX_SOURCE_ELEM_INDEX.
+    use adl_sema::{ElemIndex, MAX_SOURCE_ELEM_INDEX, Quantity};
+    let hir = analyze(
+        "region SR\n  select pT(Jet[5000000000]) > 0\n  select pT(Jet[4294967295]) > 0\n",
+    );
+    let mut saw_clamped = false;
+    for q in hir.table.quantities() {
+        if let Quantity::ElemProp { index: ElemIndex::FromFront(n), .. } = q {
+            assert_ne!(*n, u32::MAX, "source index must never mint the generic sentinel");
+            saw_clamped |= *n == MAX_SOURCE_ELEM_INDEX;
+        }
+    }
+    assert!(saw_clamped, "the oversized index must clamp to MAX_SOURCE_ELEM_INDEX");
+}
+
+#[test]
+fn unsupported_cuts_never_share_identity() {
+    // Soundness review S1: `<unsupported: reason>` renders discard the
+    // DIFFERING substructure, so two physically different cuts could intern
+    // one ElemPredId -> one CollectionId -> one size variable (reproduced
+    // false PROVEN DISJOINT on the corpus lepton-cleaning idiom). Unsupported
+    // predicates now always mint fresh ids.
+    let hir = analyze(
+        "object eles\n  take Ele\nobject muons\n  take Muo\n\
+         object cleanA\n  take Jet\n  reject any(dR(this, eles) < 0.2 and pt(eles) > 10)\n\
+         object cleanB\n  take Jet\n  reject any(dR(this, muons) < 0.4 and pt(muons) > 20)\n",
+    );
+    let a = hir.collection_of("cleanA").unwrap();
+    let b = hir.collection_of("cleanB").unwrap();
+    assert_ne!(a, b, "different unsupported cuts must not unify the collections");
+
+    // Identical FULLY-RESOLVED cuts still merge (the intended sharing).
+    let hir = analyze(
+        "object x1\n  take Jet\n  select pt > 30\nobject x2\n  take Jet\n  select pt > 30\n",
+    );
+    assert_eq!(
+        hir.collection_of("x1").unwrap(),
+        hir.collection_of("x2").unwrap(),
+        "identical resolved cuts keep structural sharing"
+    );
+}
+
+#[test]
+fn elem_context_externals_never_intern_shared_quantities() {
+    // Soundness review S2: `sqrt(pt)` inside two different object blocks used
+    // to intern ONE ExternalFn over the context-free key "this.pt"; EPRED
+    // then asserted contradictory facts about one shared solver variable
+    // (reproduced false PROVEN DISJOINT). Such calls now become Unsupported
+    // nodes and intern nothing.
+    let hir = analyze(
+        "object bigA\n  take Jet\n  select sqrt(pt) > 5\n\
+         object bigB\n  take Muo\n  select sqrt(pt) < 2\n",
+    );
+    use adl_sema::{Quantity, QuantityArg};
+    for q in hir.table.quantities() {
+        if let Quantity::ExternalFn { args, .. } = q {
+            for a in args {
+                if let QuantityArg::Opaque(s) = a {
+                    assert!(
+                        !s.contains("this.") && !s.contains("<unsupported:"),
+                        "context-dependent opaque key must not intern: {s:?}"
+                    );
+                }
+            }
+        }
+    }
+    // And the two blocks' collections stay distinct.
+    assert_ne!(
+        hir.collection_of("bigA").unwrap(),
+        hir.collection_of("bigB").unwrap()
+    );
+}
+
+/// Proof-system v2 Phase 3 — render-injectivity enforcement. Element
+/// predicates (and opaque args) intern by canonical render, so the render
+/// must be INJECTIVE over everything allowed to share identity: two cuts
+/// differing in any semantically-relevant component must intern DIFFERENT
+/// predicates (else two physically different collections share a size
+/// variable — the review-S1 false-PROVEN class). Each pair below differs in
+/// exactly one component; a future render arm that discards its component
+/// fails here. (The converse — deliberate sharing — is the whitelist:
+/// identical resolved text, dR symmetry, sum commutativity, literal raw
+/// text; pinned by the tests above.)
+#[test]
+fn render_injectivity_differential_battery() {
+    let pairs: &[(&str, &str, &str)] = &[
+        ("literal value", "pt > 30", "pt > 31"),
+        ("literal raw text", "pt > 1", "pt > 1.0"),
+        ("property", "pt > 30", "eta > 30"),
+        ("relation", "pt > 30", "pt >= 30"),
+        ("comparison side", "pt > 30", "pt < 30"),
+        ("boolean connective", "pt > 30 and eta < 2", "pt > 30 or eta < 2"),
+        ("negation", "pt > 30", "not pt > 30"),
+        ("band kind", "pt [] 20 30", "pt ][ 20 30"),
+        ("band bound", "pt [] 20 30", "pt [] 20 31"),
+        ("ternary guard", "pt > 30 ? eta < 2 : m > 5", "pt > 40 ? eta < 2 : m > 5"),
+        ("ternary branch", "pt > 30 ? eta < 2 : m > 5", "pt > 30 ? eta < 1 : m > 5"),
+        ("abs presence", "eta < 2", "abs(eta) < 2"),
+        ("arith op", "pt + m > 30", "pt - m > 30"),
+        ("arith operand", "pt + m > 30", "pt + e > 30"),
+    ];
+    for (what, ca, cb) in pairs {
+        let src = format!(
+            "object xa\n  take Jet\n  select {ca}\nobject xb\n  take Jet\n  select {cb}\n"
+        );
+        let hir = analyze(&src);
+        let a = hir.collection_of("xa").unwrap();
+        let b = hir.collection_of("xb").unwrap();
+        assert_ne!(
+            a, b,
+            "cuts differing in {what} must intern distinct predicates: {ca:?} vs {cb:?}"
+        );
+    }
 }

@@ -1,0 +1,9 @@
+# GOLDEN-EMPTY MET_CONTRA
+# GROUND-TRUTH: a single MET value cannot be both >400 and <200; no event passes. e.g. MET=500 fails <200, MET=100 fails >400, MET=300 fails both.
+object jets
+  take Jet
+  select pt > 30
+
+region MET_CONTRA
+  select MET > 400
+  select MET < 200

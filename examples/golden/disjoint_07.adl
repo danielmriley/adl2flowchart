@@ -1,0 +1,11 @@
+# GOLDEN metBandLo metBandHi DISJOINT
+# GROUND-TRUTH: metBandLo needs MET in [100,200], metBandHi needs MET in [400,600]; bands disjoint. Event MET=150 -> lo only; MET=500 -> hi only.
+object jets
+  take Jet
+  select pt > 30
+
+region metBandLo
+  select MET [] 100 200
+
+region metBandHi
+  select MET [] 400 600

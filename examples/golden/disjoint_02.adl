@@ -1,0 +1,11 @@
+# GOLDEN htLow htHigh DISJOINT
+# GROUND-TRUTH: htLow needs HT in [0,100], htHigh needs HT in [200,300]; bands do not overlap. Event HT=50 -> htLow only; HT=250 -> htHigh only; no event in both.
+object jets
+  take Jet
+  select pt > 30
+
+region htLow
+  select HT [] 0 100
+
+region htHigh
+  select HT [] 200 300

@@ -15,6 +15,7 @@ pub mod event;
 pub mod histo;
 mod json;
 pub mod provenance;
+pub mod sample;
 pub mod sha256;
 mod weights;
 

@@ -1,0 +1,15 @@
+# GOLDEN RTight RWide DISJOINT
+# GROUND-TRUTH: dR(jets[0],jets[-1]) leading-vs-trailing separation; [-inf,1) and (3,inf] disjoint.
+#   In RTight: {j0 eta0, j1 eta0.5}=dR0.5. In RWide: {j0 eta0, j1 eta4}=dR4. dR2 in neither.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RTight
+  select size(jets) >= 2
+  select dR(jets[0], jets[-1]) < 1.0
+
+region RWide
+  select size(jets) >= 2
+  select dR(jets[0], jets[-1]) > 3.0

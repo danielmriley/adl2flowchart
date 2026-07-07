@@ -1,0 +1,11 @@
+# GOLDEN R_cancel_met R_plain_met POSSIBLY
+# GROUND-TRUTH: MET+HT-HT equals MET in real arithmetic, so R_cancel_met (MET+HT-HT>50) and R_plain_met (MET>60) genuinely overlap (witness MET=200,HT=10 passes both). The analyzer does not algebraically cancel HT — it treats MET+HT-HT as a distinct dimension — so it soundly returns the conservative POSSIBLY rather than PROVEN.
+object jets
+  take Jet
+  select pt > 30
+
+region R_cancel_met
+  select MET + HT - HT > 50
+
+region R_plain_met
+  select MET > 60

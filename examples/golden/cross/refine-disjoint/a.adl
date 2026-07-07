@@ -1,0 +1,10 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RB DISJOINT
+# GROUND-TRUTH: a's jets (pt>100) refine b's jets (pt>30) over the shared
+# base Jet, so size(a jets) <= size(b jets) (XSUB). RA needs >= 3 tight
+# jets while RB allows <= 2 loose ones: 3 <= |A| <= |B| <= 2 is absurd in
+# every event, so the pair is disjoint ACROSS the two analyses.
+object jets
+  take Jet
+  select pt > 100
+region RA
+  select size(jets) >= 3

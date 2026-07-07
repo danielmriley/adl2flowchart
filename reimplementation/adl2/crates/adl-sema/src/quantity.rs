@@ -6,7 +6,7 @@
 //! quantities are facts proven downstream (axioms/solver), never merges.
 
 use crate::intern::Symbol;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident, $prefix:literal) => {
@@ -44,9 +44,17 @@ id_type!(
     "prop"
 );
 
-/// Element index within an ordered collection. 0-based (PHASE0 OPEN-3);
-/// `FromBack` is reserved — `[-n]` is diagnosed as `Unsupported` until
-/// OPEN-3 is resolved.
+/// Element index within an ordered collection. 0-based. `FromFront(i)` is
+/// Largest front index a SOURCE expression can resolve to: `u32::MAX`
+/// itself is reserved as reconciliation's generic-element sentinel
+/// (`adl_axioms::GENERIC_INDEX`), whose soundness rests on the generic
+/// element receiving NO per-element axioms — a source index clamped onto it
+/// (`Jet[5000000000]`) would void that. Every resolver/encoder path that
+/// derives a `FromFront` index from source must clamp to this.
+pub const MAX_SOURCE_ELEM_INDEX: u32 = u32::MAX - 1;
+
+/// `coll[i]`; `FromBack(k)` is `coll[-k]` (`[-1]` = last), resolved as an
+/// in-fragment element leaf guarded by `size >= k` (OPEN-3, resolved).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ElemIndex {
     FromFront(u32),
@@ -104,6 +112,36 @@ pub enum ParticleRef {
     /// A composite-block binder slot (`take leptons l1, l2`); identity is
     /// the (collection, binder-name) pair — never merged across names.
     Binder { coll: CollectionId, name: Symbol },
+    /// The implicit *outer* element of an object-block filter, used as a
+    /// particle inside a reducer body (`reject any(dR(this, X)) < 0.4`).
+    /// Interpret-only: the analyzer keeps reducer bodies opaque (P1).
+    ThisElem,
+    /// The current iteration element of the innermost reducer (`any`/`all`/
+    /// `min`/`max`/`sum`) body. Interpret-only (P1).
+    ReduceElem,
+    /// A 4-vector sum of particle references (`l1 + l2`), canonically
+    /// flattened and operand-sorted at construction so association and
+    /// argument order do not create distinct identities. Build via
+    /// [`ParticleRef::sum`]; never construct the variant directly.
+    Sum(Vec<ParticleRef>),
+}
+
+impl ParticleRef {
+    /// Build a canonical 4-vector sum: nested `Sum`s are flattened and the
+    /// operands are sorted (`ParticleRef` derives `Ord`), so `l0+(l1+l2)`,
+    /// `(l0+l1)+l2` and `l2+l1+l0` all intern to the same identity.
+    #[must_use]
+    pub fn sum(parts: impl IntoIterator<Item = ParticleRef>) -> ParticleRef {
+        let mut flat = Vec::new();
+        for p in parts {
+            match p {
+                ParticleRef::Sum(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
+        }
+        flat.sort();
+        ParticleRef::Sum(flat)
+    }
 }
 
 /// Source of a per-event scalar.
@@ -161,6 +199,37 @@ pub enum Quantity {
     },
 }
 
+/// Sort direction of a [`Collection::Sorted`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SortDir {
+    Ascend,
+    Descend,
+}
+
+/// Sort key of a [`Collection::Sorted`]. `Prop(pt)` + [`SortDir::Descend`]
+/// over a provably pt-descending source is the *only* shape the analyzer
+/// may canonicalize to an alias of the source (P2); every other key/dir is
+/// opaque (size/existence-only). The key is the interner's identity, so two
+/// sorts by different properties never unify.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SortKey {
+    /// Sort by a single per-element property (the interpreter re-sorts by it).
+    Prop(PropId),
+    /// A key not reducible to one per-element property; the interpreter keeps
+    /// source order and any indexed access is diagnosed `Unsupported`. The
+    /// string is the canonical render (interning identity).
+    Opaque(String),
+}
+
+/// How a composite enumerates tuples (`take comb`/`disjoint`/`cartesian`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombKind {
+    /// Ordered product including cross-collection repeats (`cartesian`).
+    Cartesian,
+    /// Unordered pairs of value-distinct elements (`disjoint`, USER ANSWER 4).
+    Disjoint,
+}
+
 /// A collection's defining structure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Collection {
@@ -174,8 +243,66 @@ pub enum Collection {
     },
     /// Concatenation of parts (order is part of the identity).
     Union(Vec<CollectionId>),
-    /// Combinatorial composite (COMB / multi-binder blocks).
-    Combination { parts: Vec<CollectionId> },
+    /// A re-sorted permutation of `source` (`take sort(coll, key, dir)`). Same
+    /// element *set* as the source; the per-index order is the key's. Never an
+    /// index-ordering fact unless P2's exact pt-descending alias gate fires.
+    Sorted {
+        source: CollectionId,
+        key: SortKey,
+        dir: SortDir,
+    },
+    /// A contiguous half-open sub-range `source[start..end]` (`coll[a:b]`).
+    /// `end == None` means "through the end".
+    Slice {
+        source: CollectionId,
+        start: u32,
+        end: Option<u32>,
+    },
+    /// Combinatorial composite (COMB / multi-binder blocks): a collection of
+    /// *tuples* over `parts`. `kind` selects the enumeration; `members` is the
+    /// per-slot binder (name, source) in slot order; `candidate` is an
+    /// optional 4-vector candidate built from the binders
+    /// (`candidate ll = l1 + l2`); `cuts` are per-tuple filters (interned
+    /// predicate ids over the tuple). Interpret-only in P1.
+    Combination {
+        parts: Vec<CollectionId>,
+        kind: CombKind,
+        members: Vec<CompositeBinder>,
+        candidate: Option<CompositeCandidate>,
+        cuts: Vec<ElemPredId>,
+    },
+    /// A projection of a [`Collection::Combination`] onto one axis
+    /// (`X->ll` candidate, `X->l1` member): one element per surviving tuple.
+    CombProject {
+        comb: CollectionId,
+        axis: CombAxis,
+    },
+}
+
+/// One binder slot of a composite block: its name and the source collection
+/// its element ranges over.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompositeBinder {
+    pub name: Symbol,
+    pub source: CollectionId,
+}
+
+/// Which axis of a composite a projection selects.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombAxis {
+    /// A binder member slot, by name (`X->l1`).
+    Member(Symbol),
+    /// The candidate 4-vector (`X->ll`), by name.
+    Candidate(Symbol),
+}
+
+/// A composite candidate definition (`candidate ll = l1 + l2`): the binder
+/// name it is bound to and the 4-vector sum it denotes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CompositeCandidate {
+    pub name: Symbol,
+    /// The candidate 4-vector (a `ParticleRef::Sum` over the tuple binders).
+    pub vector: ParticleRef,
 }
 
 /// Structural interner for collections, quantities and properties.
@@ -208,6 +335,13 @@ impl QuantityTable {
         self.quant_ids.insert(q.clone(), id);
         self.quants.push(q);
         id
+    }
+
+    /// The id of an already-interned quantity, or `None` if it was never
+    /// interned. O(1) lookup via the interner map — no scan of the table.
+    #[must_use]
+    pub fn quantity_id(&self, q: &Quantity) -> Option<QuantityId> {
+        self.quant_ids.get(q).copied()
     }
 
     /// Intern an angular separation, canonically ordering the operands of
@@ -267,5 +401,201 @@ impl QuantityTable {
     #[must_use]
     pub fn quantities(&self) -> &[Quantity] {
         &self.quants
+    }
+
+    /// Is `c` provably pT-descending? ORD/IDOM/EPRED index-ordering facts ride
+    /// on this predicate; it is the **single source of truth** shared by the
+    /// axiom emitter and the resolver's sort-alias gate (plan §risk 5 — no
+    /// second copy may diverge).
+    ///
+    /// True only for a base collection, a `Filtered` chain rooted at a base
+    /// (filtering preserves source order), a `Slice` of a pT-descending source
+    /// (a contiguous sub-sequence of a sorted list stays sorted), and a
+    /// descending pT `Sorted` of a pT-descending source (the identity
+    /// permutation — the sole alias shape). `pt_key` is the canonical pT
+    /// property key (`ext.prop_canon("pt").0`). Everything else — a non-pT or
+    /// ascending sort, a `Union`, a `Combination`/projection — is `false`
+    /// (the sound posture: only ever weakens to POSSIBLY, never a false PROVEN).
+    #[must_use]
+    pub fn pt_ordered(&self, c: CollectionId, pt_key: &str) -> bool {
+        match self.collection(c) {
+            Collection::Base(_) => true,
+            Collection::Filtered { parent, .. } => self.pt_ordered(*parent, pt_key),
+            Collection::Slice { source, .. } => self.pt_ordered(*source, pt_key),
+            Collection::Sorted { source, key, dir } => {
+                *dir == SortDir::Descend
+                    && matches!(key, SortKey::Prop(p) if self.prop_key(*p) == pt_key)
+                    && self.pt_ordered(*source, pt_key)
+            }
+            Collection::Union(_)
+            | Collection::Combination { .. }
+            | Collection::CombProject { .. } => false,
+        }
+    }
+
+    /// Merge the element-existence requirement of `q` into `out` (per
+    /// collection, the greatest index floor): the guard `size(coll) >
+    /// out[coll]` makes every `coll[i]` / `coll[-k]` reference in `q`
+    /// defined. THE single source of definedness (proof-system v2 Phase 2 —
+    /// partiality by construction): the formula encoder's leaf guards and
+    /// the axiom emitters' guarded facts both derive from this, so the two
+    /// can never disagree about when an element exists. A front element
+    /// `[i]` exists iff `size > i`; a back element `[-k]` iff `size >= k`
+    /// (`size > k-1`); `[-0]` is degenerate (never exists) and imposes no
+    /// floor. Opaque `ExternalFn` quantities contribute nothing — their
+    /// missing-element behaviour is unknown and their values are already
+    /// declared free (SPEC_ANALYSIS §2).
+    pub fn existence_floor(&self, q: QuantityId, out: &mut BTreeMap<CollectionId, u32>) {
+        let mut need = |coll: CollectionId, i: u32| {
+            let e = out.entry(coll).or_insert(i);
+            *e = (*e).max(i);
+        };
+        let floor_need = |index: &ElemIndex| -> Option<u32> {
+            match index {
+                ElemIndex::FromFront(i) => Some(*i),
+                ElemIndex::FromBack(k) => k.checked_sub(1),
+            }
+        };
+        match self.quantity(q) {
+            Quantity::ElemProp { coll, index, .. } => {
+                if let Some(n) = floor_need(index) {
+                    need(*coll, n);
+                }
+            }
+            Quantity::AngularSep { a, b, .. } => {
+                for p in [a, b] {
+                    if let ParticleRef::Elem { coll, index } = p
+                        && let Some(n) = floor_need(index)
+                    {
+                        need(*coll, n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Flatten a **pure filter chain** into `(base symbol, predicates applied
+    /// on top, base-down)`. Returns `None` for anything that is not a `Base`
+    /// or a `Filtered` chain rooted (through more `Filtered`s) at a `Base` —
+    /// i.e. `Union`, `Sorted`, `Slice`, `Combination`, `CombProject`, or any
+    /// chain passing through one of them.
+    ///
+    /// This is the reconciliation counterpart of [`Self::pt_ordered`]: two
+    /// collections from different analyses are comparable for
+    /// IDENTICAL/REFINEMENT **only** when both flatten to the SAME base
+    /// symbol, so their membership predicates ground onto one shared generic
+    /// element. Non-filter and multi-source shapes are excluded here so no
+    /// derived subset fact can ever rest on them.
+    #[must_use]
+    pub fn filter_chain(&self, id: CollectionId) -> Option<(Symbol, Vec<ElemPredId>)> {
+        let mut preds = Vec::new();
+        let mut cur = id;
+        loop {
+            match self.collection(cur) {
+                Collection::Base(s) => {
+                    preds.reverse(); // base-down: the outermost filter is last
+                    return Some((*s, preds));
+                }
+                Collection::Filtered { parent, pred } => {
+                    preds.push(*pred);
+                    cur = *parent;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Candidate collection pairs for cross/intra reconciliation: **unordered
+    /// pairs of distinct `Filtered` collections that flatten to the same base
+    /// symbol** (via [`Self::filter_chain`]). Bare `Base`s are excluded (no
+    /// cuts to refine, and structurally identical bases already share an id),
+    /// as is every non-filter shape.
+    ///
+    /// Pure and side-effect-free: it emits no solver fact and changes no
+    /// verdict. The analysis engine consumes it, proves each pair's refinement
+    /// on the UNSAT (subset) side, and only then emits a derived size axiom —
+    /// so this enumeration cannot, by itself, fabricate a PROVEN. Iteration is
+    /// deterministic (base symbols in `BTreeMap` order, ids ascending).
+    #[must_use]
+    pub fn reconciliation_candidates(&self) -> Vec<(CollectionId, CollectionId)> {
+        let mut by_base: BTreeMap<Symbol, Vec<CollectionId>> = BTreeMap::new();
+        for (i, c) in self.colls.iter().enumerate() {
+            if !matches!(c, Collection::Filtered { .. }) {
+                continue;
+            }
+            let id = CollectionId(u32::try_from(i).expect("collection id overflow"));
+            if let Some((base, _)) = self.filter_chain(id) {
+                by_base.entry(base).or_default().push(id);
+            }
+        }
+        let mut out = Vec::new();
+        for ids in by_base.values() {
+            for a in 0..ids.len() {
+                for b in (a + 1)..ids.len() {
+                    out.push((ids[a], ids[b]));
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use super::*;
+
+    fn base(t: &mut QuantityTable, s: u32) -> CollectionId {
+        t.intern_collection(Collection::Base(Symbol(s)))
+    }
+    fn filt(t: &mut QuantityTable, parent: CollectionId, p: u32) -> CollectionId {
+        t.intern_collection(Collection::Filtered { parent, pred: ElemPredId(p) })
+    }
+
+    #[test]
+    fn filter_chain_flattens_base_down() {
+        let mut t = QuantityTable::default();
+        let b = base(&mut t, 7);
+        assert_eq!(t.filter_chain(b), Some((Symbol(7), vec![])));
+        let f1 = filt(&mut t, b, 0);
+        assert_eq!(t.filter_chain(f1), Some((Symbol(7), vec![ElemPredId(0)])));
+        let f2 = filt(&mut t, f1, 1);
+        // base-down: the inner filter comes first, the outermost last.
+        assert_eq!(
+            t.filter_chain(f2),
+            Some((Symbol(7), vec![ElemPredId(0), ElemPredId(1)]))
+        );
+    }
+
+    #[test]
+    fn filter_chain_none_for_non_filter_shapes() {
+        let mut t = QuantityTable::default();
+        let b = base(&mut t, 1);
+        let u = t.intern_collection(Collection::Union(vec![b]));
+        assert_eq!(t.filter_chain(u), None);
+        let sl = t.intern_collection(Collection::Slice { source: b, start: 0, end: Some(2) });
+        assert_eq!(t.filter_chain(sl), None);
+        // a filter rooted at a non-base (here a slice) is excluded too: a
+        // derived subset fact must never rest on a re-ordered/sliced source.
+        let f_over_slice = filt(&mut t, sl, 5);
+        assert_eq!(t.filter_chain(f_over_slice), None);
+    }
+
+    #[test]
+    fn candidates_are_same_base_filtered_pairs_only() {
+        let mut t = QuantityTable::default();
+        let jet = base(&mut t, 1);
+        let ele = base(&mut t, 2);
+        let jet_a = filt(&mut t, jet, 0); // jets pt>30
+        let jet_b = filt(&mut t, jet, 1); // jets pt>25
+        let ele_a = filt(&mut t, ele, 0); // different base
+        let _bare = base(&mut t, 3); // bare base: no cuts to refine, excluded
+        let _slice = t.intern_collection(Collection::Slice { source: jet, start: 0, end: None });
+        let cands = t.reconciliation_candidates();
+        // Only the two same-base jet filters pair (both directions handled by
+        // the prover, so one unordered pair); the lone ele filter has no
+        // partner; bare bases and non-filter shapes never appear.
+        assert_eq!(cands, vec![(jet_a, jet_b)]);
+        assert!(!cands.iter().any(|&(a, b)| a == ele_a || b == ele_a));
     }
 }

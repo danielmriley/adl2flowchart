@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex12_counts.adl\")"
 ---
 File
   Info name=analysis @25:1
-    Line key=title items=[str:"ADL/CL ex12: External counts and errors"]
+    Line key=title value="\"ADL/CL ex12: External counts and errors\""
   CountsFormat name=results @31:1
     Process name=estbg title="Total estimated BG" columns=[stat, syst]
     Process name=obsdata title="Observed data" columns=[]

@@ -75,7 +75,7 @@ pub fn flowchart_dot(hir: &Hir) -> String {
             Collection::Filtered { parent, .. } => {
                 edge_if_node(&mut s, hir, *parent, i, "take");
             }
-            Collection::Union(parts) | Collection::Combination { parts } => {
+            Collection::Union(parts) | Collection::Combination { parts, .. } => {
                 let kw = if matches!(coll, Collection::Union(_)) {
                     "union"
                 } else {
@@ -84,6 +84,11 @@ pub fn flowchart_dot(hir: &Hir) -> String {
                 for p in parts {
                     edge_if_node(&mut s, hir, *p, i, kw);
                 }
+            }
+            Collection::Sorted { source, .. } => edge_if_node(&mut s, hir, *source, i, "sort"),
+            Collection::Slice { source, .. } => edge_if_node(&mut s, hir, *source, i, "slice"),
+            Collection::CombProject { comb, .. } => {
+                edge_if_node(&mut s, hir, *comb, i, "->");
             }
             Collection::Base(_) => {}
         }
@@ -174,6 +179,9 @@ fn collection_kind(hir: &Hir, id: CollectionId) -> &'static str {
         Collection::Filtered { .. } => "filtered",
         Collection::Union(_) => "union",
         Collection::Combination { .. } => "comb",
+        Collection::Sorted { .. } => "sorted",
+        Collection::Slice { .. } => "slice",
+        Collection::CombProject { .. } => "projection",
     }
 }
 
@@ -210,7 +218,11 @@ fn collect_used_collections(hir: &Hir, node: &HNode, out: &mut Vec<usize>) {
                 ParticleRef::Elem { coll, .. }
                 | ParticleRef::Whole(coll)
                 | ParticleRef::Binder { coll, .. } => Some(*coll),
-                ParticleRef::Met => None,
+                // No single fixed collection: skip for graph-edge collection.
+                ParticleRef::Met
+                | ParticleRef::ThisElem
+                | ParticleRef::ReduceElem
+                | ParticleRef::Sum(_) => None,
             };
             match hir.table.quantity(*q) {
                 Quantity::Size(c) => push(*c, out),
@@ -227,6 +239,10 @@ fn collect_used_collections(hir: &Hir, node: &HNode, out: &mut Vec<usize>) {
             }
         }
         HKind::CollProp { coll, .. } | HKind::CollValue(coll) => push(*coll, out),
+        HKind::Reduce { coll, body, .. } => {
+            push(*coll, out);
+            collect_used_collections(hir, body, out);
+        }
         HKind::Neg(a) | HKind::Not(a) | HKind::Abs(a) | HKind::Band { expr: a, .. } => {
             collect_used_collections(hir, a, out);
         }
@@ -460,11 +476,14 @@ fn node_label_and_children<'n>(lbl: &Labeler, n: &'n HNode) -> (String, Vec<&'n 
         | HKind::Bool(_)
         | HKind::Quantity(_)
         | HKind::ElemSelfProp(_)
+        | HKind::ReduceProp(_)
         | HKind::CollProp { .. }
         | HKind::Particle(_)
         | HKind::CollValue(_)
         | HKind::RegionPred(_)
         | HKind::Unsupported => (lbl.node(n), Vec::new()),
+        HKind::Reduce { kind, body, .. } => (kind.as_str().to_owned(), vec![body.as_ref()]),
+        HKind::ScalarMinMax { kind, args } => (kind.as_str().to_owned(), args.iter().collect()),
         HKind::Neg(a) => ("neg".to_owned(), vec![a.as_ref()]),
         HKind::Not(a) => ("not".to_owned(), vec![a.as_ref()]),
         HKind::Abs(a) => ("abs".to_owned(), vec![a.as_ref()]),

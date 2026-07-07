@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex02_histograms.adl\")"
 ---
 File
   Info name=analysis @16:1
-    Line key=title items=[str:"ADL/CL ex2: Histograms in a simple semileptonic final state"]
+    Line key=title value="\"ADL/CL ex2: Histograms in a simple semileptonic final state\""
   Object kw=object name=goodJets @20:1
     Take kw=take src=Jet @21:3
     Cut kw=select @22:3

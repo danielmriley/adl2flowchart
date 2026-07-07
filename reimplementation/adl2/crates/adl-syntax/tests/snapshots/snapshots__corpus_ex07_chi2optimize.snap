@@ -4,7 +4,7 @@ expression: "snapshot_for(\"examples/tutorials/ex07_chi2optimize.adl\")"
 ---
 File
   Info name=analysis @16:1
-    Line key=title items=[str:"ADL/CL ex7: Chi2 optimization for hadronic ttbar reconstruction without b tagging"]
+    Line key=title value="\"ADL/CL ex7: Chi2 optimization for hadronic ttbar reconstruction without b tagging\""
   Object kw=object name=goodjet @20:1
     Take kw=take src=JET @21:3
     Cut kw=select @22:3

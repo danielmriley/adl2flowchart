@@ -3,7 +3,13 @@
 //! (a) every emitted instance of every catalog axiom HOLDS on every
 //!     adl-difftest generated physical event (under the canonical
 //!     pad-with-0 extension for out-of-range element variables — the
-//!     same extension that justifies asserting axioms in UNSAT proofs);
+//!     same extension that justifies asserting axioms in UNSAT proofs).
+//!     Because ALL instances are evaluated against ONE shared assignment
+//!     per event, this is also the JOINT-extension meta-test (v2 Phase 2 /
+//!     review T2): two axiom families demanding incompatible values for an
+//!     absent element's variable — the S3 false-PROVEN class — fail here,
+//!     provided the vocabulary reaches them (it now includes back-index
+//!     selects for exactly that reason);
 //! (b) the prohibited-axiom regressions stay rejected:
 //!     - "referencing C[i] implies size(C) > i" (false under guards —
 //!       removed in legacy after a false empty-region proof): all
@@ -26,6 +32,7 @@ const VOCAB: &str = "\
 object jets
   take Jet
   select pT > 30
+  select abs(eta) < 2.1
 
 object bjets
   take jets
@@ -40,16 +47,37 @@ object muons
 object leptons
   take union(eles, muons)
 
+object sortedLeptons
+  take sort(leptons, pt(leptons), descend)
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+
+composite emu
+  take cartesian(eles e, muons m)
+
+composite emuD
+  take disjoint(eles e2, muons m2)
+
 region SR
   select size(jets) >= 0
+  select size(jets[1:3]) >= 0
   select size(bjets) >= 0
   select size(leptons) >= 0
+  select size(sortedLeptons) >= 0
+  select size(dijet) >= 0
+  select size(emu) >= 0
+  select size(emuD) >= 0
+  select size(emu->e) >= 0
   select size(eles) >= 0
   select size(muons) >= 0
   select pT(jets[0]) >= 0
   select pT(jets[2]) >= 0
+  select pT(jets[-1]) >= 0
+  select pT(jets[-2]) >= 0
   select pT(bjets[0]) >= 0
   select pT(bjets[1]) >= 0
+  select pT(bjets[-1]) >= 0
   select jets[0].btag >= 0
   select jets[1].m >= 0
   select MET.pT >= 0
@@ -59,6 +87,8 @@ region SR
   select dEta(jets[0], muons[0]) [] -10 10
   select dEta(muons[0], jets[0]) [] -10 10
   select dR(jets[0], eles[0]) >= 0
+  select cos(dPhi(jets[0], jets[1])) >= -1
+  select sin(dPhi(jets[0], jets[1])) <= 1
   trigger mu_trig
 ";
 
@@ -91,19 +121,33 @@ fn eval_formula(f: &QFormula, vals: &BTreeMap<QuantityId, f64>) -> bool {
             let lhs: f64 = a
                 .terms()
                 .iter()
-                .map(|&(c, q)| c * vals.get(&q).copied().unwrap_or(0.0))
+                .map(|(c, q)| c.to_f64() * vals.get(q).copied().unwrap_or(0.0))
                 .sum();
+            let k = a.constant().to_f64();
             // The axioms are statements over REAL-valued event quantities;
             // the interpreter computes a rounded f64 image (e.g. wrap(-d)
             // is not bit-exactly -wrap(d)). Equalities therefore get an
             // epsilon; inequalities stay exact.
             if a.rel() == adl_formula::Rel::Eq {
-                let scale = 1.0_f64.max(lhs.abs()).max(a.constant().abs());
-                (lhs - a.constant()).abs() <= 1e-9 * scale
+                let scale = 1.0_f64.max(lhs.abs()).max(k.abs());
+                (lhs - k).abs() <= 1e-9 * scale
             } else {
-                a.rel().eval(lhs, a.constant())
+                rel_eval_f64(a.rel(), lhs, k)
             }
         }
+    }
+}
+
+/// f64 evaluation of a relation (the `Rel::eval` API is exact-rational now).
+fn rel_eval_f64(rel: adl_formula::Rel, a: f64, b: f64) -> bool {
+    use adl_formula::Rel;
+    match rel {
+        Rel::Lt => a < b,
+        Rel::Le => a <= b,
+        Rel::Gt => a > b,
+        Rel::Ge => a >= b,
+        Rel::Eq => a == b,
+        Rel::Ne => a != b,
     }
 }
 
@@ -157,9 +201,16 @@ fn every_axiom_holds_on_generated_physical_events() {
     let qs = all_quantities(&hir);
     let axioms = emit_axioms(&mut hir, &ext, &qs);
 
-    // The vocabulary must exercise the FULL catalog.
+    // The vocabulary must exercise the FULL emitter catalog. XSUB/XEQ are the
+    // exception: they are not produced by `emit_axioms` at all but DERIVED by
+    // the analysis engine (`Engine::reconcile`) when it proves a cross/intra
+    // collection refinement, so no vocabulary can make `emit_axioms` yield
+    // them — their soundness is covered by the cross-file reconciliation tests.
     let used = axioms.ids_used();
     for id in AxiomId::ALL {
+        if matches!(id, AxiomId::Xsub | AxiomId::Xeq) {
+            continue;
+        }
         assert!(used.contains(&id), "vocabulary must emit at least one {id}");
     }
 
@@ -231,6 +282,52 @@ region SR
 }
 
 #[test]
+fn trig_axiom_bounds_cos_sin_only_not_tan() {
+    // P3: opaque cos/sin calls get -1 <= . <= 1; tan (unbounded) gets NONE.
+    let src = "\
+object jets
+  take Jet
+
+region SR
+  select cos(dPhi(jets[0], jets[1])) >= -2
+  select sin(dPhi(jets[0], jets[1])) <= 2
+  select tan(dPhi(jets[0], jets[1])) >= -1000000
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+
+    let trig: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::Trig)
+        .map(|i| i.description.as_str())
+        .collect();
+    assert!(
+        trig.iter().any(|d| d.contains("cos")),
+        "cos must get a TRIG [-1,1] bound: {trig:?}"
+    );
+    assert!(
+        trig.iter().any(|d| d.contains("sin")),
+        "sin must get a TRIG [-1,1] bound: {trig:?}"
+    );
+    assert!(
+        !trig.iter().any(|d| d.contains("tan")),
+        "tan must get NO TRIG bound (unbounded): {trig:?}"
+    );
+
+    // The bound holds on a concrete event (the interpreter computes cos/sin
+    // of the realized dPhi, which is in [-1,1] by definition).
+    let event = parse_event(
+        r#"{"Jet": [{"pt": 100.0, "eta": 0.0, "phi": 1.0, "m": 5.0},
+                    {"pt": 90.0, "eta": 0.5, "phi": -2.0, "m": 5.0}]}"#,
+        &ext,
+    )
+    .expect("event parses");
+    check_all_hold(&hir, &ext, &axioms, &[event]);
+}
+
+#[test]
 fn sub_axiom_is_single_source_only_unions_get_uni() {
     let (mut hir, ext) = analyzed(VOCAB);
     let qs = all_quantities(&hir);
@@ -261,6 +358,58 @@ fn sub_axiom_is_single_source_only_unions_get_uni() {
         uni.iter()
             .any(|d| d.contains("size(leptons) <= size(eles) + size(muons)")),
         "{uni:?}"
+    );
+}
+
+#[test]
+fn ord_axiom_skips_filtered_union_but_keeps_base_chain() {
+    // ORD/IDOM ride on pT-descending order. A base-rooted filtered chain
+    // (jets <- Jet) preserves it; a filter OVER A UNION does not — the
+    // interpreter concatenates union parts without a pT-merge, so
+    // `goodleptons = [eles..] ++ [muons..]` can have element 1 with higher pT
+    // than element 0. Emitting ORD there asserts a false fact into every
+    // UNSAT-direction proof (false PROVEN DISJOINT/EMPTY/SUBSET).
+    let src = "\
+object jets
+  take Jet
+  select pT > 30
+
+object eles
+  take Ele
+
+object muons
+  take Muo
+
+object goodleptons
+  take union(eles, muons)
+  select pT > 20
+
+region SR
+  select pT(jets[0]) >= 0
+  select pT(jets[1]) >= 0
+  select pT(goodleptons[0]) >= 0
+  select pT(goodleptons[1]) >= 0
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+    let ord: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::Ord)
+        .map(|i| i.description.as_str())
+        .collect();
+
+    // Base-rooted filtered collection: ORD MUST still fire (no regression).
+    assert!(
+        ord.iter()
+            .any(|d| d.contains("jets[0]") && d.contains("jets[1]")),
+        "ORD must still constrain a base-rooted filtered collection: {ord:?}"
+    );
+    // Filtered-over-union: ORD MUST NOT fire.
+    assert!(
+        !ord.iter().any(|d| d.contains("goodleptons")),
+        "ORD must never constrain a filtered-union collection: {ord:?}"
     );
 }
 
@@ -346,5 +495,67 @@ region SR
             .iter()
             .any(|d| d.to_lowercase().contains("bdt") || d.to_lowercase().contains("aplanarity")),
         "bdt/aplanarity externals must get NO NNEG instance: {nneg:?}"
+    );
+}
+
+#[test]
+fn comb_size_lower_bound_is_cartesian_only_not_disjoint() {
+    // SOUNDNESS GUARD (USER ANSWER 4): the positive existence lower bound
+    // `all-parts-nonempty => size(K) >= 1` may fire ONLY for a bare CARTESIAN.
+    // A same-source OR cross-source DISJOINT must NOT get it — value-equal
+    // elements can form zero pairs even with non-empty sources.
+    let src = "\
+object eles
+  take Ele
+object muons
+  take Muo
+object jets
+  take Jet
+
+composite emuCart
+  take cartesian(eles e, muons m)
+
+composite emuDisj
+  take disjoint(eles e2, muons m2)
+
+composite jjDisj
+  take disjoint(jets j1, jets j2)
+
+region SR
+  select size(emuCart) >= 0
+  select size(emuDisj) >= 0
+  select size(jjDisj) >= 0
+";
+    let (mut hir, ext) = analyzed(src);
+    let qs = all_quantities(&hir);
+    let axioms = emit_axioms(&mut hir, &ext, &qs);
+    let combsize: Vec<&str> = axioms
+        .instances
+        .iter()
+        .filter(|i| i.id == AxiomId::CombSize)
+        .map(|i| i.description.as_str())
+        .collect();
+
+    // The cartesian gets the `>= 1` lower bound.
+    assert!(
+        combsize
+            .iter()
+            .any(|d| d.contains(">= 1") && d.contains("emuCart")),
+        "cartesian must get the all-nonempty lower bound: {combsize:?}"
+    );
+    // NEITHER disjoint composite gets a `>= 1` lower bound (only the
+    // `< 2 => = 0` / `= 0 => = 0` zero facts).
+    assert!(
+        !combsize
+            .iter()
+            .any(|d| d.contains(">= 1") && (d.contains("emuDisj") || d.contains("jjDisj"))),
+        "disjoint composites must NOT get a positive lower bound: {combsize:?}"
+    );
+    // The same-source disjoint gets its `size(C) < 2 => size(K) = 0` fact.
+    assert!(
+        combsize
+            .iter()
+            .any(|d| d.contains("< 2 =>") && d.contains("jjDisj")),
+        "same-source disjoint must get the size<2 zero fact: {combsize:?}"
     );
 }

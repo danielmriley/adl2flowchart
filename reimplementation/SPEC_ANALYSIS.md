@@ -36,17 +36,26 @@ projection (Unknown→⊥, Dual→minus), and Ax = the axiom set (§4):
 | Verdict | Definition | Sound because |
 |---|---|---|
 | **PROVEN DISJOINT** | UNSAT(Ax ∧ A⁺ ∧ B⁺) | A ⊆ A⁺, B ⊆ B⁺, Ax true of every event ⇒ no event in A∩B |
-| **PROVEN OVERLAPPING** | SAT(Ax ∧ A⁻ ∧ B⁻), shared dimension, no convention-ambiguous twin pair (§4) | model satisfies real cuts of both regions, within the scalar event model |
+| **PROVEN OVERLAPPING** | SAT(Ax ∧ A⁻ ∧ B⁻), shared dimension, no convention-ambiguous twin pair (§4), **and the realized witness event re-validated by the reference interpreter in both regions** | a concrete loader-accepted event passes every cut of both regions |
+| **CANDIDATE OVERLAPPING** | SAT(Ax ∧ A⁻ ∧ B⁻) as above, but the witness rests on an opaque quantity the interpreter cannot decide (`witness_validated = false`) | not a proof — a joint model exists but no reference-checked event; conservative for combination (an empty candidate blocks a merge, never double-counts) |
 | **PROVEN SUBSET A⊆B** | UNSAT(Ax ∧ A⁺ ∧ ¬(B⁻)) | A∧¬B ⊆ A⁺∧¬B⁻ |
 | **REGION EMPTY** | UNSAT(Ax ∧ R⁺) | no physical event can satisfy a superset of R |
 | **POSSIBLY OVERLAPPING** | everything weaker | not a claim |
 | **UNKNOWN** | solver inconclusive | not a claim |
 
-Stated model caveat (printed with every PROVEN OVERLAPPING): "a model
-exists in the per-event scalar fragment" — opaque external-function
-values and padded out-of-range element variables are free; the witness is
-a candidate, not a simulated event. PROVEN DISJOINT carries no such
-caveat (free variables only make UNSAT harder).
+Stated model caveat (printed with every PROVEN/CANDIDATE OVERLAPPING): "a
+model exists in the per-event scalar fragment" — opaque external-function
+values and padded out-of-range element variables are free. For PROVEN
+OVERLAPPING the witness has additionally been realized as an event and
+accepted by the interpreter in both regions (its displayed rows are read
+back from that validated event); for CANDIDATE it has not, and the
+verdict is not a claim of overlap. PROVEN DISJOINT carries no such caveat
+(free variables only make UNSAT harder).
+
+Note for CI gating: `--fail-on=overlap` fires on **both** PROVEN and
+CANDIDATE OVERLAPPING (fail-closed: an unvalidated candidate may still be
+a real overlap, and most real-corpus overlaps are candidate-tier because
+of opaque `size()`/externals).
 
 Pipeline per pair: cheap interval heuristic on the unconditional And-spine
 of A⁺/B⁺ (sound fast path; also the no-solver fallback) → solver checks
@@ -77,11 +86,28 @@ axiom-derived values marked. Cores/witnesses are part of the JSON schema.
 | TWIN | oriented twins: `x = y ∨ x = −y` | either convention (OPEN-2) |
 | EPRED | elements of filtered F satisfy F's predicate: `size(F)>i ⇒ predF(F[i])` | take = filter (new vs legacy: element-fact propagation) |
 | IDOM | `pt(F[i]) ≤ pt(P[i])` for filtered F⊆P | ORD + SUB (new vs legacy) |
+| SZSLICE | slice size from source size and bounds | — |
+| SZPERM | `size(sort(C, …)) = size(C)` | sort = permutation |
+| COMBSIZE | tuple-combinatoric size bounds for composites (projection bijection; same-source pair needs ≥2 elements; cartesian empty iff a factor is) | comb = tuple enumeration; disjoint distinctness by kinematic value |
+| TRIG | `−1 ≤ cos/sin(·) ≤ 1` for opaque calls | — |
+| XSUB | `size(A) ≤ size(B)` for same-base filtered A, B when A's element predicate provably implies B's (derived by the engine's reconciliation pass, not `emit_axioms`; proven on the subset side over a shared generic base element; only in explicit `--cross` runs) | same base name = same base input (documented cross-file residual) |
+| XEQ | `size(A) = size(B)` when both XSUB directions are proven | same as XSUB |
 
 Prohibited-by-history: "referencing C[i] implies size(C)>i" (false under
 guards — removed in legacy after a false empty-region proof). Pairs whose
 combined quantities contain an oriented twin pair cap at POSSIBLY for the
 SAT direction until OPEN-2 is resolved.
+
+XSUB/XEQ derivation guards (each fail-closed): predicates lower onto ONE
+generic base element with opaque leaves three-valued (an opaque superset
+conjunct under-approximates to false, never dropped); a predicate
+referencing a composite binder/reducer or a CONCRETE peer element
+(`Jet[1]`, an angular separation, a `size(·)`) aborts the pair — a peer's
+shared quantity id would leak size-guarded ORD/IDOM facts into the subset
+frame; only genuine ext detector bases participate (an unresolvable
+object block falls back to a unit-unique private base, never its own
+ext-spelled name); the shared frame is prechecked SAT before either
+UNSAT direction is trusted.
 
 ## 5. Bin partition checks
 
@@ -101,6 +127,33 @@ edges (SPEC_LANGUAGE divergence 5).
 - Exit code reflects parse/sema errors only; verdicts never fail the run
   by default. `--fail-on=overlap|gap|empty|non-exact` lets CI pipelines
   gate on physics findings explicitly.
+
+## 6b. Quantity-identity whitelist (normative, proof-system v2 Phase 3)
+
+Two syntactic references intern to one identity iff they denote the same
+per-event value. FALSE unification is a false-PROVEN factory (two
+different physical values sharing one solver variable let contradictory
+cuts prove UNSAT); false separation only loses precision. Identity keys
+are therefore FRESH BY DEFAULT, and sharing is a closed whitelist:
+
+- structural equality of fully-resolved, context-free terms (canonical
+  renders embed every interned id and raw literal — enforced by the
+  render-injectivity differential battery in `adl-sema/tests/identity.rs`);
+- `dR(a,b) = dR(b,a)` (metric symmetry; `dPhi`/`dEta` stay oriented);
+- four-vector `Sum` commutativity (Add-only flatten+sort);
+- numeric literals by RAW TEXT (never an f64 round-trip; `1` ≢ `1.0` —
+  sound separation);
+- cross-file: same structural term after per-unit opaque namespacing
+  (`merge_hirs`), plus the documented same-ext-base-name residual.
+
+Everything else fails closed: an `Unsupported` node (its render discards
+the differing substructure), any element-relative leaf (`this.prop`,
+`@elem.prop`, a binder in scalar position — renders discard the owning
+context), and a bare property name in element context poison the
+enclosing key — the construct becomes `Unsupported` and interns nothing
+(review S1/S2; `context_tainted` in resolve, second net in `lin_pred`).
+The IR census (`adl-sema/tests/ir_census.rs`) makes every new constructor
+answer the identity question at compile time.
 
 ## 7. Cross-file (forward design — Phase 8)
 

@@ -1,0 +1,12 @@
+# GOLDEN SR_atleast2 SR_window OVERLAPPING
+# GROUND-TRUTH: SR_window adds size<=4 on top of size>=2, so SR_window ⊆ SR_atleast2. In both: 3 jets. atleast2-only: 6 jets.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_atleast2
+  select size(jets) >= 2
+
+region SR_window
+  select size(jets) >= 2
+  select size(jets) <= 4

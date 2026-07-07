@@ -1,0 +1,12 @@
+# GOLDEN-EMPTY SIZEBAND
+# GROUND-TRUTH: jet multiplicity in band [2,4] forces size<=4, contradicting size>=7; no event satisfies both. e.g. 3 jets fails >=7, 8 jets fails the band.
+object jets
+  take Jet
+  select pt > 30
+
+region OPEN
+  select size(jets) [] 2 4
+
+region SIZEBAND
+  select size(jets) [] 2 4
+  select size(jets) >= 7

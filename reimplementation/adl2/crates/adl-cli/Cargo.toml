@@ -11,11 +11,13 @@ name = "smash2"
 path = "src/main.rs"
 
 [features]
-# Forwarded solver-backend feature: `--no-default-features` builds the CLI
-# against the SMT-LIB subprocess backend (or the no-solver degradation),
-# matching adl-analysis's own feature.
-default = ["native"]
+# Forwarded solver-backend features. The default CLI build uses the
+# SMT-LIB subprocess backend — no libz3 link, runs against a `z3` binary
+# on PATH. `--features native` (system libz3) or `--features bundled`
+# (libz3 built from vendored source) opt into the in-process backend.
+default = []
 native = ["adl-analysis/native"]
+bundled = ["adl-analysis/bundled"]
 
 [dependencies]
 adl-syntax.workspace = true

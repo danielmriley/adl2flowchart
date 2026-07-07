@@ -1,0 +1,19 @@
+# GOLDEN Rbarrel Rendcap DISJOINT
+# GROUND-TRUTH: barrel electrons have |eta|<1.4, endcap have |eta|>1.6 (a gap in between belongs to neither). Rbarrel needs a barrel electron and zero endcap; Rendcap is the mirror. Event {Ele eta=0.5} in Rbarrel only; {Ele eta=2.0} in Rendcap only; {Ele eta=1.5} in neither (falls in the gap).
+# Disjoint |eta| bands on the source electrons make the regions mutually exclusive.
+
+object barrel
+  take Ele
+  select abs(eta) < 1.4
+
+object endcap
+  take Ele
+  select abs(eta) > 1.6
+
+region Rbarrel
+  select size(barrel) >= 1
+  select size(endcap) == 0
+
+region Rendcap
+  select size(endcap) >= 1
+  select size(barrel) == 0

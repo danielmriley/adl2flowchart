@@ -117,13 +117,23 @@ fn qeval(f: &QFormula, vals: &BTreeMap<QuantityId, Option<f64>>) -> bool {
         QFormula::Or(v) => v.iter().any(|p| qeval(p, vals)),
         QFormula::Atom(a) => {
             let mut lhs = 0.0;
-            for &(c, q) in a.terms() {
-                let Some(Some(v)) = vals.get(&q).copied() else {
+            for (c, q) in a.terms() {
+                let Some(Some(v)) = vals.get(q).copied() else {
                     return false;
                 };
-                lhs += c * v;
+                lhs += c.to_f64() * v;
             }
-            lhs.is_finite() && a.rel().eval(lhs, a.constant())
+            let k = a.constant().to_f64();
+            use adl_formula::Rel;
+            lhs.is_finite()
+                && match a.rel() {
+                    Rel::Lt => lhs < k,
+                    Rel::Le => lhs <= k,
+                    Rel::Gt => lhs > k,
+                    Rel::Ge => lhs >= k,
+                    Rel::Eq => lhs == k,
+                    Rel::Ne => lhs != k,
+                }
         }
     }
 }

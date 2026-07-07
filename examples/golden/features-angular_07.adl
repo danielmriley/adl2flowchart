@@ -1,0 +1,17 @@
+# GOLDEN RBackToBack RCollinear DISJOINT
+# GROUND-TRUTH: dPhi(jets[0],jets[1]) is the SIGNED wrapped difference in [-pi,pi].
+#   (2.5,pi] and [-inf,0.5) cannot both hold for one pair -> disjoint.
+#   In RBackToBack: {j0 phi3, j1 phi0}=dPhi3.0. In RCollinear: {j0 phi0, j1 phi0.2}=dPhi-0.2.
+#   dPhi1.5 ({j0 phi1.5,j1 phi0}) is in neither.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RBackToBack
+  select size(jets) >= 2
+  select dPhi(jets[0], jets[1]) > 2.5
+
+region RCollinear
+  select size(jets) >= 2
+  select dPhi(jets[0], jets[1]) < 0.5

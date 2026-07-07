@@ -3,8 +3,13 @@
 //!
 //! Renders are also identity-relevant: element-predicate interning and
 //! `QuantityArg::Opaque` use the canonical render as their key, so every
-//! label embeds the structural id (`C3#jets`) — identical text always
-//! means identical resolution.
+//! label embeds the structural id (`C3#jets`). Identical text means
+//! identical resolution ONLY for fully-resolved, context-free nodes: an
+//! `<unsupported: …>` render discards the differing substructure and an
+//! element-relative render (`this.pt`, `@elem.pt`) discards the owning
+//! collection, so the resolver never uses a render containing either as a
+//! shared key (it fails closed to fresh identity — soundness review S1/S2;
+//! structural keys replace renders entirely in proof-system v2 Phase 3).
 
 use crate::hir::{HKind, HNode, Hir, HirRegionStmt};
 use crate::intern::{Symbol, SymbolTable};
@@ -48,6 +53,12 @@ impl RenderCtx<'_> {
             ParticleRef::Met => "MET".to_owned(),
             ParticleRef::Binder { coll, name } => {
                 format!("{}@{}", self.coll(*coll), self.symbols.display(*name))
+            }
+            ParticleRef::ThisElem => "this".to_owned(),
+            ParticleRef::ReduceElem => "@elem".to_owned(),
+            ParticleRef::Sum(parts) => {
+                let parts: Vec<String> = parts.iter().map(|p| self.particle(p)).collect();
+                format!("({})", parts.join(" + "))
             }
         }
     }
@@ -100,8 +111,21 @@ impl RenderCtx<'_> {
             HKind::Bool(b) => b.to_string(),
             HKind::Quantity(q) => self.quantity(self.table.quantity(*q)),
             HKind::ElemSelfProp(p) => format!("this.{}", self.table.prop_display(*p)),
+            HKind::ReduceProp(p) => format!("@elem.{}", self.table.prop_display(*p)),
+            HKind::Reduce { kind, coll, body, slice } => {
+                let s = match slice {
+                    Some((a, Some(b))) => format!("[{a}:{b}]"),
+                    Some((a, None)) => format!("[{a}:]"),
+                    None => String::new(),
+                };
+                format!("{}({}{s} of {})", kind.as_str(), self.coll(*coll), self.node(body))
+            }
             HKind::CollProp { coll, prop } => {
                 format!("{}[*].{}", self.coll(*coll), self.table.prop_display(*prop))
+            }
+            HKind::ScalarMinMax { kind, args } => {
+                let inner: Vec<String> = args.iter().map(|a| self.node(a)).collect();
+                format!("{}({})", kind.as_str(), inner.join(", "))
             }
             HKind::Particle(p) => self.particle(p),
             HKind::CollValue(c) => self.coll(*c),
@@ -161,6 +185,23 @@ fn render_ctx(hir: &Hir) -> RenderCtx<'_> {
     }
 }
 
+/// Canonical text of a single resolved expression node, over `hir`'s tables.
+/// Used to render diagnostics when no source text is available (e.g. a merged
+/// cross-file unit, whose spans index no single source).
+#[must_use]
+pub fn render_node(hir: &Hir, node: &crate::hir::HNode) -> String {
+    render_ctx(hir).node(node)
+}
+
+/// Canonical id-disambiguated reference to a collection (`C3#jets`) — the
+/// same form the rendered cut text uses. A bare first-bound name is NOT
+/// unique in a merged unit (two files' differently-cut `jets` share it), so
+/// any derived-fact statement placed next to cut text must use this form.
+#[must_use]
+pub fn collection_ref(hir: &Hir, id: CollectionId) -> String {
+    render_ctx(hir).coll(id)
+}
+
 /// Deterministic quantity-table dump: collections (id order), element
 /// predicates (id order), quantities (sorted by canonical render).
 #[must_use]
@@ -185,9 +226,18 @@ pub fn quantity_table_dump(hir: &Hir) -> String {
                 let parts: Vec<String> = parts.iter().map(|&p| rc.coll(p)).collect();
                 format!("Union({})", parts.join(", "))
             }
-            Collection::Combination { parts } => {
+            Collection::Combination { parts, kind, .. } => {
                 let parts: Vec<String> = parts.iter().map(|&p| rc.coll(p)).collect();
-                format!("Combination({})", parts.join(", "))
+                format!("Combination[{kind:?}]({})", parts.join(", "))
+            }
+            Collection::Sorted { source, key, dir } => {
+                format!("Sorted({}, {key:?}, {dir:?})", rc.coll(*source))
+            }
+            Collection::Slice { source, start, end } => {
+                format!("Slice({}, {start}..{end:?})", rc.coll(*source))
+            }
+            Collection::CombProject { comb, axis } => {
+                format!("CombProject({}, {axis:?})", rc.coll(*comb))
             }
         };
         let names = if names.is_empty() {

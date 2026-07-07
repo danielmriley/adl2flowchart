@@ -7,32 +7,56 @@ them as Graphviz diagrams. It is the from-scratch successor to the legacy
 tool in `../../legacy_parser/`, built so that the soundness properties the
 legacy tool earned through two audits hold here *by construction*.
 
+New here? Start with [docs/QUICKSTART.md](docs/QUICKSTART.md) — a 5-minute
+tour from `check` to the solver-backed `verify` proofs.
+
 Status: all spec phases through the parity gate draft are built and green,
 plus Phase 9 histogram production (`run --histos`, native pure-Rust
 `out.root`) and the full Phase 10 event pipeline: Delphes ingestion
 (`ingest` / `run --profile delphes`), per-region cutflows, TH2D +
 variable-bin histograms in per-region `TDirectory`s, embedded provenance,
 and a streaming chunked-parallel run loop that is byte-deterministic at any
-`--jobs`. End-to-end validated on the real 20k-event T2tt Delphes sample
-against independent uproot/numpy oracles (see
-[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md)) — 510 tests, 68/68 corpus
-files, the full legacy golden battery on both solver backends, and a
-verdict-parity comparison against the legacy tool with zero legacy-better
-differences (`../PARITY_DRAFT.md`).
+`--jobs`. The numeric core of the analyzer is **exact rational** (`0.3` is
+`3/10`, not an f64), and merged-unit **cross-file** verdicts (`verify
+--cross`) are shipped. End-to-end validated on the real 20k-event T2tt
+Delphes sample against independent uproot/numpy oracles (see
+[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md)) — 593 tests, a 125-file corpus
+(68 base + 57 pinned-verdict golden files), the full legacy golden battery
+on both solver backends, and a verdict-parity comparison against the legacy
+tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
 
 ---
 
 ## Quick start
 
-Requirements: stable Rust (≥ 1.93). Optional but recommended: `libz3-dev`
-(native solver backend) or a `z3`/`cvc5` binary on PATH (subprocess
-backend). With no solver at all, verdicts degrade honestly to POSSIBLY.
+Requirements: stable Rust (≥ 1.93). The default build links **nothing** —
+it uses the SMT-LIB subprocess backend and needs only a solver *binary* on
+PATH at runtime: `apt install z3`. With no solver at all,
+verdicts degrade honestly to POSSIBLY.
 
 ```bash
 cd reimplementation/adl2
-cargo build --release
+cargo build --release           # no libz3 needed; subprocess backend
 alias smash2=$PWD/target/release/smash2
 ```
+
+**Solver backends.** The subprocess backend (default) shells out to the
+`z3` binary per check — zero link burden, the right default for a stock
+machine. For heavier workloads (e.g. the 100k-case property battery) the
+faster **in-process** backend is an opt-in:
+
+```bash
+# in-process libz3 — needs system libz3 (apt install libz3-dev):
+cargo build --release -p adl-cli --features native
+# in-process libz3, built automatically from vendored source (no system
+# libz3; needs a C++ toolchain + cmake):
+cargo build --release -p adl-cli --features bundled
+```
+
+Both backends are conformance-tested to return identical verdicts; the
+choice is purely performance. (Verdicts can still differ between *z3
+versions* on the SAT side — which witness a model returns — so pin one z3
+for reproducible witness output.)
 
 ### The subcommands
 
@@ -41,6 +65,7 @@ alias smash2=$PWD/target/release/smash2
 ```bash
 smash2 check analysis.adl              # exit 1 on errors; stdout stays clean
 smash2 check --dump-ast analysis.adl   # canonical AST text dump to stdout
+smash2 check --json analysis.adl       # diagnostics as a JSON array (editors/CI)
 ```
 
 Diagnostics carry spans, labels, and help ("`selct` is not a keyword; did
@@ -54,7 +79,26 @@ smash2 verify analysis.adl
 smash2 verify --json analysis.adl > report.json     # versioned schema
 smash2 verify --no-solver analysis.adl              # interval heuristic only
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
+smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
+smash2 verify --cross a.adl b.adl                   # merged unit: cross-FILE overlap matrix
+smash2 verify --cross analyses/                     # a directory expands to its *.adl files
 ```
+
+A directory argument contributes its `*.adl` files (sorted, non-recursive,
+deduped against the other inputs). Without `--cross`, several files are
+each analyzed on their own — a per-unit report in human mode, a JSON array
+under `--json` (also whenever a directory was given, regardless of its
+file count). With `--cross` the files are merged into one analysis unit
+and regions are namespaced `file::region` (same-named regions across files
+are never falsely unified; colliding basenames are qualified by path),
+producing the sound cross-analysis overlap matrix — the identity model was
+built for exactly this (design notes in
+[`MULTIFILE_PLAN.md`](MULTIFILE_PLAN.md)). Cross runs additionally
+reconcile same-base filtered collections across files: when one file's
+element predicate provably implies the other's, the derived
+`size(A) ≤ size(B)` fact (axiom XSUB, or XEQ for both directions) links
+the two analyses' object counts — under the documented residual
+assumption that the same detector-base name means the same input.
 
 Per region: encoding coverage with named dropped cuts, vacuity check.
 Per pair: PROVEN DISJOINT / PROVEN OVERLAPPING (with witness) / PROVEN
@@ -105,16 +149,19 @@ fragment status, and derived size facts (subset of parent, union bounds).
 | Verdict | Claim | Sound because |
 |---|---|---|
 | PROVEN DISJOINT | no event can pass both regions | checked on an over-approximation of each region: if even the supersets cannot intersect, the regions cannot |
-| PROVEN OVERLAPPING | a concrete event candidate passes both | checked on under-approximations; the witness satisfies fully-encoded real cuts and is re-validated by the interpreter |
+| PROVEN OVERLAPPING | a concrete event passes both | checked on under-approximations; the realized witness event is accepted by the reference interpreter in both regions (`witness_validated = true`) |
+| CANDIDATE OVERLAPPING (matrix letter `c`) | a joint model exists, but it rests on an opaque quantity the interpreter cannot decide — **not a proof of overlap** | the unvalidated tier is reported separately instead of overclaiming PROVEN; conservative for combination studies |
 | PROVEN SUBSET A⊆B | every event passing A passes B | UNSAT(A⁺ ∧ ¬B⁻) |
 | region EMPTY | the region's cuts contradict physical axioms | UNSAT(R⁺ ∧ axioms) |
 | POSSIBLY / UNKNOWN | no claim | — |
 
 Anything the tool cannot encode faithfully becomes an explicit `Unknown`
 with a reason you can read in the report — it can weaken a verdict to
-POSSIBLY, never flip it. PROVEN OVERLAPPING is always printed with its
-model caveat: the witness is a candidate in the per-event scalar
-fragment, not a simulated event.
+POSSIBLY, never flip it. Overlap verdicts are always printed with their
+model caveat; a PROVEN OVERLAPPING witness's displayed values are read
+back from the interpreter-validated event. **CI note:**
+`--fail-on=overlap` fires on both PROVEN and CANDIDATE OVERLAPPING
+(fail-closed — an unvalidated candidate may still be a real overlap).
 
 ---
 
@@ -244,20 +291,28 @@ exactly by uproot in the wiring tests.
 (SPEC_EVENT_PIPELINE §1). Experiment specifics live in **converter
 profiles** (a pure data table in `adl-ingest`: branch names → canonical
 keys, tag-derivation rules, weight source); the core event model never
-sees experiment names. `delphes` is the first profile; `cms-nanoaod` is
-spec'd for v2.
+sees experiment names. Two profiles ship: `delphes` and `nanoaod` (CMS
+NanoAOD — `Events` tree, `n<Coll>` counters, underscored leaves, flat
+per-event `MET_pt`/`MET_phi`/`genWeight` scalars, and the continuous
+`btagDeepB` discriminant as the `btag` property).
 
 ```bash
-# Run an analysis straight off a Delphes file (native read, no temp files):
+# Run an analysis straight off a Delphes or NanoAOD file (native read):
 smash2 run analysis.adl events.root --profile delphes
+smash2 run analysis.adl nano.root  --profile nanoaod
 
 # Materialize canonical JSONL (byte-deterministic) for debugging/fixtures:
-smash2 ingest events.root --profile delphes -o events.jsonl
+smash2 ingest events.root --profile nanoaod -o events.jsonl
 
 # Generate the independent uproot oracle script (also the no-Rust path):
-smash2 ingest --profile delphes --emit-script out/
+smash2 ingest --profile nanoaod --emit-script out/
 python3 out/to_jsonl.py events.root events.jsonl   # byte-identical output
 ```
+
+Both profiles are validated against their generated uproot oracle on a real
+sample (the Delphes T2tt file; the committed CMS Open Data ttbar NanoAOD
+fixture) — the native reader and the independent uproot path must produce
+byte-identical JSONL.
 
 The mapping (branch → canonical): `Jet`/`FatJet` pt/eta/phi/m + `btag`/
 `tautag` flags from the Delphes bitmasks (bit 0 = the card's default
@@ -353,14 +408,38 @@ synthetic event and re-validated through the interpreter; a witness the
 interpreter rejects downgrades the verdict and files an internal
 diagnostic.
 
+The numeric core is **exact rational** (`adl_sema::Rat`, a `BigRational`
+newtype with shortest-round-trip decimal semantics — `0.3` is exactly
+`3/10`), so boundary folding never invents an f64 seam that the legacy
+tool's stepwise floats once turned into false PROVEN verdicts. Where the
+analyzer's flattened canonical form *could* diverge from the interpreter's
+stepwise f64 — an additive expression that is not f64-faithful (more than
+one add/sub, or a non-dyadic additive constant) — an **f64-faithfulness
+guard** interns the operand as a structure-keyed opaque scalar instead of
+a shared linear atom, so two regions that round differently can never
+unify into a false disjoint. The encodable fragment now covers ratio cuts
+and ratio-bands (exact denominator clearing; nonlinear denominators stay
+opaque), inclusive/excluded bands (`[]`/`][`), scalar n-ary `min`/`max`,
+`abs`, bare and back-indexed elements (`jets[-1]`), static slices, and
+operator-scoped unindexed angular cuts (`dR(A,B)` as a single min-pair
+quantity). The pT-ordering axioms include front ORD, back-index ORD, and a
+**front-to-back ORD** fact (`pt(C[i]) >= pt(C[-k])`, emitted only when
+`i == 0` or `k == 1`, the size-invariant cases) — each proven sound
+against the interpreter's accepted-event domain.
+
 **Why trust it**: beyond unit tests, the encoder is property-tested
 against the interpreter (random regions × sampled events; any PROVEN
 verdict that contradicts sampling is a release-blocking bug — this
 battery caught and fixed a real missing-element soundness bug during the
 build, see `COUNTEREXAMPLES.md`), a metamorphic suite checks invariances
-(`reject c` ≡ `select not c`, rename invariance, …), and the entire
-legacy golden battery — every historical false-verdict bug from two
-audits of the old tool — runs as integration tests.
+(`reject c` ≡ `select not c`, rename invariance, …), the entire legacy
+golden battery — every historical false-verdict bug from two audits of the
+old tool — runs as integration tests, and a hand-authored **golden verdict
+corpus** (`../../examples/golden/`, 57 files) pins fully-known
+disjoint/overlapping/empty ground truth: each file declares its expected
+verdict in a `# GOLDEN` header and `golden_regions.rs` asserts the analyzer
+reproduces it exactly. Paired with the property oracle (which guarantees no
+false PROVEN), a green golden run means those PROVEN headers are real.
 
 ---
 
@@ -445,9 +524,11 @@ Build history: `BUILD_NOTES.md`, `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`,
 `PIPELINE_REPORT.md` (Phase 10 real-sample e2e).
 
 ```bash
-cargo test --workspace          # full battery (510 tests)
-scripts/corpus_gate.sh          # all 68 example files parse + resolve
-cargo test -p adl-solver --no-default-features   # subprocess-backend job
+cargo test --workspace          # full battery (593 tests, subprocess backend)
+scripts/corpus_gate.sh          # all 125 example files parse + resolve
+cargo test -p adl-analysis --test golden_regions # golden verdict corpus (needs a solver)
+cargo test --workspace --features native         # same battery, in-process libz3 backend
+cargo test -p adl-difftest --features deep        # 100k-case property oracle (use --features native too)
 
 # env-gated oracles (need .venv-uproot on PATH; see BUILD_NOTES.md):
 ROOTFILE_REQUIRE_UPROOT=1 cargo test -p rootfile --test uproot_oracle
@@ -456,15 +537,20 @@ SMASH2_RUN_DELPHES_E2E=1 cargo test -p adl-cli --test ingest
 
 ## Known limits / open items
 
-- Five semantic questions (quantifier reading of unindexed collection
-  cuts, dPhi/dEta sign convention, negative indices, `~=`, size aliases)
-  are pinned to convention-neutral defaults pending a project decision
-  (Daniel + collaborators) — see `../PHASE0_RESOLUTIONS.md`. Deciding them
-  upgrades several POSSIBLY verdicts to exact.
+- Some semantic questions remain pinned to convention-neutral defaults
+  pending a project decision (Daniel + collaborators) — the dPhi/dEta sign
+  convention, `~=`, and size aliases — see `../PHASE0_RESOLUTIONS.md`;
+  deciding them upgrades several POSSIBLY verdicts to exact. (Negative
+  indices and the quantifier reading of unindexed angular cuts `dR(A,B)`
+  are now resolved, operator-scoped.)
 - The per-event scalar model caveat applies to overlap witnesses
-  (opaque external-function values are free variables).
-- Cross-file analysis (`--cross`) is designed (`../SPEC_ANALYSIS.md` §7)
-  but not yet implemented — the quantity-identity model was built for it.
-- Legacy features not yet ported: the object-pair disjointness printout
-  and the object-attributes listing (both still available in
-  `../../legacy_parser/`).
+  (opaque external-function values are free variables). A back-indexed
+  element is a sound free leaf on the disjoint/empty side, but the witness
+  builder cannot realize it, so an overlap that depends on it caps at
+  POSSIBLY.
+- Known residual soundness boundary (out of corpus, monitored by the
+  property oracle): single-subtraction catastrophic cancellation `q1 - q2`
+  with `q1 ≈ q2` huge passes the f64-faithfulness guard.
+- Legacy feature not yet ported: the object-pair disjointness printout
+  (still in `../../legacy_parser/`). The object-attributes listing *is*
+  ported — `smash2 objects`.

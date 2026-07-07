@@ -1,0 +1,11 @@
+# GOLDEN oneJet threeJet DISJOINT
+# GROUND-TRUTH: oneJet needs size(jets)==1, threeJet needs size(jets)>=3; intervals [1,1] vs [3,inf] disjoint. Event with 1 jet -> oneJet only; 3 jets -> threeJet only.
+object jets
+  take Jet
+  select pt > 30
+
+region oneJet
+  select size(jets) == 1
+
+region threeJet
+  select size(jets) >= 3

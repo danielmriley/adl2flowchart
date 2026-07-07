@@ -1,0 +1,11 @@
+# GOLDEN SR_loose SR_tight OVERLAPPING
+# GROUND-TRUTH: MET>200 implies MET>100, so SR_tight ⊆ SR_loose. Witness in both: MET=250. In SR_loose only: MET=150.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_loose
+  select MET > 100
+
+region SR_tight
+  select MET > 200

@@ -1,0 +1,11 @@
+# GOLDEN R_ratio_hi R_ratio_lo DISJOINT
+# GROUND-TRUTH: MET/HT>10 and MET/HT<5 cannot both hold for the same MET,HT (HT>0). Event MET=200,HT=10 (ratio 20) is in R_ratio_hi only; MET=10,HT=100 (ratio 0.1) is in R_ratio_lo only; no event has ratio both >10 and <5.
+object jets
+  take Jet
+  select pt > 30
+
+region R_ratio_hi
+  select MET / HT > 10
+
+region R_ratio_lo
+  select MET / HT < 5

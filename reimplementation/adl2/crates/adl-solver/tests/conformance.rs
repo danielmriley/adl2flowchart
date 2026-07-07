@@ -6,7 +6,11 @@
 //! audit Bug 5: never silently weaker).
 
 use adl_formula::{LinAtom, QFormula, Rel};
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
+
+fn r(v: f64) -> Rat {
+    Rat::from_decimal_f64(v).unwrap()
+}
 use adl_solver::{AssertName, QSort, SatResult, Solver, SubprocessSolver, subprocess_available};
 use std::time::Duration;
 
@@ -17,11 +21,11 @@ fn q(n: u32) -> QuantityId {
 }
 
 fn atom(qid: u32, rel: Rel, k: f64) -> QFormula {
-    QFormula::Atom(LinAtom::single(q(qid), rel, k).unwrap())
+    QFormula::Atom(LinAtom::single(q(qid), rel, r(k)))
 }
 
 fn atom2(c0: f64, q0: u32, c1: f64, q1: u32, rel: Rel, k: f64) -> QFormula {
-    QFormula::Atom(LinAtom::new([(c0, q(q0)), (c1, q(q1))], rel, k).unwrap())
+    QFormula::Atom(LinAtom::new([(r(c0), q(q0)), (r(c1), q(q1))], rel, r(k)))
 }
 
 fn name(s: &str) -> Option<AssertName> {
@@ -121,7 +125,7 @@ fn battery(s: &mut dyn Solver) {
     s.push();
     // 0.1 * x >= 1  and  x < 10  is UNSAT iff 0.1 is treated as 1/10.
     s.assert(
-        &QFormula::Atom(LinAtom::new([(0.1, q(5))], Rel::Ge, 1.0).unwrap()),
+        &QFormula::Atom(LinAtom::new([(r(0.1), q(5))], Rel::Ge, r(1.0))),
         None,
     );
     s.assert(&atom(5, Rel::Lt, 10.0), None);

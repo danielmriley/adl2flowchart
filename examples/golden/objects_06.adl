@@ -1,0 +1,17 @@
+# GOLDEN Rtight Rloose POSSIBLY
+# GROUND-TRUTH: tight is a filtered-of-filtered chain (loose = jets pt>30, tight = loose with pt>50), so tight is a SUBSET of loose and size(tight)>=1 implies size(loose)>=1. Hence Rtight subset of Rloose. Event {1 jet pt=60} passes both (witness in both); {1 jet pt=40} passes Rloose only (superset-only witness); {} passes neither. The tool reports POSSIBLY OVERLAPPING (sound conservative; it notes "subset: Rtight within Rloose").
+# Filtered-of-filtered chain yields a genuine subset; verdict is the sound POSSIBLY.
+
+object loose
+  take Jet
+  select pt > 30
+
+object tight
+  take loose
+  select pt > 50
+
+region Rtight
+  select size(tight) >= 1
+
+region Rloose
+  select size(loose) >= 1

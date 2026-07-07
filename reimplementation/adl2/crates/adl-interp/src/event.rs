@@ -41,6 +41,16 @@ pub struct EventObject {
 }
 
 impl EventObject {
+    /// Build a synthetic object from canonical (key, value) pairs — used by
+    /// the interpreter to materialize composite-candidate 4-vectors
+    /// (`candidate ll = l1 + l2`) as indexable elements.
+    #[must_use]
+    pub fn from_props(props: impl IntoIterator<Item = (String, f64)>) -> Self {
+        EventObject {
+            props: props.into_iter().collect(),
+        }
+    }
+
     /// Property value by canonical key (see [`ExtDecls::prop_canon`]).
     #[must_use]
     pub fn get(&self, canon_key: &str) -> Option<f64> {
@@ -528,14 +538,19 @@ fn load_collection(
 }
 
 /// PHASE0: collections arrive pT-descending; assert, never re-sort.
-/// Objects without a `pt` property are exempt (and break the chain).
+///
+/// An object without a `pt` property is *skipped*, but it must NOT reset the
+/// running maximum: the ORD/IDOM axioms assert `c[i].pt >= c[j].pt` for every
+/// `i < j` directly by index, so the pT-bearing SUBSEQUENCE must be globally
+/// non-increasing. Resetting on a gap would accept e.g. `[pt=10, {no pt},
+/// pt=100]`, on which `c[0].pt >= c[2].pt` (10 >= 100) is false — letting the
+/// axiom fabricate a false PROVEN DISJOINT/SUBSET.
 fn validate_pt_descending(line: usize, ev: &Event, ext: &ExtDecls) -> Result<(), EventError> {
     let (pt_key, _) = ext.prop_canon("pt");
     for (name, objs) in &ev.collections {
         let mut prev: Option<f64> = None;
         for (i, obj) in objs.iter().enumerate() {
             let Some(pt) = obj.get(&pt_key) else {
-                prev = None;
                 continue;
             };
             if let Some(p) = prev
@@ -586,5 +601,53 @@ mod tests {
     fn duplicate_weight_after_case_folding_errors() {
         let err = parse(r#"{"weight": 1.0, "Weight": 2.0}"#).unwrap_err();
         assert!(matches!(err, EventError::Shape { .. }), "{err}");
+    }
+
+    // SOUNDNESS FOUNDATION: the ORD/IDOM/EPRED over-approximation axioms are
+    // sound ONLY because the interpreter's own load path refuses any
+    // non-pT-descending collection (never re-sorts). These tests pin that
+    // refusal on `parse_event`/`read_jsonl` — the exact path the verdict
+    // oracle and `smash2 run` use (the ingest reader has separate coverage).
+    // Weakening this rejection would turn every ORD proof into a real false
+    // PROVEN DISJOINT/SUBSET/EMPTY while the rest of the suite stayed green.
+
+    #[test]
+    fn parse_event_rejects_ascending_collection() {
+        let err = parse(r#"{"Jet":[{"pt":30.0},{"pt":100.0}]}"#).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { collection, index, .. }
+                if collection.as_str() == "jet" && *index == 1),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_event_accepts_descending_collection() {
+        let ev = parse(r#"{"Jet":[{"pt":100.0},{"pt":30.0}]}"#).unwrap();
+        assert_eq!(ev.collections.get("jet").map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn parse_event_rejects_pt_gap_that_breaks_global_order() {
+        // The load-bearing subtlety: an object with no `pt` must NOT reset the
+        // running maximum, or `[pt=10, {no pt}, pt=100]` would slip through and
+        // c[0].pt >= c[2].pt (10 >= 100) — the axiom's claim — would be false.
+        let err = parse(r#"{"Jet":[{"pt":10.0},{"eta":0.5},{"pt":100.0}]}"#).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { collection, index, .. }
+                if collection.as_str() == "jet" && *index == 2),
+            "a pt gap must not reset the running max: {err}"
+        );
+    }
+
+    #[test]
+    fn read_jsonl_rejects_non_descending_on_the_oracle_path() {
+        let text = "{\"Jet\":[{\"pt\":100.0},{\"pt\":30.0}]}\n{\"Jet\":[{\"pt\":20.0},{\"pt\":80.0}]}\n";
+        let err = read_jsonl(text, &ExtDecls::legacy()).unwrap_err();
+        assert!(
+            matches!(&err, EventError::NotPtDescending { line, collection, index }
+                if *line == 2 && collection.as_str() == "jet" && *index == 1),
+            "the second event must be rejected at its real line: {err}"
+        );
     }
 }

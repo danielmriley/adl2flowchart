@@ -32,6 +32,9 @@ fn run_with(file: &str, solver: SolverChoice) -> Report {
         solver,
         timeout: Duration::from_secs(20),
         fail_on: FailOn::default(),
+        reconcile: false,
+        sample_gate: 64,
+        certify: true,
     };
     analyze_source(&src, file, &ext, &opts)
         .unwrap_or_else(|e| panic!("{file} must parse/resolve cleanly:\n{e}"))
@@ -162,9 +165,11 @@ fn or_with_unencodable_branch_must_not_prove_disjoint() {
 fn overlap_proved_through_the_encodable_or_branch() {
     let r = run("or_unencodable_branch.adl");
     let p = pair(&r, "SR_orcut", "SR_lowmet");
-    assert_eq!(p.kind, VerdictKind::ProvenOverlapping, "{}", p.reason);
-    // The opaque external function keeps the witness a candidate: the
-    // interpreter cannot evaluate aplanarity (SPEC_ANALYSIS §2 caveat).
+    // A joint model exists (so NOT disjoint), but the opaque external
+    // function (aplanarity, SPEC_ANALYSIS §2 caveat) keeps the witness a
+    // candidate the interpreter cannot validate — so this is CANDIDATE
+    // OVERLAPPING, not a PROVEN claim the contract can't back.
+    assert_eq!(p.kind, VerdictKind::CandidateOverlapping, "{}", p.reason);
     assert_eq!(p.witness_validated, Some(false), "{}", p.reason);
     assert!(p.reason.contains("candidate"), "{}", p.reason);
 }
@@ -462,7 +467,7 @@ fn json_export_carries_the_verdicts() {
     let r = run("disjoint_pt.adl");
     let json = r.to_json();
     assert!(json.contains("\"proven_disjoint\""), "{json}");
-    assert!(json.contains("\"schema_version\": 1"), "{json}");
+    assert!(json.contains("\"schema_version\": 3"), "{json}");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert!(parsed["pairwise"].is_array());
 }

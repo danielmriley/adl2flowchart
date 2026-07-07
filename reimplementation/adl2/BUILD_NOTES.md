@@ -2008,3 +2008,38 @@ met on the committed criterion bench (ex02 ~306k parallel; light ADL 685k on
   `events.provenance.json`; NanoAOD/PHYSLITE spec'd, not built; mid-selection
   histoList fill points are honestly diagnosed (filled once on full region
   acceptance), not guessed.
+
+---
+
+## Solver-backend default flipped to subprocess (libz3 link no longer required)
+
+The native libz3 backend was `default = ["native"]` on every backend crate
+(adl-solver/adl-analysis/adl-cli), and `adl-difftest` pulled `adl-analysis`
+with default features, so feature-unification re-enabled `native` across the
+whole workspace. Net effect: `cargo build`/`cargo test` link-failed with
+`-lz3` on any machine without system libz3, and the product binary needed
+`LD_LIBRARY_PATH` at runtime. The recovery (`--no-default-features`) only
+worked when scoped to `-p adl-cli`, and native test builds clobbered
+`target/release/smash2` with a libz3-linked artifact that wouldn't launch.
+
+Fix: the SMT-LIB **subprocess** backend is now the default everywhere
+(`default = []`), so the default `cargo build` links nothing and runs against
+a `z3`/`cvc5` binary on PATH. The in-process backend is opt-in:
+`--features native` (system libz3) or the new `--features bundled` (libz3
+built from vendored z3 source via the z3 crate, no system install). The
+`native` cfg-gates are unchanged; `bundled` enables `native`.
+
+- `cargo build --release` (clean env, no system libz3) — green; `ldd
+  smash2` shows no libz3; binary runs.
+- `cargo test --workspace` (subprocess, z3 on PATH, no RUSTFLAGS/LD_LIBRARY_PATH)
+  — **60 suites / 0 failed**.
+- `cargo build --release -p adl-cli --features native` and `cargo test
+  --workspace --features native` — compile/run green.
+- `corpus_gate.sh` builds clean without the hack: 125/125.
+- One snapshot updated: `report_rendering__default_cms_sus_16_033` — the
+  default backend now runs the local z3 *binary* (4.12.2) instead of the
+  borrowed native lib (4.16); the two z3 versions return different SAT
+  witnesses, so 7 pairs that were POSSIBLY (rejected witness) under 4.16 are
+  validated PROVEN OVERLAPPING under 4.12.2 (all 28 ProvenOverlapping carry
+  witness_validated=true; PROVEN DISJOINT unchanged — no soundness change).
+  Report-rendering snapshots track the local z3 version's witness choices.

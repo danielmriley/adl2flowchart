@@ -149,7 +149,7 @@ fn unknown_profile_and_missing_action_are_usage_errors() {
         "/tmp/never_written.jsonl",
     ]);
     assert_eq!(code(&out), 2);
-    assert!(stderr(&out).contains("unknown profile `atlas` (known: delphes)"));
+    assert!(stderr(&out).contains("unknown profile `atlas` (known: delphes, nanoaod)"));
 
     let out = run(&[
         "ingest",
@@ -295,6 +295,144 @@ fn run_profile_refuses_unordered_input_with_exit_one() {
         "{}",
         stderr(&out)
     );
+}
+
+// ---- NanoAOD profile (real CMS Open Data ttbar fixture, 200 events) -------
+
+#[test]
+fn nanoaod_ingest_matches_golden() {
+    let dir = temp_dir("nano_golden");
+    let out_file = dir.join("events.jsonl");
+    let out = run(&[
+        "ingest",
+        path_str(&fixture("nanoaod_ttbar.root")),
+        "--profile",
+        "nanoaod",
+        "-o",
+        path_str(&out_file),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "", "machine-clean stdout");
+    let written = std::fs::read_to_string(&out_file).expect("output jsonl");
+    let golden = std::fs::read_to_string(fixture("nanoaod_ttbar.expected.jsonl")).expect("golden");
+    assert_eq!(written, golden, "nanoaod ingest output != frozen golden");
+    assert_eq!(written.lines().count(), 200, "200 events");
+    let err = stderr(&out);
+    assert!(err.contains("collection `Jet`"), "{err}");
+    assert!(err.contains("unmapped"), "{err}");
+    assert!(err.contains("unknown branch `CaloMET`"), "{err}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn nanoaod_run_profile_matches_materialized_jsonl() {
+    let dir = temp_dir("nano_runparity");
+    let jsonl = dir.join("events.jsonl");
+    let adl = dir.join("nano.adl");
+    let root = fixture("nanoaod_ttbar.root");
+    std::fs::write(
+        &adl,
+        "object goodjets\n  take Jet\n  select pt > 30\n\n\
+         region SR\n  select size(goodjets) >= 2\n  select MET.pt > 20\n",
+    )
+    .expect("write adl");
+
+    let out = run(&[
+        "ingest",
+        path_str(&root),
+        "--profile",
+        "nanoaod",
+        "-o",
+        path_str(&jsonl),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let native = run(&[
+        "run",
+        path_str(&adl),
+        path_str(&root),
+        "--profile",
+        "nanoaod",
+    ]);
+    let via_jsonl = run(&["run", path_str(&adl), path_str(&jsonl)]);
+    assert_eq!(code(&native), 0, "{}", stderr(&native));
+    assert_eq!(code(&via_jsonl), 0, "{}", stderr(&via_jsonl));
+    assert_eq!(
+        stdout(&native),
+        stdout(&via_jsonl),
+        "native nanoaod ingest and materialized JSONL must evaluate identically"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn nanoaod_emit_script_is_nanoaod_flavored() {
+    let dir = temp_dir("nano_script");
+    let out = run(&[
+        "ingest",
+        "--profile",
+        "nanoaod",
+        "--emit-script",
+        path_str(&dir),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let script = std::fs::read_to_string(dir.join("to_jsonl.py")).expect("script");
+    assert!(script.contains("profile nanoaod/1"), "{script}");
+    assert!(script.contains("FLAT_EVENT_VARS = True"), "naming params emitted");
+    assert!(script.contains("COUNTER_KIND = \"n\""), "n-prefix counter");
+    assert!(script.contains("LEAF_SEP = \"_\""), "underscore leaf sep");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Env-gated independent oracle: the generated uproot script must reproduce
+/// the native NanoAOD JSONL byte for byte on the real CMS Open Data fixture.
+#[test]
+fn nanoaod_native_jsonl_matches_the_uproot_script() {
+    if std::env::var_os("SMASH2_RUN_UPROOT_ORACLE").is_none() {
+        eprintln!("skipping nanoaod uproot oracle (set SMASH2_RUN_UPROOT_ORACLE=1 to enable)");
+        return;
+    }
+    let Some(py) = uproot_python() else {
+        eprintln!("skipping: python3 with uproot not available");
+        return;
+    };
+    let dir = temp_dir("nano_oracle");
+    let out = run(&[
+        "ingest",
+        "--profile",
+        "nanoaod",
+        "--emit-script",
+        path_str(&dir),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let script = dir.join("to_jsonl.py");
+    let root = fixture("nanoaod_ttbar.root");
+    let native = dir.join("native.jsonl");
+    let scripted = dir.join("script.jsonl");
+    let out = run(&[
+        "ingest",
+        path_str(&root),
+        "--profile",
+        "nanoaod",
+        "-o",
+        path_str(&native),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let sout = Command::new(&py)
+        .args([path_str(&script), path_str(&root), path_str(&scripted)])
+        .output()
+        .expect("run to_jsonl.py");
+    assert!(
+        sout.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sout.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&native).expect("native"),
+        std::fs::read(&scripted).expect("scripted"),
+        "nanoaod: native vs uproot script bytes differ"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn which(cmd: &str) -> Option<PathBuf> {

@@ -1,0 +1,6 @@
+object jets
+  take Jet
+  select pt > 30
+  select sphericity(jets) > 0.1
+region RB
+  select size(jets) <= 2

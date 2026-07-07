@@ -10,6 +10,9 @@ repository.workspace = true
 # 100k-case mode for the encoder-vs-interpreter property battery
 # (TESTING §2); normal `cargo test` runs 2000 cases.
 deep = []
+# Forward the in-process libz3 backend so the heavy oracle can run on the
+# faster solver: `cargo test -p adl-difftest --features "deep native"`.
+native = ["adl-analysis/native"]
 # The SPEC_EVENT_PIPELINE §5 throughput benchmark. Off by default so
 # criterion never enters the normal build/test graph; run with
 # `cargo bench -p adl-difftest --features bench`.

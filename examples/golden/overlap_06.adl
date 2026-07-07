@@ -1,0 +1,13 @@
+# GOLDEN SR_jets SR_more OVERLAPPING
+# GROUND-TRUTH: size bands [2,5] and [4,7] overlap on [4,5], MET>150 and MET>250 overlap on MET>250. In both: 4 jets,MET=300. jets-only: 2 jets,MET=200. more-only: 7 jets,MET=300.
+object jets
+  take Jet
+  select pT(Jet) > 30
+
+region SR_jets
+  select size(jets) [] 2 5
+  select MET > 150
+
+region SR_more
+  select size(jets) [] 4 7
+  select MET > 250

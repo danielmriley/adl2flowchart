@@ -13,6 +13,13 @@ tautag -> isTauTag
 btag -> isBTag
 ctag -> isBTag
 btagDeepB -> DeepBof
+btagDeepFlavB -> DeepFlavBof
+btagCSVV2 -> CSVV2of
+jetId -> JetIDof
+puId -> PUIDof
+tightId -> TightIDof
+looseId -> LooseIDof
+pfIsoId -> PFIsoIDof
 msoftdrop -> MsoftDof
 tau1 -> tau1of
 tau2 -> tau2of

@@ -25,7 +25,6 @@ ang(or) dphi(C1#jets[0], MET)
 ang(or) dphi(C1#jets[1], MET)
 ang(or) dphi(C1#jets[2], MET)
 ang(or) dphi(C1#jets[3], MET)
-extfn   sum(C1#jets[*].pt)
 scalar  MET.pt
 size    size(C1#jets)
 size    size(C3#bjets)

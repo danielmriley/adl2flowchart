@@ -941,3 +941,67 @@ fn unrecognized_region_stmt_is_warning_not_error() {
             .any(|s| matches!(s, RegionStmt::Cut { .. }))
     );
 }
+
+// ---- learn-adl gap fixes: object-scoped define + `bins` -------------------
+
+/// An INDENTED `define` inside an object block is a block statement
+/// (learn-adl "Defining new attributes inside an object"), and the
+/// statements after it stay inside the block.
+#[test]
+fn indented_define_stays_inside_the_object_block() {
+    let file =
+        parse_ok("object jets\n  take Jet\n  define ptratio = pt / e\n  select ptratio > 0.5\n");
+    let Section::Object(obj) = &file.sections[0] else {
+        panic!("expected object");
+    };
+    assert_eq!(file.sections.len(), 1, "define must not split the block");
+    assert_eq!(obj.stmts.len(), 3);
+    let ObjectStmt::Define(d) = &obj.stmts[1] else {
+        panic!("expected object-scoped define, got {:?}", obj.stmts[1]);
+    };
+    assert_eq!(d.name.name, "ptratio");
+    assert!(
+        matches!(&obj.stmts[2], ObjectStmt::Cut { .. }),
+        "the select after the define belongs to the block"
+    );
+}
+
+/// A COLUMN-1 `define` after an object block still begins a top-level
+/// define section — the corpus writes event defines this way (51 sites),
+/// and their meaning must not change.
+#[test]
+fn column_one_define_after_object_is_a_section() {
+    let file = parse_ok("object jets\n  take Jet\ndefine HT2 = HT * 2\n");
+    assert_eq!(file.sections.len(), 2);
+    assert!(matches!(&file.sections[1], Section::Define(_)));
+    let Section::Object(obj) = &file.sections[0] else {
+        panic!("expected object");
+    };
+    assert_eq!(obj.stmts.len(), 1, "object holds only its take");
+}
+
+/// learn-adl `bins <var> <edges>` is the same construct as `bin`'s
+/// boundary-list form; contextual, so a bare `bins` alone on its line is
+/// still a region reference.
+#[test]
+fn bins_statement_is_a_boundary_list_bin() {
+    let file = parse_ok("region r\n  select MET > 0\n  bins HT 300 500 700\n");
+    let Section::Region(region) = &file.sections[0] else {
+        panic!("expected region");
+    };
+    let RegionStmt::Bin { label, body, .. } = &region.stmts[1] else {
+        panic!("expected bin stmt, got {:?}", region.stmts[1]);
+    };
+    assert!(label.is_none());
+    let BinBody::Boundaries { edges, .. } = body else {
+        panic!("expected boundary list");
+    };
+    assert_eq!(edges.len(), 3);
+
+    // Alone on its line, `bins` is a region reference as before.
+    let file = parse_ok("region bins\n  select MET > 0\nregion r2\n  bins\n");
+    let Section::Region(r2) = &file.sections[1] else {
+        panic!("expected region");
+    };
+    assert!(matches!(&r2.stmts[0], RegionStmt::RegionRef(_)));
+}

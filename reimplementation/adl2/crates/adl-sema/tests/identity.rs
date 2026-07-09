@@ -419,7 +419,10 @@ fn descending_pt_sort_of_pt_ordered_source_aliases_to_source() {
     );
     let jets = hir.collection_of("jets").unwrap();
     let sjets = hir.collection_of("sjets").unwrap();
-    assert_eq!(sjets, jets, "descending-pt sort of an ordered source is an alias");
+    assert_eq!(
+        sjets, jets,
+        "descending-pt sort of an ordered source is an alias"
+    );
     // No opaque Sorted collection was interned for this shape.
     assert!(
         !hir.table
@@ -438,7 +441,10 @@ fn ascending_sort_does_not_alias_and_stays_opaque_sorted() {
     );
     let jets = hir.collection_of("jets").unwrap();
     let sjets = hir.collection_of("sjets").unwrap();
-    assert_ne!(sjets, jets, "ascending sort is NOT the identity permutation");
+    assert_ne!(
+        sjets, jets,
+        "ascending sort is NOT the identity permutation"
+    );
     assert!(
         matches!(hir.table.collection(sjets), Collection::Sorted { .. }),
         "ascending sort stays an opaque Sorted"
@@ -510,12 +516,14 @@ fn unresolvable_object_inputs_get_unit_unique_private_bases() {
         );
     }
     // Take cycle: a resolve ERROR, and the fallback must still be private.
-    let hir =
-        analyze("object a\n  take b\n  select pt > 1\nobject b\n  take a\n  select pt > 2\n");
+    let hir = analyze("object a\n  take b\n  select pt > 1\nobject b\n  take a\n  select pt > 2\n");
     assert!(hir.diags.iter().any(|d| d.severity == Severity::Error));
     for name in ["a", "b"] {
         let coll = hir.collection_of(name).unwrap();
-        let (base_sym, _) = hir.table.filter_chain(coll).expect("chain over the fallback");
+        let (base_sym, _) = hir
+            .table
+            .filter_chain(coll)
+            .expect("chain over the fallback");
         let label = hir.symbols.display(base_sym);
         assert!(
             label.contains("#unresolved"),
@@ -532,17 +540,27 @@ fn oversized_source_index_never_mints_the_generic_sentinel() {
     // used to clamp onto it, handing the "free" generic element ORD/IDOM
     // axioms. Source indices now cap at MAX_SOURCE_ELEM_INDEX.
     use adl_sema::{ElemIndex, MAX_SOURCE_ELEM_INDEX, Quantity};
-    let hir = analyze(
-        "region SR\n  select pT(Jet[5000000000]) > 0\n  select pT(Jet[4294967295]) > 0\n",
-    );
+    let hir =
+        analyze("region SR\n  select pT(Jet[5000000000]) > 0\n  select pT(Jet[4294967295]) > 0\n");
     let mut saw_clamped = false;
     for q in hir.table.quantities() {
-        if let Quantity::ElemProp { index: ElemIndex::FromFront(n), .. } = q {
-            assert_ne!(*n, u32::MAX, "source index must never mint the generic sentinel");
+        if let Quantity::ElemProp {
+            index: ElemIndex::FromFront(n),
+            ..
+        } = q
+        {
+            assert_ne!(
+                *n,
+                u32::MAX,
+                "source index must never mint the generic sentinel"
+            );
             saw_clamped |= *n == MAX_SOURCE_ELEM_INDEX;
         }
     }
-    assert!(saw_clamped, "the oversized index must clamp to MAX_SOURCE_ELEM_INDEX");
+    assert!(
+        saw_clamped,
+        "the oversized index must clamp to MAX_SOURCE_ELEM_INDEX"
+    );
 }
 
 #[test]
@@ -559,7 +577,10 @@ fn unsupported_cuts_never_share_identity() {
     );
     let a = hir.collection_of("cleanA").unwrap();
     let b = hir.collection_of("cleanB").unwrap();
-    assert_ne!(a, b, "different unsupported cuts must not unify the collections");
+    assert_ne!(
+        a, b,
+        "different unsupported cuts must not unify the collections"
+    );
 
     // Identical FULLY-RESOLVED cuts still merge (the intended sharing).
     let hir = analyze(
@@ -621,20 +642,31 @@ fn render_injectivity_differential_battery() {
         ("property", "pt > 30", "eta > 30"),
         ("relation", "pt > 30", "pt >= 30"),
         ("comparison side", "pt > 30", "pt < 30"),
-        ("boolean connective", "pt > 30 and eta < 2", "pt > 30 or eta < 2"),
+        (
+            "boolean connective",
+            "pt > 30 and eta < 2",
+            "pt > 30 or eta < 2",
+        ),
         ("negation", "pt > 30", "not pt > 30"),
         ("band kind", "pt [] 20 30", "pt ][ 20 30"),
         ("band bound", "pt [] 20 30", "pt [] 20 31"),
-        ("ternary guard", "pt > 30 ? eta < 2 : m > 5", "pt > 40 ? eta < 2 : m > 5"),
-        ("ternary branch", "pt > 30 ? eta < 2 : m > 5", "pt > 30 ? eta < 1 : m > 5"),
+        (
+            "ternary guard",
+            "pt > 30 ? eta < 2 : m > 5",
+            "pt > 40 ? eta < 2 : m > 5",
+        ),
+        (
+            "ternary branch",
+            "pt > 30 ? eta < 2 : m > 5",
+            "pt > 30 ? eta < 1 : m > 5",
+        ),
         ("abs presence", "eta < 2", "abs(eta) < 2"),
         ("arith op", "pt + m > 30", "pt - m > 30"),
         ("arith operand", "pt + m > 30", "pt + e > 30"),
     ];
     for (what, ca, cb) in pairs {
-        let src = format!(
-            "object xa\n  take Jet\n  select {ca}\nobject xb\n  take Jet\n  select {cb}\n"
-        );
+        let src =
+            format!("object xa\n  take Jet\n  select {ca}\nobject xb\n  take Jet\n  select {cb}\n");
         let hir = analyze(&src);
         let a = hir.collection_of("xa").unwrap();
         let b = hir.collection_of("xb").unwrap();
@@ -643,4 +675,58 @@ fn render_injectivity_differential_battery() {
             "cuts differing in {what} must intern distinct predicates: {ca:?} vs {cb:?}"
         );
     }
+}
+
+/// Object-scoped attribute defines (learn-adl) inline by construction: the
+/// define-form and the direct-form intern the SAME filtered collection —
+/// the strongest possible statement that the macro adds no identity of its
+/// own. And the attribute is referencable from a DERIVED object's cuts
+/// (the CMS-SUS-21-006 BDT pattern), where it means that block's element.
+#[test]
+fn object_scoped_define_inlines_to_the_same_identity() {
+    let hir = analyze(
+        "object direct\n  take Jet\n  select pt / e > 0.5\n\
+         object viadefine\n  take Jet\n  define ptratio = pt / e\n  select ptratio > 0.5\n\
+         object child\n  take viadefine\n  select ptratio > 0.7\n",
+    );
+    assert!(
+        !hir.diags.iter().any(|d| d.severity == Severity::Error),
+        "{:?}",
+        hir.diags
+    );
+    let direct = hir.collection_of("direct").unwrap();
+    let via = hir.collection_of("viadefine").unwrap();
+    assert_eq!(
+        hir.table.collection(direct),
+        hir.table.collection(via),
+        "define-form and direct-form must be the same filtered collection"
+    );
+    // The child's cut sees the attribute as ITS element's `pt / e`.
+    let child = hir.collection_of("child").unwrap();
+    let Collection::Filtered { parent, .. } = hir.table.collection(child) else {
+        panic!("child must be filtered");
+    };
+    assert_eq!(*parent, via, "child filters the define-bearing object");
+}
+
+/// An element-scoped attribute referenced at event (region) level cannot
+/// mean anything — it must fail closed to an Unsupported-tagged node,
+/// never resolve to a fabricated quantity.
+#[test]
+fn object_scoped_define_at_region_level_fails_closed() {
+    let hir = analyze(
+        "object jets\n  take Jet\n  define ptratio = pt / e\n\
+         region r\n  select ptratio > 0.5\n",
+    );
+    assert!(
+        !hir.diags.iter().any(|d| d.severity == Severity::Error),
+        "{:?}",
+        hir.diags
+    );
+    let nodes = select_nodes(&hir, "r");
+    assert_eq!(nodes.len(), 1);
+    assert!(
+        nodes[0].has_unsupported(),
+        "region use of an element attribute must be Unsupported-tagged"
+    );
 }

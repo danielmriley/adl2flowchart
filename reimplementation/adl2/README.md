@@ -2,10 +2,12 @@
 
 ADL2 parses [ADL](https://cern.ch/adl) (Analysis Description Language)
 files, **interprets** them over event records, **verifies** relations
-between selection regions with solver-backed proofs, and **visualizes**
-them as Graphviz diagrams. It is the from-scratch successor to the legacy
-tool in `../../legacy_parser/`, built so that the soundness properties the
-legacy tool earned through two audits hold here *by construction*.
+between selection regions with solver-backed proofs that are then
+**independently certified** with exact-rational arithmetic, and
+**visualizes** them as Graphviz diagrams. It is the from-scratch successor
+to the legacy tool in `../../legacy_parser/`, built so that the soundness
+properties the legacy tool earned through two audits hold here *by
+construction*.
 
 New here? Start with [docs/QUICKSTART.md](docs/QUICKSTART.md) — a 5-minute
 tour from `check` to the solver-backed `verify` proofs.
@@ -17,13 +19,19 @@ plus Phase 9 histogram production (`run --histos`, native pure-Rust
 variable-bin histograms in per-region `TDirectory`s, embedded provenance,
 and a streaming chunked-parallel run loop that is byte-deterministic at any
 `--jobs`. The numeric core of the analyzer is **exact rational** (`0.3` is
-`3/10`, not an f64), and merged-unit **cross-file** verdicts (`verify
---cross`) are shipped. End-to-end validated on the real 20k-event T2tt
-Delphes sample against independent uproot/numpy oracles (see
-[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md)) — 593 tests, a 125-file corpus
-(68 base + 57 pinned-verdict golden files), the full legacy golden battery
-on both solver backends, and a verdict-parity comparison against the legacy
-tool with zero legacy-better differences (`../PARITY_DRAFT.md`).
+`3/10`, not an f64); merged-unit **cross-file** verdicts (`verify --cross`)
+with same-base collection reconciliation are shipped; and every
+disjointness proof is **independently re-checked** by a self-contained
+exact-rational certifier (`adl-certify`) that replays a Farkas certificate
+against a trusted kernel — a proof the solver's word alone never has to be
+taken for. End-to-end validated on the real 20k-event T2tt Delphes sample
+against independent uproot/numpy oracles (see
+[`PIPELINE_REPORT.md`](PIPELINE_REPORT.md)) — 751 tests across 71 suites, a
+136-file corpus (68 base + 58 pinned-verdict golden + 10 cross-file golden),
+the full legacy golden battery on both solver backends, a 100k-case
+property oracle against the interpreter, and a verdict-parity comparison
+against the legacy tool with zero legacy-better differences
+(`../PARITY_DRAFT.md`).
 
 ---
 
@@ -38,7 +46,17 @@ verdicts degrade honestly to POSSIBLY.
 cd reimplementation/adl2
 cargo build --release           # no libz3 needed; subprocess backend
 alias smash2=$PWD/target/release/smash2
+
+smash2 --version                # smoke test
+smash2 verify ../../examples/tutorials/ex01_selection.adl   # first real run
 ```
+
+The one external dependency is the SMT solver binary, and only at runtime:
+`z3` (any recent build) must be on `PATH` for the `verify` proofs. The
+independent certifier is pure Rust and always compiled in — it needs no
+solver and no extra flag. `dot` visualization output additionally wants
+Graphviz (`apt install graphviz`) to rasterize, but `smash2 dot` itself
+only emits DOT text and has no build-time dependency on it.
 
 **Solver backends.** The subprocess backend (default) shells out to the
 `z3` binary per check — zero link burden, the right default for a stock
@@ -76,13 +94,19 @@ resynchronizes at statement boundaries), and go to stderr.
 
 ```bash
 smash2 verify analysis.adl
-smash2 verify --json analysis.adl > report.json     # versioned schema
+smash2 verify --explain analysis.adl                # full proof chains: unsat cores, witness values, per-axiom statements
+smash2 verify --json analysis.adl > report.json     # versioned schema (v3)
 smash2 verify --no-solver analysis.adl              # interval heuristic only
+smash2 verify --no-certify analysis.adl             # skip the independent certifier (see below)
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
 smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
 smash2 verify --cross a.adl b.adl                   # merged unit: cross-FILE overlap matrix
 smash2 verify --cross analyses/                     # a directory expands to its *.adl files
 ```
+
+`--fail-on` kinds are `overlap`, `gap`, `empty`, `non-exact` (comma-
+separated); the exit code is nonzero if any listed finding is present, for
+CI gating.
 
 A directory argument contributes its `*.adl` files (sorted, non-recursive,
 deduped against the other inputs). Without `--cross`, several files are
@@ -101,11 +125,30 @@ the two analyses' object counts — under the documented residual
 assumption that the same detector-base name means the same input.
 
 Per region: encoding coverage with named dropped cuts, vacuity check.
-Per pair: PROVEN DISJOINT / PROVEN OVERLAPPING (with witness) / PROVEN
-SUBSET / POSSIBLY / UNKNOWN, each with an explanation (unsat core mapped
-to source lines for disjointness; a validated witness event for overlap).
-Per `bin` set: pairwise disjointness and region coverage with gap
-witnesses. Output is deterministic — two runs are byte-identical.
+Per pair: PROVEN DISJOINT / CANDIDATE DISJOINT / PROVEN OVERLAPPING (with
+witness) / CANDIDATE OVERLAPPING / PROVEN SUBSET / POSSIBLY / UNKNOWN, each
+with an explanation (unsat core mapped to source lines for disjointness; a
+validated witness event for overlap). Per `bin` set: pairwise disjointness
+and region coverage with gap witnesses. Output is deterministic — two runs
+are byte-identical.
+
+**Two independent nets sit behind every PROVEN verdict**, on by default:
+
+- **Certification** (`adl-certify`). When the solver returns UNSAT for a
+  disjointness/emptiness query, the unsat core is handed to a self-
+  contained exact-rational checker that must produce a replayable Farkas
+  certificate — a proof re-checked by a small trusted kernel, in exact
+  arithmetic, with no dependence on the solver. A pair the checker cannot
+  certify (budget, shape, or an integrality-only refutation) is reported as
+  **CANDIDATE DISJOINT** — an honest "the solver says so but we could not
+  independently prove it" rather than a bare PROVEN. Certified pairs carry
+  `certified: true` in `--json`. Turn it off with `--no-certify`.
+- **Sampling gate.** Every PROVEN pair is additionally checked against a
+  deterministic battery of boundary events pushed through the reference
+  interpreter; a sampled event that the interpreter accepts into both
+  regions of a "disjoint" pair is an internal contradiction, so the verdict
+  fails closed to POSSIBLY and a bug diagnostic is filed. (No real event
+  should ever trip this — it is a live self-audit of the encoder/axioms.)
 
 **`run` — interpret regions over events**
 
@@ -146,14 +189,15 @@ fragment status, and derived size facts (subset of parent, union bounds).
 
 ### Reading verdicts
 
-| Verdict | Claim | Sound because |
-|---|---|---|
-| PROVEN DISJOINT | no event can pass both regions | checked on an over-approximation of each region: if even the supersets cannot intersect, the regions cannot |
-| PROVEN OVERLAPPING | a concrete event passes both | checked on under-approximations; the realized witness event is accepted by the reference interpreter in both regions (`witness_validated = true`) |
-| CANDIDATE OVERLAPPING (matrix letter `c`) | a joint model exists, but it rests on an opaque quantity the interpreter cannot decide — **not a proof of overlap** | the unvalidated tier is reported separately instead of overclaiming PROVEN; conservative for combination studies |
-| PROVEN SUBSET A⊆B | every event passing A passes B | UNSAT(A⁺ ∧ ¬B⁻) |
-| region EMPTY | the region's cuts contradict physical axioms | UNSAT(R⁺ ∧ axioms) |
-| POSSIBLY / UNKNOWN | no claim | — |
+| Verdict | Matrix | Claim | Sound because |
+|---|---|---|---|
+| PROVEN DISJOINT | `D` | no event can pass both regions | checked on an over-approximation of each region: if even the supersets cannot intersect, the regions cannot — and the unsat core is independently certified in exact arithmetic |
+| CANDIDATE DISJOINT | `d` | the solver reports the regions disjoint, but the proof could not be independently certified — **not a certified proof** | the uncertified tier is reported separately instead of overclaiming PROVEN; disable the certifier with `--no-certify` to collapse it back into PROVEN |
+| PROVEN OVERLAPPING | `O` | a concrete event passes both | checked on under-approximations; the realized witness event is accepted by the reference interpreter in both regions (`witness_validated = true`) |
+| CANDIDATE OVERLAPPING | `c` | a joint model exists, but it rests on an opaque quantity the interpreter cannot decide — **not a proof of overlap** | the unvalidated tier is reported separately instead of overclaiming PROVEN; conservative for combination studies |
+| PROVEN SUBSET A⊆B | `s` | every event passing A passes B | UNSAT(A⁺ ∧ ¬B⁻) |
+| region EMPTY | `E` | the region's cuts contradict physical axioms | UNSAT(R⁺ ∧ axioms) |
+| POSSIBLY / UNKNOWN | `?` / `U` | no claim | — |
 
 Anything the tool cannot encode faithfully becomes an explicit `Unknown`
 with a reason you can read in the report — it can weaken a verdict to
@@ -406,7 +450,14 @@ test), against the native libz3 backend or a conformance-equivalent
 SMT-LIB subprocess backend. Every overlap witness is converted to a
 synthetic event and re-validated through the interpreter; a witness the
 interpreter rejects downgrades the verdict and files an internal
-diagnostic.
+diagnostic. Every disjointness UNSAT is then handed to **`adl-certify`**, a
+self-contained exact-rational checker independent of the solver: it
+searches for a Farkas certificate over the rationals and replays it through
+a small trusted kernel, so a PROVEN DISJOINT never rests on the solver's
+word alone — an uncertifiable core is reported as CANDIDATE DISJOINT
+instead. On the SAT side, a deterministic **sampling gate** pushes boundary
+events through the interpreter and fails any PROVEN pair closed to POSSIBLY
+if a sampled event lands in both regions.
 
 The numeric core is **exact rational** (`adl_sema::Rat`, a `BigRational`
 newtype with shortest-round-trip decimal semantics — `0.3` is exactly
@@ -435,11 +486,14 @@ build, see `COUNTEREXAMPLES.md`), a metamorphic suite checks invariances
 (`reject c` ≡ `select not c`, rename invariance, …), the entire legacy
 golden battery — every historical false-verdict bug from two audits of the
 old tool — runs as integration tests, and a hand-authored **golden verdict
-corpus** (`../../examples/golden/`, 57 files) pins fully-known
-disjoint/overlapping/empty ground truth: each file declares its expected
-verdict in a `# GOLDEN` header and `golden_regions.rs` asserts the analyzer
+corpus** (`../../examples/golden/`, 58 single-file + 10 cross-file across 5
+merge groups) pins fully-known disjoint/overlapping/empty ground truth:
+each file declares its expected verdict in a `# GOLDEN` / `# GOLDEN-CROSS`
+header and `golden_regions.rs` / `golden_cross.rs` assert the analyzer
 reproduces it exactly. Paired with the property oracle (which guarantees no
-false PROVEN), a green golden run means those PROVEN headers are real.
+false PROVEN) and the independent certifier, a green golden run means those
+PROVEN headers are real. Every confirmed counterexample the batteries have
+ever found is regression-locked in `COUNTEREXAMPLES.md` + `regressions.rs`.
 
 ---
 
@@ -509,7 +563,8 @@ touching verdicts.
 | `adl-formula` | polarity-typed formula IR + projections; HIR→formula encoder |
 | `adl-axioms` | audited axiom catalog (+ prohibited-axiom regressions) |
 | `adl-solver` | `Solver` trait; native-z3 and SMT-LIB subprocess backends |
-| `adl-analysis` | pairwise verdicts, vacuity, subset, bins, witnesses, reports/JSON |
+| `adl-certify` | self-contained exact-rational DPLL(Farkas) checker; replays a certificate against a trusted kernel to certify solver UNSAT results independently |
+| `adl-analysis` | pairwise verdicts, vacuity, subset, bins, witnesses, sampling gate, certification, reports/JSON |
 | `adl-viz` | flowchart + AST DOT from HIR |
 | `rootfile` | pure-Rust ROOT file writer (`TH1D`, variable-bin `TH1D`, `TH2D`, labeled cutflow pairs, per-region `TDirectory`s, `TNamed` provenance — the `run --histos` native `out.root`); standalone, zero-dependency |
 | `adl-difftest` | event generator, property/metamorphic batteries, legacy harness |
@@ -524,9 +579,11 @@ Build history: `BUILD_NOTES.md`, `BUILD_REPORT.md`, `COUNTEREXAMPLES.md`,
 `PIPELINE_REPORT.md` (Phase 10 real-sample e2e).
 
 ```bash
-cargo test --workspace          # full battery (593 tests, subprocess backend)
-scripts/corpus_gate.sh          # all 125 example files parse + resolve
-cargo test -p adl-analysis --test golden_regions # golden verdict corpus (needs a solver)
+cargo test --workspace          # full battery (751 tests / 71 suites, subprocess backend)
+scripts/corpus_gate.sh          # all 136 example files parse + resolve
+cargo test -p adl-analysis --test golden_regions # single-file golden verdict corpus (needs a solver)
+cargo test -p adl-analysis --test golden_cross    # cross-file (merged/reconciled) golden corpus
+cargo test -p adl-certify        # the independent exact-rational certifier (kernel, replay, tamper)
 cargo test --workspace --features native         # same battery, in-process libz3 backend
 cargo test -p adl-difftest --features deep        # 100k-case property oracle (use --features native too)
 

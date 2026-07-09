@@ -512,8 +512,7 @@ impl<'s> Parser<'s> {
                 // `candidate <name> = <expr>`. Only valid inside `composite`
                 // — elsewhere `object`/`candidate` start a new section.
                 TokKind::Kw(Kw::Object | Kw::Obj)
-                    if keyword == ObjectKw::Composite
-                        && self.derived_candidate_ahead() =>
+                    if keyword == ObjectKw::Composite && self.derived_candidate_ahead() =>
                 {
                     stmts.push(self.parse_derived_candidate());
                 }
@@ -523,6 +522,13 @@ impl<'s> Parser<'s> {
                         && self.derived_candidate_ahead() =>
                 {
                     stmts.push(self.parse_derived_candidate());
+                }
+                // Block-scoped attribute define (learn-adl): an INDENTED
+                // `define` stays inside the block; a column-1 `define`
+                // begins a top-level define section as before (the corpus
+                // writes event defines at column 1 after object blocks).
+                TokKind::Kw(Kw::Define | Kw::Def) if !self.at_column_one() => {
+                    stmts.push(ObjectStmt::Define(self.parse_define()));
                 }
                 _ => {
                     if self.recover_block_stmt("object") {
@@ -538,6 +544,16 @@ impl<'s> Parser<'s> {
             stmts,
             span: kw_tok.span.to(self.last_span),
         }
+    }
+
+    /// True when the next significant token starts at column 1 (nothing but
+    /// a line start before it). This is the ONE layout-sensitive rule in the
+    /// grammar, and it exists only to disambiguate `define`: indented inside
+    /// an object block = block-scoped attribute; column 1 = a new top-level
+    /// define section.
+    fn at_column_one(&self) -> bool {
+        let start = self.peek().span.start as usize;
+        start == 0 || self.src.as_bytes()[start - 1] == b'\n'
     }
 
     /// True when the cursor (`candidate`/`object`/`obj` keyword) is followed
@@ -758,9 +774,25 @@ impl<'s> Parser<'s> {
                 self.bump();
                 Some(self.parse_region_ref())
             }
+            // learn-adl `bins <var> <edge> <edge> ...` — the multi-edge
+            // splitter, identical to `bin`'s boundary-list form. Contextual
+            // (not a keyword) so `bins` stays usable as a name; a bare
+            // `bins` alone on its line is still a region reference.
+            TokKind::Ident(ref n) if n.eq_ignore_ascii_case("bins") && !self.next_is_line_end() => {
+                Some(self.parse_bin_stmt())
+            }
             TokKind::Ident(_) => Some(self.parse_region_ref()),
             _ => None,
         }
+    }
+
+    /// True when the token AFTER the current one begins a new line (or the
+    /// file ends) — i.e. the current token stands alone on its line.
+    fn next_is_line_end(&self) -> bool {
+        matches!(
+            self.toks[self.sig_index() + 1].kind,
+            TokKind::Newline | TokKind::Eof
+        )
     }
 
     /// `region-ref = ident` — must stand alone on its line; otherwise this is

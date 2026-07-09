@@ -77,7 +77,8 @@ info-block      = "info" ident { info-line } ;
 define          = ("define"|"def") ident ("="|":") condition ;
 
 object-block    = ("object"|"obj"|"composite"|"trigger") ident
-                  { take-stmt | cut-stmt } ;
+                  { take-stmt | cut-stmt | object-define } ;
+object-define   = define ;   (* INDENTED only — see layout rule below *)
 take-stmt       = ("take"|"using"|":") take-source ;
 take-source     = ident
                 | ident "(" arg-list ")"
@@ -90,10 +91,13 @@ region-stmt     = cut-stmt | reject-stmt | bin-stmt | weight-stmt
 cut-stmt        = ("select"|"cut"|"cmd"|"command") condition ;
 reject-stmt     = "reject" condition ;
 region-ref      = ident ;                     (* names a prior region *)
-bin-stmt        = "bin" [ string ] bin-body ;
+bin-stmt        = ("bin" | "bins") [ string ] bin-body ;
 bin-body        = postfix boundary-list       (* boundary-list binning *)
                 | condition ;                 (* boolean bin *)
 boundary-list   = signed-num signed-num { signed-num } ;
+(* `bins` (learn-adl multi-edge splitter) is CONTEXTUAL, not a keyword: a
+   bare `bins` alone on its line is a region reference; followed by a
+   bin-body it is the same construct as `bin`. *)
 trigger-stmt    = "trigger" condition ;
 histo-stmt      = "histo" ident "," string { "," histo-arg } ;
 
@@ -217,6 +221,18 @@ Ternary `g ? a : b` = `(g ∧ a) ∨ (¬g ∧ b)`; missing/`ALL` branch is
 `true`. `x [] lo hi` = `lo ≤ x ≤ hi`; `x ][ lo hi` = `x ≤ lo ∨ x ≥ hi`.
 Defines are textual-scope-free named expressions; boolean defines are
 predicates, numeric defines are event scalars; recursion is an error.
+
+An **object-scoped define** (learn-adl "attribute define": an INDENTED
+`define` inside an object/composite block) is a macro over the element
+context — its body is inlined at each reference site in the caller's
+context, so `pt` means "this element's pt" inside any object cut, in the
+declaring block or a derived one (the CMS-SUS-21-006 BDT pattern).
+Referenced at event (region) level it is Unsupported (fail-closed). The
+inlining is by construction: the define-form and the direct-form intern
+the SAME filtered collection. **Layout rule (the grammar's one
+layout-sensitive production):** a `define` at column 1 begins a top-level
+define section even directly after an object block — the corpus writes
+event defines that way — while an indented `define` belongs to the block.
 Division by zero / non-finite arithmetic: the enclosing comparison is
 **false** (the event fails the cut) **[DECIDE]** — the verifier already
 assumes this; the interpreter must implement the verified answer.

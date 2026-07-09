@@ -191,9 +191,17 @@ impl Dumper {
                 body,
                 span,
             } => {
-                let header =
-                    format!("Derived kw={keyword} name={} {}", name.name, self.at(*span));
+                let header = format!("Derived kw={keyword} name={} {}", name.name, self.at(*span));
                 self.nested(&header, |d| d.expr(body));
+            }
+            ObjectStmt::Define(def) => {
+                let header = format!(
+                    "Define kw={} name={} {}",
+                    def.keyword,
+                    def.name.name,
+                    self.at(def.span)
+                );
+                self.nested(&header, |d| d.expr(&def.body));
             }
         }
     }

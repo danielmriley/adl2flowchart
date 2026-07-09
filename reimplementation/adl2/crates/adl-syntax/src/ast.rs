@@ -166,13 +166,27 @@ pub enum ObjectStmt {
         body: Expr,
         span: Span,
     },
+    /// Block-scoped attribute define (learn-adl "Defining new attributes
+    /// inside an object"): an INDENTED `define <name> = <expr>` inside an
+    /// object/composite block. Its body is a macro over the block's element
+    /// context (`define ptratio = pt / e`), inlined at reference sites. A
+    /// column-1 `define` still begins a top-level define section — the
+    /// corpus writes event defines at column 1 directly after object blocks,
+    /// and those must keep their event-level meaning.
+    Define(Define),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TakeSource {
     Ident(Ident),
-    Call { name: Ident, args: Vec<Arg> },
-    Union { members: Vec<Ident>, span: Span },
+    Call {
+        name: Ident,
+        args: Vec<Arg>,
+    },
+    Union {
+        members: Vec<Ident>,
+        span: Span,
+    },
     /// A postfix collection expression as a take source (`take coll[2:]`,
     /// `take coll[:4]`): the source is the sliced/indexed collection.
     Expr(Box<Expr>),

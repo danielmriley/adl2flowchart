@@ -18,7 +18,7 @@ use crate::hir::{
 };
 use crate::intern::{Symbol, SymbolTable};
 use crate::quantity::{
-    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder, CompositeCandidate,
+    AngKind, Collection, CollectionId, CombAxis, CombKind, CompositeBinder, CompositeCandidate,
     ElemIndex, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg, QuantityId, QuantityTable,
     ScalarSource, SortDir, SortKey,
 };
@@ -132,6 +132,10 @@ struct Resolver<'a> {
 
     ast_objects: Vec<&'a ast::ObjectBlock>,
     ast_defines: Vec<&'a ast::Define>,
+    /// Parallel to `ast_defines`: `Some(object idx)` for a block-scoped
+    /// attribute define (its body is a macro over that block's element
+    /// context), `None` for a top-level event define.
+    def_home: Vec<Option<usize>>,
     ast_regions: Vec<&'a ast::RegionBlock>,
     objects_by_key: HashMap<String, usize>,
     defines_by_key: HashMap<String, usize>,
@@ -160,11 +164,31 @@ impl<'a> Resolver<'a> {
     fn new(file: &'a ast::File, unit: &'a str, ext: &'a ExtDecls) -> Self {
         let mut ast_objects = Vec::new();
         let mut ast_defines = Vec::new();
+        let mut def_home: Vec<Option<usize>> = Vec::new();
         let mut ast_regions = Vec::new();
         for section in &file.sections {
             match section {
-                Section::Object(o) => ast_objects.push(o),
-                Section::Define(d) => ast_defines.push(d),
+                Section::Object(o) => {
+                    let oidx = ast_objects.len();
+                    ast_objects.push(o);
+                    // Block-scoped attribute defines join the global define
+                    // table (they are referencable downstream, e.g. a BDT
+                    // score defined on `DTpresel` and cut on in derived
+                    // objects) but remember their HOME block: their body is
+                    // a macro over an ELEMENT context, so it resolves at
+                    // each reference site in the caller's context, and its
+                    // canonical (Hir) resolution uses the home element.
+                    for stmt in &o.stmts {
+                        if let ast::ObjectStmt::Define(d) = stmt {
+                            ast_defines.push(d);
+                            def_home.push(Some(oidx));
+                        }
+                    }
+                }
+                Section::Define(d) => {
+                    ast_defines.push(d);
+                    def_home.push(None);
+                }
                 Section::Region(r) => ast_regions.push(r),
                 Section::Info(_) | Section::Table(_) | Section::CountsFormat(_) => {}
             }
@@ -221,6 +245,7 @@ impl<'a> Resolver<'a> {
             elem_pred_ids: HashMap::new(),
             ast_objects,
             ast_defines,
+            def_home,
             ast_regions,
             objects_by_key,
             defines_by_key,
@@ -601,6 +626,10 @@ impl<'a> Resolver<'a> {
                 // `Derived` only appears in composite blocks (handled by
                 // `resolve_composite`); ignore it defensively here.
                 ObjectStmt::Derived { .. } => {}
+                // Block-scoped attribute defines are collected into
+                // `ast_defines` (with a home object) in `new()`; they are
+                // macros over the element context, not membership cuts.
+                ObjectStmt::Define(_) => {}
             }
         }
 
@@ -719,11 +748,15 @@ impl<'a> Resolver<'a> {
     fn resolve_sort_source(&mut self, args: &[Arg], ctx: &Ctx) -> Option<CollectionId> {
         let exprs: Vec<&Expr> = args
             .iter()
-            .filter_map(|a| if let Arg::Expr(e) = a { Some(e.as_ref()) } else { None })
+            .filter_map(|a| {
+                if let Arg::Expr(e) = a {
+                    Some(e.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
-        let source = exprs
-            .iter()
-            .find_map(|e| self.target_collection(e, ctx))?;
+        let source = exprs.iter().find_map(|e| self.target_collection(e, ctx))?;
         // Direction: recognized token families only. The old rule ("anything
         // that is not `ascend` means descending") failed OPEN into the
         // soundness-critical alias gate below — `ascending` (or any typo)
@@ -770,9 +803,10 @@ impl<'a> Resolver<'a> {
         // Key: the first argument that is a single per-element property of the
         // source (`pt(coll)`), reduced to that `PropId`. Anything else stays
         // opaque so the analyzer never aliases a non-pt / unknown-key sort.
-        let key = self
-            .sort_prop_key(&exprs, source, ctx)
-            .map_or_else(|| SortKey::Opaque(self.sort_key_render(&exprs, ctx)), SortKey::Prop);
+        let key = self.sort_prop_key(&exprs, source, ctx).map_or_else(
+            || SortKey::Opaque(self.sort_key_render(&exprs, ctx)),
+            SortKey::Prop,
+        );
         // SORT→ALIAS (P2, soundness-critical, plan §risk 1): a stable
         // descending-pT sort of an already-pT-descending source is the
         // IDENTITY permutation, so it canonicalizes to the source itself
@@ -853,7 +887,12 @@ impl<'a> Resolver<'a> {
     /// The per-element property a sort key reduces to, when the key argument is
     /// `prop(source)` / `source.prop` over the sorted collection (so the
     /// interpreter can re-sort by it). `None` for any other key.
-    fn sort_prop_key(&mut self, exprs: &[&Expr], source: CollectionId, ctx: &Ctx) -> Option<PropId> {
+    fn sort_prop_key(
+        &mut self,
+        exprs: &[&Expr],
+        source: CollectionId,
+        ctx: &Ctx,
+    ) -> Option<PropId> {
         for e in exprs {
             // `pt(coll)` or `{coll}pt` or `coll.pt`: a CollProp over the source.
             let node = self.resolve_expr(e, ctx);
@@ -896,7 +935,9 @@ impl<'a> Resolver<'a> {
         for stmt in &obj.stmts {
             match stmt {
                 ObjectStmt::Take {
-                    source, binders: bs, ..
+                    source,
+                    binders: bs,
+                    ..
                 } => match source {
                     // `take disjoint/cartesian/comb(src1 b1, src2 b2, ...)`.
                     TakeSource::Call { name, args } => {
@@ -913,9 +954,15 @@ impl<'a> Resolver<'a> {
                                 let bname = self.symbols.intern(&bind.name);
                                 binders.insert(
                                     bind.name.to_ascii_lowercase(),
-                                    ParticleRef::Binder { coll: src, name: bname },
+                                    ParticleRef::Binder {
+                                        coll: src,
+                                        name: bname,
+                                    },
                                 );
-                                members.push(CompositeBinder { name: bname, source: src });
+                                members.push(CompositeBinder {
+                                    name: bname,
+                                    source: src,
+                                });
                                 parts.push(src);
                             }
                         }
@@ -937,7 +984,8 @@ impl<'a> Resolver<'a> {
                                     _ => self.intern_coll(Collection::Union(ids)),
                                 }
                             }
-                            TakeSource::Expr(e) => match self.target_collection(e, &Ctx::default()) {
+                            TakeSource::Expr(e) => match self.target_collection(e, &Ctx::default())
+                            {
                                 Some(c) => c,
                                 None => continue, // not a collection ⇒ skip slot
                             },
@@ -947,9 +995,15 @@ impl<'a> Resolver<'a> {
                             let bname = self.symbols.intern(&b.name);
                             binders.insert(
                                 b.name.to_ascii_lowercase(),
-                                ParticleRef::Binder { coll: src, name: bname },
+                                ParticleRef::Binder {
+                                    coll: src,
+                                    name: bname,
+                                },
                             );
-                            members.push(CompositeBinder { name: bname, source: src });
+                            members.push(CompositeBinder {
+                                name: bname,
+                                source: src,
+                            });
                             parts.push(src);
                         }
                     }
@@ -959,6 +1013,8 @@ impl<'a> Resolver<'a> {
                 }
                 ObjectStmt::Cut { cond, .. } => cut_exprs.push((false, cond)),
                 ObjectStmt::Reject { cond, .. } => cut_exprs.push((true, cond)),
+                // Collected into `ast_defines` (with a home) in `new()`.
+                ObjectStmt::Define(_) => {}
             }
         }
 
@@ -970,8 +1026,8 @@ impl<'a> Resolver<'a> {
 
         // Candidate axis: `candidate ll = l1 + l2` becomes a `ParticleRef::Sum`
         // over the tuple binders (the only supported candidate shape).
-        let candidate = candidate_decl.and_then(|(name, body)| {
-            match self.resolve_target(body, &comb_ctx) {
+        let candidate =
+            candidate_decl.and_then(|(name, body)| match self.resolve_target(body, &comb_ctx) {
                 Target::Particle(p @ (ParticleRef::Sum(_) | ParticleRef::Binder { .. })) => {
                     Some(CompositeCandidate {
                         name: self.symbols.intern(&name.name),
@@ -979,8 +1035,7 @@ impl<'a> Resolver<'a> {
                     })
                 }
                 _ => None,
-            }
-        });
+            });
 
         // Per-tuple cuts may reference the candidate by name (`select mass(ll)`):
         // bind it as a particle alongside the binders.
@@ -1083,14 +1138,78 @@ impl<'a> Resolver<'a> {
         }
         self.def_state[idx] = State::InProgress;
         let def = self.ast_defines[idx];
-        let ctx = Ctx::default();
-        let body = self.resolve_expr(&def.body, &ctx);
+        // A block-scoped attribute define's canonical resolution uses its
+        // HOME element context (`pt` = "this element's pt"). Objects are
+        // all resolved before the eager define pass in `run`, so resolving
+        // the home collection here is cycle-free; mid-object references go
+        // through `inline_define` (caller ctx) and never land here while
+        // the home object is in flight.
+        let (ctx, quiet) = match self.def_home[idx] {
+            Some(oidx) => {
+                let mut c = Ctx {
+                    elem_source: Some(self.resolve_object(oidx)),
+                    ..Ctx::default()
+                };
+                c.elem_aliases
+                    .insert(self.ast_objects[oidx].name.name.to_ascii_lowercase());
+                // A composite-home define's body speaks the block's BINDER
+                // vocabulary (`q(l1) + q(l2)`), which this post-hoc ctx does
+                // not carry — resolve quietly; the real resolution happens
+                // at reference sites inside the composite (binders present),
+                // and composites are interpret-only (P1) regardless.
+                let quiet = self.ast_objects[oidx].keyword == ast::ObjectKw::Composite;
+                (c, quiet)
+            }
+            None => (Ctx::default(), false),
+        };
+        let body = if quiet {
+            self.resolve_expr_quiet(&def.body, &ctx)
+        } else {
+            self.resolve_expr(&def.body, &ctx)
+        };
         let kind = if Self::is_boolean(&body) {
             DefineKind::Boolean
         } else {
             DefineKind::Numeric
         };
         self.def_state[idx] = State::Done((kind, body.clone()));
+        (kind, body)
+    }
+
+    /// Inline a define at a reference site. A HOME (block-scoped attribute)
+    /// define is a macro over the element context, so its body re-resolves
+    /// in the CALLER's ctx — `ptratio` means "this element's pt / e" inside
+    /// any object cut, and stays honestly Unsupported at event level. The
+    /// per-site resolution is quiet: body diagnostics are reported once by
+    /// the canonical home-context resolution (`resolve_define`, eager pass),
+    /// and a site-specific failure still fails closed through the returned
+    /// node's `Unsupported` tags. Event defines keep the memoized scope-free
+    /// resolution unchanged.
+    fn inline_define(&mut self, didx: usize, ctx: &Ctx) -> (DefineKind, HNode) {
+        if self.def_home[didx].is_none() {
+            return self.resolve_define(didx);
+        }
+        if matches!(self.def_state[didx], State::InProgress) {
+            let def = self.ast_defines[didx];
+            let name = def.name.name.clone();
+            self.diags.push(Diagnostic::error(
+                def.name.span,
+                format!("definition cycle involving `{name}`"),
+            ));
+            return (
+                DefineKind::Numeric,
+                HNode::unsupported(def.span, format!("definition cycle involving `{name}`")),
+            );
+        }
+        let def = self.ast_defines[didx];
+        let prev = std::mem::replace(&mut self.def_state[didx], State::InProgress);
+        let body = self.resolve_expr_quiet(&def.body, ctx);
+        self.def_state[didx] = prev;
+        let kind = if Self::is_boolean(&body) {
+            DefineKind::Boolean
+        } else {
+            DefineKind::Numeric
+        };
         (kind, body)
     }
 
@@ -1138,7 +1257,7 @@ impl<'a> Resolver<'a> {
                             span: id.span,
                         });
                     } else if let Some(&didx) = self.defines_by_key.get(&key) {
-                        let (kind, body) = self.resolve_define(didx);
+                        let (kind, body) = self.inline_define(didx, &ctx);
                         if kind == DefineKind::Numeric {
                             self.diags.push(Diagnostic::warning(
                                 id.span,
@@ -1246,9 +1365,7 @@ impl<'a> Resolver<'a> {
                         sort_seen = true;
                         stmts.push(HirRegionStmt::NonMembership {
                             kind: "sort",
-                            tag: Fragment::unsupported(
-                                "`sort` shape outside the lowered fragment",
-                            ),
+                            tag: Fragment::unsupported("`sort` shape outside the lowered fragment"),
                             span: *span,
                         });
                     }
@@ -1479,16 +1596,21 @@ impl<'a> Resolver<'a> {
                     // `f(leadjet)` and `f(jets[0])` the SAME quantity — else
                     // they intern as two distinct opaque args and fabricate a
                     // false PROVEN OVERLAPPING between contradictory cuts.
-                    // Resolve the body in the default (scope-free) context,
-                    // exactly as `resolve_define` does, and guard cycles.
+                    // An event define's body resolves in the default
+                    // (scope-free) context, exactly as `resolve_define`
+                    // does; a block-scoped attribute define is a macro over
+                    // the ELEMENT context, so its body resolves in the
+                    // caller's ctx. Cycles are guarded either way.
                     if matches!(self.def_state[didx], State::InProgress) {
                         return Target::None;
                     }
                     let def = self.ast_defines[didx];
-                    let prev =
-                        std::mem::replace(&mut self.def_state[didx], State::InProgress);
-                    let body_ctx = Ctx::default();
-                    let target = self.resolve_target(&def.body, &body_ctx);
+                    let prev = std::mem::replace(&mut self.def_state[didx], State::InProgress);
+                    let target = if self.def_home[didx].is_some() {
+                        self.resolve_target(&def.body, ctx)
+                    } else {
+                        self.resolve_target(&def.body, &Ctx::default())
+                    };
                     self.def_state[didx] = prev;
                     return target;
                 }
@@ -1525,7 +1647,9 @@ impl<'a> Resolver<'a> {
             // `coll[a:b]` — a contiguous sub-range; a new collection identity
             // (USER ANSWER 3: ordered, element-indexable; never assumed
             // pt-descending). `[-n]`-bounded slices stay unsupported (OPEN-3).
-            Expr::Slice { base, start, end, .. } => {
+            Expr::Slice {
+                base, start, end, ..
+            } => {
                 let Target::Coll(c) = self.resolve_target(base, ctx) else {
                     return Target::None;
                 };
@@ -1554,22 +1678,23 @@ impl<'a> Resolver<'a> {
                 // before `intern_coll` mutates.
                 let (member_syms, cand_sym): (Vec<Symbol>, Option<Symbol>) =
                     match self.table.collection(c) {
-                        Collection::Combination { members, candidate, .. } => (
+                        Collection::Combination {
+                            members, candidate, ..
+                        } => (
                             members.iter().map(|m| m.name).collect(),
                             candidate.as_ref().map(|c| c.name),
                         ),
                         _ => return Target::None,
                     };
                 let fkey = field.name.to_ascii_lowercase();
-                let axis = if let Some(&m) =
-                    member_syms.iter().find(|&&s| self.symbols.key(s) == fkey)
-                {
-                    CombAxis::Member(m)
-                } else if cand_sym.is_some_and(|s| self.symbols.key(s) == fkey) {
-                    CombAxis::Candidate(cand_sym.expect("checked"))
-                } else {
-                    return Target::None;
-                };
+                let axis =
+                    if let Some(&m) = member_syms.iter().find(|&&s| self.symbols.key(s) == fkey) {
+                        CombAxis::Member(m)
+                    } else if cand_sym.is_some_and(|s| self.symbols.key(s) == fkey) {
+                        CombAxis::Candidate(cand_sym.expect("checked"))
+                    } else {
+                        return Target::None;
+                    };
                 let id = self.intern_coll(Collection::CombProject { comb: c, axis });
                 Self::coll_or_reduce_elem(id, ctx)
             }
@@ -1581,7 +1706,10 @@ impl<'a> Resolver<'a> {
                 lhs,
                 rhs,
                 ..
-            } => match (self.target_particle(lhs, ctx), self.target_particle(rhs, ctx)) {
+            } => match (
+                self.target_particle(lhs, ctx),
+                self.target_particle(rhs, ctx),
+            ) {
                 (Some(a), Some(b)) => Target::Particle(ParticleRef::sum([a, b])),
                 _ => Target::None,
             },
@@ -1768,8 +1896,7 @@ impl<'a> Resolver<'a> {
                 match self.resolve_target(e, ctx) {
                     Target::Coll(c) => {
                         let mut node = HNode::new(HKind::CollValue(c), *span);
-                        node.tag =
-                            Fragment::unsupported("composite axis used as a scalar value");
+                        node.tag = Fragment::unsupported("composite axis used as a scalar value");
                         node
                     }
                     _ => {
@@ -1797,9 +1924,9 @@ impl<'a> Resolver<'a> {
                     // in lock-step. Front and back indices alike.
                     Target::Particle(ParticleRef::Elem { coll, index }) => {
                         let prop = self.intern_prop("pt");
-                        let q = self
-                            .table
-                            .intern_quantity(Quantity::ElemProp { coll, index, prop });
+                        let q =
+                            self.table
+                                .intern_quantity(Quantity::ElemProp { coll, index, prop });
                         self.quantity_node(q, *span)
                     }
                     // A whole-collection / composite-binder reference is a
@@ -1827,10 +1954,7 @@ impl<'a> Resolver<'a> {
                     node.tag = Fragment::unsupported("slice collection used as a scalar value");
                     node
                 }
-                _ => HNode::unsupported(
-                    *span,
-                    "slice expression is outside the checked fragment",
-                ),
+                _ => HNode::unsupported(*span, "slice expression is outside the checked fragment"),
             },
             Expr::Braced { args, prop, span } => self.resolve_braced(args, prop, *span, ctx),
             Expr::ParticleList { span, .. } => HNode::unsupported(
@@ -1899,8 +2023,10 @@ impl<'a> Resolver<'a> {
             return node;
         }
         if let Some(&didx) = self.defines_by_key.get(&key) {
-            // Defines resolve to their body HIR: inline by construction.
-            let (_, body) = self.resolve_define(didx);
+            // Defines resolve to their body HIR: inline by construction
+            // (block-scoped attribute defines re-resolve in the caller's
+            // element context; event defines use the memoized resolution).
+            let (_, body) = self.inline_define(didx, ctx);
             return body;
         }
         if let Some(&oidx) = self.objects_by_key.get(&key) {
@@ -2320,10 +2446,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         } else if Self::is_boolean(&body) {
-            return HNode::unsupported(
-                span,
-                format!("`{}` expects a numeric body", kind.as_str()),
-            );
+            return HNode::unsupported(span, format!("`{}` expects a numeric body", kind.as_str()));
         }
 
         let mut node = HNode::new(

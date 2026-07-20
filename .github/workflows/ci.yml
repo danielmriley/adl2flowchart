@@ -2,24 +2,39 @@ name: CI
 
 on:
   push:
-    branches: [main, disjoint_dev]
+    branches: [main]
   pull_request:
 
 jobs:
-  build-and-test:
+  smash2:
+    name: smash2 (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: reimplementation/adl2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install z3
+        run: sudo apt-get update && sudo apt-get install -y z3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reimplementation/adl2
+      - name: Build
+        run: cargo build --release --workspace
+      - name: Test
+        run: cargo test --release --workspace
+
+  legacy:
+    name: legacy smash (C++)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y flex bison clang graphviz
-          sudo apt-get install -y z3
+          sudo apt-get install -y flex bison libfl-dev clang graphviz z3
       - name: Build
         run: make
-      - name: Golden region tests
-        run: make test-disjoint
-      - name: Example corpus parse + region analysis
-        run: make test-corpus
-      - name: Phase-2 Z3 spike (optional)
-        run: chmod +x scripts/phase2_z3_spike.sh && ./scripts/phase2_z3_spike.sh
+      - name: Golden suite + corpus sweep + z3 spike
+        run: make -C legacy_parser test

@@ -14,8 +14,14 @@ jobs:
         working-directory: reimplementation/adl2
     steps:
       - uses: actions/checkout@v4
-      - name: Install z3
-        run: sudo apt-get update && sudo apt-get install -y z3
+      # Pinned to the version the snapshot corpus was generated with:
+      # witness models in rendered reports are solver-version-dependent.
+      - name: Install z3 4.12.2
+        run: |
+          curl -sSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.12.2/z3-4.12.2-x64-glibc-2.35.zip
+          unzip -q /tmp/z3.zip -d /tmp/z3
+          sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
+          z3 --version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

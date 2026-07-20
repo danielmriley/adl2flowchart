@@ -9,9 +9,10 @@ ADL2Flowchart is a compiler that parses Analysis Description Language (ADL) file
 ## Repository layout
 
 - `legacy_parser/` — the original C++ tool (everything below describes it)
-- `reimplementation/` — ADL2 from-scratch specs/plan (Rust; see
-  reimplementation/README.md and PLAN.md)
-- `examples/` — shared ADL corpus; `docs/` — audits/reports/plans
+- `reimplementation/` — ADL2 / `smash2`, the from-scratch Rust toolchain
+  (canonical doc: reimplementation/README.md)
+- `examples/` — shared ADL corpus; `docs/archive/` — specs, plans,
+  audits, and reports (historical record)
 
 ## Build & Run (legacy tool)
 
@@ -49,7 +50,7 @@ The compiler follows a standard pipeline: **Lex → Parse → Semantic Analysis 
 
 5. **semantic_checks.h / semantic_checks.cpp** — Type checking (`typeCheck`), declaration checking (`checkDecl`), dependency graph analysis, and DOT file generation for both AST (`visitAST`/`printAST`) and flowchart (`printFlowChart`).
 
-6. **region_formula.h / constraint_encoder.{hpp,cpp} / region_analysis.{hpp,cpp}** — the dual-encoding disjointness engine: polarity-aware formula IR, region encoder, axioms, batched Z3 analysis (see docs/DUAL_ENCODING_REPORT.md).
+6. **region_formula.h / constraint_encoder.{hpp,cpp} / region_analysis.{hpp,cpp}** — the dual-encoding disjointness engine: polarity-aware formula IR, region encoder, axioms, batched Z3 analysis (see docs/archive/reports/DUAL_ENCODING_REPORT.md).
 
 7. **main.cpp** — Entry point: parse → setTables → checkDecl → typeCheck → DOT output → optional `-r` region analysis.
 

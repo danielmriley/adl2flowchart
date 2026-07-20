@@ -3,7 +3,7 @@ digraph adl2 {
   bgcolor="white";
   labelloc="t";
   fontname="Helvetica-Bold"; fontsize=22;
-  label="ADL2  /  smash2 — architecture\l12 crates · ~26,600 lines of Rust · 510 tests · pure Rust (optional z3)\l";
+  label="ADL2  /  smash2 — architecture\l13 crates · ~37,600 lines of Rust · 751 tests / 71 suites · pure Rust (z3 binary at runtime)\l";
   node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", margin="0.12,0.07"];
   edge [fontname="Helvetica", fontsize=9, color="gray40"];
   nodesep=0.35; ranksep=0.55;
@@ -11,49 +11,50 @@ digraph adl2 {
   // ---------- inputs ----------
   subgraph cluster_in {
     label="INPUTS"; style="rounded,filled"; fillcolor="#eef3fb"; fontname="Helvetica-Bold"; color="#9db8e0";
-    adl   [label="analysis.adl\n(selection logic)", fillcolor="#dce8fa"];
-    rootin[label="event data .root\n(Delphes)", fillcolor="#dce8fa"];
+    adl   [label="analysis.adl files\n(one or many — --cross)", fillcolor="#dce8fa"];
+    rootin[label="event data .root\n(Delphes · NanoAOD)", fillcolor="#dce8fa"];
     jsonl [label="events.jsonl", fillcolor="#dce8fa"];
   }
 
   // ---------- front end ----------
   subgraph cluster_front {
     label="FRONT END  (one resolved truth)"; style="rounded,filled"; fillcolor="#f3eefb"; fontname="Helvetica-Bold"; color="#bfa6e0";
-    syntax [label="adl-syntax (3.1k)\nlexer → recursive-descent\nparser → spanned AST", fillcolor="#e7dcfa"];
-    ingest [label="adl-ingest (1.5k)\nDelphes .root → events\n(oxyroot, native Rust)", fillcolor="#e7dcfa"];
-    sema   [label="adl-sema (3.2k)\nresolve → HIR + QuantityTable\ntyped identity · fragment tags", fillcolor="#d8c4f5", penwidth=2];
+    syntax [label="adl-syntax (3.5k)\nlexer → recursive-descent\nparser → spanned AST", fillcolor="#e7dcfa"];
+    ingest [label="adl-ingest (2.0k)\nDelphes/NanoAOD .root → events\n(oxyroot, native Rust)", fillcolor="#e7dcfa"];
+    sema   [label="adl-sema (5.9k)\nresolve → HIR + QuantityTable\ntyped identity · fragment tags\ncross-file merge", fillcolor="#d8c4f5", penwidth=2];
   }
 
   // ---------- consumers ----------
   subgraph cluster_analysis {
-    label="VERIFY  (proofs)"; style="rounded,filled"; fillcolor="#eaf7ee"; fontname="Helvetica-Bold"; color="#8fcea8";
-    formula  [label="adl-formula (1.5k)\nOver/Under encoder", fillcolor="#d6f0de"];
-    axioms   [label="adl-axioms (0.9k)\nphysics axiom catalog", fillcolor="#d6f0de"];
-    solver   [label="adl-solver (1.0k)\nz3 native + subprocess", fillcolor="#d6f0de"];
-    analysis [label="adl-analysis (3.7k)\ndisjoint · overlap · subset\nvacuity · bins · explanations", fillcolor="#c2e8cf", penwidth=2];
+    label="VERIFY  (certified proofs)"; style="rounded,filled"; fillcolor="#eaf7ee"; fontname="Helvetica-Bold"; color="#8fcea8";
+    formula  [label="adl-formula (2.5k)\npolarity-typed Over/Under encoder\nexact-rational core", fillcolor="#d6f0de"];
+    axioms   [label="adl-axioms (2.1k)\n16-family axiom catalog\n+ shared-element encoder", fillcolor="#d6f0de"];
+    solver   [label="adl-solver (0.9k)\nz3 subprocess (default) + native", fillcolor="#d6f0de"];
+    analysis [label="adl-analysis (5.2k)\ndisjoint · overlap · subset · vacuity · bins\ncross-file reconciliation (XSUB/XEQ)\nsampling gate · witness realization", fillcolor="#c2e8cf", penwidth=2];
+    certify  [label="adl-certify (1.1k)\nINDEPENDENT exact-rational\nDPLL(Farkas) certificate checker", fillcolor="#a8dfbe", penwidth=2];
   }
 
   subgraph cluster_interp {
-    label="RUN  (semantics)"; style="rounded,filled"; fillcolor="#fdf4e3"; fontname="Helvetica-Bold"; color="#e8c98f";
-    interp [label="adl-interp (4.1k)\nreference interpreter\nstreaming + parallel\nfill histos & cutflows", fillcolor="#fae9c8", penwidth=2];
-    rootfile [label="rootfile (3.3k)\nPURE-RUST .root WRITER\nTH1D/TH2D + cutflows", fillcolor="#f7dca0", penwidth=2];
+    label="RUN  (reference semantics)"; style="rounded,filled"; fillcolor="#fdf4e3"; fontname="Helvetica-Bold"; color="#e8c98f";
+    interp [label="adl-interp (5.5k)\nreference interpreter\nstreaming + parallel (byte-deterministic)\nfill histos & cutflows", fillcolor="#fae9c8", penwidth=2];
+    rootfile [label="rootfile (3.3k)\nPURE-RUST .root WRITER\nTH1D/TH2D/varbin + cutflows\n+ provenance TNamed", fillcolor="#f7dca0", penwidth=2];
   }
 
   subgraph cluster_viz {
     label="VISUALIZE"; style="rounded,filled"; fillcolor="#fdeef0"; fontname="Helvetica-Bold"; color="#e0a6b0";
-    viz [label="adl-viz (0.8k)\nflowchart + AST → DOT", fillcolor="#f7d6dc"];
+    viz [label="adl-viz (0.9k)\nflowchart + AST → DOT\n(from the HIR, never raw AST)", fillcolor="#f7d6dc"];
   }
 
   // ---------- harness / cli ----------
-  cli  [label="adl-cli (2.3k) — smash2:  check | verify | run | dot | objects | ingest", fillcolor="#e8e8e8", shape=box, style="rounded,filled"];
-  diff [label="adl-difftest (1.1k)\nproperty + metamorphic batteries · oracles", fillcolor="#e8e8e8"];
+  cli  [label="adl-cli (2.6k) — smash2:  check | verify [--cross --explain --json] | run | dot | objects | ingest", fillcolor="#e8e8e8", shape=box, style="rounded,filled"];
+  diff [label="adl-difftest (1.9k)\n100k-case differential oracle · metamorphic battery\nreconcile oracle · golden corpora (136 files)", fillcolor="#e8e8e8"];
 
   // ---------- outputs ----------
   subgraph cluster_out {
     label="OUTPUTS"; style="rounded,filled"; fillcolor="#eef3fb"; fontname="Helvetica-Bold"; color="#9db8e0";
-    verdicts [label="verdict report\n(text · --json · --explain)", fillcolor="#dce8fa"];
-    rootout  [label="histograms .root\n+ cutflow + provenance", fillcolor="#dce8fa"];
-    bridges  [label="histos.json · .C · .py\nCSV · SVG", fillcolor="#dce8fa"];
+    verdicts [label="verdict report + certificates\n(text · --json v3 · --explain)", fillcolor="#dce8fa"];
+    rootout  [label="out.root\nhistograms + labeled cutflows\n+ provenance", fillcolor="#dce8fa"];
+    bridges  [label="histos.json · cutflow.json\nmake_histos.C · to_root.py · CSV · SVG", fillcolor="#dce8fa"];
     dot      [label="flowchart.pdf\nast.pdf", fillcolor="#dce8fa"];
     objtbl   [label="objects table", fillcolor="#dce8fa"];
   }
@@ -73,9 +74,11 @@ digraph adl2 {
   formula -> analysis;
   axioms  -> analysis;
   solver  -> analysis;
+  analysis -> certify [label="UNSAT cores", color="#3a7d4d"];
+  certify -> analysis [label="certified /\nCANDIDATE", color="#3a7d4d"];
 
   interp  -> rootfile [label="accumulators"];
-  analysis -> interp [label="witness\nre-validation", style=dotted, constraint=false, color="#3a7d4d"];
+  analysis -> interp [label="witness re-validation\n+ sampling gate", style=dotted, constraint=false, color="#3a7d4d"];
 
   // ---------- edges: outputs ----------
   analysis -> verdicts;

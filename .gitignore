@@ -27,3 +27,10 @@ docs/*.toc
 # generic analyze-adl outputs (regenerable; keep them out of commits)
 /analysis.md
 /report.md
+
+# presentation materials (local only, not committed)
+docs/presentation/
+docs/smash2_deck.html
+docs/PRESENTATION_PLAN_2026-07.md
+# stray local binary copies
+/smash2

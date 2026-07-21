@@ -3,15 +3,15 @@ source: crates/adl-cli/tests/cli.rs
 expression: body
 ---
 == objects ==
-  jets       jets <- JET            pt > 25, |eta| < 2.4                    exact
+  jets       jets <- JET                   pt > 25, |eta| < 2.4                    exact
                size(jets) ≤ size(JET)  (subset of parent)
-  bjets      bjets <- jets <- JET   btag == 1                               exact
+  bjets      bjets <- jets <- JET          btag == 1                               exact
                size(bjets) ≤ size(jets)  (subset of parent)
-  cjets      cjets <- jets <- JET   ctag == 1                               exact
+  cjets      cjets <- jets <- JET          ctag == 1                               exact
                size(cjets) ≤ size(jets)  (subset of parent)
-  muons      muons <- MUON          pt > 10, |eta| < 2.4, D0(MUON) < 2      partial: cut out of fragment
+  muons      muons <- MUON                 pt > 10, |eta| < 2.4, D0(MUON) < 2      partial: cut out of fragment
                size(muons) ≤ size(MUON)  (subset of parent)
-  electrons  electrons <- ELECTRON  pt > 10, |eta| < 2.4, D0(ELECTRON) < 2  partial: cut out of fragment
+  electrons  electrons <- ELECTRON         pt > 10, |eta| < 2.4, D0(ELECTRON) < 2  partial: cut out of fragment
                size(electrons) ≤ size(ELECTRON)  (subset of parent)
-  leptons    leptons                —                                       exact
+  leptons    leptons <- electrons + muons  —                                       exact
                size(leptons) = size(electrons) + size(muons)  (disjoint parts ⇒ exact; else ≤)

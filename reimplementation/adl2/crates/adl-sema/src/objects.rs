@@ -166,9 +166,11 @@ fn collapse_names(hir: &Hir, names: &[Symbol]) -> String {
 }
 
 /// The base chain: this collection's name(s), then its parent's, up to the
-/// detector-level `Base`, joined with `<-`. Union/combination have no
-/// single parent chain — the chain is just this node (parts are shown as
-/// derived facts).
+/// detector-level `Base`, joined with `<-`. A union or combination has
+/// several sibling parents rather than a linear ancestry — its immediate
+/// sources are shown after the `<-`, joined with `+` (mirroring the
+/// `size = size + size` fact below), so the node is never left looking
+/// disconnected from the collections it draws on.
 fn base_chain(hir: &Hir, id: CollectionId) -> String {
     let mut links: Vec<String> = Vec::new();
     let mut cur = id;
@@ -192,15 +194,36 @@ fn base_chain(hir: &Hir, id: CollectionId) -> String {
                 links.push(link_name(hir, cur, names));
                 cur = *source;
             }
-            Collection::Union(_)
-            | Collection::Combination { .. }
-            | Collection::CombProject { .. } => {
+            // A projection has a single source combination — follow it.
+            Collection::CombProject { comb, .. } => {
                 links.push(link_name(hir, cur, names));
+                cur = *comb;
+            }
+            // Multi-parent nodes: this node, then its sibling sources joined
+            // with `+`. Each source's own chain is not expanded here (it has
+            // its own row); the parts are named so the link is visible.
+            Collection::Union(parts) => {
+                links.push(link_name(hir, cur, names));
+                links.push(join_parts(hir, parts));
+                break;
+            }
+            Collection::Combination { parts, .. } => {
+                links.push(link_name(hir, cur, names));
+                links.push(join_parts(hir, parts));
                 break;
             }
         }
     }
     links.join(" <- ")
+}
+
+/// The immediate sources of a multi-parent collection, joined with ` + `.
+fn join_parts(hir: &Hir, parts: &[CollectionId]) -> String {
+    parts
+        .iter()
+        .map(|&p| coll_short(hir, p))
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 fn link_name(hir: &Hir, id: CollectionId, names: &[Symbol]) -> String {

@@ -7,7 +7,7 @@ expression: "object_table(&hir, false)"
                              size(electrons) ≤ size(ELECTRON)  (subset of parent)
   muons                    muons <- MUON                                                     pt > 40, |eta| < 2.4, passIso? == 1, mediumID? == 1               partial: cut out of fragment
                              size(muons) ≤ size(MUON)  (subset of parent)
-  leptons                  leptons                                                           —                                                                 exact
+  leptons                  leptons <- electrons + muons                                      —                                                                 exact
                              size(leptons) = size(electrons) + size(muons)  (disjoint parts ⇒ exact; else ≤)
   electronsTransferfactor  electronsTransferfactor <- ELECTRON                               pt > 30, |eta| < 2.4, passIso? == 1, tightId == 1                 partial: cut out of fragment
                              size(electronsTransferfactor) ≤ size(ELECTRON)  (subset of parent)
@@ -36,17 +36,17 @@ expression: "object_table(&hir, false)"
                              size(DTSRsh) ≤ size(DTpreselMuIsosh)  (subset of parent)
   DTSRlg                   DTSRlg <- DTpreselMuIsolg <- DTpresellg <- DTpresel <- TRACK      not dR(jets4DTiso, DTpreselMuIsolg) < 0.4, matchedCaloEnergy? /…  partial: cut out of fragment
                              size(DTSRlg) ≤ size(DTpreselMuIsolg)  (subset of parent)
-  DTSR                     DTSR                                                              —                                                                 exact
+  DTSR                     DTSR <- DTSRsh + DTSRlg                                           —                                                                 exact
                              size(DTSR) = size(DTSRsh) + size(DTSRlg)  (disjoint parts ⇒ exact; else ≤)
   DTCRrealsh               DTCRrealsh <- DTpreselMuIsosh <- DTpreselsh <- DTpresel <- TRACK  not dR(jets4DTiso, DTpreselMuIsosh) < 0.1, matchedCaloEnergy? i…  partial: cut out of fragment
                              size(DTCRrealsh) ≤ size(DTpreselMuIsosh)  (subset of parent)
   DTCRreallg               DTCRreallg <- DTpreselMuIsolg <- DTpresellg <- DTpresel <- TRACK  not dR(jets4DTiso, DTpreselMuIsolg) < 0.4, matchedCaloEnergy? /…  partial: cut out of fragment
                              size(DTCRreallg) ≤ size(DTpreselMuIsolg)  (subset of parent)
-  DTCRreal                 DTCRreal                                                          —                                                                 exact
+  DTCRreal                 DTCRreal <- DTCRrealsh + DTCRreallg                               —                                                                 exact
                              size(DTCRreal) = size(DTCRrealsh) + size(DTCRreallg)  (disjoint parts ⇒ exact; else ≤)
   DTCRfakesh               DTCRfakesh <- DTpreselMuIsosh <- DTpreselsh <- DTpresel <- TRACK  matchedCaloEnergy? < 15, phase0? ? <call `BDT` over an element-…  partial: cut out of fragment
                              size(DTCRfakesh) ≤ size(DTpreselMuIsosh)  (subset of parent)
   DTCRfakelg               DTCRfakelg <- DTpreselMuIsolg <- DTpresellg <- DTpresel <- TRACK  matchedCaloEnergy? / p < 0.2, phase0? ? <call `BDT` over an ele…  partial: cut out of fragment
                              size(DTCRfakelg) ≤ size(DTpreselMuIsolg)  (subset of parent)
-  DTCRfake                 DTCRfake                                                          —                                                                 exact
+  DTCRfake                 DTCRfake <- DTCRfakesh + DTCRfakelg                               —                                                                 exact
                              size(DTCRfake) = size(DTCRfakesh) + size(DTCRfakelg)  (disjoint parts ⇒ exact; else ≤)

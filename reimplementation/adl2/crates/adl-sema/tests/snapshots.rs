@@ -112,6 +112,30 @@ fn object_table_is_deterministic_and_plain() {
     assert!(colored.contains('\u{1b}'), "color path must emit ANSI");
 }
 
+/// A union collection shows its sibling sources in the chain column
+/// (`name <- a + b`), not just its bare name — so it never reads as
+/// disconnected from the collections it draws on. Same for its `size`
+/// fact below.
+#[test]
+fn union_chain_shows_its_parts() {
+    let ext = ExtDecls::legacy();
+    let src = "\
+object goodEles\n  take Ele\n  select pt(Ele) > 20\n\n\
+object goodMuos\n  take Muo\n  select pt(Muo) > 20\n\n\
+object leptons : Union(goodEles, goodMuos)\n\n\
+region r\n  select size(leptons) == 1\n";
+    let hir = analyze_str(src, "union", &ext);
+    let table = object_table(&hir, false);
+    let leptons_row = table
+        .lines()
+        .find(|l| l.trim_start().starts_with("leptons "))
+        .expect("a leptons row");
+    assert!(
+        leptons_row.contains("leptons <- goodEles + goodMuos"),
+        "union chain must name its parts, got: {leptons_row:?}"
+    );
+}
+
 /// Every corpus file resolves without panicking, with no error-severity
 /// diagnostics (warnings are honest coverage notes), and resolution is
 /// deterministic (two runs produce byte-identical dumps).

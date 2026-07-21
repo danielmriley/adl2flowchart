@@ -27,8 +27,45 @@ use adl_analysis::report::FailOn;
 use adl_analysis::{AnalysisOptions, SolverChoice, analyze_hir, analyze_source};
 use adl_sema::{ExtDecls, analyze_str, merge_hirs, object_table};
 use std::io::IsTerminal as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// Write each `--combine` bundle to `DIR/<unit>__<idx>__<a>__<b>.json`
+/// (names sanitized to a filename-safe alphabet; the index keeps files
+/// unique and in report order). Says on stderr how many were written —
+/// including zero, so "no bundles" is never read as "wrote them".
+fn write_bundles(
+    dir: &Path,
+    unit: &str,
+    report: &adl_analysis::Report,
+) -> Result<(), CliError> {
+    let sane = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+            .collect()
+    };
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CliError::Usage(format!("cannot create {}: {e}", dir.display())))?;
+    for (i, b) in report.combine_bundles.iter().enumerate() {
+        let path = dir.join(format!(
+            "{}__{:03}__{}__{}.json",
+            sane(unit),
+            i,
+            sane(&b.region_a),
+            sane(&b.region_b)
+        ));
+        let js = serde_json::to_string_pretty(b)
+            .map_err(|e| CliError::Usage(format!("bundle serialization failed: {e}")))?;
+        std::fs::write(&path, js)
+            .map_err(|e| CliError::Usage(format!("cannot write {}: {e}", path.display())))?;
+    }
+    eprintln!(
+        "{unit}: wrote {} certificate bundle(s) to {} (re-check offline with smash2-recheck)",
+        report.combine_bundles.len(),
+        dir.display()
+    );
+    Ok(())
+}
 
 /// When the user did NOT ask for `--no-solver` but no backend was found,
 /// every verdict silently capped at POSSIBLY — warn loudly on stderr so a
@@ -108,6 +145,7 @@ pub fn run(
     verbose: bool,
     cross: bool,
     certify: bool,
+    combine: Option<&Path>,
 ) -> Result<ExitCode, CliError> {
     // A directory argument contributes its `*.adl` files (sorted), so
     // `--cross analyses/` reconciles a whole folder as well as an explicit
@@ -129,10 +167,11 @@ pub fn run(
         },
         fail_on,
         certify,
+        combine: combine.is_some(),
         ..AnalysisOptions::default()
     };
     if cross {
-        return run_cross(files, &ext, &opts, json, explain, verbose);
+        return run_cross(files, &ext, &opts, json, explain, verbose, combine);
     }
     let multi = files.len() > 1;
     let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
@@ -155,6 +194,9 @@ pub fn run(
         };
 
         warn_if_no_solver(&name, &report, no_solver);
+        if let Some(dir) = combine {
+            write_bundles(dir, &name, &report)?;
+        }
 
         if verbose {
             eprintln!(
@@ -266,6 +308,7 @@ fn run_cross(
     json: bool,
     explain: bool,
     verbose: bool,
+    combine: Option<&Path>,
 ) -> Result<ExitCode, CliError> {
     // Resolve every unit; refuse if any has errors (merge needs clean units).
     // Unit labels are basenames qualified only as far as needed to be unique,
@@ -297,6 +340,9 @@ fn run_cross(
     };
     let report = analyze_hir(&mut merged, "", ext, &opts);
     warn_if_no_solver("cross", &report, opts.solver == SolverChoice::NoSolver);
+    if let Some(dir) = combine {
+        write_bundles(dir, "cross", &report)?;
+    }
 
     if verbose {
         eprintln!(

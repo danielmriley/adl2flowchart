@@ -90,6 +90,12 @@ enum Command {
         /// certified: true in --json).
         #[arg(long)]
         no_certify: bool,
+        /// Write a portable certificate bundle (JSON, schema smash2-combine/1)
+        /// per certified PROVEN DISJOINT pair into this directory. Each bundle
+        /// carries the certified formula set and the Farkas certificate, and
+        /// re-checks offline with `smash2-recheck` — no solver, no smash2 run.
+        #[arg(long, value_name = "DIR", conflicts_with = "no_certify")]
+        combine: Option<PathBuf>,
     },
     /// Evaluate regions over JSONL events: per-region pass/fail + bins.
     Run {
@@ -182,6 +188,7 @@ fn main() -> ExitCode {
             fail_on,
             cross,
             no_certify,
+            combine,
         } => cmd::verify::run(
             &files,
             json,
@@ -191,6 +198,7 @@ fn main() -> ExitCode {
             verbose,
             cross,
             !no_certify,
+            combine.as_deref(),
         ),
         Command::Run {
             file,

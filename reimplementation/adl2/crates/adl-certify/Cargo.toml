@@ -10,7 +10,11 @@ repository.workspace = true
 adl-formula.workspace = true
 adl-sema.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 proptest.workspace = true
+
+[[bin]]
+name = "smash2-recheck"
+path = "src/bin/recheck.rs"

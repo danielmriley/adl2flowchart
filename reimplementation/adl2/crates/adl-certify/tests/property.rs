@@ -8,7 +8,7 @@
 //!   `Certified ⇒ z3 unsat`, and each satisfiable-by-construction system is
 //!   `z3 sat` and uncertified. Skipped (with a note) when z3 is absent.
 
-use adl_certify::{Budget, Certificate, certify_unsat};
+use adl_certify::{Budget, CertNode, Certificate, QRat, certify_unsat};
 use adl_formula::{LinAtom, QFormula, Rel};
 use adl_sema::{QuantityId, Rat};
 use proptest::prelude::*;
@@ -16,7 +16,7 @@ use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
 use std::collections::BTreeSet;
 
-const N_QUANTS: u32 = 3;
+const N_QUANTS: u32 = 6;
 
 /// A generated formula skeleton. `k` drives the free (random) build; `delta`
 /// drives the satisfiable-by-construction build.
@@ -45,10 +45,10 @@ fn rel_of(t: u8) -> Rel {
 
 fn atom_strat() -> impl Strategy<Value = Shape> {
     (
-        prop::collection::vec((-3i64..=3, 0u32..N_QUANTS), 1..3),
+        prop::collection::vec((-12i64..=12, 0u32..N_QUANTS), 1..4),
         0u8..6,
-        -5i64..=5,
-        1i64..=4,
+        -60i64..=60,
+        1i64..=9,
     )
         .prop_map(|(terms, rel, k, delta)| Shape::Atom {
             terms,
@@ -59,10 +59,10 @@ fn atom_strat() -> impl Strategy<Value = Shape> {
 }
 
 fn shape_strat() -> impl Strategy<Value = Shape> {
-    atom_strat().prop_recursive(3, 16, 3, |inner| {
+    atom_strat().prop_recursive(4, 24, 3, |inner| {
         prop_oneof![
-            prop::collection::vec(inner.clone(), 1..3).prop_map(Shape::And),
-            prop::collection::vec(inner, 1..3).prop_map(Shape::Or),
+            prop::collection::vec(inner.clone(), 1..4).prop_map(Shape::And),
+            prop::collection::vec(inner, 1..4).prop_map(Shape::Or),
         ]
     })
 }
@@ -87,7 +87,7 @@ fn build_free(sh: &Shape) -> QFormula {
 
 /// Build a formula that is *true at* `point`: every atom's constant is chosen so
 /// the relation holds at the point, so the whole boolean combination holds too.
-fn build_true(sh: &Shape, point: [i64; 3]) -> QFormula {
+fn build_true(sh: &Shape, point: [i64; N_QUANTS as usize]) -> QFormula {
     match sh {
         Shape::Atom {
             terms, rel, delta, ..
@@ -144,7 +144,7 @@ proptest! {
     #[test]
     fn sat_by_construction_never_certified(
         shape in shape_strat(),
-        point in proptest::array::uniform3(-3i64..=3),
+        point in proptest::array::uniform6(-9i64..=9),
     ) {
         let forms = vec![build_true(&shape, point)];
         let r = certify_unsat(&forms, &Budget::default());
@@ -152,6 +152,47 @@ proptest! {
             !r.is_certified(),
             "certified a satisfiable set (point={point:?}): {shape:?}"
         );
+    }
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Forged certificates must never replay against a satisfiable system:
+    /// arbitrary non-negative multiplier vectors (any length), bogus
+    /// Contradiction claims, and Splits of every arity — plain, nested, and
+    /// wrapping a forged Farkas leaf. This fuzzes replay's false-accept
+    /// direction directly, independent of the search that normally builds
+    /// certificates.
+    #[test]
+    fn forged_certificates_never_replay_on_sat_systems(
+        shape in shape_strat(),
+        point in proptest::array::uniform6(-9i64..=9),
+        muls in prop::collection::vec(0i64..=7, 0..10),
+        arity in 0usize..5,
+    ) {
+        let forms = vec![build_true(&shape, point)];
+        let farkas = CertNode::Farkas {
+            multipliers: muls.iter().map(|n| QRat(Rat::from_i64(*n))).collect(),
+        };
+
+        let forged = [
+            Certificate::new(farkas.clone()),
+            Certificate::new(CertNode::Contradiction),
+            Certificate::new(CertNode::Split {
+                branches: vec![CertNode::Contradiction; arity],
+            }),
+            Certificate::new(CertNode::Split { branches: vec![farkas.clone(); arity] }),
+            Certificate::new(CertNode::Split {
+                branches: vec![CertNode::Split { branches: vec![farkas] }; arity],
+            }),
+        ];
+        for (i, cert) in forged.iter().enumerate() {
+            prop_assert!(
+                !cert.replay(&forms),
+                "forged certificate #{i} replayed on a satisfiable system (point={point:?})"
+            );
+        }
     }
 }
 
@@ -276,7 +317,7 @@ fn z3_agreement() {
     }
 
     let mut runner = TestRunner::deterministic();
-    let strat = (shape_strat(), proptest::array::uniform3(-3i64..=3));
+    let strat = (shape_strat(), proptest::array::uniform6(-9i64..=9));
     let budget = Budget::default();
     let cases = 800;
 

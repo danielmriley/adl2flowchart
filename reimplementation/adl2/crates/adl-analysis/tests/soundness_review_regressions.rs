@@ -21,6 +21,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         reconcile: false,
         sample_gate: 64,
         certify: true,
+        combine: false,
     }
 }
 

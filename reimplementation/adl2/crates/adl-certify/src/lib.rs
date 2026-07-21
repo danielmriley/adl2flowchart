@@ -90,12 +90,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bundle;
 mod certificate;
 mod constraint;
 mod fm;
 mod saturate;
 mod search;
 
+pub use bundle::CombineBundle;
 pub use certificate::{CertNode, Certificate, QRat};
 
 use adl_formula::QFormula;

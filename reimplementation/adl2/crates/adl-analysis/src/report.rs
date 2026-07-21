@@ -223,6 +223,12 @@ pub struct Report {
     /// Internal-error diagnostics (e.g. a witness the interpreter
     /// rejected — TESTING §3; each one is a bug report, not user error).
     pub internal_diagnostics: Vec<String>,
+    /// Portable certificate bundles (`--combine`), one per certified
+    /// PROVEN DISJOINT pair that survived to the final report. Not part
+    /// of the versioned `--json` output — the CLI writes each bundle to
+    /// its own file, re-checkable offline with `smash2-recheck`.
+    #[serde(skip)]
+    pub combine_bundles: Vec<adl_certify::CombineBundle>,
 }
 
 /// CI gating flags (SPEC_ANALYSIS §6): verdicts never fail the run by

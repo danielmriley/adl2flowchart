@@ -78,6 +78,11 @@ pub struct AnalysisOptions {
     /// internal-contradiction diagnostic (an encoder/axiom bug, caught at
     /// verdict time instead of shipped). `0` disables the gate.
     pub sample_gate: usize,
+    /// Build a portable certificate bundle ([`adl_certify::CombineBundle`])
+    /// for every certified PROVEN DISJOINT pair, surfaced on
+    /// [`Report::combine_bundles`](report::Report). Set by `verify --combine`;
+    /// off by default (bundling clones the certified formula set per pair).
+    pub combine: bool,
 }
 
 impl Default for AnalysisOptions {
@@ -89,6 +94,7 @@ impl Default for AnalysisOptions {
             reconcile: false,
             sample_gate: 64,
             certify: true,
+            combine: false,
         }
     }
 }
@@ -241,6 +247,8 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         gate_events,
         certify: opts.certify,
         recon_facts: Vec::new(),
+        combine: opts.combine,
+        bundles: Vec::new(),
     };
     engine.run()
 }

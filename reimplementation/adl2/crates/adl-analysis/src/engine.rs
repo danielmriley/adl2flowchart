@@ -58,6 +58,15 @@ pub(crate) struct Engine<'a> {
     /// name so a certified core containing an `XR{k}` member can map it back
     /// to its formula.
     pub recon_facts: Vec<(AssertName, QFormula)>,
+    /// Build a portable [`adl_certify::CombineBundle`] for every certified
+    /// PROVEN DISJOINT pair (CLI `--combine`). Off by default: bundling
+    /// clones the certified formula set per pair.
+    pub combine: bool,
+    /// Bundles accumulated under `combine`; [`Self::run`] filters them
+    /// against the FINAL pair verdicts (so a later demotion — e.g. by the
+    /// sampling gate — never leaves a bundle for a retracted claim) and
+    /// moves them into [`Report::combine_bundles`].
+    pub bundles: Vec<adl_certify::CombineBundle>,
 }
 
 /// Bounded witness retry: how many distinct overlap models to try to
@@ -324,6 +333,16 @@ impl Engine<'_> {
             })
             .collect();
 
+        // Keep only bundles whose pair SURVIVED as PROVEN DISJOINT: the
+        // sampling gate (or any later demotion) retracting a verdict must
+        // also retract its portable artifact.
+        let mut combine_bundles = std::mem::take(&mut self.bundles);
+        combine_bundles.retain(|b| {
+            pairwise.iter().any(|p: &PairReport| {
+                p.kind == VerdictKind::ProvenDisjoint && p.a == b.region_a && p.b == b.region_b
+            })
+        });
+
         Report {
             schema_version: SCHEMA_VERSION,
             unit: self.unit_name.clone(),
@@ -344,6 +363,7 @@ impl Engine<'_> {
             bin_checks,
             axioms_used,
             internal_diagnostics: internal,
+            combine_bundles,
         }
     }
 
@@ -545,9 +565,17 @@ impl Engine<'_> {
                 .flatten()
                 .filter_map(|n| origins.get(n).cloned())
                 .collect();
-            let certified = self.certify_disjoint(core_names.as_deref(), c1, c2);
+            let (certified, cert_payload) = self.certify_disjoint(core_names.as_deref(), c1, c2);
             self.pop();
             report.certified = certified;
+            if let Some((asserts, cert)) = cert_payload {
+                self.bundles.push(adl_certify::CombineBundle::new(
+                    report.a.clone(),
+                    report.b.clone(),
+                    asserts,
+                    cert,
+                ));
+            }
             if certified == Some(false) {
                 // Solver said UNSAT but the independent exact-rational
                 // certifier could not verify the proof: a candidate, not a
@@ -1094,14 +1122,18 @@ impl Engine<'_> {
     /// Certifying the CORE ONLY is sound: UNSAT of a subset implies UNSAT of
     /// the asserted superset. A core name that maps to no known formula
     /// fails closed.
+    /// Under `combine`, a certified proof additionally returns its portable
+    /// payload: the named formula set in the exact order handed to the
+    /// certifier, plus the certificate — everything a [`adl_certify::CombineBundle`]
+    /// needs to replay offline.
     fn certify_disjoint(
         &mut self,
         core: Option<&[AssertName]>,
         c1: &RegionCtx,
         c2: &RegionCtx,
-    ) -> Option<bool> {
+    ) -> (Option<bool>, Option<(Vec<(String, QFormula)>, adl_certify::Certificate)>) {
         if !self.certify {
-            return None;
+            return (None, None);
         }
         let mut fmap: BTreeMap<AssertName, QFormula> = BTreeMap::new();
         for (n, o) in c1.overs.iter().chain(c2.overs.iter()) {
@@ -1113,22 +1145,29 @@ impl Engine<'_> {
         for (n, f) in &self.recon_facts {
             fmap.insert(n.clone(), f.clone());
         }
-        let formulas: Vec<QFormula> = match core {
+        let named: Vec<(AssertName, QFormula)> = match core {
             Some(names) if !names.is_empty() => {
                 let mut v = Vec::with_capacity(names.len());
                 for n in names {
                     match fmap.get(n) {
-                        Some(f) => v.push(f.clone()),
-                        None => return Some(false),
+                        Some(f) => v.push((n.clone(), f.clone())),
+                        None => return (Some(false), None),
                     }
                 }
                 v
             }
-            _ => fmap.into_values().collect(),
+            _ => fmap.into_iter().collect(),
         };
+        let formulas: Vec<QFormula> = named.iter().map(|(_, f)| f.clone()).collect();
         match adl_certify::certify_unsat(&formulas, &adl_certify::Budget::default()) {
-            adl_certify::CertifyResult::Certified(_) => Some(true),
-            adl_certify::CertifyResult::Uncertified(_) => Some(false),
+            adl_certify::CertifyResult::Certified(cert) => {
+                let payload = self.combine.then(|| {
+                    let asserts = named.into_iter().map(|(n, f)| (n.0, f)).collect();
+                    (asserts, cert)
+                });
+                (Some(true), payload)
+            }
+            adl_certify::CertifyResult::Uncertified(_) => (Some(false), None),
         }
     }
 
@@ -1527,6 +1566,8 @@ mod reconcile_solver_tests {
             spawn_failures: 0,
             gate_events: Vec::new(),
             certify: false,
+            combine: false,
+            bundles: Vec::new(),
             recon_facts: Vec::new(),
         };
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
@@ -1669,6 +1710,8 @@ mod sampling_gate_tests {
             spawn_failures: 0,
             gate_events,
             certify: false,
+            combine: false,
+            bundles: Vec::new(),
             recon_facts: Vec::new(),
         };
         engine.run()
@@ -1732,6 +1775,8 @@ mod sampling_gate_tests {
             spawn_failures: 0,
             gate_events: adl_interp::sample::battery(&ext, 64),
             certify: false,
+            combine: false,
+            bundles: Vec::new(),
             recon_facts: Vec::new(),
         };
         let r = engine.run();

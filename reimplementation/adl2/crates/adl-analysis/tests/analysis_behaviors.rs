@@ -20,6 +20,7 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         reconcile: false,
         sample_gate: 64,
         certify: true,
+        combine: false,
     }
 }
 
@@ -811,6 +812,7 @@ fn certification_tiers_disjoint_verdicts() {
     let ext = ExtDecls::legacy();
     let certify_opts = AnalysisOptions {
         certify: true,
+        combine: false,
         ..opts(SolverChoice::Auto)
     };
     // A SOLVER-proven disjointness certifies: the Farkas combination of the

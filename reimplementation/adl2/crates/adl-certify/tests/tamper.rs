@@ -113,6 +113,28 @@ fn wrong_node_shape_breaks_replay() {
 }
 
 #[test]
+fn genuine_certificate_fails_against_a_different_system() {
+    // A valid certificate is a proof about ONE formula set. Replaying it
+    // against a satisfiable system — even one with the same shape and the
+    // same atom count — must fail.
+    let unsat = [a(0, Rel::Gt, 2), a(0, Rel::Lt, 1)];
+    let cert = certified(&unsat);
+    assert!(cert.replay(&unsat));
+
+    let sat_same_shape = [a(0, Rel::Gt, 1), a(0, Rel::Lt, 2)]; // 1 < x < 2
+    assert!(
+        !cert.replay(&sat_same_shape),
+        "certificate replayed against a satisfiable look-alike system"
+    );
+
+    let sat_other_quantity = [a(1, Rel::Gt, 2), a(0, Rel::Lt, 1)];
+    assert!(
+        !cert.replay(&sat_other_quantity),
+        "certificate replayed against a different-quantity system"
+    );
+}
+
+#[test]
 fn contradiction_claim_without_false_breaks_replay() {
     // Claiming Contradiction on a set with no `false` conjunct must fail.
     let forms = [a(0, Rel::Gt, 2), a(0, Rel::Lt, 1)];

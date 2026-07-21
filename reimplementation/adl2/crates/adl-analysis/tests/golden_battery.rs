@@ -35,6 +35,7 @@ fn run_with(file: &str, solver: SolverChoice) -> Report {
         reconcile: false,
         sample_gate: 64,
         certify: true,
+        combine: false,
     };
     analyze_source(&src, file, &ext, &opts)
         .unwrap_or_else(|e| panic!("{file} must parse/resolve cleanly:\n{e}"))

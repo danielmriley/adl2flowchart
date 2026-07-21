@@ -181,6 +181,7 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         bin_checks: Vec::new(),
         axioms_used: Vec::new(),
         internal_diagnostics: Vec::new(),
+        combine_bundles: Vec::new(),
     };
     let run = CaseRun {
         report,

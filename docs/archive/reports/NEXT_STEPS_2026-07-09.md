@@ -6,7 +6,8 @@ on 28/78 CMS file-pairs, learn-adl syntax fully supported.
 
 The tool's features are in place; what remains is **proof reach** (how many
 true facts it can prove rather than fail-closed), **trust deliverables**
-(artifacts a collaborator can check without trusting smash2), and
+(artifacts a collaborator can re-check without running smash2 or z3 —
+they still trust that the exported formulas/axioms are the right claim), and
 **adoption polish**. Ordered by value-per-effort within each track.
 Effort: S = hours, M = a day-ish, L = multi-day.
 
@@ -57,11 +58,13 @@ over EXACT binder predicates, fail-closed elsewhere.
 
 ## Track B — Trust deliverables
 
-### B1. `verify --combine` certificate artifact (M) — roadmap rank 10
+### B1. `verify --combine` certificate artifact (M) — roadmap rank 10 — **SHIPPED 2026-07-21**
 Emit a machine-checkable artifact per PROVEN cross-file relation: the
 unsat core, axiom instances with justifications, and the replayable
 Farkas certificate. A collaborator re-verifies with the standalone
-checker — no trust in smash2 required. This is the "combination claims
+checker — no trust in solver search or smash2's replay run required
+(the exported formula/axiom set being the *right claim* is still
+smash2's encoder speaking). This is the "combination claims
 you can hand to a working group" deliverable; certification (Phase 4)
 did the hard part already.
 - Exit: `verify --cross --combine out/` writes the artifact; a fresh

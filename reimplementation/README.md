@@ -104,8 +104,9 @@ and a streaming chunked-parallel run loop that is byte-deterministic at any
 with same-base collection reconciliation are shipped; and every
 disjointness proof is **independently re-checked** by a self-contained
 exact-rational certifier (`adl-certify`) that replays a Farkas certificate
-against a trusted kernel — a proof the solver's word alone never has to be
-taken for. End-to-end validated on the real 20k-event T2tt Delphes sample
+against a small trusted kernel — the solver's *search* is never taken on
+its word (what the certificate covers, and what stays trusted around it,
+is spelled out in "Trust surface after certification" below). End-to-end validated on the real 20k-event T2tt Delphes sample
 against independent uproot/numpy oracles (see
 [`PIPELINE_REPORT.md`](../docs/archive/adl2/PIPELINE_REPORT.md)) — 751 tests across 71 suites, a
 136-file corpus (68 base + 58 pinned-verdict golden + 10 cross-file golden),
@@ -219,7 +220,13 @@ are byte-identical.
   disjointness/emptiness query, the unsat core is handed to a self-
   contained exact-rational checker that must produce a replayable Farkas
   certificate — a proof re-checked by a small trusted kernel, in exact
-  arithmetic, with no dependence on the solver. A pair the checker cannot
+  arithmetic, with no dependence on the solver. Scope, stated precisely:
+  the certificate makes the *solver's claim about the encoded formula*
+  independently checkable — it removes solver search from the trusted
+  base, not the encoder, polarity projection, or axiom catalog, which
+  remain the meaning of "regions disjoint" and are audited by the testing
+  nets (differential oracle, metamorphic battery, sampling gate — testing,
+  not proof). A pair the checker cannot
   certify (budget, shape, or an integrality-only refutation) is reported as
   **CANDIDATE DISJOINT** — an honest "the solver says so but we could not
   independently prove it" rather than a bare PROVEN. Certified pairs carry
@@ -230,6 +237,22 @@ are byte-identical.
   regions of a "disjoint" pair is an internal contradiction, so the verdict
   fails closed to POSSIBLY and a bug diagnostic is filed. (No real event
   should ever trip this — it is a live self-audit of the encoder/axioms.)
+
+**Portable proof export — `verify [--cross] --combine DIR/`.** Writes one
+JSON bundle (schema `smash2-combine/1`) per certified PROVEN DISJOINT
+pair: the certified formula set — cuts, `AX<i>` axiom instances, `XR<k>`
+reconciliation facts, in replay order — plus the Farkas certificate tree,
+all rationals exact. A collaborator re-checks a bundle offline with the
+standalone **`smash2-recheck`** binary (built with the workspace): no
+solver, no smash2 analysis run, just the ~1,100-line replay kernel doing
+exact arithmetic. `--explain`'s unsat cores are the human-readable shadow
+of the same proof; the bundle is the machine-checkable receipt. Scope,
+stated honestly (and embedded in every bundle's `note` field): replay
+proves the *listed formulas* are real-unsatisfiable together — that those
+formulas are the right encoding of the named regions is smash2's claim,
+audited by the testing nets above. A verdict later demoted (e.g. by the
+sampling gate) never leaves a bundle behind, and a tampered bundle fails
+replay.
 
 **`run` — interpret regions over events**
 
@@ -536,7 +559,10 @@ self-contained exact-rational checker independent of the solver: it
 searches for a Farkas certificate over the rationals and replays it through
 a small trusted kernel, so a PROVEN DISJOINT never rests on the solver's
 word alone — an uncertifiable core is reported as CANDIDATE DISJOINT
-instead. On the SAT side, a deterministic **sampling gate** pushes boundary
+instead. Certification replaced trust in solver *search* with trust in a
+small arithmetic kernel — half the old trusted base, not all of it; the
+encoder, polarity projection, and axioms remain trusted for what the
+certified formula *means* (see "Trust surface after certification" below). On the SAT side, a deterministic **sampling gate** pushes boundary
 events through the interpreter and fails any PROVEN pair closed to POSSIBLY
 if a sampled event lands in both regions.
 
@@ -575,6 +601,28 @@ reproduces it exactly. Paired with the property oracle (which guarantees no
 false PROVEN) and the independent certifier, a green golden run means those
 PROVEN headers are real. Every confirmed counterexample the batteries have
 ever found is regression-locked in `../docs/archive/adl2/COUNTEREXAMPLES.md` + `regressions.rs`.
+
+### Trust surface after certification
+
+A Farkas certificate proves that *the encoded formula* is
+real-unsatisfiable. It removes solver search from the trusted base — it
+does not, by itself, prove that two ADL regions are disjoint in the
+interpreter's sense. What a PROVEN DISJOINT still trusts, and what audits
+each piece:
+
+| Still trusted | What it decides | Audited by (testing, not proof) |
+|---|---|---|
+| encoder (HIR → formula) | that the formula *means* the regions | differential oracle (encoder vs interpreter, 100k cases) |
+| polarity / over-approximation | that R⁺ really is a superset | type-enforced construction + sampling gate |
+| axiom catalog + reconciliation facts | the background physics handed to the solver | per-axiom event tests, metamorphic battery, sampling gate |
+| `adl_sema::Rat` + the certify replay kernel | that certificate checking is itself correct | property tests (sat-by-construction never certifies, tamper suite), z3 agreement |
+| reference interpreter | the meaning of every region (overlap witnesses, sampling) | uproot/numpy pipeline oracles, legacy golden battery |
+
+The honest summary: certification replaced trust in solver search with
+trust in a small arithmetic kernel — half the old trusted base, not all
+of it. The remaining rows are covered by nets that *audit* them
+continuously; none of those nets constitute proof, which is exactly why
+they all stay on by default.
 
 ---
 
@@ -644,7 +692,7 @@ touching verdicts.
 | `adl-formula` | polarity-typed formula IR + projections; HIR→formula encoder |
 | `adl-axioms` | audited axiom catalog (+ prohibited-axiom regressions) |
 | `adl-solver` | `Solver` trait; native-z3 and SMT-LIB subprocess backends |
-| `adl-certify` | self-contained exact-rational DPLL(Farkas) checker; replays a certificate against a trusted kernel to certify solver UNSAT results independently |
+| `adl-certify` | self-contained exact-rational DPLL(Farkas) checker; replays a certificate against a small trusted kernel so solver UNSAT claims about the encoded formulas are independently checked (kernel arithmetic rests on `adl_sema::Rat`/`BigRational`) |
 | `adl-analysis` | pairwise verdicts, vacuity, subset, bins, witnesses, sampling gate, certification, reports/JSON |
 | `adl-viz` | flowchart + AST DOT from HIR |
 | `rootfile` | pure-Rust ROOT file writer (`TH1D`, variable-bin `TH1D`, `TH2D`, labeled cutflow pairs, per-region `TDirectory`s, `TNamed` provenance — the `run --histos` native `out.root`); standalone, zero-dependency |

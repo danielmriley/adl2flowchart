@@ -48,11 +48,43 @@ pub(crate) struct ReconCandidate {
     pub size_b: QuantityId,
     pub phi_a: Formula,
     pub phi_b: Formula,
+    /// The two collections, retained so the engine can name them in the
+    /// reconciliation ledger (a report section — never part of a proof).
+    pub coll_a: adl_sema::CollectionId,
+    pub coll_b: adl_sema::CollectionId,
+}
+
+/// A pair enumerated as a candidate but dropped before any proof could be
+/// attempted, with the reason. Reported so a blocked reconciliation is
+/// visible instead of silently surfacing as an unexplained POSSIBLY.
+pub(crate) struct ReconSkip {
+    pub coll_a: adl_sema::CollectionId,
+    pub coll_b: adl_sema::CollectionId,
+    pub reason: String,
+}
+
+/// Two filtered collections whose cut structure is IDENTICAL once lowered
+/// onto a common base, but whose base names differ and cannot be known
+/// equal from the ADL text (at least one is a private/unknown base).
+///
+/// This derives NO fact and changes NO verdict: it is an advisory naming
+/// the single assumption that would unlock a proof. Pairs where BOTH bases
+/// are known detector objects are excluded — `Jet` and `Electron` often
+/// carry identical cuts and are emphatically not the same object.
+pub(crate) struct ReconNearMiss {
+    pub coll_a: adl_sema::CollectionId,
+    pub coll_b: adl_sema::CollectionId,
+    pub base_a: String,
+    pub base_b: String,
 }
 
 /// The reconciliation encoding for one (merged) unit.
 pub(crate) struct ReconEnc {
     pub candidates: Vec<ReconCandidate>,
+    /// Candidate pairs dropped before proving, with why.
+    pub skipped: Vec<ReconSkip>,
+    /// Structurally-identical pairs blocked only by base naming.
+    pub near_misses: Vec<ReconNearMiss>,
 }
 
 impl ReconEnc {
@@ -87,6 +119,7 @@ impl ReconEnc {
 pub(crate) fn build(hir: &mut Hir, ext: &ExtDecls) -> ReconEnc {
     let cands = hir.table.reconciliation_candidates();
     let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
     for (a, b) in cands {
         // Both flatten to the same base symbol (guaranteed by the candidate
         // enumeration); re-read to obtain the predicate lists.
@@ -103,13 +136,27 @@ pub(crate) fn build(hir: &mut Hir, ext: &ExtDecls) -> ReconEnc {
         // to one base Symbol — the "same base name = same input" residual is
         // safe only for real shared detector objects, not arbitrary names.
         if ext.base_collection(hir.symbols.display(base_sym)).is_none() {
+            skipped.push(ReconSkip {
+                coll_a: a,
+                coll_b: b,
+                reason: format!(
+                    "base `{}` is not a known detector object, so a shared spelling \
+                     cannot be assumed to mean a shared input",
+                    hir.symbols.display(base_sym)
+                ),
+            });
             continue;
         }
         let base = hir.table.intern_collection(Collection::Base(base_sym));
-        let Some(phi_a) = lower(hir, &preds_a, base) else {
-            continue;
-        };
-        let Some(phi_b) = lower(hir, &preds_b, base) else {
+        let (Some(phi_a), Some(phi_b)) = (lower(hir, &preds_a, base), lower(hir, &preds_b, base))
+        else {
+            skipped.push(ReconSkip {
+                coll_a: a,
+                coll_b: b,
+                reason: "a cut references a composite/peer element that cannot ground \
+                         onto one shared element"
+                    .to_owned(),
+            });
             continue;
         };
         let size_a = hir.table.intern_quantity(Quantity::Size(a));
@@ -119,9 +166,73 @@ pub(crate) fn build(hir: &mut Hir, ext: &ExtDecls) -> ReconEnc {
             size_b,
             phi_a,
             phi_b,
+            coll_a: a,
+            coll_b: b,
         });
     }
-    ReconEnc { candidates }
+    let near_misses = near_misses(hir, ext);
+    ReconEnc {
+        candidates,
+        skipped,
+        near_misses,
+    }
+}
+
+/// Advisory pass (derives nothing): find filtered collections whose cut
+/// structure is identical once lowered onto a COMMON base, but whose base
+/// names differ and cannot be known equal from the text.
+///
+/// Gated so the advice is never misleading: at least one of the two bases
+/// must be a private/unknown name. Two DIFFERENT known detector objects
+/// (`Jet` vs `Electron`) are genuinely different inputs no matter how alike
+/// their cuts look, and must never be suggested as identifiable.
+fn near_misses(hir: &mut Hir, ext: &ExtDecls) -> Vec<ReconNearMiss> {
+    // Collect every filtered collection with its base and predicate chain.
+    let mut chains: Vec<(adl_sema::CollectionId, adl_sema::Symbol, Vec<ElemPredId>)> = Vec::new();
+    for i in 0..hir.table.collections().len() {
+        let id = adl_sema::CollectionId(u32::try_from(i).expect("collection id overflow"));
+        if !matches!(hir.table.collection(id), Collection::Filtered { .. }) {
+            continue;
+        }
+        if let Some((base, preds)) = hir.table.filter_chain(id) {
+            chains.push((id, base, preds));
+        }
+    }
+
+    let mut out = Vec::new();
+    for i in 0..chains.len() {
+        for j in i + 1..chains.len() {
+            let (a, base_a, preds_a) = (chains[i].0, chains[i].1, chains[i].2.clone());
+            let (b, base_b, preds_b) = (chains[j].0, chains[j].1, chains[j].2.clone());
+            if base_a == base_b {
+                continue; // same base: already a real candidate, not a near miss
+            }
+            let name_a = hir.symbols.display(base_a).to_owned();
+            let name_b = hir.symbols.display(base_b).to_owned();
+            let known_a = ext.base_collection(&name_a).is_some();
+            let known_b = ext.base_collection(&name_b).is_some();
+            if known_a && known_b {
+                // Two DIFFERENT detector objects — never advise identifying them.
+                continue;
+            }
+            // Lower BOTH chains onto ONE base: equal formulas mean the cut
+            // structure is identical and only the base naming differs.
+            let probe = hir.table.intern_collection(Collection::Base(base_a));
+            let (Some(fa), Some(fb)) = (lower(hir, &preds_a, probe), lower(hir, &preds_b, probe))
+            else {
+                continue;
+            };
+            if fa == fb {
+                out.push(ReconNearMiss {
+                    coll_a: a,
+                    coll_b: b,
+                    base_a: name_a,
+                    base_b: name_b,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Conjoin a filter chain's predicates, each lowered onto `base[GENERIC_INDEX]`.

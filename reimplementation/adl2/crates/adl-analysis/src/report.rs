@@ -18,6 +18,10 @@ use serde::Serialize;
 /// not verify — only under `--certify`), and pairwise rows gained
 /// `certified` (true = an independently replay-checked Farkas certificate
 /// backs the disjointness; absent = certification did not run).
+///
+/// Still v3 after the reconciliation ledger: `reconciliations` and
+/// `recon_near_misses` are ADDITIVE and omitted when empty, so no existing
+/// field changed meaning and single-file output is byte-identical.
 pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -188,6 +192,75 @@ pub struct BinCheckReport {
     pub gap_witness: Vec<WitnessValue>,
 }
 
+/// What the reconciliation prover concluded about one candidate pair of
+/// collections (the ledger row). Purely descriptive — the verdicts these
+/// enable are reported per-pair as usual.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconOutcome {
+    /// Both refinement directions proven: the collections hold the same
+    /// elements, so their sizes are equal (XEQ).
+    Equivalent,
+    /// `a`'s cuts imply `b`'s: every element of `a` is in `b` (XSUB).
+    ARefinesB,
+    /// `b`'s cuts imply `a`'s (XSUB, other direction).
+    BRefinesA,
+    /// Neither direction could be proven — no size fact was derived.
+    Unrelated,
+    /// The pair was dropped before proving; `note` says why.
+    Skipped,
+}
+
+impl ReconOutcome {
+    /// The relation symbol shown in the ledger.
+    #[must_use]
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            ReconOutcome::Equivalent => "≡",
+            ReconOutcome::ARefinesB => "⊆",
+            ReconOutcome::BRefinesA => "⊇",
+            ReconOutcome::Unrelated => "?",
+            ReconOutcome::Skipped => "⊘",
+        }
+    }
+
+    /// The axiom family this outcome emitted, if any.
+    #[must_use]
+    pub fn axiom(&self) -> Option<&'static str> {
+        match self {
+            ReconOutcome::Equivalent => Some("XEQ"),
+            ReconOutcome::ARefinesB | ReconOutcome::BRefinesA => Some("XSUB"),
+            ReconOutcome::Unrelated | ReconOutcome::Skipped => None,
+        }
+    }
+}
+
+/// One row of the reconciliation ledger: how two collections from
+/// (usually) different analyses were related — or why they were not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconReport {
+    pub a: String,
+    pub b: String,
+    pub outcome: ReconOutcome,
+    /// The shared detector base, when the pair had one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Why a pair was skipped / left unrelated; empty otherwise.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+/// An advisory: two collections whose cuts are structurally identical but
+/// whose base names differ and cannot be known equal from the ADL text.
+/// Derives nothing — it names the assumption a user could supply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconNearMissReport {
+    pub a: String,
+    pub b: String,
+    pub base_a: String,
+    pub base_b: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AxiomUse {
     pub id: String,
@@ -219,6 +292,15 @@ pub struct Report {
     pub regions: Vec<RegionReport>,
     pub pairwise: Vec<PairReport>,
     pub bin_checks: Vec<BinCheckReport>,
+    /// The reconciliation ledger (cross-file runs): how same-base
+    /// collections from different analyses were related, including the
+    /// pairs that could not be. Empty when reconciliation did not run.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reconciliations: Vec<ReconReport>,
+    /// Advisories: structurally-identical collections blocked only by
+    /// differing base names. Derive nothing; name a missing assumption.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recon_near_misses: Vec<ReconNearMissReport>,
     pub axioms_used: Vec<AxiomUse>,
     /// Internal-error diagnostics (e.g. a witness the interpreter
     /// rejected — TESTING §3; each one is a bug report, not user error).

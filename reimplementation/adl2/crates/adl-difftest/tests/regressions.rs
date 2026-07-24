@@ -179,6 +179,8 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         regions: Vec::new(),
         pairwise: vec![pair],
         bin_checks: Vec::new(),
+        reconciliations: Vec::new(),
+        recon_near_misses: Vec::new(),
         axioms_used: Vec::new(),
         internal_diagnostics: Vec::new(),
         combine_bundles: Vec::new(),

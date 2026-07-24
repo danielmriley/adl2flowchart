@@ -248,6 +248,8 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         certify: opts.certify,
         recon_facts: Vec::new(),
         combine: opts.combine,
+        recon_ledger: Vec::new(),
+        recon_near_misses: Vec::new(),
         bundles: Vec::new(),
     };
     engine.run()

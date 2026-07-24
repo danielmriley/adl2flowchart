@@ -238,6 +238,31 @@ are byte-identical.
   fails closed to POSSIBLY and a bug diagnostic is filed. (No real event
   should ever trip this — it is a live self-audit of the encoder/axioms.)
 
+**The reconciliation ledger (cross-file runs).** `verify --cross` reports a
+`== collection reconciliation ==` section showing how each analysis's
+collections were related to the other's — the identity work that powers
+cross-analysis verdicts, made visible:
+
+```
+  1 of 1 candidate pair(s) related
+  C1#ajets  ≡  C2#bjets  XEQ  (base jet)      # equivalent: both directions proven
+  C14#jets  ⊇  C15#bjets XSUB (base jet)      # one refines the other
+  C9#jets   ?  C14#jets  — neither cut set implies the other
+```
+
+Collection *names* never matter — identity is structural — so two files
+calling the same object `ajets` and `bjets` still reconcile. Pairs that
+could NOT be related are listed too, with the reason, so a blocked
+reconciliation is visible instead of surfacing only as an unexplained
+POSSIBLY downstream.
+
+The section also carries **advisories**: when two collections have
+identical cut structure but different base names that cannot be known
+equal from the text (a private/custom base such as `SignalTrack` vs
+`dispTrack`), the tool says so and derives nothing. Two *different* known
+detector objects are never advised this way — `Jet` and `Electron` often
+carry identical cuts and are emphatically not the same input.
+
 **Portable proof export — `verify [--cross] --combine DIR/`.** Writes one
 JSON bundle (schema `smash2-combine/1`) per certified PROVEN DISJOINT
 pair: the certified formula set — cuts, `AX<i>` axiom instances, `XR<k>`

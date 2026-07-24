@@ -306,6 +306,7 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
     render_matrix(report, &st, &empty_set, &mut s);
     render_pairwise(report, &st, &empty_set, &mut s);
     render_bins(report, &st, &mut s);
+    render_reconciliation(report, &st, &mut s);
 
     // Axioms: one line of id×count, plus one line of (deduped) soundness
     // assumptions. Statements stay in --explain.
@@ -756,6 +757,72 @@ fn render_pairwise(report: &Report, st: &Style, empty_set: &BTreeSet<&str>, s: &
             let _ = writeln!(s, "{line}");
             let _ = writeln!(s, "    {}", group_members(report, &g.members));
         }
+    }
+}
+
+/// The reconciliation ledger: how collections from different analyses were
+/// related (or why they were not), plus the near-miss advisories. Silent
+/// when reconciliation did not run, so single-file reports are unchanged.
+fn render_reconciliation(report: &Report, st: &Style, s: &mut String) {
+    if report.reconciliations.is_empty() && report.recon_near_misses.is_empty() {
+        return;
+    }
+    let _ = writeln!(s, "\n{}", st.head("== collection reconciliation =="));
+
+    let a_w = report
+        .reconciliations
+        .iter()
+        .map(|r| r.a.chars().count())
+        .max()
+        .unwrap_or(0);
+    let b_w = report
+        .reconciliations
+        .iter()
+        .map(|r| r.b.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let related = report
+        .reconciliations
+        .iter()
+        .filter(|r| r.outcome.axiom().is_some())
+        .count();
+    if !report.reconciliations.is_empty() {
+        let _ = writeln!(
+            s,
+            "  {related} of {} candidate pair(s) related",
+            report.reconciliations.len()
+        );
+    }
+    for r in &report.reconciliations {
+        let tail = match (r.outcome.axiom(), r.base.as_deref()) {
+            (Some(ax), Some(base)) => format!("{ax}  (base {base})"),
+            (Some(ax), None) => ax.to_owned(),
+            (None, _) => String::new(),
+        };
+        let _ = writeln!(
+            s,
+            "  {a:a_w$}  {sym}  {b:b_w$}  {tail}{note}",
+            a = r.a,
+            sym = r.outcome.symbol(),
+            b = r.b,
+            note = if r.note.is_empty() {
+                String::new()
+            } else {
+                format!("— {}", r.note)
+            },
+        );
+    }
+
+    // Advisories: structurally identical, blocked only by base naming.
+    for n in &report.recon_near_misses {
+        let _ = writeln!(
+            s,
+            "  note: {} and {} have identical cut structure but different bases \
+             (`{}` vs `{}`); they cannot be related unless those bases are known \
+             to be the same input",
+            n.a, n.b, n.base_a, n.base_b
+        );
     }
 }
 

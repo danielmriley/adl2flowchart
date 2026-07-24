@@ -58,6 +58,12 @@ pub(crate) struct Engine<'a> {
     /// name so a certified core containing an `XR{k}` member can map it back
     /// to its formula.
     pub recon_facts: Vec<(AssertName, QFormula)>,
+    /// The reconciliation ledger, filled by [`Self::reconcile`]: one row per
+    /// candidate pair (related, unrelated, or skipped with a reason).
+    pub recon_ledger: Vec<crate::report::ReconReport>,
+    /// Advisories for structurally-identical collections whose base names
+    /// differ (see [`crate::reconcile::ReconNearMiss`]).
+    pub recon_near_misses: Vec<crate::report::ReconNearMissReport>,
     /// Build a portable [`adl_certify::CombineBundle`] for every certified
     /// PROVEN DISJOINT pair (CLI `--combine`). Off by default: bundling
     /// clones the certified formula set per pair.
@@ -94,6 +100,20 @@ fn size_label(hir: &Hir, q: QuantityId) -> String {
         Quantity::Size(c) => format!("size({})", adl_sema::collection_ref(hir, *c)),
         _ => quantity_label(hir, q),
     }
+}
+
+/// Ledger label for a collection: the id-disambiguated `C3#jets` form, so
+/// two files' same-named-but-differently-cut collections stay distinct.
+fn coll_label(hir: &Hir, c: adl_sema::CollectionId) -> String {
+    adl_sema::collection_ref(hir, c)
+}
+
+/// The detector base a collection flattens to, for the ledger's `base`
+/// column. `None` for shapes with no single filter chain.
+fn base_label(hir: &Hir, c: adl_sema::CollectionId) -> Option<String> {
+    hir.table
+        .filter_chain(c)
+        .map(|(base, _)| hir.symbols.display(base).to_owned())
 }
 
 /// Snap every model value to the dyadic 2⁻²² grid (second-chance
@@ -361,6 +381,8 @@ impl Engine<'_> {
             regions: region_reports,
             pairwise,
             bin_checks,
+            reconciliations: std::mem::take(&mut self.recon_ledger),
+            recon_near_misses: std::mem::take(&mut self.recon_near_misses),
             axioms_used,
             internal_diagnostics: internal,
             combine_bundles,
@@ -1035,6 +1057,27 @@ impl Engine<'_> {
         let Some(recon) = self.recon.take() else {
             return counts;
         };
+        // The ledger records what reconciliation concluded — including pairs
+        // dropped before any proof ran, which would otherwise surface only as
+        // an unexplained POSSIBLY downstream.
+        for s in &recon.skipped {
+            self.recon_ledger.push(crate::report::ReconReport {
+                a: coll_label(self.hir, s.coll_a),
+                b: coll_label(self.hir, s.coll_b),
+                outcome: crate::report::ReconOutcome::Skipped,
+                base: None,
+                note: s.reason.clone(),
+            });
+        }
+        for n in &recon.near_misses {
+            self.recon_near_misses
+                .push(crate::report::ReconNearMissReport {
+                    a: coll_label(self.hir, n.coll_a),
+                    b: coll_label(self.hir, n.coll_b),
+                    base_a: n.base_a.clone(),
+                    base_b: n.base_b.clone(),
+                });
+        }
         if self.solver.is_none() || recon.is_empty() {
             return counts;
         }
@@ -1042,6 +1085,22 @@ impl Engine<'_> {
         let mut k = 0usize;
         for cand in &recon.candidates {
             let (a_in_b, b_in_a) = self.prove_pred_implies(&cand.phi_a, &cand.phi_b);
+            self.recon_ledger.push(crate::report::ReconReport {
+                a: coll_label(self.hir, cand.coll_a),
+                b: coll_label(self.hir, cand.coll_b),
+                outcome: match (a_in_b, b_in_a) {
+                    (true, true) => crate::report::ReconOutcome::Equivalent,
+                    (true, false) => crate::report::ReconOutcome::ARefinesB,
+                    (false, true) => crate::report::ReconOutcome::BRefinesA,
+                    (false, false) => crate::report::ReconOutcome::Unrelated,
+                },
+                base: base_label(self.hir, cand.coll_a),
+                note: if a_in_b || b_in_a {
+                    String::new()
+                } else {
+                    "neither cut set implies the other".to_owned()
+                },
+            });
             // Directions to emit, as (sub_size, sup_size, catalog id).
             let facts: &[(QuantityId, QuantityId, AxiomId)] = if a_in_b && b_in_a {
                 &[
@@ -1567,6 +1626,8 @@ mod reconcile_solver_tests {
             gate_events: Vec::new(),
             certify: false,
             combine: false,
+            recon_ledger: Vec::new(),
+            recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
         };
@@ -1711,6 +1772,8 @@ mod sampling_gate_tests {
             gate_events,
             certify: false,
             combine: false,
+            recon_ledger: Vec::new(),
+            recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
         };
@@ -1776,6 +1839,8 @@ mod sampling_gate_tests {
             gate_events: adl_interp::sample::battery(&ext, 64),
             certify: false,
             combine: false,
+            recon_ledger: Vec::new(),
+            recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
         };

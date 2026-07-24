@@ -225,6 +225,59 @@ pub struct ElemPred {
     pub render: String,
 }
 
+/// The ONE interning discipline for element predicates.
+///
+/// Both the resolver (single unit) and the merger (cross-file) intern
+/// through this type, so the fail-closed rule below cannot hold on one path
+/// and be missing on the other — which is exactly the drift that produced a
+/// false PROVEN DISJOINT on the merge path (a cut set unified with a
+/// physically different one, collapsing two collections into one size
+/// quantity).
+///
+/// The rule: an `Unsupported` node renders as `<unsupported: reason>`, and
+/// several reasons DISCARD the differing sub-expression (e.g. a reducer
+/// reason that keeps only the reducer kind and a plural-reference count), so
+/// two physically different cuts can render identically. Sharing an id would
+/// unify their filtered collections — and their sizes. Such predicates
+/// therefore always get a fresh, never-shared id and never enter the render
+/// index. Fully-resolved identical cuts still merge on the render key, which
+/// is what makes cross-file collection identity work.
+#[derive(Debug, Default)]
+pub struct ElemPredInterner {
+    preds: Vec<ElemPred>,
+    by_render: std::collections::HashMap<String, ElemPredId>,
+}
+
+impl ElemPredInterner {
+    /// Intern `node` under its already-computed canonical `render` (each
+    /// caller renders in its own context, so the render is supplied).
+    pub fn intern(&mut self, node: HNode, render: String) -> ElemPredId {
+        let id = ElemPredId(u32::try_from(self.preds.len()).expect("pred id overflow"));
+        if node.has_unsupported() {
+            self.preds.push(ElemPred { node, render });
+            return id;
+        }
+        if let Some(&prev) = self.by_render.get(&render) {
+            return prev;
+        }
+        self.by_render.insert(render.clone(), id);
+        self.preds.push(ElemPred { node, render });
+        id
+    }
+
+    /// The interned predicates, indexed by [`ElemPredId`].
+    #[must_use]
+    pub fn preds(&self) -> &[ElemPred] {
+        &self.preds
+    }
+
+    /// Consume the interner for the finished [`Hir`].
+    #[must_use]
+    pub fn into_preds(self) -> Vec<ElemPred> {
+        self.preds
+    }
+}
+
 /// A resolved `object` block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirObject {

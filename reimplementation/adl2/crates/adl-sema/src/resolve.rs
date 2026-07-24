@@ -13,7 +13,7 @@
 use crate::dump::RenderCtx;
 use crate::ext::ExtDecls;
 use crate::hir::{
-    ArithOp, DefineKind, ElemPred, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
+    ArithOp, DefineKind, Fragment, HKind, HNode, Hir, HirDefine, HirHisto, HirObject,
     HirRegion, HirRegionStmt, HirWeight, HirWeightValue, HistoSpec, ReduceKind,
 };
 use crate::intern::{Symbol, SymbolTable};
@@ -127,8 +127,7 @@ struct Resolver<'a> {
     symbols: SymbolTable,
     table: QuantityTable,
     coll_names: Vec<Vec<Symbol>>,
-    elem_preds: Vec<ElemPred>,
-    elem_pred_ids: HashMap<String, ElemPredId>,
+    elem_preds: crate::hir::ElemPredInterner,
 
     ast_objects: Vec<&'a ast::ObjectBlock>,
     ast_defines: Vec<&'a ast::Define>,
@@ -241,8 +240,7 @@ impl<'a> Resolver<'a> {
             symbols: SymbolTable::default(),
             table: QuantityTable::default(),
             coll_names: Vec::new(),
-            elem_preds: Vec::new(),
-            elem_pred_ids: HashMap::new(),
+            elem_preds: crate::hir::ElemPredInterner::default(),
             ast_objects,
             ast_defines,
             def_home,
@@ -335,7 +333,7 @@ impl<'a> Resolver<'a> {
             symbols: self.symbols,
             table: self.table,
             coll_names: self.coll_names,
-            elem_preds: self.elem_preds,
+            elem_preds: self.elem_preds.into_preds(),
             objects,
             defines,
             regions: self.regions,
@@ -1095,26 +1093,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn intern_elem_pred(&mut self, node: HNode) -> ElemPredId {
-        let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
-        // An Unsupported node renders as `<unsupported: reason>` — the
-        // DIFFERING sub-expression is discarded and replaced by a (often
-        // generic) reason string, so two physically different cuts can render
-        // identically. Sharing an id would unify their filtered collections
-        // (and sizes) — a reproduced false-PROVEN factory (soundness review
-        // S1). Fail closed: such predicates always get a fresh, never-shared
-        // id. Fully-resolved identical cuts keep merging via the render key.
-        if node.has_unsupported() {
-            let render = self.render_node(&node);
-            self.elem_preds.push(ElemPred { node, render });
-            return id;
-        }
+        // The fail-closed unsupported rule lives in `ElemPredInterner` so the
+        // resolver and the merger share ONE discipline (see its doc comment).
         let render = self.render_node(&node);
-        if let Some(&prev) = self.elem_pred_ids.get(&render) {
-            return prev;
-        }
-        self.elem_pred_ids.insert(render.clone(), id);
-        self.elem_preds.push(ElemPred { node, render });
-        id
+        self.elem_preds.intern(node, render)
     }
 
     // ---- defines ----------------------------------------------------------

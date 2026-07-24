@@ -18,7 +18,7 @@
 //! and acyclic, so the recursion terminates without a cycle guard.
 
 use crate::dump::RenderCtx;
-use crate::hir::{ElemPred, HKind, HNode, Hir, HirRegion, HirRegionStmt};
+use crate::hir::{HKind, HNode, Hir, HirRegion, HirRegionStmt};
 use crate::intern::{Symbol, SymbolTable};
 use crate::quantity::{
     CombAxis, Collection, CollectionId, ElemPredId, ParticleRef, PropId, Quantity, QuantityArg,
@@ -44,8 +44,7 @@ struct Merger {
     symbols: SymbolTable,
     table: QuantityTable,
     coll_names: Vec<Vec<Symbol>>,
-    elem_preds: Vec<ElemPred>,
-    elem_pred_ids: HashMap<String, ElemPredId>,
+    elem_preds: crate::hir::ElemPredInterner,
     regions: Vec<HirRegion>,
     region_name_order: Vec<Symbol>,
     histolist_regions: Vec<bool>,
@@ -80,8 +79,7 @@ fn merge_hirs_inner(units: &[&Hir]) -> Hir {
         symbols: SymbolTable::default(),
         table: QuantityTable::default(),
         coll_names: Vec::new(),
-        elem_preds: Vec::new(),
-        elem_pred_ids: HashMap::new(),
+        elem_preds: crate::hir::ElemPredInterner::default(),
         regions: Vec::new(),
         region_name_order: Vec::new(),
         histolist_regions: Vec::new(),
@@ -117,7 +115,7 @@ fn merge_hirs_inner(units: &[&Hir]) -> Hir {
         symbols: m.symbols,
         table: m.table,
         coll_names: m.coll_names,
-        elem_preds: m.elem_preds,
+        elem_preds: m.elem_preds.into_preds(),
         objects: Vec::new(),
         defines: Vec::new(),
         regions: m.regions,
@@ -288,11 +286,11 @@ impl Merger {
             region_names: &self.region_name_order,
         }
         .node(&node);
-        let id = *self.elem_pred_ids.entry(render.clone()).or_insert_with(|| {
-            let id = ElemPredId(u32::try_from(self.elem_preds.len()).expect("pred id overflow"));
-            self.elem_preds.push(ElemPred { node, render });
-            id
-        });
+        // Through the SHARED interner: an unsupported cut gets a fresh id
+        // here exactly as it does in the resolver, so two units' physically
+        // different opaque cuts can never collapse into one collection (and
+        // one size quantity) just because their reason strings match.
+        let id = self.elem_preds.intern(node, render);
         memo.pred.insert(p.0, id);
         id
     }
@@ -628,6 +626,87 @@ mod tests {
             .filter(|c| matches!(c, Collection::Filtered { .. }))
             .count();
         assert_eq!(filtered, 1, "identical cuts must unify to one Filtered");
+    }
+
+    /// Two units whose cuts are physically different but whose UNSUPPORTED
+    /// renders collide must stay distinct collections.
+    ///
+    /// Several unsupported reasons discard the differing sub-expression (the
+    /// reducer reason below keeps only the kind and a plural-reference
+    /// count), so both cuts render as the same `<unsupported: ...>` string.
+    /// Sharing an `ElemPredId` collapsed them into ONE `Filtered` collection
+    /// and ONE size quantity, which produced a false PROVEN DISJOINT:
+    /// `size(o1) >= 3` and `size(o2) <= 1` became a contradiction on a single
+    /// quantity. The resolver has always refused this; the merger did not.
+    #[test]
+    fn merge_never_unifies_unsupported_cuts() {
+        let a = hir(
+            "object o1\n  take Jet\n  select sum(pt(Muon) + pt(Electron)) > 5\n\
+             region RA\n  select size(o1) >= 3\n",
+            "a",
+        );
+        let b = hir(
+            "object o2\n  take Jet\n  select sum(eta(Photon) * eta(Tau)) > 5\n\
+             region RB\n  select size(o2) <= 1\n",
+            "b",
+        );
+        // Precondition: the two cuts really do render identically, so this
+        // test keeps testing what it says even if a reason string changes.
+        assert_eq!(
+            a.elem_preds[0].render, b.elem_preds[0].render,
+            "test premise: the two unsupported cuts must share a render"
+        );
+        assert!(a.elem_preds[0].node.has_unsupported());
+
+        let m = merge_hirs(&[&a, &b]);
+        let filtered = m
+            .table
+            .collections()
+            .iter()
+            .filter(|c| matches!(c, Collection::Filtered { .. }))
+            .count();
+        assert_eq!(
+            filtered, 2,
+            "physically different unsupported cuts must NOT collapse into one \
+             collection (false-PROVEN factory)"
+        );
+
+        // And the two filtered collections must carry distinct pred ids.
+        let preds: Vec<ElemPredId> = m
+            .table
+            .collections()
+            .iter()
+            .filter_map(|c| match c {
+                Collection::Filtered { pred, .. } => Some(*pred),
+                _ => None,
+            })
+            .collect();
+        assert_ne!(preds[0], preds[1], "unsupported preds must never be shared");
+    }
+
+    /// The fail-closed rule must not cost us legitimate sharing: two units
+    /// with the SAME fully-resolved cut still unify to one collection.
+    #[test]
+    fn merge_still_unifies_identical_supported_cuts_across_units() {
+        let a = hir(
+            "object j\n  take Jet\n  select pt > 30\nregion R\n  select size(j) >= 1\n",
+            "a",
+        );
+        let b = hir(
+            "object k\n  take Jet\n  select pt > 30\nregion S\n  select size(k) >= 1\n",
+            "b",
+        );
+        let m = merge_hirs(&[&a, &b]);
+        let filtered = m
+            .table
+            .collections()
+            .iter()
+            .filter(|c| matches!(c, Collection::Filtered { .. }))
+            .count();
+        assert_eq!(
+            filtered, 1,
+            "identical resolved cuts must still unify (names are labels)"
+        );
     }
 
     #[test]

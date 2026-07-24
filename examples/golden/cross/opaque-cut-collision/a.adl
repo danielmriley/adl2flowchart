@@ -1,0 +1,18 @@
+# GOLDEN-CROSS a.adl::RA b.adl::RB POSSIBLY
+# GROUND-TRUTH: both units filter Jet by a cut the analyzer cannot encode,
+# and the two cuts render to the SAME `<unsupported: ...>` string because
+# that reason discards the differing sub-expression. They are physically
+# different filters, so the collections — and their sizes — are unrelated:
+# size(o1) >= 3 and size(o2) <= 1 can hold on one event.
+#
+# Sharing an ElemPredId here collapsed both into one collection and one size
+# quantity, yielding a false PROVEN DISJOINT (and a CERTIFIED one when the
+# contradiction needed the solver). The pin is the fail-closed POSSIBLY.
+# This class was live on the real corpus: CMS-SUS-16-042 vs -043 shared a
+# byte-identical `jets` block whose `reject dR(j, leptons) < 0.4` referenced
+# a DIFFERENT `leptons` in each file (electrons pt>25 vs pt>30).
+object o1
+  take Jet
+  select sum(pt(Muon) + pt(Electron)) > 5
+region RA
+  select size(o1) >= 3

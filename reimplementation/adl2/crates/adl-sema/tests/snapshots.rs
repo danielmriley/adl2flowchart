@@ -147,8 +147,8 @@ fn corpus_smoke_and_determinism() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        136,
-        "expected the 136-file corpus (68 base + 58 golden + 10 golden-cross)"
+        138,
+        "expected the 138-file corpus (68 base + 58 golden + 12 golden-cross)"
     );
     for path in paths {
         let a = analyze_file(&path);

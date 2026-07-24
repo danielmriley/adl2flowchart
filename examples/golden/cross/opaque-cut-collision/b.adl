@@ -1,0 +1,5 @@
+object o2
+  take Jet
+  select sum(eta(Photon) * eta(Tau)) > 5
+region RB
+  select size(o2) <= 1

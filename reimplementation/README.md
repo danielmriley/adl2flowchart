@@ -109,7 +109,7 @@ its word (what the certificate covers, and what stays trusted around it,
 is spelled out in "Trust surface after certification" below). End-to-end validated on the real 20k-event T2tt Delphes sample
 against independent uproot/numpy oracles (see
 [`PIPELINE_REPORT.md`](../docs/archive/adl2/PIPELINE_REPORT.md)) — 751 tests across 71 suites, a
-136-file corpus (68 base + 58 pinned-verdict golden + 10 cross-file golden),
+138-file corpus (68 base + 58 pinned-verdict golden + 12 cross-file golden),
 the full legacy golden battery on both solver backends, a 100k-case
 property oracle against the interpreter, and a verdict-parity comparison
 against the legacy tool with zero legacy-better differences
@@ -618,7 +618,7 @@ build, see `../docs/archive/adl2/COUNTEREXAMPLES.md`), a metamorphic suite check
 (`reject c` ≡ `select not c`, rename invariance, …), the entire legacy
 golden battery — every historical false-verdict bug from two audits of the
 old tool — runs as integration tests, and a hand-authored **golden verdict
-corpus** (`../../examples/golden/`, 58 single-file + 10 cross-file across 5
+corpus** (`../../examples/golden/`, 58 single-file + 12 cross-file across 6
 merge groups) pins fully-known disjoint/overlapping/empty ground truth:
 each file declares its expected verdict in a `# GOLDEN` / `# GOLDEN-CROSS`
 header and `golden_regions.rs` / `golden_cross.rs` assert the analyzer

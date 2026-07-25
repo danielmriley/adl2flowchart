@@ -113,8 +113,16 @@ pub struct IntervalMap {
 }
 
 impl IntervalMap {
-    pub fn add_over(&mut self, f: &QFormula) {
-        self.spine(f);
+    /// Fold an over-projection's And-spine into the map.
+    ///
+    /// Takes [`Over`] — not a raw [`QFormula`] — so the type system, not a
+    /// naming convention, guarantees only supersets ever feed the interval
+    /// layer. `Under::qformula()` has an identical signature; before this
+    /// took `Over`, passing an under here would have compiled and silently
+    /// inverted the polarity of the path that decides the majority of
+    /// PROVEN DISJOINT verdicts.
+    pub fn add_over(&mut self, o: &adl_formula::Over) {
+        self.spine(o.qformula());
     }
 
     fn spine(&mut self, f: &QFormula) {
@@ -196,10 +204,17 @@ impl IntervalMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adl_formula::LinAtom;
+    use adl_formula::{Formula, LinAtom, Over};
 
-    fn atom(q: u32, rel: Rel, k: f64) -> QFormula {
-        QFormula::Atom(LinAtom::single(
+    /// Tests must construct a genuine [`Over`] the way the engine does —
+    /// through the projection — since `add_over` no longer takes raw
+    /// formulas.
+    fn over(f: Formula) -> Over {
+        f.over()
+    }
+
+    fn atom(q: u32, rel: Rel, k: f64) -> Formula {
+        Formula::Atom(LinAtom::single(
             QuantityId(q),
             rel,
             Rat::from_decimal_f64(k).unwrap(),
@@ -209,31 +224,31 @@ mod tests {
     #[test]
     fn spine_intervals_and_disjointness() {
         let mut a = IntervalMap::default();
-        a.add_over(&QFormula::And(vec![
+        a.add_over(&over(Formula::And(vec![
             atom(0, Rel::Gt, 100.0),
             atom(0, Rel::Lt, 200.0),
-        ]));
+        ])));
         let mut b = IntervalMap::default();
-        b.add_over(&atom(0, Rel::Gt, 300.0));
+        b.add_over(&over(atom(0, Rel::Gt, 300.0)));
         assert!(a.disjoint_with(&b).is_some());
         assert!(a.self_empty().is_none());
 
         // Touching closed bounds intersect; strict ones do not.
         let mut c = IntervalMap::default();
-        c.add_over(&atom(0, Rel::Ge, 200.0));
+        c.add_over(&over(atom(0, Rel::Ge, 200.0)));
         assert!(a.disjoint_with(&c).is_some(), "a is strict at 200");
         let mut d = IntervalMap::default();
-        d.add_over(&atom(0, Rel::Le, 100.0));
+        d.add_over(&over(atom(0, Rel::Le, 100.0)));
         assert!(a.disjoint_with(&d).is_some(), "a is strict at 100");
     }
 
     #[test]
     fn or_branches_are_ignored_soundly() {
         let mut a = IntervalMap::default();
-        a.add_over(&QFormula::Or(vec![
+        a.add_over(&over(Formula::Or(vec![
             atom(0, Rel::Lt, 100.0),
             atom(0, Rel::Gt, 500.0),
-        ]));
+        ])));
         assert!(a.by_quantity.is_empty(), "Or contributes nothing");
     }
 
@@ -241,11 +256,11 @@ mod tests {
     fn negative_coefficient_flips() {
         // -2 q <= -400  ⇔  q >= 200
         let mut a = IntervalMap::default();
-        a.add_over(&QFormula::Atom(LinAtom::new(
+        a.add_over(&over(Formula::Atom(LinAtom::new(
             [(Rat::from_i64(-2), QuantityId(0))],
             Rel::Le,
             Rat::from_i64(-400),
-        )));
+        ))));
         let iv = &a.by_quantity[&QuantityId(0)];
         assert_eq!((iv.lo.clone(), iv.lo_strict), (Some(Rat::from_i64(200)), false));
     }
@@ -253,10 +268,10 @@ mod tests {
     #[test]
     fn self_empty_detection() {
         let mut a = IntervalMap::default();
-        a.add_over(&QFormula::And(vec![
+        a.add_over(&over(Formula::And(vec![
             atom(0, Rel::Gt, 5.0),
             atom(0, Rel::Lt, 5.0),
-        ]));
+        ])));
         assert!(a.self_empty().is_some());
     }
 }

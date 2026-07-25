@@ -89,16 +89,25 @@ fn merge_hirs_inner(units: &[&Hir]) -> Hir {
     // `<unit>::<region>` labels indistinguishable and invert the cross/intra
     // pair classification — qualify later duplicates with their ordinal.
     let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
     let unit_labels: Vec<String> = units
         .iter()
         .map(|h| {
             let n = seen.entry(h.unit.to_ascii_lowercase()).or_insert(0);
             *n += 1;
-            if *n == 1 {
+            let mut label = if *n == 1 {
                 h.unit.clone()
             } else {
                 format!("{}#{n}", h.unit)
+            };
+            // A literal filename can mimic the dedup suffix (units
+            // ["a", "a#2", "a"] would otherwise mint "a#2" twice); keep
+            // bumping until the label is genuinely fresh.
+            while !taken.insert(label.to_ascii_lowercase()) {
+                *n += 1;
+                label = format!("{}#{n}", h.unit);
             }
+            label
         })
         .collect();
     for (i, src) in units.iter().enumerate() {
@@ -349,16 +358,22 @@ impl Merger {
         match key {
             // The opaque key is a self-contained render string (identity),
             // carrying no unit-local ids — kept verbatim.
-            // NOT namespaced by unit, unlike `QuantityArg::Opaque` below.
-            // Safe only because the fragment gate blocks this upstream: an
-            // opaque sort shape drops its region out of the lowered fragment,
-            // and any indexed access after a region-level `sort` is dropped
-            // too, so no quantity — and therefore no proof — can rest on a
-            // collided key. If sorted-element reasoning is ever unlocked,
-            // namespace this the way `remap_arg` does or two units' different
-            // opaque keys can unify (same lossy-render class as the
-            // ElemPredInterner fail-closed rule).
-            crate::quantity::SortKey::Opaque(s) => crate::quantity::SortKey::Opaque(s),
+            // Namespaced by unit ordinal, exactly like `QuantityArg::Opaque`
+            // in `remap_arg`: the key is a per-unit RENDER string embedding
+            // source-local collection ids, so two units' physically different
+            // keys can render byte-identically (`take sort(jets, dR(jets,
+            // refs[0]))` with a different `refs` in each file). Un-namespaced,
+            // those Sorted collections interned to ONE, `sj[0].pt` became a
+            // single variable, and the interval prefilter proved a false
+            // DISJOINT — same lossy-render class as the ElemPredInterner
+            // rule. (A REGION-level opaque sort is separately blocked by the
+            // fragment gate; the take-level form is not, which is how this
+            // was reachable.) Cross-unit sorted views now never unify; the
+            // cost is only missed sharing of genuinely identical sorts, which
+            // weakens to POSSIBLY — fail-closed.
+            crate::quantity::SortKey::Opaque(s) => {
+                crate::quantity::SortKey::Opaque(format!("{}\u{1}{s}", self.unit_ord))
+            }
             // `Prop` carries a unit-local PropId; re-intern by key/display.
             crate::quantity::SortKey::Prop(p) => {
                 crate::quantity::SortKey::Prop(self.remap_prop(src, memo, p))

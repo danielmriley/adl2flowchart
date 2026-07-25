@@ -71,9 +71,25 @@ region RB
   select size(cleanjetsB) <= 1
 ";
     let ext = ExtDecls::legacy();
+
+    // The identity collapse this pins fabricated its PROVEN through the
+    // INTERVAL fast path, which runs without any solver — so this assertion
+    // must hold solver-less too. A skip here would make the sole verdict-
+    // level pin for the identity class vacuous in exactly the configuration
+    // (no solver → interval path) where the bug is reachable.
+    let r0 =
+        analyze_source(src, "s1.adl", &ext, &opts(SolverChoice::NoSolver)).expect("resolves");
+    let p0 = find_pair(&r0.pairwise, "RA", "RB");
+    assert_ne!(
+        p0.kind,
+        VerdictKind::ProvenDisjoint,
+        "identity collapse must not prove via the solver-free interval path: {}",
+        p0.reason
+    );
+
     let r = analyze_source(src, "s1.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
     if r.solver == "none" {
-        eprintln!("SKIP: no solver");
+        eprintln!("SKIP: no solver (interval-path assertion above still ran)");
         return;
     }
     let p = find_pair(&r.pairwise, "RA", "RB");

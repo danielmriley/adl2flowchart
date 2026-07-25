@@ -257,7 +257,7 @@ impl Engine<'_> {
                     r.stmts.iter().map(crate::encode::StmtEnc::under).collect();
                 let mut intervals = IntervalMap::default();
                 for (_, o) in &overs {
-                    intervals.add_over(o.qformula());
+                    intervals.add_over(o);
                 }
                 RegionCtx {
                     overs,
@@ -1411,9 +1411,9 @@ impl Engine<'_> {
         }
         // No-solver fallback: interval spine of (R ∧ Bi) vs (R ∧ Bj).
         let mut a = region_ctx.intervals.clone();
-        a.add_over(bi.qformula());
+        a.add_over(bi);
         let mut b = region_ctx.intervals.clone();
-        b.add_over(bj.qformula());
+        b.add_over(bj);
         a.self_empty().is_some() || b.self_empty().is_some() || a.disjoint_with(&b).is_some()
     }
 

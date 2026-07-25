@@ -98,16 +98,30 @@ fn constant_comparisons_fold() {
 // ---- row: `reject c` = exact negation -----------------------------------
 
 #[test]
-fn reject_is_exact_negation_of_select() {
-    let (sel, hir) = encode("region A\n  select MET > 100 or HT > 200\n", 0);
+fn reject_is_guarded_negation_of_select() {
+    // `HT` is an event-record lookup (EventVar): on an event lacking the
+    // key, `HT > 200` soft-fails, so `reject (MET>100 or HT>200)` HOLDS —
+    // the classical AND of negations would wrongly exclude that event from
+    // the superset (the fabricated-DISJOINT class, 2026-07-25). The
+    // absent-property guard therefore hedges: the OVER side keeps only the
+    // total-quantity constraint (MET is safe — a missing MET vector is a
+    // hard evaluation error, so no In-event lacks it), the UNDER side keeps
+    // the full classical negation (sound: absence satisfies the reject
+    // regardless; present values are classical). The legacy regression
+    // class — reject of an OR must not become a strengthened/weakened
+    // guess — is preserved on BOTH sides: each is exactly De Morgan, the
+    // over side merely dropping the un-expressible HT conjunct.
+    let (_sel, hir) = encode("region A\n  select MET > 100 or HT > 200\n", 0);
     let (rej, _) = encode("region B\n  reject MET > 100 or HT > 200\n", 0);
-    assert_eq!(rej.formula, sel.formula.clone().not());
-    // The legacy regression class: reject of an OR must become an AND of
-    // negations, not a strengthened/weakened guess.
     let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let Formula::Dual { plus, minus, .. } = &rej.formula else {
+        panic!("expected guarded Dual, got {:?}", rej.formula);
+    };
+    assert_eq!(**plus, atom1(met, Rel::Le, 100.0), "over: MET constraint kept, HT widened");
     assert_eq!(
-        rej.formula,
-        Formula::And(vec![atom1(met, Rel::Le, 100.0), atom1(ht, Rel::Le, 200.0)])
+        **minus,
+        Formula::And(vec![atom1(met, Rel::Le, 100.0), atom1(ht, Rel::Le, 200.0)]),
+        "under: full classical De Morgan"
     );
 }
 
@@ -396,13 +410,16 @@ fn ternary_expands_to_guarded_disjunction() {
     let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100 : MET > 200\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
     let g = atom1(ht, Rel::Gt, 500.0);
-    assert_eq!(
-        enc.formula,
-        Formula::Or(vec![
-            Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]),
-            Formula::And(vec![g.not(), atom1(met, Rel::Gt, 200.0)]),
-        ])
-    );
+    // The else-branch guard `¬(HT > 500)` goes through the absent-property
+    // hedge (HT is an event-record lookup): over side widens to `true`,
+    // under side keeps the classical `HT <= 500`.
+    let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
+    assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
+    let Formula::And(e) = &v[1] else { panic!("{:?}", v[1]) };
+    let Formula::Dual { plus, minus, .. } = &e[0] else { panic!("{:?}", e[0]) };
+    assert_eq!(**plus, Formula::True);
+    assert_eq!(**minus, atom1(ht, Rel::Le, 500.0));
+    assert_eq!(e[1], atom1(met, Rel::Gt, 200.0));
 }
 
 #[test]
@@ -410,13 +427,13 @@ fn ternary_missing_else_is_true() {
     let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
     let g = atom1(ht, Rel::Gt, 500.0);
-    assert_eq!(
-        enc.formula,
-        Formula::Or(vec![
-            Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]),
-            g.not(),
-        ])
-    );
+    // Missing-else ⇒ `true` branch guarded by `¬g`, which goes through the
+    // absent-property hedge (HT is an event-record lookup).
+    let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
+    assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
+    let Formula::Dual { plus, minus, .. } = &v[1] else { panic!("{:?}", v[1]) };
+    assert_eq!(**plus, Formula::True);
+    assert_eq!(**minus, atom1(ht, Rel::Le, 500.0));
 }
 
 // ---- row: [] / ][ bands ----------------------------------------------------
@@ -673,24 +690,48 @@ fn region_with_no_membership_statements_is_true() {
 // ---- polarity safety through reject (Dual branch swap) ---------------------
 
 #[test]
-fn reject_of_unindexed_cut_swaps_dual_branches() {
+fn reject_of_unindexed_cut_is_guarded_swap() {
+    // Pre-guard this asserted the pure Dual branch swap
+    // (¬plus ⊆ ¬R ⊆ ¬minus). The swap alone is the absent-property seam in
+    // Dual form: the swapped OVER (`¬minus`) constrains element-property
+    // quantities, so two complementary unindexed rejects over an
+    // absence event would fabricate a DISJOINT. The guard wraps the swap:
+    // the reject's UNDER is still exactly the swapped classical negation
+    // (projection-equal to ¬plus — sound under absence), while its OVER
+    // widens every property-quantity atom to `true`.
     let (sel, _) = encode("region A\n  select Jet.pt > 30\n", 0);
     let (rej, _) = encode("region B\n  reject Jet.pt > 30\n", 0);
-    assert_eq!(rej.formula, sel.formula.clone().not());
-    let Formula::Dual { plus, minus, .. } = &sel.formula else {
-        panic!("expected Dual select, got {:?}", sel.formula);
-    };
-    let Formula::Dual {
-        plus: rplus,
-        minus: rminus,
-        ..
-    } = &rej.formula
-    else {
-        panic!("expected Dual reject, got {:?}", rej.formula);
-    };
-    // ¬(minus ⊆ R ⊆ plus) ⇒ ¬plus ⊆ ¬R ⊆ ¬minus: branches swap.
-    assert_eq!(**rplus, (**minus).clone().not());
-    assert_eq!(**rminus, (**plus).clone().not());
+    let exact = sel.formula.clone().not();
+    // Under side: projection-identical to the exact swapped negation.
+    assert_eq!(
+        rej.formula.under(),
+        exact.under(),
+        "reject under must stay the classical swap"
+    );
+    // Over side: the widen is per-atom, so the sound SIZE skeleton of the
+    // swapped negation survives (sizes are total on loader-valid events)
+    // while every per-element pt atom — the possibly-absent part — is
+    // widened away. Assert exactly that: the superset constrains size
+    // quantities only.
+    let (_, hir) = encode("region A\n  select Jet.pt > 30\n", 0);
+    fn quantities(f: &QFormula, out: &mut Vec<adl_sema::QuantityId>) {
+        match f {
+            QFormula::Atom(a) => out.extend(a.terms().iter().map(|(_, q)| *q)),
+            QFormula::And(v) | QFormula::Or(v) => v.iter().for_each(|p| quantities(p, out)),
+            QFormula::True | QFormula::False => {}
+        }
+    }
+    let mut qs = Vec::new();
+    quantities(rej.formula.over().qformula(), &mut qs);
+    assert!(!qs.is_empty(), "size skeleton must survive the widen");
+    for q in qs {
+        assert!(
+            matches!(hir.table.quantity(q), adl_sema::Quantity::Size(_)),
+            "over side may constrain only total quantities, found {:?}",
+            hir.table.quantity(q)
+        );
+    }
+    assert!(matches!(rej.formula, Formula::Dual { .. }));
 }
 
 #[test]

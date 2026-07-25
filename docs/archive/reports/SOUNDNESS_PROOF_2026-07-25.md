@@ -95,7 +95,8 @@ holds of `v(e)` for every `e ∈ E` (each family carries a written physical
 justification and an assumption tag; the pT-ordering family is sound
 because the loader *rejects* non-pT-descending events).
 
-> **Discovered seam (2026-07-25, by the cross-oracle work; live, gate-held).**
+> **Discovered seam (2026-07-25, by the cross-oracle work). Broader than
+> first recorded — see the escalation note at the end of this box.**
 > P3 quantifies over `v(e)` — but `v` is *partial*, and the interpreter's
 > semantics for an **absent property** is a decidable `false` for every
 > comparison over it: for a btag-less electron, `BTag(e) ≥ 0` and
@@ -110,6 +111,28 @@ because the loader *rejects* non-pT-descending events).
 > on the full opaque-masking battery — that layer's invariants cost five
 > verification rounds) or an explicit input-completeness assumption on `E`
 > plus axiom instantiation guarded by property presence. §8 item 1.
+>
+> **Escalation (same day, follow-up verification).** The seam is not
+> limited to axiom instantiation, and it is not always gate-held. The
+> absorbing-false is **anti-monotone under negation**: a `reject`/`not`
+> over an absent property evaluates *true* (inner comparison false →
+> reject no-op), while its classical encoding `¬(q ⋈ k)` constrains a
+> total valuation. Two complementary rejects over the same possibly-absent
+> property therefore produce a false PROVEN DISJOINT **with no axiom
+> involved, through the interval path** — this breaks P2's definedness
+> premise (and hence L1-upper) directly. Verified instances: on
+> `BTag(eles[0])` the gate refutes it (battery electrons lack btag); on
+> `BTag(jets[0])` it **ships** — `proven_disjoint`, `refutations: 0`
+> (battery jets carry btag, so the gate is blind), while the interpreter
+> accepts a legal btag-less-jet JSONL event into both regions. The gate's
+> reach equals the synthetic battery's absence pattern; the CLI never
+> exposes `sample_gate: 0`, but that only bounds who can *disable* the
+> net, not what it can *see*. This is the first known shipping false
+> PROVEN since the merge-path fixes, and item 1 of §8 accordingly rises
+> from "decide the semantics" to "required for the soundness claim over
+> partial events". Interim scope note: real Delphes-ingested events carry
+> the mapped properties, so the reachable inputs are hand-written or
+> partially-populated JSONL — but `E` as defined admits them.
 
 **P4 — Refutation validity.** When the engine treats a frame as UNSAT, the
 asserted conjunction is truly unsatisfiable over ℚ. Two independent
@@ -279,10 +302,52 @@ the hardening list (§8).
 
 ## 8. Known gaps this proof does NOT close (hardening list, in order)
 
-1. **The absent-property seam** (P3 box above): a wrong SUBSET derivation
-   exists today, held only by the default-on sampling gate. Decide the
-   semantics (Unknown-for-absent vs input-completeness + guarded
-   instantiation) and re-run the full opaque-masking battery either way.
+1. **The absent-property seam** (P3 box above). Owner decision taken
+   2026-07-25: keep the interpreter's NaN semantics; model definedness on
+   the prover side.
+   - **Phase A — LANDED same day**: `guarded_not` in the encoder replaces
+     any negation whose scope mentions a quantity that can soft-false on
+     absence (everything except collection sizes and MET components, whose
+     absence is a hard error) with the polarity-split hedge
+     `Dual{plus: true, minus: classical ¬}`: the superset side is widened
+     to `true` (an absence event satisfies the negation, and no atom can
+     say "absent"), while the subset side keeps the classical negation,
+     which remains sound (absence makes the negation true regardless; a
+     present value behaves classically; inner Unknowns stay Kleene). This
+     killed the shipping complementary-reject false DISJOINT class at the
+     derivation level (verified: no verdict, no gate reliance) while
+     preserving overlap witnesses and subset inners through rejects
+     (regression pins CE-1/CE-3). Negation placement is canonicalized
+     BEFORE the guard (`not not c → c`; `reject not X → select X`) so
+     logically-equivalent spellings encode identically — pinned
+     mechanically (`guarded_negation_is_rewrite_invariant`) after the
+     metamorphic battery caught the first, blunt version flipping verdicts
+     across rewrites. Cost, measured: 18 of 834 corpus PROVEN DISJOINT
+     (−2.2%) moved to POSSIBLY, each leaning on a negated
+     possibly-absent-property atom; three truly-disjoint/-empty
+     complement-of-one-predicate pins (`features-angular_06`, legacy
+     `not_tag`, CE-7's `¬d0 ∧ d0` emptiness) re-pinned fail-closed with
+     restore markers. No overlap or candidate verdict moved.
+   - **Still open in the positive arm — demonstrated same day**: PROVEN
+     SUBSET / bin coverage consume L1-lower, where an axiom can discharge
+     the inner side over an absent property with no negation involved:
+     `A: size(jets) ≥ 2` vs `B: select BTag(jets[-1]) ≥ 0` ships
+     `subset A-in-B: true` (TAG supplies the atom; battery jets carry
+     btag, so the gate is blind), while the interpreter rejects a legal
+     btag-less-jet event from B. Interim: widen the gate battery with
+     absence-pattern events so every enumerated pattern is gate-held;
+     closed for real by Phase B (TAG cannot discharge `p_q = 1 ∧ atom`
+     without proving presence). PROVEN DISJOINT and PROVEN OVERLAPPING
+     are unaffected: disjointness consumes only L1-upper (positive atoms
+     imply presence; negations are guarded), overlap is
+     interpreter-validated by construction.
+   - **Phase B — OPEN, the real fix**: presence-indicator encoding
+     (`p_q ∈ {0,1}` twin per possibly-absent quantity; cuts encode
+     `p_q = 1 ∧ atom`, so negation is faithful automatically). Restores
+     the complement pins and the 18, makes P2 provable, extends to the
+     positive-cut/axiom residual (the TAG-subset instance, still
+     gate-held). Requires: spec, sampler absence patterns in the oracles,
+     corpus A/B, the full opaque-masking battery.
 2. **Certify the other UNSAT shapes** (empty, subset, bins, and the XSUB
    derivation frames): mechanical extensions of `certify_disjoint`'s
    pattern (audit F3), removing bare-solver trust everywhere.

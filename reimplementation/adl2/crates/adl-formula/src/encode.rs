@@ -431,6 +431,107 @@ impl Encoder<'_> {
         Formula::Unknown(self.diags.push(span, reason))
     }
 
+    /// Negation with the absent-property fail-closed guard.
+    ///
+    /// The interpreter evaluates a comparison over an ABSENT value as a
+    /// decidable soft `false` (the ROOT/C++ NaN convention), so under a
+    /// `not`/`reject` the statement holds precisely BECAUSE the data is
+    /// missing — while the classical negation `¬(q ⋈ k)` constrains a total
+    /// valuation. That mismatch is anti-monotone: two complementary rejects
+    /// over the same possibly-absent property fabricated a PROVEN DISJOINT
+    /// through the interval path (both regions accept a property-less event).
+    ///
+    /// Sound negation is therefore allowed only over quantities whose
+    /// absence can never yield a soft `false`:
+    /// - collection sizes (total on every loader-valid event), and
+    /// - MET components (a missing MET vector is a HARD evaluation error —
+    ///   the event is decidably in no MET-cutting region).
+    /// A negation whose scope mentions any other exact atom degrades to
+    /// `Unknown` — over-side true, under-side false — which can only weaken
+    /// verdicts. Interim until definedness (presence) modeling lands; see
+    /// SOUNDNESS_PROOF_2026-07-25 §8 item 1.
+    fn guarded_not(&mut self, f: Formula, span: Span) -> Formula {
+        if self.negation_safe(&f) {
+            return f.not();
+        }
+        // Polarity-split hedge over the NNF negation `n = ¬f` (Formula::not
+        // pushes negations to the leaves, so every atom in `n` occurs
+        // positively):
+        // - OVER side: `n` with every atom over a soft-false-able quantity
+        //   widened to `true`. An absence event satisfies the negation (the
+        //   inner comparison soft-fails) but no atom can express absence, so
+        //   a superset may constrain ONLY quantities that are total or
+        //   hard-error on loader-valid events; widening the unsafe atoms —
+        //   and nothing else — keeps every size/MET constraint's precision
+        //   (e.g. a comb-existence negation keeps its `size < 1` bound).
+        // - UNDER side: the classical `n`, which IS sound: absence makes the
+        //   negation true regardless of the valuation; a present value
+        //   behaves classically (P2); inner Unknowns stay Kleene. This
+        //   preserves overlap witnesses and subset inners through rejects
+        //   (regression pins CE-1/CE-3).
+        let n = f.not();
+        let plus = Self::widen_unsafe(self, &n);
+        let why = self.diags.push(
+            span,
+            "negation over a possibly-absent quantity: superset side keeps only \
+             total-quantity constraints (a missing value fails the inner \
+             comparison, so the negation would hold); subset side kept classical \
+             (sound under absence). Pending definedness modeling",
+        );
+        Formula::Dual {
+            plus: Box::new(plus),
+            minus: Box::new(n),
+            why,
+        }
+    }
+
+    /// The over-side widening for a guarded negation: `f` is in NNF (no
+    /// negation nodes), so every atom occurs positively and replacing an
+    /// atom by `true` is a monotone weakening. Unsafe-quantity atoms become
+    /// `true`; `And`/`Or` simplify through [`fand`]/[`forr`]; a nested
+    /// `Dual`'s over side is its `plus`, so only that branch is widened.
+    fn widen_unsafe(&self, f: &Formula) -> Formula {
+        match f {
+            Formula::True | Formula::False | Formula::Unknown(_) => f.clone(),
+            Formula::Atom(a) => {
+                let safe = a.terms().iter().all(|(_, q)| {
+                    matches!(
+                        self.table.quantity(*q),
+                        Quantity::Size(_) | Quantity::EventScalar(ScalarSource::MetProp(_))
+                    )
+                });
+                if safe { f.clone() } else { Formula::True }
+            }
+            Formula::And(v) => fand(v.iter().map(|p| self.widen_unsafe(p)).collect()),
+            Formula::Or(v) => forr(v.iter().map(|p| self.widen_unsafe(p)).collect()),
+            Formula::Dual { plus, minus, why } => Formula::Dual {
+                plus: Box::new(self.widen_unsafe(plus)),
+                minus: minus.clone(),
+                why: *why,
+            },
+        }
+    }
+
+    /// May `f` be negated exactly? True iff every exact atom is over a
+    /// quantity that is total-or-hard-error on loader-valid events.
+    /// `Unknown`/`Dual` sub-formulas negate soundly by construction
+    /// (`Unknown` stays `Unknown`; `Dual` swaps branches).
+    fn negation_safe(&self, f: &Formula) -> bool {
+        match f {
+            Formula::True | Formula::False | Formula::Unknown(_) => true,
+            Formula::Atom(a) => a.terms().iter().all(|(_, q)| {
+                matches!(
+                    self.table.quantity(*q),
+                    Quantity::Size(_) | Quantity::EventScalar(ScalarSource::MetProp(_))
+                )
+            }),
+            Formula::And(v) | Formula::Or(v) => v.iter().all(|p| self.negation_safe(p)),
+            Formula::Dual { plus, minus, .. } => {
+                self.negation_safe(plus) && self.negation_safe(minus)
+            }
+        }
+    }
+
     /// Small-constant atom used by the OPEN-1 expansion and triggers;
     /// constants are tiny integers.
     fn simple_atom(&mut self, q: QuantityId, rel: Rel, k: i64) -> Formula {
@@ -460,8 +561,22 @@ impl Encoder<'_> {
     fn stmt(&mut self, stmt: &HirRegionStmt) -> Option<Formula> {
         match stmt {
             HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => Some(self.boolean(n)),
-            // `reject c` is the exact negation of `c` (NNF).
-            HirRegionStmt::Reject(n) => Some(self.boolean(n).not()),
+            // `reject c` is the negation of `c` — exact only where negation
+            // is sound over absent data (see `guarded_not`). A directly-
+            // nested `not` cancels against the reject's implicit negation
+            // BEFORE the guard (`reject not X` ≡ `select X`), mirroring the
+            // double-negation peephole in `boolean`, so `reject c` and
+            // `select not c` encode identically under every negation
+            // placement (metamorphic invariants `reject ≡ select not`,
+            // `not not c ≡ c`).
+            HirRegionStmt::Reject(n) => {
+                if let HKind::Not(inner) = &n.kind {
+                    Some(self.boolean(inner))
+                } else {
+                    let f = self.boolean(n);
+                    Some(self.guarded_not(f, n.span))
+                }
+            }
             HirRegionStmt::Inherit { region, span } => Some(self.region(*region, *span)),
             // Bins partition the region's events; they do not constrain
             // membership (SPEC_ANALYSIS §1/§5).
@@ -494,7 +609,21 @@ impl Encoder<'_> {
                 let parts = v.iter().map(|n| self.boolean(n)).collect();
                 forr(parts)
             }
-            HKind::Not(inner) => self.boolean(inner).not(),
+            // Double negation is eliminated BEFORE the absent-property guard
+            // so `not not c` and `c` encode identically: the guard's
+            // precision must not depend on syntactic negation placement
+            // (metamorphic invariant `not not c ≡ c`). Sound in every layer:
+            // classical, Kleene (¬¬x = x in K3), and the interpreter's
+            // soft-false absorbing semantics (¬¬ is the identity on decided
+            // values).
+            HKind::Not(inner) if matches!(&inner.kind, HKind::Not(_)) => {
+                let HKind::Not(inner2) = &inner.kind else { unreachable!() };
+                self.boolean(inner2)
+            }
+            HKind::Not(inner) => {
+                let f = self.boolean(inner);
+                self.guarded_not(f, node.span)
+            }
             HKind::Cmp { .. } | HKind::Band { .. } => self.leaf(node),
             // `g ? a : b` ≡ `(g∧a) ∨ (¬g∧b)`; missing/ALL branch is true
             // (SPEC_LANGUAGE §4.4).
@@ -504,7 +633,8 @@ impl Encoder<'_> {
                 let e = els
                     .as_deref()
                     .map_or(Formula::True, |els| self.boolean(els));
-                forr(vec![fand(vec![g.clone(), t]), fand(vec![g.not(), e])])
+                let ng = self.guarded_not(g.clone(), guard.span);
+                forr(vec![fand(vec![g, t]), fand(vec![ng, e])])
             }
             // `trigger t` ⇒ atom `trig(t) = 1`.
             HKind::Quantity(q) => match self.table.quantity(*q) {

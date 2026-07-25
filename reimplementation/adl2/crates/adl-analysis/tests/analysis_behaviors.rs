@@ -858,3 +858,47 @@ fn certification_tiers_disjoint_verdicts() {
     assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
     assert_eq!(r.pairwise[0].certified, None);
 }
+
+/// The absent-property guard must be POSITION-INVARIANT: `reject c` and
+/// `select not c` funnel through the same guarded negation, so their
+/// region encodings must be byte-identical — otherwise the metamorphic
+/// battery's `reject ≡ select not` invariant flips verdicts wherever the
+/// guard fires. Same for `not not c ≡ c` (double negation is eliminated
+/// before the guard).
+#[test]
+fn guarded_negation_is_rewrite_invariant() {
+    use adl_analysis::encode::encode_unit;
+    let ext = ExtDecls::legacy();
+    let enc = |body: &str| {
+        let src = format!(
+            "object jets\n  take Jet\nobject eles\n  take Ele\nregion R\n  select size(jets) >= 1\n  {body}\n"
+        );
+        let mut hir = adl_sema::analyze_str(&src, "u", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags), "{:?}", hir.diags);
+        let unit = encode_unit(&mut hir, &src);
+        let r = &unit.regions[0];
+        r.stmts
+            .iter()
+            .map(|s| (s.over().qformula().clone(), s.under().qformula().clone()))
+            .collect::<Vec<_>>()
+    };
+    // A body that trips the guard (property + angular quantities).
+    let x = "dR(jets, eles) < 0.4 and BTag(jets[0]) == 1 and size(eles) <= 2";
+
+    let reject = enc(&format!("reject {x}"));
+    let select_not = enc(&format!("select not ({x})"));
+    assert_eq!(reject, select_not, "reject c must encode exactly as select not c");
+
+    let base = enc(&format!("select {x}"));
+    let notnot = enc(&format!("select not not ({x})"));
+    assert_eq!(base, notnot, "not not c must encode exactly as c");
+
+    let n1 = enc(&format!("reject not ({x})"));
+    let n3 = enc(&format!("reject not not not ({x})"));
+    assert_eq!(n1, n3, "odd negation stacks must collapse identically");
+
+    // The reject's implicit negation cancels a directly-nested `not`, so
+    // `reject not X` is exactly `select X` — full precision, no guard.
+    let plain = enc(&format!("select {x}"));
+    assert_eq!(n1, plain, "reject not X must encode exactly as select X");
+}

@@ -15,12 +15,12 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   noncompressedHT1  27/27   yes
   noncompressedHT2  27/27   yes
   noncompressedHT3  26/26   yes
-  compressed        27/27   yes    EMPTY — provably selects no events
-  compressednb1     29/29   yes    EMPTY — provably selects no events
-  compressednb2     28/28   yes    EMPTY — provably selects no events
-  compressednc1     29/29   yes    EMPTY — provably selects no events
-  compressednc2     28/28   yes    EMPTY — provably selects no events
-  compressednbnc0   28/28   yes    EMPTY — provably selects no events
+  compressed        26/26   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressednb1     28/28   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressednb2     27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressednc1     28/28   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressednc2     27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressednbnc0   27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
 
 == verdict matrix ==
   D disjoint   O overlapping   s subset (overlap)   c candidate (unvalidated)   ? possibly   U unknown   E empty region

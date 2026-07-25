@@ -102,6 +102,87 @@ region RB
     );
 }
 
+/// ABSENT-PROPERTY seam (CRITICAL, 2026-07-25): the interpreter evaluates a
+/// comparison over an ABSENT property as a decidable soft `false` (NaN
+/// convention), so a `reject` over it HOLDS precisely because the data is
+/// missing — while the classical encoding `¬(q ⋈ k)` constrains a total
+/// valuation. Two complementary rejects over the same possibly-absent
+/// property therefore fabricated a PROVEN DISJOINT through the interval
+/// path (no axiom, no solver needed): a btag-less-jet event is accepted by
+/// BOTH regions (neither veto fires) — verified via `run` on a real JSONL
+/// event. The battery's jets carry btag, so the sampling gate was blind and
+/// the false verdict SHIPPED. Ground truth: NOT disjoint over loader-valid
+/// events. The encoder's `guarded_not` now degrades such negations to
+/// Unknown (fail-closed) pending definedness modeling.
+#[test]
+fn absent_property_complementary_rejects_must_not_prove_disjoint() {
+    let src = "\
+object jets
+  take Jet
+region RA
+  select size(jets) >= 1
+  reject BTag(jets[0]) > 0.5
+region RB
+  select size(jets) >= 1
+  reject BTag(jets[0]) <= 0.5
+";
+    let ext = ExtDecls::legacy();
+    // The fabrication fired through the solver-free interval path, so the
+    // pin must hold without a solver too (same rationale as S1 above).
+    let r0 =
+        analyze_source(src, "absent.adl", &ext, &opts(SolverChoice::NoSolver)).expect("resolves");
+    let p0 = find_pair(&r0.pairwise, "RA", "RB");
+    assert_ne!(
+        p0.kind,
+        VerdictKind::ProvenDisjoint,
+        "complementary rejects over a possibly-absent property must not prove \
+         via the interval path: {}",
+        p0.reason
+    );
+
+    let r = analyze_source(src, "absent.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver != "none" {
+        let p = find_pair(&r.pairwise, "RA", "RB");
+        assert_ne!(p.kind, VerdictKind::ProvenDisjoint, "{}", p.reason);
+        // And the guard must not have traded the false proof for a gate
+        // refutation — the claim should never be DERIVED at all now.
+        assert_eq!(
+            r.sampling.as_ref().map(|s| s.refutations),
+            Some(0),
+            "the guard should prevent the derivation, not rely on the gate"
+        );
+    }
+}
+
+/// Same seam, positive/negative split: `select q ⋈ k` (positive) is still
+/// exactly encodable — a decided-true cut implies the property was present —
+/// so sizes-and-selects proofs must survive the guard (soundness must not
+/// cost all precision). The b-veto idiom via sizes is the canonical case.
+#[test]
+fn size_based_vetoes_still_prove_after_the_absent_guard() {
+    let src = "\
+object jets
+  take Jet
+object bjets
+  take jets
+  select btag == 1
+region ZeroB
+  select size(bjets) == 0
+region MultiB
+  select size(bjets) > 0
+";
+    let ext = ExtDecls::legacy();
+    let r0 =
+        analyze_source(src, "veto.adl", &ext, &opts(SolverChoice::NoSolver)).expect("resolves");
+    let p0 = find_pair(&r0.pairwise, "ZeroB", "MultiB");
+    assert_eq!(
+        p0.kind,
+        VerdictKind::ProvenDisjoint,
+        "size-complement vetoes are negation-free and must keep proving: {}",
+        p0.reason
+    );
+}
+
 /// S2 (CRITICAL, RC-A): a function-wrapped element property (`sqrt(pt)`) on
 /// different parent blocks degenerates to one context-free opaque key, so
 /// `sqrt(pt)` over Jet and over Muo share a QuantityId and EPRED fabricates a

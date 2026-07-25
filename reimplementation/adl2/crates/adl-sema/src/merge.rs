@@ -349,6 +349,15 @@ impl Merger {
         match key {
             // The opaque key is a self-contained render string (identity),
             // carrying no unit-local ids — kept verbatim.
+            // NOT namespaced by unit, unlike `QuantityArg::Opaque` below.
+            // Safe only because the fragment gate blocks this upstream: an
+            // opaque sort shape drops its region out of the lowered fragment,
+            // and any indexed access after a region-level `sort` is dropped
+            // too, so no quantity — and therefore no proof — can rest on a
+            // collided key. If sorted-element reasoning is ever unlocked,
+            // namespace this the way `remap_arg` does or two units' different
+            // opaque keys can unify (same lossy-render class as the
+            // ElemPredInterner fail-closed rule).
             crate::quantity::SortKey::Opaque(s) => crate::quantity::SortKey::Opaque(s),
             // `Prop` carries a unit-local PropId; re-intern by key/display.
             crate::quantity::SortKey::Prop(p) => {

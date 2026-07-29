@@ -30,10 +30,79 @@ use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// Filename pattern written by [`write_bundles`]:
+/// `<unit>__NNN__<a>__<b>.json` (regex `^.+__[0-9]{3}__.+__.+\.json$`).
+fn is_combine_bundle_filename(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    let b = stem.as_bytes();
+    // Find a `__DDD__` separator with nonempty prefix and a `.+__.+` suffix.
+    for i in 0..b.len().saturating_sub(6) {
+        if b[i] == b'_'
+            && b[i + 1] == b'_'
+            && b[i + 2].is_ascii_digit()
+            && b[i + 3].is_ascii_digit()
+            && b[i + 4].is_ascii_digit()
+            && b[i + 5] == b'_'
+            && b[i + 6] == b'_'
+            && i > 0
+        {
+            let rest = &stem[i + 7..];
+            if let Some(j) = rest.find("__") {
+                if j > 0 && j + 2 < rest.len() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Before writing a new `--combine` run, remove pre-existing files in `dir`
+/// that match the exact bundle naming pattern this tool writes. Never
+/// recurses into subdirectories; never deletes anything else. Logs how many
+/// were removed (including zero).
+fn clean_stale_bundles(dir: &Path) -> Result<(), CliError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CliError::Usage(format!("cannot create {}: {e}", dir.display())))?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| CliError::Usage(format!("cannot read {}: {e}", dir.display())))?;
+    let mut removed = 0usize;
+    for ent in entries {
+        let ent = ent
+            .map_err(|e| CliError::Usage(format!("cannot read an entry of {}: {e}", dir.display())))?;
+        let ft = ent.file_type().map_err(|e| {
+            CliError::Usage(format!("cannot stat {}: {e}", ent.path().display()))
+        })?;
+        if !ft.is_file() {
+            continue;
+        }
+        let fname = ent.file_name();
+        let Some(name) = fname.to_str() else {
+            continue;
+        };
+        if !is_combine_bundle_filename(name) {
+            continue;
+        }
+        std::fs::remove_file(ent.path())
+            .map_err(|e| CliError::Usage(format!("cannot remove {}: {e}", ent.path().display())))?;
+        removed += 1;
+    }
+    eprintln!(
+        "removed {removed} stale certificate bundle(s) from {}",
+        dir.display()
+    );
+    Ok(())
+}
+
 /// Write each `--combine` bundle to `DIR/<unit>__<idx>__<a>__<b>.json`
 /// (names sanitized to a filename-safe alphabet; the index keeps files
 /// unique and in report order). Says on stderr how many were written —
 /// including zero, so "no bundles" is never read as "wrote them".
+///
+/// Call [`clean_stale_bundles`] once before the first write into `dir` so a
+/// re-run never leaves a demoted pair's prior bundle behind.
 fn write_bundles(
     dir: &Path,
     unit: &str,
@@ -175,15 +244,23 @@ pub fn run(
     }
     let multi = files.len() > 1;
     let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    // Disambiguate same-basename inputs the same way `--cross` does, so
+    // multi-file `--combine` filenames (and `--json` `"unit"` fields) never
+    // collide / overwrite.
+    let labels = unit_labels(files);
+
+    if let Some(dir) = combine {
+        clean_stale_bundles(dir)?;
+    }
 
     let mut worst: u8 = 0;
     let mut json_reports: Vec<String> = Vec::new();
 
     for (i, file) in files.iter().enumerate() {
         let src = read_file(file)?;
-        let name = unit_name(file);
+        let name = &labels[i];
 
-        let report = match analyze_source(&src, &name, &ext, &opts) {
+        let report = match analyze_source(&src, name, &ext, &opts) {
             Ok(r) => r,
             Err(e) => {
                 eprint!("{}", e.rendered);
@@ -193,9 +270,9 @@ pub fn run(
             }
         };
 
-        warn_if_no_solver(&name, &report, no_solver);
+        warn_if_no_solver(name, &report, no_solver);
         if let Some(dir) = combine {
-            write_bundles(dir, &name, &report)?;
+            write_bundles(dir, name, &report)?;
         }
 
         if verbose {
@@ -341,6 +418,7 @@ fn run_cross(
     let report = analyze_hir(&mut merged, "", ext, &opts);
     warn_if_no_solver("cross", &report, opts.solver == SolverChoice::NoSolver);
     if let Some(dir) = combine {
+        clean_stale_bundles(dir)?;
         write_bundles(dir, "cross", &report)?;
     }
 

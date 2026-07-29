@@ -36,6 +36,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// OPEN-1 bounded-expansion depth (PHASE0_RESOLUTIONS: `k = 3`).
 pub const OPEN1_BOUND: u32 = 3;
 
+/// Cap on the width of a static slice (`jets[0:N]`) that a boolean reducer
+/// may expand exactly. Wider user-controlled bounds would iterate
+/// unboundedly (`any(jets[0:4294967295].pt > 30)`); beyond this cap the
+/// reducer encodes as [`Formula::Unknown`] (sound — weakens to POSSIBLY).
+pub const MAX_STATIC_SLICE_REDUCE: u32 = 1024;
+
 /// Per-binder index bound for the 2D composite-existence expansion (P3). A
 /// `k`-binder combination expands `COMB2D_BOUND^k` index tuples within the
 /// bound (e.g. `2` ⇒ one disjoint pair `(0,1)` / four cartesian pairs), with
@@ -282,60 +288,171 @@ fn reduce_body_key(node: &HNode) -> Option<String> {
     })
 }
 
-/// Number of `Add`/`Sub` nodes anywhere in an arithmetic source tree
-/// (`Mul`/`Div`/`Pow` are not counted — only additive associativity and
-/// cancellation are the f64-faithfulness hazard).
-fn count_add_sub(node: &HNode) -> u32 {
+/// True when `node` contains no event quantities — only numerals and
+/// arithmetic/`Neg`/`Abs`/`min`/`max` over them. Such trees fold by emulating
+/// the interpreter's stepwise f64 evaluation (see [`eval_const_f64`]).
+fn is_const_tree(node: &HNode) -> bool {
     match &node.kind {
-        HKind::Binary {
-            op: ArithOp::Add | ArithOp::Sub,
-            lhs,
-            rhs,
-        } => 1 + count_add_sub(lhs) + count_add_sub(rhs),
-        HKind::Binary { lhs, rhs, .. } => count_add_sub(lhs) + count_add_sub(rhs),
-        HKind::Neg(a) | HKind::Abs(a) => count_add_sub(a),
-        _ => 0,
+        HKind::Num(_) => true,
+        HKind::Neg(a) | HKind::Abs(a) => is_const_tree(a),
+        HKind::Binary { lhs, rhs, .. } => is_const_tree(lhs) && is_const_tree(rhs),
+        HKind::ScalarMinMax { args, .. } => args.iter().all(is_const_tree),
+        _ => false,
     }
 }
 
-/// Every numeric literal that is an operand of an `Add`/`Sub` must be dyadic
-/// (`fl(c) == c`), else folding it across the comparison is not f64-faithful:
-/// `MET + 0.1 > 0.3` folds to the exact atom `MET > 0.2`, but the interpreter
-/// computes `fl(MET + 0.1) > 0.3`, which diverges at the boundary.
-fn additive_consts_dyadic(node: &HNode) -> bool {
+/// Absolute value is exactly a power of two (`±2^k` or `±1/2^k`, `k ≥ 0`).
+/// Multiplication/division by such a constant is IEEE-exact on finite,
+/// non-subnormal results. Overflow/underflow to non-finite makes the
+/// interpreter's enclosing comparison false (§4.4) — over-approximation-safe
+/// on the UNSAT side (a False cut strengthens neither A⁺ nor B⁺ incorrectly
+/// when the analyzer keeps the exact scaled atom: models of the atom that
+/// overflow are a superset concern only for SAT, which is re-validated).
+fn is_power_of_two_rat(r: &Rat) -> bool {
+    if r.is_zero() {
+        return false;
+    }
+    let p = r.abs().to_parts();
+    let is_pow2 = |s: &str| -> bool {
+        s.parse::<u64>()
+            .ok()
+            .is_some_and(|n| n != 0 && n.is_power_of_two())
+    };
+    (p.numerator == "1" && is_pow2(&p.denominator))
+        || (p.denominator == "1" && is_pow2(&p.numerator))
+}
+
+/// Stepwise f64 evaluation of a constant-only tree, matching
+/// `adl-interp::eval` `num`/`num3` for `Num`/`Neg`/`Abs`/`Binary`/`ScalarMinMax`
+/// (left-to-right operands, `powf` for `^`). Non-finite results are
+/// [`LinErr::NonFinite`] (§4.4).
+fn eval_const_f64(node: &HNode) -> Result<f64, LinErr> {
     match &node.kind {
-        HKind::Binary {
-            op: ArithOp::Add | ArithOp::Sub,
-            lhs,
-            rhs,
-        } => {
-            for side in [lhs.as_ref(), rhs.as_ref()] {
-                if let HKind::Num(s) = &side.kind {
-                    match parse_rat(s) {
-                        Some(c) if c.is_dyadic() => {}
-                        _ => return false,
-                    }
-                }
+        HKind::Num(s) => {
+            let v = s.parse::<f64>().map_err(|_| LinErr::BadLiteral)?;
+            if v.is_finite() {
+                Ok(v)
+            } else {
+                Err(LinErr::BadLiteral)
             }
-            additive_consts_dyadic(lhs) && additive_consts_dyadic(rhs)
         }
-        HKind::Binary { lhs, rhs, .. } => {
-            additive_consts_dyadic(lhs) && additive_consts_dyadic(rhs)
+        HKind::Neg(a) => Ok(-eval_const_f64(a)?),
+        HKind::Abs(a) => Ok(eval_const_f64(a)?.abs()),
+        HKind::Binary { op, lhs, rhs } => {
+            let a = eval_const_f64(lhs)?;
+            let b = eval_const_f64(rhs)?;
+            let v = match op {
+                ArithOp::Add => a + b,
+                ArithOp::Sub => a - b,
+                ArithOp::Mul => a * b,
+                ArithOp::Div => a / b,
+                ArithOp::Pow => a.powf(b),
+            };
+            if v.is_finite() {
+                Ok(v)
+            } else {
+                Err(LinErr::NonFinite)
+            }
         }
-        HKind::Neg(a) | HKind::Abs(a) => additive_consts_dyadic(a),
-        _ => true,
+        HKind::ScalarMinMax { kind, args } => {
+            let mut acc: Option<f64> = None;
+            for a in args {
+                let v = eval_const_f64(a)?;
+                acc = Some(match acc {
+                    None => v,
+                    Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
+                    Some(p) => p.max(v),
+                });
+            }
+            match acc {
+                Some(v) if v.is_finite() => Ok(v),
+                Some(_) => Err(LinErr::NonFinite),
+                None => Err(LinErr::NonLinear(
+                    "empty scalar min/max has no constant value".to_owned(),
+                )),
+            }
+        }
+        _ => Err(LinErr::NonLinear(
+            "not a constant-only arithmetic tree".to_owned(),
+        )),
     }
 }
 
-/// Whether a comparison-operand source may be flattened to a shared exact
-/// linear atom (`Σcᵢqᵢ`) without the analyzer's exact value diverging from the
-/// interpreter's stepwise-f64 evaluation. Sound f64-faithfulness guard: at
-/// most one additive op AND no non-dyadic additive constant. A non-faithful
-/// source is routed to `intern_opaque_scalar` (structure-keyed) so two regions
-/// whose sources f64-evaluate differently never unify into a false PROVEN
-/// DISJOINT/SUBSET/EMPTY (the UNSAT side has no witness oracle).
-fn is_f64_faithful(node: &HNode) -> bool {
-    count_add_sub(node) <= 1 && additive_consts_dyadic(node)
+/// Rationalize a constant-only tree by f64-emulating the interpreter, then
+/// bridging via [`Rat::from_decimal_f64`] (shortest-decimal).
+fn const_tree_rat(node: &HNode) -> Result<Rat, LinErr> {
+    let v = eval_const_f64(node)?;
+    Rat::from_decimal_f64(v).ok_or(LinErr::NonFinite)
+}
+
+/// Every quantity leaf is [`Quantity::Size`] and every numeric literal is an
+/// integer [`Rat`]. f64 integer arithmetic is exact below 2⁵³, so size
+/// arithmetic may flatten exactly.
+fn is_integer_valued_tree(node: &HNode, table: &QuantityTable) -> bool {
+    match &node.kind {
+        HKind::Num(s) => parse_rat(s).is_some_and(|r| r.is_integer()),
+        HKind::Quantity(q) => matches!(table.quantity(*q), Quantity::Size(_)),
+        HKind::Neg(a) | HKind::Abs(a) => is_integer_valued_tree(a, table),
+        HKind::Binary {
+            op: ArithOp::Add | ArithOp::Sub | ArithOp::Mul,
+            lhs,
+            rhs,
+        } => is_integer_valued_tree(lhs, table) && is_integer_valued_tree(rhs, table),
+        _ => false,
+    }
+}
+
+/// Side of an integer-valued `+`/`-`/`*`: a const integer tree, or a
+/// quantity-bearing exact-f64-linear tree.
+fn integer_side_ok(node: &HNode, table: &QuantityTable) -> bool {
+    if is_const_tree(node) {
+        is_integer_valued_tree(node, table)
+    } else {
+        is_exact_f64_linear(node, table)
+    }
+}
+
+/// Whether a **quantity-bearing** comparison operand may flatten to an exact
+/// [`LinExpr`] / [`LinAtom`] — every arithmetic step the interpreter would
+/// perform on that tree must be provably exact in f64:
+///
+/// 1. bare [`HKind::Quantity`]; `Neg`/`Abs` of an allowed tree;
+/// 2. `*`/`/` of an allowed quantity subtree by a power-of-two constant;
+/// 3. `+`/`-`/`*` over an integer-valued size tree (see
+///    [`is_integer_valued_tree`]).
+///
+/// Constant-only trees are handled separately ([`const_tree_rat`]). Everything
+/// else must go through structure-keyed [`Encoder::intern_opaque_scalar`].
+fn is_exact_f64_linear(node: &HNode, table: &QuantityTable) -> bool {
+    match &node.kind {
+        HKind::Quantity(_) => true,
+        // Numeric reducers intern as one free quantity (`intern_reduce`); as a
+        // leaf they behave like a bare `Quantity` for pow2 scaling (`2*min`).
+        HKind::Reduce { kind, .. } if !kind.is_boolean() => true,
+        HKind::Neg(a) | HKind::Abs(a) => is_exact_f64_linear(a, table),
+        HKind::Binary { op, lhs, rhs } => {
+            let pow2_scale = |side: &HNode, other: &HNode| -> bool {
+                is_const_tree(side)
+                    && const_tree_rat(side).is_ok_and(|c| is_power_of_two_rat(&c))
+                    && is_exact_f64_linear(other, table)
+            };
+            match op {
+                // Integer-size exemption for `size±size` / `size*2` (f64 int
+                // arithmetic is exact below 2⁵³). Checked before pow2 scale
+                // so `size*2` stays on the integer path.
+                ArithOp::Add | ArithOp::Sub | ArithOp::Mul
+                    if is_integer_valued_tree(node, table) =>
+                {
+                    integer_side_ok(lhs, table) && integer_side_ok(rhs, table)
+                }
+                ArithOp::Mul => pow2_scale(lhs, rhs) || pow2_scale(rhs, lhs),
+                // quantity / pow2 only (pow2 / quantity is a reciprocal).
+                ArithOp::Div => pow2_scale(rhs, lhs),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// Canonical text of a reducer's static slice (`None` ⇒ empty).
@@ -889,6 +1006,15 @@ impl Encoder<'_> {
         } = *self.table.collection(coll)
         {
             let n = end.saturating_sub(start);
+            if n > MAX_STATIC_SLICE_REDUCE {
+                return self.unknown(
+                    span,
+                    format!(
+                        "static slice width {n} exceeds reducer expansion cap \
+                         {MAX_STATIC_SLICE_REDUCE}"
+                    ),
+                );
+            }
             return self.encode_static_slice_reduce(dual_kind, source, start, n, body);
         }
 
@@ -1526,7 +1652,7 @@ impl Encoder<'_> {
                 lhs: num,
                 rhs: den,
             } => self.ratio(num, den, rel, c, span),
-            HKind::Abs(inner) => self.abs_cmp(inner, rel, c, span),
+            HKind::Abs(inner) => self.abs_cmp(side, inner, rel, c, span),
             // Scalar min/max against a constant — the EXACT monotone identity:
             // `min(a,…) < c ⇔ ∃ aᵢ < c`, `min(a,…) > c ⇔ ∀ aᵢ > c`, max dual
             // (Le/Ge alike). Each `aᵢ ⋈ c` recurses through the full
@@ -1665,24 +1791,42 @@ impl Encoder<'_> {
 
     /// Exact absolute-value expansion against a constant:
     /// `|E| < c ⇔ E < c ∧ E > −c`, `|E| > c ⇔ E > c ∨ E < −c`, etc.
-    fn abs_cmp(&mut self, inner: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
-        let e = match self.lin(inner) {
-            Ok(v) => v,
-            Err(err) => {
-                return self.lin_err(err, "absolute value of a non-linear expression", span);
-            }
-        };
-        // `|E| >= 0` always, so a comparison against a negative constant is
-        // itself constant — exact for every relation, no approximation. The
-        // expansion below is only correct for `c >= 0`; without this guard
-        // `|E| == c` (c<0) would encode as SAT and `|E| != c` (c<0) as a
-        // two-point exclusion — both unsound (false PROVEN verdicts).
+    ///
+    /// The inner expression is flattened only when it passes the exact-f64
+    /// criterion ([`Self::lin`]). On failure the **whole** `abs(...)` node is
+    /// interned as one opaque scalar — never re-enter [`Self::pattern`]'s Abs
+    /// arm (that would recurse), and never unguarded-flatten (audit C3).
+    fn abs_cmp(
+        &mut self,
+        abs_node: &HNode,
+        inner: &HNode,
+        rel: Rel,
+        c: Rat,
+        span: Span,
+    ) -> Formula {
+        // `|E| >= 0` always — fold against a negative constant before any
+        // flatten attempt (inner may be opaque / non-linear).
         if c.is_negative() {
             return match rel {
                 Rel::Lt | Rel::Le | Rel::Eq => Formula::False,
                 Rel::Gt | Rel::Ge | Rel::Ne => Formula::True,
             };
         }
+        let e = match self.lin(inner) {
+            Ok(v) => v,
+            Err(LinErr::NonLinear(_)) => {
+                return self.opaque_atom(
+                    abs_node,
+                    rel,
+                    c,
+                    "absolute value of a non-exact-f64 expression",
+                    span,
+                );
+            }
+            Err(err) => {
+                return self.lin_err(err, "absolute value of a non-linear expression", span);
+            }
+        };
         let hi = &c - &e.k;
         let neg_c = -&c;
         let lo = &neg_c - &e.k;
@@ -1882,16 +2026,6 @@ impl Encoder<'_> {
     /// numerator/denominator so `MET / (HT^0.5) ⋈ c` reduces to the exact
     /// two-branch encoding over a single free quantity rather than dropping.
     fn lin_or_opaque(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
-        // A non-f64-faithful source (≥2 additive ops / non-dyadic additive
-        // constant) must NOT flatten even in a ratio operand — intern it whole
-        // as a structure-keyed opaque scalar so cancellation/reassociation
-        // can't fabricate a false PROVEN through the ratio path.
-        if !is_f64_faithful(node) {
-            return match self.intern_opaque_scalar(node) {
-                Some(q) => Ok(LinExpr::quantity(q)),
-                None => Err(LinErr::NonLinear("source not f64-faithful".to_owned())),
-            };
-        }
         match self.lin(node) {
             Ok(v) => Ok(v),
             Err(LinErr::NonLinear(why)) => match self.intern_opaque_scalar(node) {
@@ -1902,22 +2036,9 @@ impl Encoder<'_> {
         }
     }
 
-    /// [`Self::lin`] for a TOP-LEVEL comparison operand, gated by the
-    /// f64-faithfulness guard: a source that is not [`is_f64_faithful`]
-    /// (multiple additive ops, or a non-dyadic additive constant) is refused
-    /// as `NonLinear` so `cmp`/`pattern` route it to `intern_opaque_scalar`
-    /// (structure-keyed) instead of flattening it into a shared linear atom.
-    /// This prevents two regions whose sources f64-evaluate differently — yet
-    /// canonicalize to the same `Σcᵢqᵢ` — from fabricating a false PROVEN
-    /// DISJOINT/SUBSET/EMPTY. NOT used for recursive sub-linearization, which
-    /// stays exact (the `0.5*HT` inside a faithful `MET + 0.5*HT` is fine).
+    /// [`Self::lin`] for a top-level comparison operand. The exact-f64
+    /// criterion is enforced inside [`Self::lin`] itself (every entry point).
     fn lin_guarded(&mut self, node: &HNode) -> Result<LinExpr, LinErr> {
-        if !is_f64_faithful(node) {
-            return Err(LinErr::NonLinear(
-                "source not f64-faithful (multiple additive ops or non-dyadic additive constant)"
-                    .to_owned(),
-            ));
-        }
         self.lin(node)
     }
 
@@ -1925,17 +2046,44 @@ impl Encoder<'_> {
         if let Fragment::Unsupported(reason) = &node.tag {
             return Err(LinErr::NonLinear(reason.clone()));
         }
+        // Constant-only: emulate the interpreter's stepwise f64, then
+        // rationalize. Closes C6 / R1; keeps `0.1+0.2` decidable as the
+        // interpreter sees it. Bare `Num` still uses parse_rat via the
+        // same bridge (from_decimal_f64 of the parsed f64).
+        if is_const_tree(node) {
+            return Ok(LinExpr::constant(const_tree_rat(node)?));
+        }
         match &node.kind {
             HKind::Num(s) => match parse_rat(s) {
                 Some(v) => Ok(LinExpr::constant(v)),
                 None => Err(LinErr::BadLiteral),
             },
             HKind::Quantity(q) => Ok(LinExpr::quantity(*q)),
-            HKind::Neg(a) => Ok(self.lin(a)?.scale(&Rat::from_i64(-1))),
+            HKind::Neg(a) => {
+                // Quantity-bearing Neg: only when the inner tree is exact-f64.
+                if !is_exact_f64_linear(node, self.table) {
+                    return Err(LinErr::NonLinear(
+                        "source not exact-f64-linear (fold would diverge from stepwise f64)"
+                            .to_owned(),
+                    ));
+                }
+                Ok(self.lin(a)?.scale(&Rat::from_i64(-1)))
+            }
             HKind::Abs(_) => Err(LinErr::NonLinear(
                 "absolute value (only `|E| ⋈ const` is expanded)".to_owned(),
             )),
-            HKind::Binary { op, lhs, rhs } => self.lin_binary(*op, lhs, rhs),
+            HKind::Binary { op, lhs, rhs } => {
+                // Flatten Add/Sub/Mul/Div only when every interpreter step is
+                // provably IEEE-exact (pow2 scale, size-integer arithmetic).
+                // Reducers / opaque leaves below are unaffected by this gate.
+                if !is_exact_f64_linear(node, self.table) {
+                    return Err(LinErr::NonLinear(
+                        "source not exact-f64-linear (fold would diverge from stepwise f64)"
+                            .to_owned(),
+                    ));
+                }
+                self.lin_binary(*op, lhs, rhs)
+            }
             HKind::CollProp { .. } => Err(LinErr::NonLinear(
                 "unindexed collection property".to_owned(),
             )),
@@ -2032,37 +2180,26 @@ impl Encoder<'_> {
                 }
                 let l = self.lin(lhs)?;
                 if l.terms.is_empty() {
-                    // constant / constant: exact rational division.
+                    // Constant/constant reaches here only if the top-level
+                    // const-tree path was skipped; keep a safe exact div.
                     return match l.k.checked_div(&r.k) {
                         Some(v) => Ok(LinExpr::constant(v)),
-                        None => Err(LinErr::NonFinite), // r.k != 0, so unreachable
+                        None => Err(LinErr::NonFinite),
                     };
                 }
-                // variable numerator / constant denominator: deferred to the
-                // comparison level, where multiply-through clears the
-                // denominator with the numerator's exact coefficients; a
-                // nested occurrence has no comparison to clear it -> Unknown.
-                Err(LinErr::NonLinear(
-                    "division by a constant (cleared at the comparison level)".to_owned(),
-                ))
+                // Quantity / constant: [`is_exact_f64_linear`] admits only
+                // power-of-two divisors (IEEE-exact scale). Non-pow2 const
+                // denominators fail the gate and reach `pattern` → `ratio`
+                // for multiply-through clearing.
+                match Rat::one().checked_div(&r.k) {
+                    Some(inv) => Ok(l.scale(&inv)),
+                    None => Err(LinErr::NonFinite),
+                }
             }
             ArithOp::Pow => {
-                let l = self.lin(lhs)?;
-                let r = self.lin(rhs)?;
-                if l.terms.is_empty() && r.terms.is_empty() {
-                    // Only INTEGER powers stay rational; a fractional exponent
-                    // is generally irrational, so it leaves the linear fragment
-                    // (Unknown) rather than being folded to an inexact f64.
-                    match r.k.to_i64().and_then(|n| i32::try_from(n).ok()) {
-                        Some(n) => match l.k.powi(n) {
-                            Some(v) => Ok(LinExpr::constant(v)),
-                            None => Err(LinErr::NonFinite), // 0^negative (§4.4)
-                        },
-                        None => Err(LinErr::NonLinear("non-integer power".to_owned())),
-                    }
-                } else {
-                    Err(LinErr::NonLinear("non-constant power".to_owned()))
-                }
+                // Constant powers go through [`const_tree_rat`] (f64 `powf`)
+                // at the `lin` entry — no exact-rational `powi` blowup (R1).
+                Err(LinErr::NonLinear("non-constant power".to_owned()))
             }
         }
     }

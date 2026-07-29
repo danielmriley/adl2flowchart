@@ -23,6 +23,10 @@ use crate::{Certificate, QRat};
 /// Schema tag every bundle carries; the recheck tool refuses anything else.
 pub const BUNDLE_SCHEMA: &str = "smash2-combine/1";
 
+/// Canonical verdict string every bundle carries; [`CombineBundle::replay`]
+/// refuses anything else so a forged claim cannot ride a valid certificate.
+pub const BUNDLE_VERDICT: &str = "PROVEN DISJOINT";
+
 /// The honest-scope sentence embedded in every bundle.
 pub const SCOPE_NOTE: &str = "Replaying this bundle proves the listed formulas are \
     (real-)unsatisfiable together. That the formulas faithfully encode the named \
@@ -194,7 +198,7 @@ impl CombineBundle {
             schema: BUNDLE_SCHEMA.to_owned(),
             region_a,
             region_b,
-            verdict: "PROVEN DISJOINT".to_owned(),
+            verdict: BUNDLE_VERDICT.to_owned(),
             note: SCOPE_NOTE.to_owned(),
             asserts: asserts
                 .into_iter()
@@ -213,12 +217,19 @@ impl CombineBundle {
         self.asserts.iter().map(|a| a.formula.to_qformula()).collect()
     }
 
-    /// Re-check the bundle with the trusted kernel: `true` iff the schema
-    /// matches and the certificate is a valid refutation of the listed
-    /// formulas. No solver, no search. Fails closed on schema mismatch.
+    /// Re-check the bundle with the trusted kernel: `true` iff the schema,
+    /// verdict, and scope note match their canonical constants and the
+    /// certificate is a valid refutation of the listed formulas. No solver,
+    /// no search. Fails closed on any mismatch.
+    ///
+    /// Region names (`region_a` / `region_b`) are informational only — they
+    /// do not affect the math and are intentionally left unchecked.
     #[must_use]
     pub fn replay(&self) -> bool {
-        self.schema == BUNDLE_SCHEMA && self.certificate.replay(&self.formulas())
+        self.schema == BUNDLE_SCHEMA
+            && self.verdict == BUNDLE_VERDICT
+            && self.note == SCOPE_NOTE
+            && self.certificate.replay(&self.formulas())
     }
 }
 

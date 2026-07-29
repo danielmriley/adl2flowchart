@@ -275,11 +275,13 @@ pub struct Report {
     pub schema_version: u32,
     pub unit: String,
     pub solver: String,
-    /// Set when a solver WAS selected but its checks failed to run (e.g. the
-    /// `z3` binary vanished between the probe and use): verdicts silently
-    /// degraded to UNKNOWN/POSSIBLY, and the CLI must warn as loudly as it
-    /// does for no-solver-found. Absent in healthy runs (and omitted from
-    /// JSON), so existing consumers are unaffected.
+    /// Set when a solver WAS selected but checks failed to run usefully:
+    /// spawn/IO failure (binary vanished after the probe) **or** a
+    /// spawnable-but-broken solver that answers `-version` then errors on
+    /// every script (`Unknown("solver reported an error: …")`, G7).
+    /// Timeouts / plain `unknown` answers do NOT set this. Verdicts
+    /// degraded to UNKNOWN/POSSIBLY; the CLI warns as loudly as for
+    /// no-solver-found. Absent in healthy runs (omitted from JSON).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solver_degraded: Option<String>,
     /// Sampling-gate accounting (proof-system v2 Phase 1): how many synthetic
@@ -315,6 +317,10 @@ pub struct Report {
 
 /// CI gating flags (SPEC_ANALYSIS §6): verdicts never fail the run by
 /// default; `--fail-on=overlap|gap|empty|non-exact` opts in explicitly.
+///
+/// `gap` fires on bin coverage holes (`CoverageStatus::NotProven`) **and**
+/// on unproven bin-pair disjointness (`disjoint_pairs_proven < total`) —
+/// fail-closed so CI can gate on bins that may double-count (G6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FailOn {
     pub overlap: bool,
@@ -365,9 +371,19 @@ impl Report {
         }
         if fail_on.gap {
             for b in &self.bin_checks {
+                // Fail-closed (G6): coverage holes AND unproven bin-pair
+                // disjointness both fire — bins that may double-count are a
+                // physics finding CI must be able to gate on, matching the
+                // human findings renderer.
                 if b.coverage == CoverageStatus::NotProven {
                     out.push(format!(
                         "gap: {} [{}] bin coverage not proven",
+                        b.region, b.variable
+                    ));
+                }
+                if b.disjoint_pairs_proven < b.disjoint_pairs_total {
+                    out.push(format!(
+                        "gap: {} [{}] bin pair disjointness not proven",
                         b.region, b.variable
                     ));
                 }

@@ -28,7 +28,10 @@ pub use report::{
 pub use witness::Validation;
 
 use adl_axioms::emit_axioms;
-use adl_sema::{CollectionId, ElemIndex, ExtDecls, Hir, Quantity, QuantityId, analyze_str};
+use adl_sema::{
+    CollectionId, ElemIndex, ExtDecls, HKind, HNode, Hir, HirRegionStmt, Quantity, QuantityId,
+    analyze_str,
+};
 use adl_solver::Solver;
 use adl_syntax::diag::Diagnostic;
 use std::collections::BTreeSet;
@@ -227,9 +230,12 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
     let unit_name = hir.unit.clone();
     let (solver, solver_label) = make_solver(opts.solver);
     // The sampling-gate battery is built once per run (deterministic; empty
-    // when the gate is disabled).
+    // when the gate is disabled). Cut constants from the unit's HIR expand
+    // to {c, next_up(c), next_down(c)} in the boundary pools so off-pool
+    // cut edges (AUDIT_2026-07-28 §3) are exercised.
     let gate_events = if opts.sample_gate > 0 {
-        adl_interp::sample::battery(ext, opts.sample_gate)
+        let cuts = cut_constants(hir);
+        adl_interp::sample::battery_with_cuts(ext, opts.sample_gate, &cuts)
     } else {
         Vec::new()
     };
@@ -244,6 +250,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         unit_name,
         recon,
         spawn_failures: 0,
+        solver_errors: 0,
         gate_events,
         certify: opts.certify,
         recon_facts: Vec::new(),
@@ -253,6 +260,62 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         bundles: Vec::new(),
     };
     engine.run()
+}
+
+/// Numeric literals appearing in the unit's membership cuts / object
+/// filters / bin edges, as f64. Sorted, deduped, capped at
+/// [`adl_interp::sample::MAX_CUT_CONSTANTS`] for a bounded gate battery.
+fn cut_constants(hir: &Hir) -> Vec<f64> {
+    let mut vals = Vec::new();
+    for region in &hir.regions {
+        for stmt in &region.stmts {
+            match stmt {
+                HirRegionStmt::Select(n)
+                | HirRegionStmt::Reject(n)
+                | HirRegionStmt::Trigger(n) => collect_nums(n, &mut vals),
+                HirRegionStmt::Bin { var, edges, .. } => {
+                    collect_nums(var, &mut vals);
+                    for e in edges {
+                        if let Ok(v) = e.parse::<f64>()
+                            && v.is_finite()
+                        {
+                            vals.push(v);
+                        }
+                    }
+                }
+                HirRegionStmt::BinCond { cond, .. } => collect_nums(cond, &mut vals),
+                HirRegionStmt::Inherit { .. } | HirRegionStmt::NonMembership { .. } => {}
+            }
+        }
+    }
+    for def in &hir.defines {
+        collect_nums(&def.body, &mut vals);
+    }
+    // Object-block filter predicates (pt/eta cuts) live here.
+    for pred in &hir.elem_preds {
+        collect_nums(&pred.node, &mut vals);
+    }
+    vals.sort_by(|a, b| a.total_cmp(b));
+    vals.dedup_by(|a, b| a.to_bits() == b.to_bits());
+    vals.truncate(adl_interp::sample::MAX_CUT_CONSTANTS);
+    vals
+}
+
+fn collect_nums(node: &HNode, out: &mut Vec<f64>) {
+    match &node.kind {
+        HKind::Num(s) => {
+            if let Ok(v) = s.parse::<f64>()
+                && v.is_finite()
+            {
+                out.push(v);
+            }
+        }
+        _ => {
+            for c in node.children() {
+                collect_nums(c, out);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +335,55 @@ mod tests {
         assert!(f.non_exact);
         assert!(FailOn::parse("bogus").is_err());
         assert_eq!(FailOn::parse("").unwrap(), FailOn::default());
+    }
+
+    #[test]
+    fn cut_constants_extracts_met_literal() {
+        let ext = ExtDecls::legacy();
+        let hir = analyze_str(
+            "region RA\n  select MET > 0.5\nregion RB\n  select MET < 100\n",
+            "t",
+            &ext,
+        );
+        let cuts = cut_constants(&hir);
+        assert!(cuts.iter().any(|&v| v == 0.5), "{cuts:?}");
+        assert!(cuts.iter().any(|&v| v == 100.0), "{cuts:?}");
+    }
+
+    /// G6: `--fail-on=gap` must fire on unproven bin-pair disjointness,
+    /// not only on coverage holes.
+    #[test]
+    fn fail_on_gap_fires_on_unproven_bin_pairs() {
+        use crate::report::{BinCheckReport, CoverageStatus, Report, SCHEMA_VERSION};
+        let report = Report {
+            schema_version: SCHEMA_VERSION,
+            unit: "t".to_owned(),
+            solver: "none".to_owned(),
+            sampling: None,
+            solver_degraded: None,
+            regions: Vec::new(),
+            pairwise: Vec::new(),
+            bin_checks: vec![BinCheckReport {
+                region: "SR".to_owned(),
+                variable: "MET".to_owned(),
+                n_bins: 2,
+                disjoint_pairs_proven: 0,
+                disjoint_pairs_total: 1,
+                coverage: CoverageStatus::Proven,
+                gap_witness: Vec::new(),
+            }],
+            reconciliations: Vec::new(),
+            recon_near_misses: Vec::new(),
+            axioms_used: Vec::new(),
+            internal_diagnostics: Vec::new(),
+            combine_bundles: Vec::new(),
+        };
+        let f = FailOn::parse("gap").unwrap();
+        let findings = report.findings(&f);
+        assert!(
+            findings.iter().any(|m| m.contains("bin pair disjointness not proven")),
+            "{findings:?}"
+        );
+        assert_eq!(report.exit_code(&f), 4);
     }
 }

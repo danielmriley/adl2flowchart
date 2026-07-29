@@ -45,6 +45,12 @@ pub(crate) struct Engine<'a> {
     /// run at all (spawn/IO failure — e.g. the binary vanished after the
     /// probe). Surfaced via [`Report::solver_degraded`] so the CLI warns.
     pub spawn_failures: usize,
+    /// Checks that returned `Unknown("solver reported an error: …")` — a
+    /// spawnable-but-broken solver (answers `-version`, errors on every
+    /// script). Distinct from [`Self::spawn_failures`] but feeds the same
+    /// `solver_degraded` warning (G7). Timeouts / `unknown` answers are
+    /// NOT counted — those are legitimate hard-query outcomes.
+    pub solver_errors: usize,
     /// The sampling-gate battery (proof-system v2 Phase 1): deterministic
     /// loader-valid events every UNSAT-side PROVEN verdict is refuted against
     /// through the reference interpreter before being reported. Empty = gate
@@ -371,11 +377,14 @@ impl Engine<'_> {
                 events: self.gate_events.len(),
                 refutations: gate_refutations,
             }),
-            solver_degraded: (self.spawn_failures > 0).then(|| {
+            solver_degraded: (self.spawn_failures + self.solver_errors > 0).then(|| {
                 format!(
-                    "{} solver check(s) could not run (the `{}` process failed to \
-                     spawn); affected verdicts degraded to UNKNOWN/POSSIBLY",
-                    self.spawn_failures, self.solver_label
+                    "{} solver check(s) failed via `{}` ({} spawn/IO, {} solver error); \
+                     affected verdicts degraded to UNKNOWN/POSSIBLY",
+                    self.spawn_failures + self.solver_errors,
+                    self.solver_label,
+                    self.spawn_failures,
+                    self.solver_errors
                 )
             }),
             regions: region_reports,
@@ -391,12 +400,25 @@ impl Engine<'_> {
 
     fn check(&mut self, timeout: Duration) -> Option<SatResult> {
         let r = self.solver.as_deref_mut().map(|s| s.check(timeout));
-        if let Some(SatResult::Unknown(reason)) = &r
-            && reason.contains("spawn")
-        {
-            self.spawn_failures += 1;
+        if let Some(ref result) = r {
+            self.note_check_result(result);
         }
         r
+    }
+
+    /// Account for a solver `check` outcome toward the `solver_degraded`
+    /// warning. Call sites that bypass [`Self::check`] (witness retry,
+    /// `refined_model`) must route through this so spawn/error failures
+    /// cannot stay silent (G7).
+    fn note_check_result(&mut self, result: &SatResult) {
+        let SatResult::Unknown(reason) = result else {
+            return;
+        };
+        if reason.contains("spawn") {
+            self.spawn_failures += 1;
+        } else if reason.contains("solver reported an error") {
+            self.solver_errors += 1;
+        }
     }
 
     fn push(&mut self) {
@@ -726,7 +748,10 @@ impl Engine<'_> {
                                 break;
                             };
                             s.assert(&block, None);
-                            if !matches!(s.check(timeout), SatResult::Sat) {
+                            let retry = s.check(timeout);
+                            // G7: bypass of Engine::check — still account.
+                            self.note_check_result(&retry);
+                            if !matches!(retry, SatResult::Sat) {
                                 break;
                             }
                         }
@@ -892,9 +917,6 @@ impl Engine<'_> {
                 _ => {}
             }
         }
-        let timeout = self.timeout;
-        let s = self.solver.as_deref_mut()?;
-        let base = s.model();
         let lo_atoms: Vec<QFormula> = lo_hints
             .iter()
             .map(|(&sq, &min_idx)| {
@@ -947,29 +969,38 @@ impl Engine<'_> {
                 rat(DPHI_WISH_BOUND),
             )));
         }
-        let try_with = |s: &mut dyn Solver, atoms: &[&[QFormula]]| -> Option<Model> {
+        // G7: route each layered check through note_check_result so a
+        // spawn/error Unknown here still trips solver_degraded.
+        let try_with = |engine: &mut Self, atoms: &[&[QFormula]]| -> Option<Model> {
+            let timeout = engine.timeout;
+            let Some(s) = engine.solver.as_deref_mut() else {
+                return None;
+            };
             s.push();
             for group in atoms {
                 for a in *group {
                     s.assert(a, None);
                 }
             }
-            let m = match s.check(timeout) {
+            let result = s.check(timeout);
+            let m = match &result {
                 SatResult::Sat => s.model(),
                 _ => None,
             };
             s.pop();
+            engine.note_check_result(&result);
             m
         };
+        let base = self.solver.as_deref_mut()?.model();
         // Layered: hints are wishes, not requirements — drop the
         // dPhi = 0 preference first, then the ε-interior preference (an
         // overlap may exist only on a boundary), then the existence
         // hints (a model may legitimately need a small size), the
         // realizer caps last, the raw model as the floor.
-        try_with(s, &[&zero_atoms, interior, &lo_atoms, &hi_atoms])
-            .or_else(|| try_with(s, &[interior, &lo_atoms, &hi_atoms]))
-            .or_else(|| try_with(s, &[&lo_atoms, &hi_atoms]))
-            .or_else(|| try_with(s, &[&hi_atoms]))
+        try_with(self, &[&zero_atoms, interior, &lo_atoms, &hi_atoms])
+            .or_else(|| try_with(self, &[interior, &lo_atoms, &hi_atoms]))
+            .or_else(|| try_with(self, &[&lo_atoms, &hi_atoms]))
+            .or_else(|| try_with(self, &[&hi_atoms]))
             .or(base)
     }
 
@@ -1269,10 +1300,17 @@ impl Engine<'_> {
                                      at POSSIBLY"
                         .to_owned();
                     report.core.clear();
+                    // G2: a retracted PROVEN must not keep advertising a
+                    // replay-checked certificate — `certified: true` with
+                    // `kind: possibly_overlapping` would lie to JSON consumers.
+                    report.certified = None;
                     break;
                 }
             }
         }
+        // Subset claims do not set `certified` (certification is wired only
+        // into the pairwise-disjointness path), so there is no G2-style flag
+        // leak on withdrawal — only the boolean claims need clearing.
         let mut gate_subset = |sub: usize, sup: usize, flag: &mut bool, label: &str| {
             if !*flag {
                 return;
@@ -1623,6 +1661,7 @@ mod reconcile_solver_tests {
             unit_name: "t".to_owned(),
             recon: Some(recon),
             spawn_failures: 0,
+            solver_errors: 0,
             gate_events: Vec::new(),
             certify: false,
             combine: false,
@@ -1769,6 +1808,7 @@ mod sampling_gate_tests {
             unit_name: "t".to_owned(),
             recon: None,
             spawn_failures: 0,
+            solver_errors: 0,
             gate_events,
             certify: false,
             combine: false,
@@ -1803,7 +1843,9 @@ mod sampling_gate_tests {
             r.internal_diagnostics
         );
         let s = r.sampling.expect("gate accounting present");
-        assert_eq!(s.events, 64);
+        // Battery is at least the requested size; cut-constant injection
+        // may append dedicated MET/HT boundary events on top.
+        assert!(s.events >= 64, "events={}", s.events);
         assert!(s.refutations >= 1);
     }
 
@@ -1836,6 +1878,7 @@ mod sampling_gate_tests {
             unit_name: "t".to_owned(),
             recon: None,
             spawn_failures: 0,
+            solver_errors: 0,
             gate_events: adl_interp::sample::battery(&ext, 64),
             certify: false,
             combine: false,
@@ -1847,5 +1890,74 @@ mod sampling_gate_tests {
         let r = engine.run();
         assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
         assert_eq!(r.sampling.unwrap().refutations, 0);
+    }
+
+    /// G2: a sampling-gate demotion must clear `certified`. Otherwise the
+    /// final JSON can ship `"kind": "possibly_overlapping", "certified": true`
+    /// — a retracted proof that still looks independently verified.
+    #[test]
+    fn gate_demotion_clears_certified_flag() {
+        let src = "region RA\n  select MET > 100\nregion RB\n  select MET > 50\n";
+        let ext = ExtDecls::legacy();
+        let mut hir = adl_sema::analyze_str(src, "t", &ext);
+        let unit = crate::encode::encode_unit(&mut hir, src);
+        let axioms = AxiomSet::default();
+        let gate_events = adl_interp::sample::battery(&ext, 64);
+        let engine = Engine {
+            hir: &hir,
+            ext: &ext,
+            unit: &unit,
+            axioms: &axioms,
+            solver: None,
+            solver_label: "none".to_owned(),
+            timeout: Duration::from_secs(1),
+            unit_name: "t".to_owned(),
+            recon: None,
+            spawn_failures: 0,
+            solver_errors: 0,
+            gate_events,
+            certify: false,
+            combine: false,
+            recon_ledger: Vec::new(),
+            recon_near_misses: Vec::new(),
+            bundles: Vec::new(),
+            recon_facts: Vec::new(),
+        };
+        let mut report = PairReport {
+            a: "RA".to_owned(),
+            b: "RB".to_owned(),
+            kind: VerdictKind::ProvenDisjoint,
+            reason: "fabricated".to_owned(),
+            exact: true,
+            shared_dimensions: Vec::new(),
+            subset_a_in_b: false,
+            subset_b_in_a: false,
+            witness: Vec::new(),
+            witness_validated: None,
+            certified: Some(true),
+            core: vec![CoreItem::Cut {
+                region: "RA".to_owned(),
+                line: 1,
+                text: "MET > 100".to_owned(),
+            }],
+        };
+        let interp = Interp::new(&hir, &ext);
+        let mut internal = Vec::new();
+        let mut refutations = 0;
+        engine.gate_pair(
+            &mut report,
+            unit.regions[0].idx,
+            unit.regions[1].idx,
+            &interp,
+            &mut internal,
+            &mut refutations,
+        );
+        assert_eq!(report.kind, VerdictKind::PossiblyOverlapping);
+        assert!(refutations >= 1);
+        assert_eq!(
+            report.certified, None,
+            "demoted verdict must not keep certified: true"
+        );
+        assert!(report.core.is_empty());
     }
 }

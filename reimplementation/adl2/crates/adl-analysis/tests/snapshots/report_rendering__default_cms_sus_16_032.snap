@@ -6,8 +6,8 @@ expression: "render(\"examples/Examples/CMS-SUS-16-032.adl\")"
 ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
 
 == findings ==
-  EMPTY REGIONS (6): compressed, compressednb1, compressednb2, compressednc1, compressednc2, compressednbnc0
-    provably select no events — run --explain for the proof chains
+  BINS compressednbnc0 [MET]: coverage not proven
+    cause: solver could not prove the remaining checks
 
 == regions ==
   region            leaves  exact  note
@@ -15,34 +15,48 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   noncompressedHT1  27/27   yes
   noncompressedHT2  27/27   yes
   noncompressedHT3  26/26   yes
-  compressed        26/26   no     EMPTY — provably selects no events; 1 dual-encoded leaf
-  compressednb1     28/28   no     EMPTY — provably selects no events; 1 dual-encoded leaf
-  compressednb2     27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
-  compressednc1     28/28   no     EMPTY — provably selects no events; 1 dual-encoded leaf
-  compressednc2     27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
-  compressednbnc0   27/27   no     EMPTY — provably selects no events; 1 dual-encoded leaf
+  compressed        26/26   no     1 dual-encoded leaf
+  compressednb1     28/28   no     1 dual-encoded leaf
+  compressednb2     27/27   no     1 dual-encoded leaf
+  compressednc1     28/28   no     1 dual-encoded leaf
+  compressednc2     27/27   no     1 dual-encoded leaf
+  compressednbnc0   27/27   no     1 dual-encoded leaf
 
 == verdict matrix ==
   D disjoint   O overlapping   s subset (overlap)   c candidate (unvalidated)   ? possibly   U unknown   E empty region
    1 noncompressed     ·
-   2 noncompressedHT1  s  ·
-   3 noncompressedHT2  s  O  ·
-   4 noncompressedHT3  s  D  D  ·
-   5 compressed        E  E  E  E  ·
-   6 compressednb1     E  E  E  E  E  ·
-   7 compressednb2     E  E  E  E  E  E  ·
-   8 compressednc1     E  E  E  E  E  E  E  ·
-   9 compressednc2     E  E  E  E  E  E  E  E  ·
-  10 compressednbnc0   E  E  E  E  E  E  E  E  E  ·
+   2 noncompressedHT1  ?  ·
+   3 noncompressedHT2  ?  ?  ·
+   4 noncompressedHT3  ?  D  D  ·
+   5 compressed        D  D  D  D  ·
+   6 compressednb1     D  D  D  D  c  ·
+   7 compressednb2     D  D  D  D  c  c  ·
+   8 compressednc1     D  D  D  D  c  ?  ?  ·
+   9 compressednc2     D  D  D  D  c  ?  ?  c  ·
+  10 compressednbnc0   D  D  D  D  ?  D  D  D  D  ·
                        1  2  3  4  5  6  7  8  9
 
-== pairwise (45 pairs, 5 groups) ==
-  39 pairs involving a provably-empty region — PROVEN DISJOINT (trivially: one side selects no events)
-  3 pairs PROVEN OVERLAPPING — cut sets satisfiable together (witness validated by interpreter); subset: second within first (in every pair)
-    noncompressed vs noncompressedHT{1,2,3}
-  noncompressedHT1 vs noncompressedHT2: PROVEN OVERLAPPING — cut sets satisfiable together (witness validated by interpreter)
-  noncompressedHT1 vs noncompressedHT3: PROVEN DISJOINT — core: noncompressedHT1 line 83 ∧ noncompressedHT3 line 93
-  noncompressedHT2 vs noncompressedHT3: PROVEN DISJOINT — core: noncompressedHT2 line 88 ∧ noncompressedHT3 line 93
+== pairwise (45 pairs, 16 groups) ==
+  noncompressed vs noncompressedHT1: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region noncompressedHT1 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":1.0,"ctag":0.0,"etaof":2.3687500298023383,"mof":0.0,"phiof":0.0,"ptof":100.03125092387198,"tautag":0.0},{"btag":1.0,"ctag":0.0,"etaof":-2.3687500298023383,"mof":0.0,"phiof":0.0,"ptof":75.03125092387198,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":-2.3687500298023383,"mof":0.0,"phiof":0.0,"ptof":30.03125092387198,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":2.3687500298023383,"mof":0.0,"phiof":0.0,"ptof":30.03125092387198,"tautag":0.0}],"MET":{"ptof":250.03125092387197},"MUON":[]}); subset: noncompressedHT1 within noncompressed
+  noncompressed vs noncompressedHT2: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region noncompressedHT2 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":1.0,"ctag":0.0,"etaof":2.337500059604643,"mof":0.0,"phiof":0.0,"ptof":100.06250089406969,"tautag":0.0},{"btag":1.0,"ctag":0.0,"etaof":-2.337500059604643,"mof":0.0,"phiof":0.0,"ptof":75.06250089406967,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":-2.337500059604643,"mof":0.0,"phiof":0.0,"ptof":30.062500894069675,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":2.337500059604643,"mof":0.0,"phiof":0.0,"ptof":30.062500894069675,"tautag":0.0}],"MET":{"ptof":250.06250089406967},"MUON":[]}); subset: noncompressedHT2 within noncompressed
+  noncompressed vs noncompressedHT3: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region noncompressedHT3 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":1.0,"ctag":0.0,"etaof":-1.4,"mof":0.0,"phiof":0.0,"ptof":102.0,"tautag":0.0},{"btag":1.0,"ctag":0.0,"etaof":1.4,"mof":0.0,"phiof":0.0,"ptof":76.00000095367432,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":1.4,"mof":0.0,"phiof":0.0,"ptof":31.000000953674316,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":1.4,"mof":0.0,"phiof":0.0,"ptof":31.000000953674316,"tautag":0.0}],"MET":{"ptof":251.00000095367432},"MUON":[]}); subset: noncompressedHT3 within noncompressed
+  24 pairs PROVEN DISJOINT — jets[0].btag: [1, 1] vs [0, 0]
+    noncompressed{,HT1,HT2,HT3} vs compressed{,nb1,nb2,nc1,nc2,nbnc0}
+  noncompressedHT1 vs noncompressedHT2: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region noncompressedHT1 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":1.0,"ctag":0.0,"etaof":2.36875,"mof":0.0,"phiof":0.0,"ptof":100.03125,"tautag":0.0},{"btag":1.0,"ctag":0.0,"etaof":-2.36875,"mof":0.0,"phiof":0.0,"ptof":75.15625,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":-2.36875,"mof":0.0,"phiof":0.0,"ptof":30.03125,"tautag":0.0},{"btag":1.0,"ctag":1.0,"etaof":2.36875,"mof":0.0,"phiof":0.0,"ptof":30.03125,"tautag":0.0}],"MET":{"ptof":250.03125},"MUON":[]})
+  noncompressedHT1 vs noncompressedHT3: PROVEN DISJOINT — opaque.scalar(...): [200, 500] vs (1000, inf]
+  noncompressedHT2 vs noncompressedHT3: PROVEN DISJOINT — opaque.scalar(...): [500, 1000] vs (1000, inf]
+  6 pairs CANDIDATE OVERLAPPING — a joint model exists but rests on an opaque quantity the interpreter cannot decide, so the witness is a candidate, not a proof (a model exists in the per-event scalar fragment; opaque external-function values and padded out-of-range element variables are free — the witness is a candidate, not a simulated event); region the second region depends on an opaque quantity (external function `pt` has no reference interpretation)
+    compressed–compressednb1, compressed–compressednb2, compressed–compressednc1
+      compressed–compressednc2, compressednb1–compressednb2, compressednc1–compressednc2
+  compressed vs compressednbnc0: POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in region compressednbnc0 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":0.0,"ctag":0.0,"etaof":0.0,"mof":0.0,"phiof":0.0,"ptof":101.00000095367432,"tautag":0.0},{"btag":0.0,"ctag":1.0,"etaof":0.0,"mof":0.0,"phiof":0.0,"ptof":51.000000953674316,"tautag":0.0}],"MET":{"ptof":251.00000095367432},"MUON":[]})
+  2 pairs POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in region the first region (stmt 1 fails; stmt 2 errors: external function `ht` has no reference interpretation); event: {"ELECTRON":[],"JET":[{"btag":0.0,"ctag":0.0,"etaof":-2.3375,"mof":0.0,"phiof":0.0,"ptof":100.31250095367432,"tautag":0.0},{"btag":0.0,"ctag":1.0,"etaof":2.3375,"mof":0.0,"phiof":0.0,"ptof":50.062500953674316,"tautag":0.0}],"MET":{"ptof":250.06250095367432},"MUON":[]})
+    compressednb1 vs compressednc{1,2}
+  compressednb1 vs compressednbnc0: PROVEN DISJOINT — core: compressednb1 line 111 ∧ compressednbnc0 line 146 (+1 axioms)
+  compressednb2 vs compressednc1: POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in region compressednb2 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":0.0,"ctag":0.0,"etaof":-2.3375,"mof":0.0,"phiof":0.0,"ptof":100.31250095367432,"tautag":0.0},{"btag":0.0,"ctag":1.0,"etaof":2.3375,"mof":0.0,"phiof":0.0,"ptof":50.062500953674316,"tautag":0.0}],"MET":{"ptof":250.06250095367432},"MUON":[]})
+  compressednb2 vs compressednc2: POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in region compressednb2 (stmt 1 fails); event: {"ELECTRON":[],"JET":[{"btag":0.0,"ctag":0.0,"etaof":-1.6499999999999981,"mof":0.0,"phiof":0.0,"ptof":100.75000095367432,"tautag":0.0},{"btag":0.0,"ctag":1.0,"etaof":-1.6499999999999981,"mof":0.0,"phiof":0.0,"ptof":50.75000095367432,"tautag":0.0}],"MET":{"ptof":250.75000095367432},"MUON":[]})
+  compressednb2 vs compressednbnc0: PROVEN DISJOINT — core: compressednb2 line 117 ∧ compressednbnc0 line 146 (+1 axioms)
+  compressednc1 vs compressednbnc0: PROVEN DISJOINT — core: compressednc1 line 127 ∧ compressednbnc0 line 146 (+1 axioms)
+  compressednc2 vs compressednbnc0: PROVEN DISJOINT — core: compressednc2 line 133 ∧ compressednbnc0 line 146 (+1 axioms)
 
 == bins ==
   noncompressedHT1  [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]  4 bins  disjoint  6/6   coverage proven
@@ -50,10 +64,12 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   noncompressedHT3  [2*{jets[0]}pT *{jets[1]}pT * (1 + cos( …]  6 bins  disjoint 15/15  coverage proven
   compressednb1     [MET]                                       5 bins  disjoint 10/10  coverage proven
   compressednc1     [MET]                                       5 bins  disjoint 10/10  coverage proven
-  compressednbnc0   [MET]                                       5 bins  disjoint 10/10  coverage proven
+  compressednbnc0   [MET]                                       5 bins  disjoint 10/10  coverage NOT PROVEN
 
 == axioms used ==
-  ORD×12, SZ0×9, SUB×5, UNI×3, NNEG×10, TAG×4, EPRED×4, IDOM×4
+  ORD×12, SZ0×9, SUB×5, UNI×3, NNEG×9, TAG×4, EPRED×4, IDOM×4
   assuming: collections pT-ordered (ORD); take = filter (SUB, EPRED); union = concat/dedup (UNI); tags boolean; discriminants excluded by exact-name rule (TAG); ORD + SUB (IDOM)
 
-summary: 45 pairs — 41 proven disjoint, 4 proven overlapping, 0 possibly overlapping, 0 unknown
+note: 4 witness-validation diagnostics (POSSIBLY downgrades, no verdict changed) — see --explain or --json
+
+summary: 45 pairs — 30 proven disjoint, 0 proven overlapping, 6 candidate overlapping, 9 possibly overlapping, 0 unknown

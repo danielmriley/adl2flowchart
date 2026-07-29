@@ -92,8 +92,9 @@ impl<'de> Deserialize<'de> for QRat {
 /// A node of the certificate proof tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CertNode {
-    /// The conjunction contains an explicit `false` (or an empty disjunction)
-    /// — unsatisfiable outright, no multipliers needed.
+    /// The conjunction contains an explicit `false` — unsatisfiable outright,
+    /// no multipliers needed. (An empty disjunction is a different case: it
+    /// goes through the split path as `Split { branches: [] }`.)
     Contradiction,
     /// A conjunctive leaf refuted by Farkas multipliers, one per hard atom in
     /// saturation order.

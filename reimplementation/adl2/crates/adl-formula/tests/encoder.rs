@@ -82,9 +82,22 @@ fn select_linear_comparison_is_one_atom() {
 
 #[test]
 fn linear_sums_diffs_const_mults() {
+    // `2*MET - HT` mixes a pow2 scale with an additive cancellation hazard —
+    // not exact-f64-linear. It must intern as one opaque scalar (sound), not
+    // flatten to the exact atom `2·MET − HT < 50`.
     let (enc, hir) = encode("region SR\n  select 2*MET - HT < 50\n", 0);
+    let q = opaque_q(&hir);
+    assert_eq!(enc.formula, atom1(q, Rel::Lt, 50.0));
+}
+
+#[test]
+fn pow2_scale_and_bare_diff_stay_exact() {
+    // Positive cases that remain exact under the exact-f64 criterion.
+    let (enc, hir) = encode("region SR\n  select 2*MET < 50\n", 0);
+    assert_eq!(enc.formula, atom(&[(2.0, met_q(&hir))], Rel::Lt, 50.0));
+    let (enc, hir) = encode("region SR\n  select MET > HT\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
-    assert_eq!(enc.formula, atom(&[(2.0, met), (-1.0, ht)], Rel::Lt, 50.0));
+    assert_eq!(enc.formula, atom(&[(1.0, met), (-1.0, ht)], Rel::Gt, 0.0));
 }
 
 #[test]
@@ -225,11 +238,10 @@ fn define_encodes_identically_to_textual_paste() {
     );
     let (inline, _) = encode("region SR\n  select HT + 2*MET > 100\n", 0);
     assert_eq!(via_def.formula, inline.formula);
-    let (met, ht) = (met_q(&hir), ht_q(&hir));
-    assert_eq!(
-        via_def.formula,
-        atom(&[(1.0, ht), (2.0, met)], Rel::Gt, 100.0)
-    );
+    // Additive mix is opaque (exact-f64 criterion); define inlining must
+    // still share the same structure-keyed opaque quantity.
+    let q = opaque_q(&hir);
+    assert_eq!(via_def.formula, atom1(q, Rel::Gt, 100.0));
 }
 
 // ---- row: Int-size coercion ----------------------------------------------
@@ -346,13 +358,13 @@ fn nonlinear_ratio_denominator_interns_opaque() {
 
 #[test]
 fn constant_denominator_clears_into_an_exact_atom() {
-    // `MET / d ⋈ c` clears the denominator at the comparison level
-    // (`MET ⋈ c·d`) rather than folding the f64 reciprocal `1/d` into the
-    // coefficient — the latter shifts the cut boundary off the interpreter's
-    // for non-dyadic `d` (a false-PROVEN source). For `MET / 2 > 50` that is
-    // `MET > 100`, with the coefficient left at exactly 1.
+    // Power-of-two division is IEEE-exact, so `MET / 2` flattens to the
+    // scaled atom `(1/2)·MET > 50` (equivalent over the reals to `MET > 100`).
+    // Non-pow2 denominators still take the ratio multiply-through path.
     let (enc, hir) = encode("region SR\n  select MET / 2 > 50\n", 0);
-    assert_eq!(enc.formula, atom(&[(1.0, met_q(&hir))], Rel::Gt, 100.0));
+    assert_eq!(enc.formula, atom(&[(0.5, met_q(&hir))], Rel::Gt, 50.0));
+    let (enc, hir) = encode("region SR\n  select MET / 3 > 50\n", 0);
+    assert_eq!(enc.formula, atom(&[(1.0, met_q(&hir))], Rel::Gt, 150.0));
 }
 
 #[test]
@@ -600,36 +612,40 @@ fn non_finite_literal_is_unknown_not_an_atom() {
 }
 
 #[test]
-fn constant_arithmetic_does_not_overflow_over_rationals() {
-    // ~f64::MAX as a literal; ×10 would overflow f64 but is EXACT over
-    // rationals, so the cut stays a normal (satisfiable) atom — no spurious
-    // §4.4 collapse to false (and no fabricated empty/disjoint downstream).
+fn constant_arithmetic_overflow_matches_interpreter_nonfinite() {
+    // Constant subtrees emulate stepwise f64: ~f64::MAX × 10 → inf → §4.4
+    // makes the enclosing comparison false (same as the interpreter).
     let max = format!("17976931348623157{}", "0".repeat(292));
     let (enc, _) = encode(&format!("region SR\n  select MET > {max} * 10\n"), 0);
-    assert!(
-        matches!(enc.formula, Formula::Atom(_)),
-        "got {:?}",
-        enc.formula
-    );
+    assert_eq!(enc.formula, Formula::False, "got {:?}", enc.formula);
 }
 
 // ---- exact |E| ⋈ const expansion (extension of the linear row) ------------
 
 #[test]
 fn abs_versus_constant_expands_exactly() {
-    let (lt, hir) = encode("region SR\n  select abs(MET - 200) < 50\n", 0);
+    // Bare `abs(q)` is exact-f64 (IEEE abs); expand against a constant.
+    let (lt, hir) = encode("region SR\n  select abs(MET) < 50\n", 0);
     let met = met_q(&hir);
     assert_eq!(
         lt.formula,
-        Formula::And(vec![atom1(met, Rel::Lt, 250.0), atom1(met, Rel::Gt, 150.0)])
+        Formula::And(vec![atom1(met, Rel::Lt, 50.0), atom1(met, Rel::Gt, -50.0)])
     );
 
-    let (gt, hir) = encode("region SR\n  select abs(MET - 200) > 50\n", 0);
+    let (gt, hir) = encode("region SR\n  select abs(MET) > 50\n", 0);
     let met = met_q(&hir);
     assert_eq!(
         gt.formula,
-        Formula::Or(vec![atom1(met, Rel::Gt, 250.0), atom1(met, Rel::Lt, 150.0)])
+        Formula::Or(vec![atom1(met, Rel::Gt, 50.0), atom1(met, Rel::Lt, -50.0)])
     );
+}
+
+#[test]
+fn abs_of_additive_inner_is_opaque_not_flattened() {
+    // Audit C3: `abs(MET - 200)` must NOT unguarded-flatten the inner sub.
+    let (enc, hir) = encode("region SR\n  select abs(MET - 200) < 50\n", 0);
+    let q = opaque_q(&hir);
+    assert_eq!(enc.formula, atom1(q, Rel::Lt, 50.0));
 }
 
 // `|E| >= 0`, so comparing `|E|` to a NEGATIVE constant is itself constant.
@@ -647,24 +663,24 @@ fn abs_versus_negative_constant_is_exactly_constant() {
         (">=", Formula::True),
         ("!=", Formula::True),
     ] {
-        let (enc, _hir) = encode(&format!("region SR\n  select abs(MET - 200) {op} -5\n"), 0);
+        let (enc, _hir) = encode(&format!("region SR\n  select abs(MET) {op} -5\n"), 0);
         assert_eq!(enc.formula, expect, "abs(...) {op} -5 must fold to {expect:?}");
     }
 }
 
 // Boundary guard: `c == 0` must NOT be swallowed by the `c < 0` short-circuit
 // (0.0 < 0.0 is false), so it still takes the exact general expansion and
-// stays a genuine constraint on MET — `|MET-200| == 0` is satisfiable (only at
-// MET==200) and `|MET-200| != 0` is not a tautology. A regression that widened
+// stays a genuine constraint on MET — `|MET| == 0` is satisfiable (only at
+// MET==0) and `|MET| != 0` is not a tautology. A regression that widened
 // the guard to `c <= 0` would fold these to False/True respectively.
 #[test]
 fn abs_versus_zero_keeps_the_exact_constraint() {
-    let (eq, _hir) = encode("region SR\n  select abs(MET - 200) == 0\n", 0);
-    assert_ne!(eq.formula, Formula::False, "|MET-200| == 0 is satisfiable at MET==200");
+    let (eq, _hir) = encode("region SR\n  select abs(MET) == 0\n", 0);
+    assert_ne!(eq.formula, Formula::False, "|MET| == 0 is satisfiable at MET==0");
     assert_ne!(eq.formula, Formula::True);
 
-    let (ne, _hir) = encode("region SR\n  select abs(MET - 200) != 0\n", 0);
-    assert_ne!(ne.formula, Formula::True, "|MET-200| != 0 is not a tautology");
+    let (ne, _hir) = encode("region SR\n  select abs(MET) != 0\n", 0);
+    assert_ne!(ne.formula, Formula::True, "|MET| != 0 is not a tautology");
     assert_ne!(ne.formula, Formula::False);
 }
 

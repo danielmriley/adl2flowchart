@@ -48,6 +48,10 @@ fn render(rel: &str) -> String {
 
 #[test]
 fn default_rendering_cms_sus_16_032() {
+    // Snapshot refreshed 2026-07-28 after the strict f64-exactness encoder
+    // rule (AUDIT_2026-07-28 §12): PROVEN DISJOINT 41→30 and several
+    // OVERLAPPING→POSSIBLY/CANDIDATE — completeness loss from refusing
+    // cross-form folds, not a stronger (unsound) verdict.
     insta::assert_snapshot!(
         "default_cms_sus_16_032",
         render("examples/Examples/CMS-SUS-16-032.adl")

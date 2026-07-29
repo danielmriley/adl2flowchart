@@ -19,7 +19,9 @@ pub mod encode;
 pub mod formula;
 pub mod lin;
 
-pub use encode::{EncodedRegion, OPEN1_BOUND, encode_region, encode_regions};
+pub use encode::{
+    EncodedRegion, MAX_STATIC_SLICE_REDUCE, OPEN1_BOUND, encode_region, encode_regions,
+};
 pub use formula::{DiagId, DiagTable, Formula, FormulaDiag, Over, QFormula, Under};
 pub use lin::{LinAtom, Rel};
 

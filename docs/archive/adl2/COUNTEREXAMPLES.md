@@ -4,7 +4,9 @@ Every entry below was found mechanically by the property-based
 encoder-vs-interpreter battery or the metamorphic battery
 (`crates/adl-difftest/tests/{prop_encoder_vs_interp,metamorphic}.rs`),
 minimized, fixed in engine code, and locked as a regression test in
-`crates/adl-difftest/tests/regressions.rs`. Dated 2026-06-11.
+`crates/adl-difftest/tests/regressions.rs` (CE-1…CE-7) or
+`crates/adl-analysis/tests/f64_fold_regressions.rs` (CE-8…CE-13).
+Dated 2026-06-11 (CE-1…CE-7) / 2026-07-28 (CE-8…CE-13).
 
 ## CE-1 — false PROVEN DISJOINT: unguarded negation over missing elements
 
@@ -167,3 +169,114 @@ interpreter membership remain strict.
 Follow-up (certifier completeness, not soundness): unit-propagating
 top-level conjuncts before case-splitting would find `d0 ∧ ¬d0` without
 entering the branch explosion, certifying the inherit core too.
+
+## CE-8 — false PROVEN DISJOINT: multiplicative regrouping (C1, 2026-07-28)
+
+```adl
+region a
+  select MET*0.2*0.3 + HT > 1
+
+region b
+  select 0.06*MET + HT <= 1
+```
+
+Exact-rational folding unifies `(MET·0.2)·0.3` with `0.06·MET`, but
+stepwise f64 rounds twice on the left and once on the right. Witness
+`MET=947.8280087844788, HT=-55.869680527068724` passes both regions
+under the interpreter. Old verdict: PROVEN DISJOINT.
+
+**Fix (adl-formula encode.rs):** strict f64-exactness foldability —
+quantity-bearing arithmetic that is not provably exact in f64 interns as
+a structure-keyed opaque scalar. Verdict after fix: POSSIBLY OVERLAPPING.
+Regression: `f64_fold_regressions::c1_multiplicative_regrouping_not_proven_disjoint`.
+
+## CE-9 — false PROVEN DISJOINT: `Neg(Num)` additive literal (C2, 2026-07-28)
+
+```adl
+region a
+  select MET + -0.1 > 0.3
+
+region b
+  select MET <= 0.4
+```
+
+The dyadic-constant probe missed `Neg(Num)` operands, so `MET + -0.1`
+folded across a non-dyadic add. Witness `MET=0.4` passes both. Old
+verdict: PROVEN DISJOINT.
+
+**Fix:** same strict foldability rule (and cut-constant-aware sampling
+gate as defense-in-depth). Verdict after fix: POSSIBLY OVERLAPPING.
+Regression: `f64_fold_regressions::c2_neg_num_literal_not_proven_disjoint`.
+
+## CE-10 — false PROVEN DISJOINT: `abs_cmp` re-flatten (C3, 2026-07-28)
+
+```adl
+region a
+  select abs(MET + HT - HT) < 50
+
+region b
+  select abs(MET) >= 50
+```
+
+`abs_cmp` re-flattened its inner with unguarded `lin`, cancelling
+`+ HT - HT` exactly while f64 keeps a residual at huge HT. Witness
+`MET=50, HT=1152921504606846976`. Old verdict: PROVEN DISJOINT.
+
+**Fix:** strict foldability + guarded `abs_cmp`. Verdict after fix:
+POSSIBLY OVERLAPPING.
+Regression: `f64_fold_regressions::c3_abs_cancellation_not_proven_disjoint`.
+
+## CE-11 — false PROVEN DISJOINT: single dyadic add (C4, 2026-07-28)
+
+```adl
+region a
+  select MET + 0.5 <= 1
+
+region b
+  select MET > 0.5
+```
+
+The guard's previously-allowed case (one dyadic add) is itself unsound
+at a half-ulp flat spot: witness `MET=0.5000000000000001` has
+`fl(MET+0.5)=1.0≤1` and `MET>0.5`. Old verdict: PROVEN DISJOINT
+(interval prefilter).
+
+**Fix (AUDIT §12):** folding across *any* rounding op is refused.
+Verdict after fix: POSSIBLY OVERLAPPING.
+Regression: `f64_fold_regressions::c4_dyadic_add_not_proven_disjoint`.
+
+## CE-12 — false PROVEN DISJOINT: single non-dyadic multiply (C5, 2026-07-28)
+
+```adl
+region a
+  select MET*0.3 <= 1
+
+region b
+  select MET >= 3.3333333333333335
+```
+
+Folds to `MET ≤ 10/3` vs bare `MET ≥ 3.333…5` (disjoint as rationals);
+witness `MET=3.3333333333333335` has `fl(MET·fl(0.3))=1.0≤1`. Old
+verdict: PROVEN DISJOINT.
+
+**Fix:** same. Verdict after fix: POSSIBLY OVERLAPPING.
+Regression: `f64_fold_regressions::c5_single_mul_not_proven_disjoint`.
+
+## CE-13 — false PROVEN DISJOINT: constant-only multiplicative fold (C6, 2026-07-28)
+
+```adl
+region a
+  select MET <= 0.1 * 3
+
+region b
+  select MET >= 0.30000000000000004
+```
+
+Exact fold gives `MET ≤ 3/10`; interpreter computes
+`fl(fl(0.1)·3)=0.30000000000000004`. Witness at that boundary passes
+both — the regions genuinely share the f64-emulated cut. Old verdict:
+PROVEN DISJOINT.
+
+**Fix:** constant-only subtrees fold by f64 emulation, then rationalize
+the result. Verdict after fix: PROVEN OVERLAPPING (or weaker-but-not-
+disjoint). Regression: `f64_fold_regressions::c6_const_mul_not_proven_disjoint`.

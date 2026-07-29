@@ -244,13 +244,22 @@ fn tag_01_axiom_proves_threshold_complement_disjoint() {
     );
 }
 
+/// `(MET+100)/MET < 1.5` vs `MET < 150` used to prove DISJOINT via exact
+/// denominator clearing (`L/D ⋈ c` ⇒ `L ⋈ c·D`). Under the strict
+/// f64-exactness rule (AUDIT_2026-07-28 §12 — ratio clearing is the same
+/// half-ulp hazard class as C4/C5), that cross-form fold is refused:
+/// completeness sacrifice, not a new unsoundness. Pin POSSIBLY.
 #[test]
-fn ratio_cut_encoded_exactly_and_disjoint() {
+fn ratio_cut_gives_up_denominator_clearing() {
     let r = run("ratio_met.adl");
     let p = pair(&r, "SR_ratio", "SR_lowmet");
-    assert_eq!(p.kind, VerdictKind::ProvenDisjoint);
-    assert!(p.exact, "ratio encoding must be exact");
-    assert!(region(&r, "SR_ratio").exact);
+    assert_eq!(
+        p.kind,
+        VerdictKind::PossiblyOverlapping,
+        "strict f64 guard refuses ratio clearing; got {:?} ({})",
+        p.kind,
+        p.reason
+    );
 }
 
 #[test]

@@ -80,8 +80,8 @@ fn f64_faithfulness_guard_blocks_false_disjoint() {
     }
 }
 
-/// The guard must NOT over-regress: f64-faithful sources (single quantity,
-/// same-structure sums, dyadic additive constants) keep their PROVEN verdicts.
+/// Bare quantities and identical-structure opaque scalars keep PROVEN
+/// DISJOINT: no cross-form fold, so the shared opaque / bare atom is sound.
 #[test]
 fn f64_faithfulness_guard_preserves_sound_disjoint() {
     let ext = ExtDecls::legacy();
@@ -90,8 +90,6 @@ fn f64_faithfulness_guard_preserves_sound_disjoint() {
         "region RA\n  select MET > 400\nregion RB\n  select MET < 200\n",
         // identical-structure sum in both regions (same f64 value → partition)
         "region RA\n  select MET + HT > 400\nregion RB\n  select MET + HT < 200\n",
-        // dyadic additive constant (0.5 is exactly representable)
-        "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n",
     ];
     for src in sound {
         let r =
@@ -108,6 +106,31 @@ fn f64_faithfulness_guard_preserves_sound_disjoint() {
             r.pairwise[0].reason
         );
     }
+}
+
+/// Strict f64-exactness rule (AUDIT_2026-07-28 §12): folding a comparison
+/// operand across *any* rounding op is unsound in general — C4
+/// (`MET + 0.5 <= 1` vs `MET > 0.5`) was a demonstrated false PROVEN at a
+/// half-ulp flat spot. This pair (`MET + 0.5 > 1.5` vs `MET <= 1.0`) *is*
+/// sound under f64 (1.5 representable; exact sum ≤ 1.5 when MET ≤ 1), but
+/// the guard cannot distinguish sound instances without per-boundary
+/// representability analysis, so it intentionally gives up → POSSIBLY.
+#[test]
+fn strict_f64_guard_gives_up_cross_form_folds() {
+    let ext = ExtDecls::legacy();
+    let src = "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n";
+    let r = analyze_source(src, "cross_form.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver");
+        return;
+    }
+    assert_eq!(
+        r.pairwise[0].kind,
+        VerdictKind::PossiblyOverlapping,
+        "cross-form fold must degrade to POSSIBLY (completeness sacrifice), got {:?} ({})",
+        r.pairwise[0].kind,
+        r.pairwise[0].reason
+    );
 }
 
 /// The realizer builds all-pass events (every base element passes every
@@ -480,11 +503,13 @@ region SR_y
 }
 
 /// CMS-SUS-16-032 transcription-bug class (CORPUS gap 1): an opaque
-/// pt-named external call inside an impossible ratio must prove the
-/// region EMPTY — `(pT(...) + MET)/MET < 0.5` with `MET > 250` forces
-/// `pT(...) < -125`, contradicting the NNEG axiom on pt-named opaques.
+/// pt-named external call inside an impossible ratio *used* to prove the
+/// region EMPTY via flattening the additive numerator into a linear atom
+/// that NNEG contradicted. Under the strict f64-exactness rule
+/// (AUDIT_2026-07-28 §12), that cross-form fold is refused — sound
+/// precision loss; emptiness is no longer proven.
 #[test]
-fn opaque_pt_in_impossible_ratio_proves_region_empty() {
+fn opaque_pt_in_impossible_ratio_no_longer_proves_empty() {
     use adl_analysis::EmptyStatus;
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opaque_pt_ratio_empty.adl");
@@ -506,18 +531,12 @@ fn opaque_pt_in_impossible_ratio_proves_region_empty() {
         .iter()
         .find(|reg| reg.name == "SR_impossible_ratio")
         .expect("region present");
-    assert_eq!(
+    assert_ne!(
         impossible.empty,
         EmptyStatus::Proven,
-        "impossible ratio over a pt-named opaque must prove EMPTY"
-    );
-    assert!(
-        impossible.empty_core.iter().any(|c| {
-            let h = c.human();
-            h.contains("NNEG") && h.contains("pT(...)")
-        }),
-        "the emptiness core must rest on the NNEG opaque-pt instance: {:?}",
-        impossible.empty_core
+        "strict f64 guard refuses the additive-ratio flatten; emptiness \
+         must not be Proven (got {:?})",
+        impossible.empty
     );
     let sane = r
         .regions

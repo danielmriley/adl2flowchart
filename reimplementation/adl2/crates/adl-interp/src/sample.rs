@@ -13,10 +13,30 @@
 //! Determinism: a hand-rolled SplitMix64 (no `rand` dependency, no global
 //! state) so the same gate size always evaluates the same events — verdicts
 //! must never flicker across runs.
+//!
+//! Cut-constant injection (AUDIT_2026-07-28 §3): fixed pools alone miss
+//! off-pool cut boundaries (0.4, 0.5, 50, …) where f64-folding bugs live.
+//! Callers pass the unit's comparison constants; each expands to
+//! `{c, next_up(c), next_down(c)}` in the pools, and dedicated MET/HT
+//! events guarantee those values appear in the battery.
 
 use crate::event::{Event, parse_event};
 use adl_sema::ExtDecls;
 use std::f64::consts::PI;
+
+/// Cap on distinct cut constants injected into boundary pools (each expands
+/// to the value ± 1 ulp). Keeps the battery bounded on files with hundreds
+/// of numeric literals; excess constants (after sort/dedup) are dropped.
+pub const MAX_CUT_CONSTANTS: usize = 32;
+
+/// Absolute-value cap for injected cut constants. Values beyond this
+/// (e.g. `f64::MAX` from overflow-stress tests) are skipped: putting them
+/// in the pT pool produces non-finite HT sums and invalid JSON.
+const MAX_INJECT_ABS: f64 = 1.0e6;
+
+fn injectible(c: f64) -> bool {
+    c.is_finite() && c.abs() <= MAX_INJECT_ABS
+}
 
 /// SplitMix64 — tiny, deterministic, statistically fine for event synthesis.
 struct Rng(u64);
@@ -74,10 +94,35 @@ fn pick(rng: &mut Rng, pool: &[f64]) -> f64 {
     pool[rng.below(pool.len() as u64) as usize]
 }
 
+/// Expand cut constants to `{c, next_up(c), next_down(c)}`, sorted/deduped,
+/// capped at `3 * MAX_CUT_CONSTANTS` boundary values. Non-finite and
+/// out-of-range inputs are dropped (see [`MAX_INJECT_ABS`]).
+#[must_use]
+pub fn expand_cut_boundaries(cut_consts: &[f64]) -> Vec<f64> {
+    let mut out = Vec::new();
+    for &c in cut_consts.iter().filter(|&&c| injectible(c)).take(MAX_CUT_CONSTANTS) {
+        for v in [c, c.next_up(), c.next_down()] {
+            if injectible(v) {
+                out.push(v);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.total_cmp(b));
+    out.dedup_by(|a, b| a.to_bits() == b.to_bits());
+    out
+}
+
+fn merge_pool(base: &[f64], extra: &[f64]) -> Vec<f64> {
+    let mut v: Vec<f64> = base.iter().copied().chain(extra.iter().copied()).collect();
+    v.sort_by(|a, b| a.total_cmp(b));
+    v.dedup_by(|a, b| a.to_bits() == b.to_bits());
+    v
+}
+
 /// One synthetic event as a JSON line. Half the values come from the boundary
 /// pools, half are uniform draws; collections are pT-descending (the loader
 /// invariant every real event obeys).
-fn event_json(rng: &mut Rng) -> String {
+fn event_json(rng: &mut Rng, pt_pool: &[f64], eta_pool: &[f64], met_pool: &[f64]) -> String {
     use std::fmt::Write as _;
     let mut s = String::from("{");
     let mut ht = 0.0;
@@ -86,7 +131,7 @@ fn event_json(rng: &mut Rng) -> String {
         let mut pts: Vec<f64> = (0..n)
             .map(|_| {
                 if rng.next() & 1 == 0 {
-                    pick(rng, PT_POOL)
+                    pick(rng, pt_pool)
                 } else {
                     round3(rng.in_range(0.0, 500.0))
                 }
@@ -102,7 +147,7 @@ fn event_json(rng: &mut Rng) -> String {
                 s.push(',');
             }
             let eta = if rng.next() & 1 == 0 {
-                pick(rng, ETA_POOL).clamp(-eta_max, eta_max)
+                pick(rng, eta_pool).clamp(-eta_max, eta_max)
             } else {
                 round3(rng.in_range(-eta_max, eta_max))
             };
@@ -121,7 +166,7 @@ fn event_json(rng: &mut Rng) -> String {
         s.push_str("],");
     }
     let met = if rng.next() & 1 == 0 {
-        pick(rng, MET_POOL)
+        pick(rng, met_pool)
     } else {
         round3(rng.in_range(0.0, 600.0))
     };
@@ -135,22 +180,70 @@ fn event_json(rng: &mut Rng) -> String {
     s
 }
 
+/// Empty-collections skeleton with a chosen MET.pt (and HT=0). Used to
+/// guarantee cut-boundary MET values appear in the battery.
+fn met_boundary_json(met: f64) -> String {
+    format!(
+        r#"{{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{{"pt":{met},"phi":0.0}},"HT":0.0,"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
+    )
+}
+
+/// Empty-collections skeleton with a chosen HT scalar (MET.pt=0).
+fn ht_boundary_json(ht: f64) -> String {
+    format!(
+        r#"{{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{{"pt":0.0,"phi":0.0}},"HT":{ht},"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
+    )
+}
+
 /// The gate battery: `n` deterministic loader-valid events (plus the all-empty
-/// event, which refutes many "provably empty" mistakes for free). Events that
-/// fail the loader are a bug in THIS module — panic loudly rather than gate on
-/// a silently smaller battery.
+/// event, which refutes many "provably empty" mistakes for free), then
+/// dedicated MET/HT events at every injected cut boundary (±1 ulp).
+///
+/// `cut_consts` are the unit's comparison numeric literals (as f64); pass
+/// `&[]` for the fixed-pool-only battery. Events that fail the loader are a
+/// bug in THIS module — panic loudly rather than gate on a silently smaller
+/// battery.
 #[must_use]
 pub fn battery(ext: &ExtDecls, n: usize) -> Vec<Event> {
+    battery_with_cuts(ext, n, &[])
+}
+
+/// Like [`battery`], but injects `cut_consts` (±1 ulp) into the PT/ETA/MET
+/// pools and appends dedicated scalar-boundary events so those values are
+/// guaranteed to appear (AUDIT_2026-07-28 §3 defense-in-depth).
+#[must_use]
+pub fn battery_with_cuts(ext: &ExtDecls, n: usize, cut_consts: &[f64]) -> Vec<Event> {
+    let boundaries = expand_cut_boundaries(cut_consts);
+    let pt_pool = merge_pool(PT_POOL, &boundaries);
+    // ETA: only inject boundaries that look like angular cuts (|v| ≤ 6).
+    let eta_extra: Vec<f64> = boundaries
+        .iter()
+        .copied()
+        .filter(|v| v.abs() <= 6.0)
+        .collect();
+    let eta_pool = merge_pool(ETA_POOL, &eta_extra);
+    let met_pool = merge_pool(MET_POOL, &boundaries);
+
     let empty = r#"{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{"pt":0.0,"phi":0.0},"HT":0.0,"triggers":{"mu_trig":0,"el_trig":0}}"#;
     let mut events = vec![
         parse_event(empty, ext).expect("the empty battery event is loader-valid"),
     ];
     let mut rng = Rng(0x5A_11D6_A7E0_u64);
     for i in 0..n.saturating_sub(1) {
-        let line = event_json(&mut rng);
+        let line = event_json(&mut rng, &pt_pool, &eta_pool, &met_pool);
         events.push(parse_event(&line, ext).unwrap_or_else(|e| {
             panic!("sampling-gate battery event {i} failed the loader: {e}\n{line}")
         }));
+    }
+    // Dedicated MET/HT events at every cut boundary — pool draws alone can
+    // miss a specific value when the pool grows. Scalars are the priority
+    // hazard class (AUDIT C1–C6).
+    for &v in &boundaries {
+        for line in [met_boundary_json(v), ht_boundary_json(v)] {
+            events.push(parse_event(&line, ext).unwrap_or_else(|e| {
+                panic!("cut-boundary battery event failed the loader: {e}\n{line}")
+            }));
+        }
     }
     events
 }
@@ -189,5 +282,38 @@ mod tests {
                 .is_some_and(|js| js.iter().any(|j| j.get("ptof") == Some(30.0)))
         });
         assert!(boundary_pt, "pool draws must land on common cut boundaries");
+    }
+
+    #[test]
+    fn cut_constant_battery_includes_met_boundaries() {
+        // AUDIT §3: a cut at MET > 0.5 must put 0.5 ± 1 ulp into the battery.
+        let ext = ExtDecls::legacy();
+        let (pt_key, _) = ext.prop_canon("pt");
+        let c = 0.5_f64;
+        let events = battery_with_cuts(&ext, 8, &[c]);
+        let want = [c, c.next_up(), c.next_down()];
+        for w in want {
+            let hit = events.iter().any(|e| e.met.get(&pt_key) == Some(&w));
+            assert!(
+                hit,
+                "battery must contain an event with MET.{pt_key} = {w:?} (cut 0.5 ± ulp); \
+                 met keys present: {:?}",
+                events
+                    .iter()
+                    .filter_map(|e| e.met.get(&pt_key).copied())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn expand_cut_boundaries_is_sorted_deduped_and_capped() {
+        let many: Vec<f64> = (0..100).map(|i| f64::from(i)).collect();
+        let b = expand_cut_boundaries(&many);
+        // Cap at MAX_CUT_CONSTANTS inputs × ≤3, after dedup of overlaps.
+        assert!(b.len() <= MAX_CUT_CONSTANTS * 3);
+        for w in b.windows(2) {
+            assert!(w[0].total_cmp(&w[1]).is_lt());
+        }
     }
 }

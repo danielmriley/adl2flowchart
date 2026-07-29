@@ -217,11 +217,13 @@ are byte-identical.
 **Two independent nets sit behind every PROVEN verdict**, on by default:
 
 - **Certification** (`adl-certify`). When the solver returns UNSAT for a
-  disjointness/emptiness query, the unsat core is handed to a self-
+  pairwise **disjointness** query, the unsat core is handed to a self-
   contained exact-rational checker that must produce a replayable Farkas
   certificate — a proof re-checked by a small trusted kernel, in exact
-  arithmetic, with no dependence on the solver. Scope, stated precisely:
-  the certificate makes the *solver's claim about the encoded formula*
+  arithmetic, with no dependence on the solver. Emptiness, subset, and bin
+  UNSAT verdicts are not yet certified — they still rest on the solver plus
+  the sampling gate (an open item). Scope, stated precisely: the
+  certificate makes the *solver's claim about the encoded formula*
   independently checkable — it removes solver search from the trusted
   base, not the encoder, polarity projection, or axiom catalog, which
   remain the meaning of "regions disjoint" and are audited by the testing
@@ -276,8 +278,9 @@ stated honestly (and embedded in every bundle's `note` field): replay
 proves the *listed formulas* are real-unsatisfiable together — that those
 formulas are the right encoding of the named regions is smash2's claim,
 audited by the testing nets above. A verdict later demoted (e.g. by the
-sampling gate) never leaves a bundle behind, and a tampered bundle fails
-replay.
+sampling gate) never leaves a bundle behind. Replay checks the schema, the
+formula set, the certificate tree, the verdict string, and the scope note
+— tampering any of those fails closed.
 
 **`run` — interpret regions over events**
 

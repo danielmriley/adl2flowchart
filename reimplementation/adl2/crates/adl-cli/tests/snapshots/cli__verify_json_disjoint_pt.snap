@@ -1,5 +1,6 @@
 ---
 source: crates/adl-cli/tests/cli.rs
+assertion_line: 237
 expression: stdout(&out)
 ---
 {
@@ -7,7 +8,7 @@ expression: stdout(&out)
   "unit": "disjoint_pt.adl",
   "solver": "none",
   "sampling": {
-    "events": 64,
+    "events": 88,
     "refutations": 0
   },
   "regions": [

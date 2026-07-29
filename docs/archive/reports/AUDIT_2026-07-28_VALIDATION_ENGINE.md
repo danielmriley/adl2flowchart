@@ -973,6 +973,26 @@ matrix.
 | N1 (`~=` → `!=`, OPEN-4) | language decision |
 | Ratio-clearing residual (§12) | documented residual |
 
-**Working tree:** changes are uncommitted (agents instructed not to commit).
-Architecture PNG/SVG under `reimplementation/` are unrelated untracked
-artifacts from earlier work.
+**Shipped:** commit `28859fb` on `main`.
+
+---
+
+## 14. Post-ship double-check (2026-07-29) — CE-14 ratio clearing
+
+After push, an adversarial pass found a **residual false PROVEN DISJOINT**
+the exact-f64 fold gate did not cover: `ratio()` still cleared
+`L/d ⋈ c → L ⋈ c·d` for every constant `d`. Against `fl(L)/fl(d)` that is
+unsound when `d` is not a ±power of two.
+
+Demonstrated: `pT(jets[0])/0.3 <= 0.1` vs `pT(jets[0]) > 0.03` with
+witness `pt = next_up(0.03)` — PROVEN DISJOINT even under `--no-solver`
+(interval path); MET twin was gate-caught. Also hit via `min`, band, and
+a false mutual-SUBSET twin.
+
+**Follow-up fix:** clear constant denominators only for ±pow2 `d`; else
+opaque the whole ratio (encoder + EPRED). Gate emits dedicated
+Jet/Electron/Muon boundary events. Locked as CE-14 /
+`c14_ratio_const_den_not_proven_disjoint`.
+
+Workspace battery at double-check time: **831 passed / 0 failed**.
+Corpus: **pairs=1893 disjoint=794** (matches post-28859fb baseline).

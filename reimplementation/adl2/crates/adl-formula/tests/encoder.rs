@@ -360,11 +360,28 @@ fn nonlinear_ratio_denominator_interns_opaque() {
 fn constant_denominator_clears_into_an_exact_atom() {
     // Power-of-two division is IEEE-exact, so `MET / 2` flattens to the
     // scaled atom `(1/2)·MET > 50` (equivalent over the reals to `MET > 100`).
-    // Non-pow2 denominators still take the ratio multiply-through path.
+    // Non-pow2 denominators must NOT exact-clear (CE-14): intern the ratio
+    // as a structure-keyed opaque instead of fabricating `MET > 150`.
     let (enc, hir) = encode("region SR\n  select MET / 2 > 50\n", 0);
     assert_eq!(enc.formula, atom(&[(0.5, met_q(&hir))], Rel::Gt, 50.0));
     let (enc, hir) = encode("region SR\n  select MET / 3 > 50\n", 0);
-    assert_eq!(enc.formula, atom(&[(1.0, met_q(&hir))], Rel::Gt, 150.0));
+    assert!(
+        !matches!(enc.formula, Formula::Unknown(_)),
+        "non-pow2 ratio must stay decidable via opaque atom, got {:?}",
+        enc.formula
+    );
+    assert!(
+        hir.table.quantities().iter().any(|q| matches!(q,
+            Quantity::ExternalFn { name, .. } if hir.symbols.display(*name) == "opaque.scalar")),
+        "MET/3 must intern as opaque.scalar, not clear to MET > 150"
+    );
+    // opaque_atom yields Formula::Atom over the opaque quantity — that is
+    // fine. The CE-14 bug was clearing to a bare MET atom (`MET > 150`).
+    assert_ne!(
+        enc.formula,
+        atom(&[(1.0, met_q(&hir))], Rel::Gt, 150.0),
+        "exact-clearing MET/3 → MET>150 is the CE-14 false-PROVEN path"
+    );
 }
 
 #[test]

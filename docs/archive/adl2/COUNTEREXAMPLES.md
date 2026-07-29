@@ -280,3 +280,33 @@ PROVEN DISJOINT.
 **Fix:** constant-only subtrees fold by f64 emulation, then rationalize
 the result. Verdict after fix: PROVEN OVERLAPPING (or weaker-but-not-
 disjoint). Regression: `f64_fold_regressions::c6_const_mul_not_proven_disjoint`.
+
+## CE-14 — false PROVEN DISJOINT: non-pow2 constant-denominator ratio clearing (2026-07-29)
+
+Found in the post-28859fb double-check. Exact-f64 fold closed C1–C6 but
+left `ratio()` clearing `L/d ⋈ c` → exact `L ⋈ c·d` for *any* constant
+`d`. Against stepwise `fl(L)/fl(d)` that is unsound for non-power-of-two
+`d`. Sampling caught the MET twin; object `pT` slipped through the
+interval path with `refutations: 0`.
+
+```adl
+object jets
+  take Jet
+
+region a
+  select pT(jets[0]) / 0.3 <= 0.1
+
+region b
+  select pT(jets[0]) > 0.03
+```
+
+Witness `jets[0].pt = 0.030000000000000002`: `fl(pt/0.3)=0.1≤0.1` and
+`pt>0.03`. Old verdict: PROVEN DISJOINT (even under `--no-solver`).
+Same class: electron pT, `min(pT/0.3,…)`, band `pT/0.3 [] …`, and a
+false mutual-SUBSET twin (`pT/0.3≤0.1` vs `pT≤0.03`).
+
+**Fix:** clear constant denominators only when `d` is a ±power of two;
+otherwise intern the whole ratio as a structure-keyed opaque. EPRED
+`clear_ratio` matches. Gate also emits dedicated Jet/Electron/Muon
+boundary events. Regression:
+`f64_fold_regressions::c14_ratio_const_den_not_proven_disjoint`.

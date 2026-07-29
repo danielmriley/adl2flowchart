@@ -8,7 +8,7 @@ expression: stdout(&out)
   "unit": "disjoint_pt.adl",
   "solver": "none",
   "sampling": {
-    "events": 88,
+    "events": 124,
     "refutations": 0
   },
   "regions": [

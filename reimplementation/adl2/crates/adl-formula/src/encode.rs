@@ -1651,7 +1651,7 @@ impl Encoder<'_> {
                 op: ArithOp::Div,
                 lhs: num,
                 rhs: den,
-            } => self.ratio(num, den, rel, c, span),
+            } => self.ratio(side, num, den, rel, c, span),
             HKind::Abs(inner) => self.abs_cmp(side, inner, rel, c, span),
             // Scalar min/max against a constant — the EXACT monotone identity:
             // `min(a,…) < c ⇔ ∃ aᵢ < c`, `min(a,…) > c ⇔ ∀ aᵢ > c`, max dual
@@ -1756,7 +1756,15 @@ impl Encoder<'_> {
     /// Exact two-branch ratio encoding (SPEC_ANALYSIS §1):
     /// `L/D ⋈ c` (D non-constant) ⇒ `(D>0 ∧ L ⋈ cD) ∨ (D<0 ∧ L ⋈̄ cD)`.
     /// `D = 0` fails the cut (neither branch admits it; §4.4).
-    fn ratio(&mut self, num: &HNode, den: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
+    fn ratio(
+        &mut self,
+        whole: &HNode,
+        num: &HNode,
+        den: &HNode,
+        rel: Rel,
+        c: Rat,
+        span: Span,
+    ) -> Formula {
         let l = match self.lin_or_opaque(num) {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio numerator is not linear", span),
@@ -1766,11 +1774,23 @@ impl Encoder<'_> {
             Err(e) => return self.lin_err(e, "ratio denominator is not linear", span),
         };
         if d.terms.is_empty() {
-            // Constant denominator: clear it EXACTLY. `L/d ⋈ c` ⇔ `L ⋈ c·d`
-            // (d>0) or `L ⋈̄ c·d` (d<0); `d=0` fails the cut (§4.4). Rational
-            // arithmetic keeps the boundary on the interpreter's exactly.
+            // Constant denominator: `L/d ⋈ c` ⇔ `L ⋈ c·d` is only f64-faithful
+            // when division by `d` is IEEE-exact (d a ±power of two). Exact
+            // rational clearing against a non-dyadic `d` (e.g. `pT/0.3 <= 0.1`)
+            // fabricates a false PROVEN DISJOINT — the interpreter computes
+            // `fl(L)/fl(d)` and half-ulp flat spots dual-satisfy complementary
+            // cleared atoms (AUDIT_2026-07-28 double-check / CE-14).
             if d.k.is_zero() {
                 return Formula::False; // §4.4
+            }
+            if !is_power_of_two_rat(&d.k) {
+                return self.opaque_atom(
+                    whole,
+                    rel,
+                    c,
+                    "ratio with non-power-of-two constant denominator cannot be cleared f64-exactly",
+                    span,
+                );
             }
             let cd = d.scale(&c);
             let e = l.sub(&cd);

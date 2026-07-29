@@ -1538,6 +1538,12 @@ fn clear_ratio(
         // `x / 0` is never a member (the interpreter's comparison is false).
         return Some(QFormula::False);
     }
+    // Exact clearing is only f64-faithful for ±power-of-two denominators
+    // (mirrors adl-formula::encode::ratio). Non-pow2 → drop the conjunct
+    // (sound EPRED weakening) rather than assert a too-strong predicate.
+    if !is_power_of_two_rat(&d.k) {
+        return None;
+    }
     let l = lin_pred(table, num, coll, index)?;
     let r = lin_pred(table, other_side, coll, index)?;
     // L/d ⋈ R  ⇔  L ⋈ R·d  (relation flips when d < 0).
@@ -1550,6 +1556,23 @@ fn clear_ratio(
     };
     let k = -&e.k;
     Some(lin_atom(e.terms, rel, k))
+}
+
+/// IEEE-exact scale factors: ±2^k (numerator or denominator a power of two,
+/// the other side 1). Used to keep EPRED ratio clearing aligned with the
+/// main encoder's f64-faithfulness gate.
+fn is_power_of_two_rat(r: &Rat) -> bool {
+    if r.is_zero() {
+        return false;
+    }
+    let p = r.abs().to_parts();
+    let is_pow2 = |s: &str| -> bool {
+        s.parse::<u64>()
+            .ok()
+            .is_some_and(|n| n != 0 && n.is_power_of_two())
+    };
+    (p.numerator == "1" && is_pow2(&p.denominator))
+        || (p.denominator == "1" && is_pow2(&p.numerator))
 }
 
 fn lin_pred(

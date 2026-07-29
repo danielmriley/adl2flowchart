@@ -192,3 +192,23 @@ region b
     );
     assert_witness_in_both(src, &met_ht_event(0.30000000000000004, None), "c6");
 }
+
+/// CE-14 — constant-denominator ratio clearing (`L/d ⋈ c` → exact `L ⋈ c·d`)
+/// with non-power-of-two `d`. Demonstrated 2026-07-29 double-check: interval
+/// path emitted PROVEN DISJOINT while the interpreter accepted a shared jet.
+#[test]
+fn c14_ratio_const_den_not_proven_disjoint() {
+    let src = "\
+object jets
+  take Jet
+
+region a
+  select pT(jets[0]) / 0.3 <= 0.1
+
+region b
+  select pT(jets[0]) > 0.03
+";
+    let wit = r#"{"Jet":[{"pt":0.030000000000000002,"eta":0.0,"phi":0.0,"m":0.0}],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{"pt":0.0,"phi":0.0},"HT":0.0,"triggers":{"mu_trig":0,"el_trig":0}}"#;
+    assert_not_proven_disjoint(src, "c14");
+    assert_witness_in_both(src, wit, "c14");
+}

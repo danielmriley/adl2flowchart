@@ -195,6 +195,27 @@ fn ht_boundary_json(ht: f64) -> String {
     )
 }
 
+/// Single leading Jet/Electron/Muon at a cut-boundary pT (defense-in-depth for
+/// ratio/object cuts the MET/HT-only events cannot refute).
+fn obj_boundary_json(coll: &str, pt: f64) -> String {
+    let extra = match coll {
+        "Electron" | "Muon" | "Tau" => r#","charge":1.0"#,
+        "Jet" => r#","btag":0.0,"ctag":0.0"#,
+        _ => "",
+    };
+    let one = format!(r#"[{{"pt":{pt},"eta":0.0,"phi":0.0,"m":0.0{extra}}}]"#);
+    let empty = "[]".to_owned();
+    let (jet, ele, muo) = match coll {
+        "Jet" => (one, empty.clone(), empty),
+        "Electron" => (empty.clone(), one, empty),
+        "Muon" => (empty.clone(), empty, one),
+        _ => (empty.clone(), empty.clone(), empty),
+    };
+    format!(
+        r#"{{"Jet":{jet},"Electron":{ele},"Muon":{muo},"Tau":[],"Photon":[],"MET":{{"pt":0.0,"phi":0.0}},"HT":0.0,"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
+    )
+}
+
 /// The gate battery: `n` deterministic loader-valid events (plus the all-empty
 /// event, which refutes many "provably empty" mistakes for free), then
 /// dedicated MET/HT events at every injected cut boundary (±1 ulp).
@@ -235,11 +256,18 @@ pub fn battery_with_cuts(ext: &ExtDecls, n: usize, cut_consts: &[f64]) -> Vec<Ev
             panic!("sampling-gate battery event {i} failed the loader: {e}\n{line}")
         }));
     }
-    // Dedicated MET/HT events at every cut boundary — pool draws alone can
-    // miss a specific value when the pool grows. Scalars are the priority
-    // hazard class (AUDIT C1–C6).
+    // Dedicated boundary events at every cut ±1 ulp — pool draws alone can
+    // miss a specific value. MET/HT cover scalar cuts (AUDIT C1–C6); single
+    // Jet/Electron/Muon cover object-pT ratio cuts the scalar events cannot
+    // refute (AUDIT double-check CE-14).
     for &v in &boundaries {
-        for line in [met_boundary_json(v), ht_boundary_json(v)] {
+        for line in [
+            met_boundary_json(v),
+            ht_boundary_json(v),
+            obj_boundary_json("Jet", v),
+            obj_boundary_json("Electron", v),
+            obj_boundary_json("Muon", v),
+        ] {
             events.push(parse_event(&line, ext).unwrap_or_else(|e| {
                 panic!("cut-boundary battery event failed the loader: {e}\n{line}")
             }));

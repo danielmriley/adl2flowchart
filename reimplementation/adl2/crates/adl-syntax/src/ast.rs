@@ -540,6 +540,80 @@ impl Expr {
         }
     }
 
+    /// Depth of this expression tree: 1 for a leaf, `1 + max(child depth)`
+    /// otherwise.
+    ///
+    /// Computed **iteratively** — an explicit worklist, no recursion — because
+    /// this is the guard that keeps every *recursive* consumer downstream
+    /// (resolve, encode, dump, interpret, and the derived `Clone`/`Drop`) off
+    /// an attacker-chosen stack depth. A recursive implementation here would
+    /// overflow on exactly the inputs it exists to reject.
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        // (node, depth-of-node) worklist; `max` is the answer.
+        let mut stack: Vec<(&Expr, u32)> = vec![(self, 1)];
+        let mut max = 1;
+        let mut kids: Vec<&Expr> = Vec::new();
+        while let Some((e, d)) = stack.pop() {
+            max = max.max(d);
+            kids.clear();
+            e.push_children(&mut kids);
+            for k in kids.drain(..) {
+                stack.push((k, d + 1));
+            }
+        }
+        max
+    }
+
+    /// Push this node's direct sub-expressions onto `out`.
+    ///
+    /// The match is exhaustive on purpose: adding an `Expr` variant with a
+    /// child must not silently escape [`Expr::depth`], so the compiler is the
+    /// one enforcing that every child is listed here.
+    fn push_children<'a>(&'a self, out: &mut Vec<&'a Expr>) {
+        fn args<'a>(args: &'a [Arg], out: &mut Vec<&'a Expr>) {
+            for a in args {
+                match a {
+                    Arg::Expr(e) => out.push(e),
+                    Arg::Str(_) | Arg::Path(_) => {}
+                }
+            }
+        }
+        match self {
+            Expr::Num(_)
+            | Expr::Ident(_)
+            | Expr::All(_)
+            | Expr::NoneKw(_)
+            | Expr::True(_)
+            | Expr::False(_)
+            | Expr::Error(_) => {}
+            Expr::Unary { expr, .. }
+            | Expr::Band { expr, .. }
+            | Expr::Abs { expr, .. }
+            | Expr::Dot { base: expr, .. }
+            | Expr::Member { base: expr, .. }
+            | Expr::Index { base: expr, .. }
+            | Expr::Slice { base: expr, .. }
+            | Expr::UnderscoreIndex { base: expr, .. }
+            | Expr::UnderscoreAll { base: expr, .. } => out.push(expr),
+            Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
+                out.push(lhs);
+                out.push(rhs);
+            }
+            Expr::Ternary {
+                guard, then, els, ..
+            } => {
+                out.push(guard);
+                out.push(then);
+                if let Some(e) = els {
+                    out.push(e);
+                }
+            }
+            Expr::Call { args: a, .. } | Expr::Braced { args: a, .. } => args(a, out),
+            Expr::ParticleList { items, .. } => out.extend(items.iter()),
+        }
+    }
+
     /// Is this a bare object reference chain (no operators)? Used to decide
     /// whether adjacent postfix expressions may join into a particle-list.
     #[must_use]

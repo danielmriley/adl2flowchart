@@ -13,8 +13,22 @@
 //! them with a current smash2.
 //!
 //! Usage: `smash2-recheck BUNDLE.json... | DIR...`  (a directory contributes
-//! its `*.json` files, sorted). Exit 0 iff at least one bundle was checked
-//! and every one replayed.
+//! its `*.json` files, sorted).
+//!
+//! # Exit codes
+//!
+//! | code | meaning |
+//! |------|---------|
+//! | 0 | at least one bundle was checked and **every** one replayed |
+//! | 1 | bundles were checked and at least one failed to replay |
+//! | 2 | nothing could be checked: bad usage, an unreadable path, or a
+//!       directory that contains no `*.json` bundles |
+//!
+//! Exit 2 for "no bundles found" is deliberate and must stay non-zero: a
+//! release script that runs `smash2-recheck dist/bundles/` to gate a publish
+//! has to fail when the bundle directory is empty, not silently pass having
+//! verified nothing. Vacuous success is the one outcome a verification tool
+//! must never produce.
 
 use adl_certify::CombineBundle;
 use adl_certify::bundle::{BUNDLE_SCHEMA, SUPERSEDED_SCHEMAS, supersession_note};
@@ -50,7 +64,20 @@ fn collect_inputs(args: &[String]) -> Result<Vec<PathBuf>, String> {
                 .collect();
             found.sort();
             if found.is_empty() {
-                return Err(format!("no .json bundles in directory {}", p.display()));
+                let total = std::fs::read_dir(&p).map(Iterator::count).unwrap_or(0);
+                return Err(format!(
+                    "no *.json certificate bundles in directory {} ({}); \
+                     nothing was verified, so this exits 2 rather than reporting success. \
+                     Bundles are produced by `smash2 verify --combine {}`",
+                    p.display(),
+                    match total {
+                        0 => "the directory is empty".to_owned(),
+                        n => format!("{n} entr{} present, none ending in .json", {
+                            if n == 1 { "y" } else { "ies" }
+                        }),
+                    },
+                    p.display(),
+                ));
             }
             out.extend(found);
         } else {
@@ -68,9 +95,16 @@ fn check(path: &PathBuf) -> Result<String, String> {
         return Err(supersession_note(&probe.schema));
     }
     if probe.schema != BUNDLE_SCHEMA {
+        // The schema string is attacker-controlled and unbounded; quote only a
+        // recognizable prefix rather than echoing megabytes back to the reader.
+        let shown: String = probe.schema.chars().take(64).collect();
+        let ellipsis = if shown.len() < probe.schema.len() {
+            "..."
+        } else {
+            ""
+        };
         return Err(format!(
-            "unknown schema {:?} (expected {BUNDLE_SCHEMA:?})",
-            probe.schema
+            "unknown schema {shown:?}{ellipsis} (expected {BUNDLE_SCHEMA:?})"
         ));
     }
     let bundle: CombineBundle =
@@ -84,18 +118,37 @@ fn check(path: &PathBuf) -> Result<String, String> {
         0 => String::new(),
         n => format!(", {n} derived fact(s) re-derived"),
     };
-    Ok(format!(
-        "{} vs {}{chain}",
-        bundle.region_a, bundle.region_b
-    ))
+    Ok(format!("{} vs {}{chain}", bundle.region_a, bundle.region_b))
 }
 
+/// Restore the default SIGPIPE disposition, so `smash2-recheck DIR/ | head`
+/// terminates on the closed pipe instead of panicking out of `println!`.
+/// See `adl-cli`'s `restore_sigpipe` for the full rationale and tradeoff.
+#[cfg(unix)]
+fn restore_sigpipe() {
+    // SAFETY: runs once at the top of `main`, before any thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
+
 fn main() -> ExitCode {
+    restore_sigpipe();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("usage: smash2-recheck BUNDLE.json... | DIR...");
         eprintln!("re-checks smash2 `verify --combine` certificate bundles ({BUNDLE_SCHEMA})");
         eprintln!("with the trusted exact-rational kernel; no solver required.");
+        eprintln!();
+        eprintln!("exit codes:");
+        eprintln!("  0  every bundle checked replayed successfully (at least one was checked)");
+        eprintln!("  1  a bundle failed to replay");
+        eprintln!("  2  nothing was checked: bad usage, unreadable path, or a directory");
+        eprintln!("     with no *.json bundles (fail-closed, so an empty bundle directory");
+        eprintln!("     never gates a release as a vacuous success)");
         return ExitCode::from(2);
     }
 

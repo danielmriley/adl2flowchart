@@ -1005,3 +1005,176 @@ fn bins_statement_is_a_boundary_list_bin() {
     };
     assert!(matches!(&r2.stmts[0], RegionStmt::RegionRef(_)));
 }
+
+// ---------------------------------------------------------------- depth bound
+
+/// Every expression the parser hands back must be within `MAX_EXPR_DEPTH`,
+/// measured by [`Expr::depth`] — an *independent*, iterative computation over
+/// an exhaustive `match`, not the running counter the parser maintains while
+/// building.
+///
+/// This is the real guard. The parser tracks depth incrementally across ~15
+/// productions; a single missed update there would silently let an unbounded
+/// tree through to `resolve`, the encoder, the dump, the interpreter, and
+/// `Expr`'s own derived `Clone`/`Drop`, every one of which recurses. Checking
+/// the *output* rather than the counter means the test cannot be fooled by the
+/// same mistake it is looking for.
+fn deepest_expr(file: &File) -> u32 {
+    let mut max = 0;
+    for s in &file.sections {
+        match s {
+            Section::Define(d) => max = max.max(d.body.depth()),
+            Section::Region(r) => {
+                for st in &r.stmts {
+                    if let RegionStmt::Cut { cond, .. } | RegionStmt::Reject { cond, .. } = st {
+                        max = max.max(cond.depth());
+                    }
+                }
+            }
+            Section::Object(o) => {
+                for st in &o.stmts {
+                    if let ObjectStmt::Cut { cond, .. } | ObjectStmt::Reject { cond, .. } = st {
+                        max = max.max(cond.depth());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    max
+}
+
+#[test]
+fn expr_depth_is_bounded_for_every_hostile_shape() {
+    // One shape per way the grammar can grow deep: nesting that builds no node
+    // (parens), prefix self-recursion, ternary right-recursion, and the
+    // depth-linear left-fold chains at each precedence level.
+    let shapes: Vec<(&str, String)> = vec![
+        (
+            "parens",
+            format!("define x = {}1{}\n", "(".repeat(9000), ")".repeat(9000)),
+        ),
+        ("neg", format!("define x = {}1\n", "-".repeat(9000))),
+        (
+            "not",
+            format!("region R\n  select {}true\n", "not ".repeat(9000)),
+        ),
+        (
+            "ternary",
+            format!(
+                "define x = {}1{}\n",
+                "1 ? ".repeat(4000),
+                ": 2".repeat(4000)
+            ),
+        ),
+        ("add", format!("define x = {}1\n", "1+".repeat(9000))),
+        ("mul", format!("define x = {}1\n", "1*".repeat(9000))),
+        (
+            "and",
+            format!("region R\n  select {}true\n", "true and ".repeat(9000)),
+        ),
+        (
+            "or",
+            format!("region R\n  select {}true\n", "true or ".repeat(9000)),
+        ),
+        (
+            "cmp",
+            format!("region R\n  select 1 {}\n", "< 2 ".repeat(4000)),
+        ),
+        ("dot", format!("define x = jet{}\n", ".pt".repeat(9000))),
+        ("index", format!("define x = jet{}\n", "[0]".repeat(9000))),
+        (
+            "abs",
+            format!("define x = {}1{}\n", "|".repeat(3000), "|".repeat(3000)),
+        ),
+        (
+            "call",
+            format!("define x = {}1{}\n", "abs(".repeat(4000), ")".repeat(4000)),
+        ),
+        // Mixed: a deep left-fold used as the operand of a nested construct,
+        // which is where a naive save/restore accounting under-counts.
+        (
+            "chain_under_nesting",
+            format!(
+                "define x = {}{}1{}\n",
+                "abs(".repeat(200),
+                "1+".repeat(200),
+                ")".repeat(200)
+            ),
+        ),
+    ];
+
+    // `MAX_EXPR_DEPTH + 1`, not `MAX_EXPR_DEPTH`: the node whose construction
+    // *detects* the breach has already been built by the time the limit is
+    // consulted, so one over is the true, and constant, ceiling. What matters
+    // is that it is `+ 1` and not `+ nesting depth`.
+    let ceiling = adl_syntax::MAX_EXPR_DEPTH + 1;
+    for (label, src) in shapes {
+        let r = parse(&src);
+        let d = deepest_expr(&r.file);
+        assert!(
+            d <= ceiling,
+            "[{label}] produced an expression of depth {d}, over the \
+             {ceiling} ceiling — a consumer's stack is now attacker-controlled"
+        );
+        assert!(
+            r.diags.iter().any(|x| x.severity == Severity::Error),
+            "[{label}] was truncated silently; it must carry a diagnostic"
+        );
+    }
+}
+
+/// Width is not depth. 9 000 juxtaposed object refs make a `ParticleList` with
+/// 9 000 *siblings* and a depth of 2, so the depth limit has no business
+/// rejecting it — every consumer iterates that `Vec` rather than recursing into
+/// it. Pinned so a future tightening of the limit does not start refusing wide
+/// but shallow expressions.
+#[test]
+fn wide_but_shallow_expressions_are_not_rejected() {
+    let src = format!("define x = {}\n", "jet ".repeat(9000));
+    let r = parse(&src);
+    let errs: Vec<_> = r
+        .diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errs.is_empty(), "wide particle list rejected: {errs:#?}");
+    assert_eq!(deepest_expr(&r.file), 2);
+}
+
+#[test]
+fn depth_limit_admits_far_more_than_any_real_file() {
+    // Deepest expression in the 139-file example corpus: 9. Six times that must
+    // parse without a murmur, or the limit is interfering with real work.
+    let n = 54;
+    for (label, src) in [
+        (
+            "parens",
+            format!("define x = {}1{}\n", "(".repeat(n), ")".repeat(n)),
+        ),
+        ("add", format!("define x = {}1\n", "1+".repeat(n))),
+        ("dot", format!("define x = jet{}\n", ".pt".repeat(n))),
+    ] {
+        let r = parse(&src);
+        let errs: Vec<_> = r
+            .diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errs.is_empty(), "[{label}] {n} levels rejected: {errs:#?}");
+    }
+}
+
+/// A rejected file yields exactly one error, not one per unwinding level.
+#[test]
+fn over_deep_input_reports_once() {
+    let src = format!("define x = {}1{}\n", "(".repeat(5000), ")".repeat(5000));
+    let r = parse(&src);
+    let errs: Vec<_> = r
+        .diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(errs.len(), 1, "expected one diagnostic, got: {errs:#?}");
+    assert!(errs[0].message.contains("nested too deeply"));
+}

@@ -265,6 +265,34 @@ impl Rat {
             denominator: self.0.denom().to_string(),
         }
     }
+
+    /// The exact inverse of [`Rat::to_parts`]: rebuild a value from decimal
+    /// digit strings. `None` on a non-decimal digit, an empty part, or a zero
+    /// denominator.
+    ///
+    /// The digit strings go straight to `BigInt`'s own radix conversion, which
+    /// is subquadratic. Folding the digits by hand (`acc*10 + d` over
+    /// `BigRational`) is the obvious alternative and is a trap: every step
+    /// re-normalizes through a `gcd`, so the cost is ~n^2.7 and a numeral read
+    /// out of an untrusted file becomes a denial of service.
+    #[must_use]
+    pub fn from_decimal_parts(parts: &RatParts) -> Option<Self> {
+        fn digits(s: &str) -> Option<BigInt> {
+            if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            s.parse().ok()
+        }
+        let denom = digits(&parts.denominator)?;
+        if denom.is_zero() {
+            return None;
+        }
+        let mut numer = digits(&parts.numerator)?;
+        if parts.negative {
+            numer = -numer;
+        }
+        Some(Rat(BigRational::new(numer, denom)))
+    }
 }
 
 /// Sign + numerator/denominator decimal strings (denominator > 0, lowest
@@ -389,5 +417,37 @@ mod tests {
         assert!(big.is_integer());
         let doubled = &big + &big;
         assert!(doubled > big);
+    }
+
+    #[test]
+    fn decimal_parts_round_trip_exactly() {
+        for v in [0.3_f64, -1.5, 100.0, f64::MAX, -f64::MAX, 0.0] {
+            let r = Rat::from_decimal_f64(v).unwrap();
+            assert_eq!(Rat::from_decimal_parts(&r.to_parts()), Some(r), "{v:?}");
+        }
+        // A 4000-digit integer is exact, not an approximation.
+        let digits = "9".repeat(4000);
+        let parts = RatParts {
+            negative: false,
+            numerator: digits.clone(),
+            denominator: "1".to_owned(),
+        };
+        let r = Rat::from_decimal_parts(&parts).unwrap();
+        assert_eq!(r.to_parts().numerator, digits);
+    }
+
+    #[test]
+    fn decimal_parts_reject_malformed_input() {
+        let parts = |n: &str, d: &str| RatParts {
+            negative: false,
+            numerator: n.to_owned(),
+            denominator: d.to_owned(),
+        };
+        assert!(Rat::from_decimal_parts(&parts("1", "0")).is_none());
+        assert!(Rat::from_decimal_parts(&parts("", "1")).is_none());
+        assert!(Rat::from_decimal_parts(&parts("1", "")).is_none());
+        assert!(Rat::from_decimal_parts(&parts("1x", "1")).is_none());
+        assert!(Rat::from_decimal_parts(&parts("-1", "1")).is_none()); // sign is a field
+        assert!(Rat::from_decimal_parts(&parts("١٢٣", "1")).is_none()); // non-ASCII digits
     }
 }

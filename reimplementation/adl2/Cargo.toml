@@ -47,6 +47,9 @@ num-rational = { version = "0.4", default-features = false, features = ["num-big
 num-bigint = { version = "0.4", default-features = false }
 num-traits = { version = "0.2", default-features = false }
 clap = { version = "4", features = ["derive"] }
+# Binaries only: restoring the default SIGPIPE disposition so piping into
+# `head` terminates instead of panicking (see `restore_sigpipe`).
+libc = "0.2"
 z3 = "0.20"
 # Delphes TTree reading (SPEC_EVENT_PIPELINE §1.1): pinned exactly — the
 # crate is v0.1.x/low-activity; the generated uproot oracle script detects

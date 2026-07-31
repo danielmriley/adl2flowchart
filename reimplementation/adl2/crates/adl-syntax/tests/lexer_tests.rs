@@ -88,7 +88,11 @@ fn repeated_underscore_splits_collapse_to_one_note_plus_summary() {
         .filter(|d| d.severity == Severity::Note)
         .collect();
     assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(notes[0].message.contains("identifier `METLV` ends before `_`"));
+    assert!(
+        notes[0]
+            .message
+            .contains("identifier `METLV` ends before `_`")
+    );
     assert!(notes[0].help.is_some(), "first note keeps its help");
     assert_eq!(
         notes[1].message,
@@ -171,6 +175,74 @@ fn scientific_notation_is_an_error_with_help() {
         .expect("expected a lexical error for 1e6");
     assert!(err.message.contains("scientific notation"));
     assert!(err.help.as_deref().unwrap_or("").contains("1000000.0"));
+}
+
+// -------------------------------------------------------- numeric separators
+
+/// `1_000` used to lex as `1` `_` `000` — three tokens — because `_<digit>` is
+/// the underscore-indexing operator. The parser then happily built `1[000]`
+/// and emitted **no diagnostic at all**, so a cut threshold written the way
+/// most languages allow was silently read as something else entirely.
+#[test]
+fn underscore_in_a_numeral_is_an_error_not_an_index() {
+    let errs = errors("1_000");
+    assert_eq!(errs.len(), 1, "expected exactly one error, got {errs:?}");
+    assert!(errs[0].contains("not a digit separator"), "{}", errs[0]);
+
+    // Recovery reads the value that was obviously meant, as one token.
+    assert_eq!(kinds("1_000"), vec![TokKind::Int(1000)]);
+    assert_eq!(kinds("1_0_0_0"), vec![TokKind::Int(1000)]);
+    assert_eq!(kinds("12_345_678"), vec![TokKind::Int(12_345_678)]);
+}
+
+#[test]
+fn underscore_separator_help_gives_the_rewrite() {
+    let help = lex("1_000")
+        .diags
+        .into_iter()
+        .find(|d| d.severity == Severity::Error)
+        .and_then(|d| d.help)
+        .expect("separator error carries a help");
+    assert_eq!(help, "write `1000`");
+}
+
+#[test]
+fn underscore_separator_in_a_real_literal() {
+    let errs = errors("1.0_5");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(kinds("1.0_5"), vec![TokKind::Real(1.05)]);
+}
+
+/// The identifier rule is untouched: `_<digit>` after a *word* is still the
+/// indexing operator, which is how idiomatic corpus names like `METLV_0` and
+/// region names like `SR_3b3j` lex. Only digits-underscore-digits is rejected.
+#[test]
+fn underscore_indexing_after_an_identifier_still_works() {
+    assert!(errors("goodJets_1").is_empty());
+    assert_eq!(
+        kinds("goodJets_1"),
+        vec![
+            TokKind::Ident("goodJets".to_owned()),
+            TokKind::Underscore,
+            TokKind::Int(1)
+        ]
+    );
+    // A digit run followed by *letters* is a name segment, not a bad numeral.
+    assert!(errors("SR_3b3j").is_empty());
+}
+
+/// A long numeral must not be reproduced in full inside the error message.
+#[test]
+fn oversized_numerals_are_elided_in_diagnostics() {
+    let src = format!("{}_{}", "9".repeat(5000), "9".repeat(5000));
+    let errs = errors(&src);
+    assert_eq!(errs.len(), 1);
+    assert!(
+        errs[0].len() < 200,
+        "diagnostic reproduced the numeral ({} chars)",
+        errs[0].len()
+    );
+    assert!(errs[0].contains("..."), "{}", errs[0]);
 }
 
 #[test]

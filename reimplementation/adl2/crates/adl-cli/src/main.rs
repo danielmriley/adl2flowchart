@@ -192,7 +192,41 @@ enum Command {
     },
 }
 
+/// Restore the default SIGPIPE disposition.
+///
+/// Rust sets `SIGPIPE` to `SIG_IGN` before `main`, which turns a closed pipe
+/// into an `EPIPE` write error — and `println!` *panics* on write errors. So
+/// `smash2 verify --explain BIG.adl | head` used to die with
+/// `failed printing to stdout: Broken pipe` and exit 101, a panic on entirely
+/// ordinary shell usage.
+///
+/// Restoring `SIG_DFL` makes smash2 behave like every other unix filter: once
+/// the reader goes away the process is terminated by the signal, silently, at
+/// whichever write hits the closed pipe. It is preferred over catching
+/// `ErrorKind::BrokenPipe` per write for two reasons: it covers every current
+/// and future stdout write in the tree (there are ~15 `print!` sites across
+/// four subcommands, and missing one reintroduces the panic), and it does not
+/// convert a truncated pipe into exit 0, which would mask a real `--fail-on`
+/// verdict from a CI pipeline.
+///
+/// The tradeoff: signal disposition is process-global. If this crate's logic
+/// were ever hosted in-process by another program, that host would inherit the
+/// disposition — which is exactly why this lives in `main` and not in any
+/// library crate.
+#[cfg(unix)]
+fn restore_sigpipe() {
+    // SAFETY: `signal` with `SIG_DFL` is async-signal-safe and this runs once,
+    // at the top of `main`, before any thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
+
 fn main() -> ExitCode {
+    restore_sigpipe();
     let cli = Cli::parse();
     let verbose = cli.verbose;
     let result = match cli.command {

@@ -53,6 +53,7 @@ expression: stdout(&out)
       "subset_b_in_a": false,
       "witness": [],
       "witness_validated": null,
+      "certified": true,
       "core": []
     }
   ],

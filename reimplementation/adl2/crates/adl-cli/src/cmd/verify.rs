@@ -107,6 +107,7 @@ fn write_bundles(
     dir: &Path,
     unit: &str,
     report: &adl_analysis::Report,
+    inputs: &[adl_certify::bundle::BundleInput],
 ) -> Result<(), CliError> {
     let sane = |s: &str| -> String {
         s.chars()
@@ -123,7 +124,12 @@ fn write_bundles(
             sane(&b.region_a),
             sane(&b.region_b)
         ));
-        let js = serde_json::to_string_pretty(b)
+        // The engine has the proof; only the CLI has the file bytes, so unit
+        // identity is stamped here. Content only — no wall clock, so two runs
+        // over the same sources are byte-identical.
+        let mut b = b.clone();
+        b.inputs = inputs.to_vec();
+        let js = serde_json::to_string_pretty(&b)
             .map_err(|e| CliError::Usage(format!("bundle serialization failed: {e}")))?;
         std::fs::write(&path, js)
             .map_err(|e| CliError::Usage(format!("cannot write {}: {e}", path.display())))?;
@@ -134,6 +140,15 @@ fn write_bundles(
         dir.display()
     );
     Ok(())
+}
+
+/// Identify one analyzed unit by name and content digest. Descriptive: it
+/// lets a reader confirm a bundle describes the `.adl` they are holding.
+fn bundle_input(name: &str, src: &str) -> adl_certify::bundle::BundleInput {
+    adl_certify::bundle::BundleInput {
+        name: name.to_owned(),
+        sha256: adl_certify::sha256::sha256_hex(src.as_bytes()),
+    }
 }
 
 /// When the user did NOT ask for `--no-solver` but no backend was found,
@@ -274,7 +289,7 @@ pub fn run(
 
         warn_if_no_solver(name, &report, no_solver);
         if let Some(dir) = combine {
-            write_bundles(dir, name, &report)?;
+            write_bundles(dir, name, &report, &[bundle_input(name, &src)])?;
         }
 
         if verbose {
@@ -395,6 +410,7 @@ fn run_cross(
     // never collide across same-named files.
     let labels = unit_labels(files);
     let mut hirs = Vec::with_capacity(files.len());
+    let mut inputs = Vec::with_capacity(files.len());
     for (file, name) in files.iter().zip(&labels) {
         let src = read_file(file)?;
         let hir = analyze_str(&src, name, ext);
@@ -403,6 +419,7 @@ fn run_cross(
             eprintln!("{name}: analysis did not run (resolve errors above)");
             return Ok(ExitCode::from(1));
         }
+        inputs.push(bundle_input(name, &src));
         hirs.push(hir);
     }
 
@@ -421,7 +438,7 @@ fn run_cross(
     warn_if_no_solver("cross", &report, opts.solver == SolverChoice::NoSolver);
     if let Some(dir) = combine {
         clean_stale_bundles(dir)?;
-        write_bundles(dir, "cross", &report)?;
+        write_bundles(dir, "cross", &report, &inputs)?;
     }
 
     if verbose {

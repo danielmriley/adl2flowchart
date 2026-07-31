@@ -86,6 +86,16 @@
 //!   as feasible and aborts the whole attempt as `Uncertified`; since a single
 //!   satisfiable branch witnesses satisfiability of the whole input, a
 //!   satisfiable set can never be certified.
+//!
+//! # Two producers, one kernel
+//!
+//! [`certify_unsat`] is the search-based producer, for solver unsat cores.
+//! [`certify_bounds`] is the search-free one, for the analyzer's interval fast
+//! path: two opposing bounds on one quantity refute under multipliers written
+//! down in closed form. They share `replay` as the single definition of
+//! "proved", so no tier of the tool gets its own weaker notion of a proof.
+//! [`bundle`] then packages a proof for offline re-checking, including the
+//! derivation chain of any reconciliation fact the proof leans on.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -93,9 +103,11 @@
 pub mod bundle;
 mod certificate;
 mod constraint;
+mod direct;
 mod fm;
 mod saturate;
 mod search;
+pub mod sha256;
 
 pub use bundle::CombineBundle;
 pub use certificate::{CertNode, Certificate, QRat};
@@ -201,6 +213,28 @@ pub fn certify_unsat(formulas: &[QFormula], budget: &Budget) -> CertifyResult {
         }
         Err(reason) => CertifyResult::Uncertified(reason),
     }
+}
+
+/// Certify a **bound refutation** without any search: the proof shape the
+/// analyzer's interval fast path produces (two opposing single-quantity bounds
+/// on one quantity, or a constant-false conjunct).
+///
+/// Returns a certificate only if it has already passed
+/// [`Certificate::replay`] against `formulas`, so — exactly as with
+/// [`certify_unsat`] — `Some(_)` implies the trusted kernel accepts it.
+/// `None` means "not of this shape, or not refutable this way"; it is never a
+/// claim about satisfiability, and the caller must treat it as *uncertified*,
+/// never as *satisfiable*.
+///
+/// Why this exists next to [`certify_unsat`]: the interval path never calls a
+/// solver, so there is no unsat core to certify and no search worth running —
+/// the multipliers are `1/|a|` on each of the two bounds and can be written
+/// down directly. Going through the same kernel keeps a single definition of
+/// "proved" for every tier of the tool.
+#[must_use]
+pub fn certify_bounds(formulas: &[QFormula]) -> Option<Certificate> {
+    let cert = direct::construct(formulas)?;
+    cert.replay(formulas).then_some(cert)
 }
 
 /// Crate identity marker used by the bootstrap smoke test.

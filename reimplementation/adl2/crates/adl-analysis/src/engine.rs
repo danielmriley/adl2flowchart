@@ -13,13 +13,14 @@
 //! the only verdict constructors (ADR-004).
 
 use crate::encode::{BinSetEnc, RegionEnc, UnitEnc};
-use crate::interval::IntervalMap;
+use crate::interval::{IntervalMap, RefutingPart};
 use crate::report::{
     AxiomUse, BinCheckReport, CoreItem, CoverageStatus, EmptyStatus, OVERLAP_CAVEAT, PairReport,
     RegionReport, Report, SCHEMA_VERSION, VerdictKind, WitnessValue,
 };
 use crate::witness::{Validation, validate_witness};
 use adl_axioms::{AxiomId, AxiomSet, catalog_entry, derived_size_le, quantity_label, twin_pairs};
+use adl_certify::bundle::{AssertSource, BundleAssert, BundleParts, DerivedFact, Derivation};
 use adl_formula::{Over, QFormula, Under};
 use adl_interp::Interp;
 use adl_sema::{ElemIndex, ExtDecls, Hir, Quantity, QuantityId, Rat};
@@ -27,12 +28,24 @@ use adl_solver::{AssertName, Model, QSort, SatResult, Solver};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+/// The exact formula set a certificate was checked against, in replay order,
+/// paired with the certificate. This is what a `--combine` bundle is built
+/// from; it is also what a derived fact carries as its own proof.
+struct CertPayload {
+    asserts: Vec<(AssertName, QFormula)>,
+    cert: adl_certify::Certificate,
+    /// Are the listed formulas the asserts' whole over-projections (`true` —
+    /// solver cores and the primary interval shape), or single spine conjuncts
+    /// extracted from them (`false` — the interval fallback for a cut whose
+    /// disjunctive structure a bound pair cannot cross)? It rides into the
+    /// bundle so a reader is never left guessing whether the quoted formula is
+    /// the whole cut.
+    whole: bool,
+}
+
 /// A certification outcome: `None` = certification off, `Some(true/false)` =
-/// certified / not, plus the portable payload (`--combine`) when there is one.
-type Certified = (
-    Option<bool>,
-    Option<(Vec<(String, QFormula)>, adl_certify::Certificate)>,
-);
+/// certified / not, plus the replayable payload when one was kept.
+type Certified = (Option<bool>, Option<CertPayload>);
 
 pub(crate) struct Engine<'a> {
     pub hir: &'a Hir,
@@ -79,6 +92,12 @@ pub(crate) struct Engine<'a> {
     /// name so a certified core containing an `XR{k}` member can map it back
     /// to its formula.
     pub recon_facts: Vec<(AssertName, QFormula)>,
+    /// Per reconciliation fact, the derivation chain that earned it: the
+    /// generic-element premises and the certificate refuting them. A bundle
+    /// whose core uses `XR{k}` embeds this, so replaying the bundle re-derives
+    /// the fact instead of taking it as a given. Filled only under
+    /// `--certify` (without it there is no certificate to embed).
+    pub recon_chains: BTreeMap<AssertName, DerivedFact>,
     /// The reconciliation ledger, filled by [`Self::reconcile`]: one row per
     /// candidate pair (related, unrelated, or skipped with a reason).
     pub recon_ledger: Vec<crate::report::ReconReport>,
@@ -121,6 +140,25 @@ fn size_label(hir: &Hir, q: QuantityId) -> String {
         Quantity::Size(c) => format!("size({})", adl_sema::collection_ref(hir, *c)),
         _ => quantity_label(hir, q),
     }
+}
+
+/// Label for a bundle's quantity dictionary. Like [`size_label`], except it
+/// renders the reconciliation layer's *generic element* readably: that index
+/// is a deliberately out-of-range sentinel (`adl_axioms::GENERIC_INDEX`) and
+/// would otherwise print as `jet[4294967295].pt` — meaningless to the reader
+/// the dictionary exists for. Bundle-local on purpose: the report's own
+/// `quantity_label` rendering is left byte-identical.
+fn bundle_label(hir: &Hir, q: QuantityId) -> String {
+    if let Quantity::ElemProp { coll, index, prop } = hir.table.quantity(q)
+        && matches!(index, ElemIndex::FromFront(i) if *i == adl_axioms::GENERIC_INDEX)
+    {
+        return format!(
+            "{}[*].{} (any one element of the collection)",
+            adl_sema::collection_ref(hir, *coll),
+            hir.table.prop_display(*prop)
+        );
+    }
+    size_label(hir, q)
 }
 
 /// Ledger label for a collection: the id-disambiguated `C3#jets` form, so
@@ -193,6 +231,16 @@ fn mentions_back_index(hir: &Hir, quantities: &BTreeSet<QuantityId>) -> bool {
     })
 }
 
+/// The refinement directions between two element predicates, each with the
+/// replayable proof that established it (present only under `--certify`).
+#[derive(Default)]
+struct PredImplies {
+    a_in_b: bool,
+    b_in_a: bool,
+    a_chain: Option<CertPayload>,
+    b_chain: Option<CertPayload>,
+}
+
 /// Per-region precomputation.
 struct RegionCtx {
     overs: Vec<(AssertName, Over)>,
@@ -263,7 +311,7 @@ impl Engine<'_> {
         // and assert the derived size facts at the base frame (persistent for
         // every pairwise push/pop below). Runs after the base axioms so the
         // proofs see them, and before the pairwise loop so the sizes relate.
-        let recon_counts = self.reconcile(&mut origins);
+        let recon_counts = self.reconcile(&mut origins, &mut internal);
 
         // Per-region projections + interval maps.
         let ctxs: Vec<RegionCtx> = self
@@ -276,8 +324,8 @@ impl Engine<'_> {
                 let unders: Vec<Under> =
                     r.stmts.iter().map(crate::encode::StmtEnc::under).collect();
                 let mut intervals = IntervalMap::default();
-                for (_, o) in &overs {
-                    intervals.add_over(o);
+                for (n, o) in &overs {
+                    intervals.add_over(n, o);
                 }
                 RegionCtx {
                     overs,
@@ -292,7 +340,8 @@ impl Engine<'_> {
         let mut refute_refutations = 0usize;
         let mut region_reports = Vec::new();
         for (r, ctx) in self.unit.regions.iter().zip(&ctxs) {
-            let (mut empty, mut empty_core) = self.region_empty(ctx, &origins);
+            let (mut empty, mut empty_core) =
+                self.region_empty(ctx, &r.name, &origins, &mut internal);
             if matches!(empty, EmptyStatus::Proven | EmptyStatus::Candidate)
                 && self.gate_empty(r.idx, &interp, &mut internal, &mut gate_refutations)
             {
@@ -354,7 +403,7 @@ impl Engine<'_> {
         // -- bins --------------------------------------------------------------
         let mut bin_checks = Vec::new();
         for set in &self.unit.bin_sets {
-            let report = self.bin_check(set, &ctxs[set.region_idx]);
+            let report = self.bin_check(set, &ctxs[set.region_idx], &mut internal);
             bin_checks.push(report);
         }
 
@@ -509,10 +558,24 @@ impl Engine<'_> {
     fn region_empty(
         &mut self,
         ctx: &RegionCtx,
+        region: &str,
         origins: &BTreeMap<AssertName, CoreItem>,
+        internal: &mut Vec<String>,
     ) -> (EmptyStatus, Vec<CoreItem>) {
-        // Interval-only emptiness has no solver core to certify — keep Proven.
-        if ctx.intervals.self_empty().is_some() {
+        // Interval-only emptiness runs no solver, but it is still a bound
+        // refutation the kernel can check — so check it. A rejection is a
+        // kernel/interval disagreement (a bug), reported rather than used to
+        // demote a verdict the interval layer stands behind.
+        if let Some(empty) = ctx.intervals.self_empty() {
+            let lookup = |n: &AssertName| over_of(&ctx.overs, n);
+            if let Some(Err(why)) = self.certify_interval(&empty.parts(), lookup) {
+                internal.push(format!(
+                    "INTERVAL CERTIFICATE unavailable for the emptiness of region {region}: \
+                     {why}. The interval layer refuted the region's own spine but the replay \
+                     kernel would not confirm it — one of the two is wrong; the verdict is \
+                     left as it was."
+                ));
+            }
             return (EmptyStatus::Proven, Vec::new());
         }
         if self.solver.is_none() {
@@ -583,26 +646,32 @@ impl Engine<'_> {
             core: Vec::new(),
         };
 
-        // 1. Interval fast path (also the no-solver fallback).
-        if let Some((q, ia, ib)) = ca.intervals.disjoint_with(&cb.intervals) {
+        // 1. Interval fast path (also the no-solver fallback). No solver runs
+        //    here, but the refutation is still a two-atom Farkas proof, so it
+        //    is certified and bundled like any other (M2: no proven tier
+        //    without a receipt).
+        if let Some(d) = ca.intervals.disjoint_with(&cb.intervals) {
             report.kind = VerdictKind::ProvenDisjoint;
             report.reason = format!(
                 "intervals cannot intersect on {}: {} requires {}, {} requires {}",
-                quantity_label(self.hir, q),
+                quantity_label(self.hir, d.q),
                 ra.name,
-                ia.human(),
+                d.a.human(),
                 rb.name,
-                ib.human()
+                d.b.human()
             );
+            self.certify_interval_pair(&mut report, &d.parts, ca, cb, origins, internal);
             return report;
         }
         for (ctx, enc) in [(ca, ra), (cb, rb)] {
-            if let Some(why) = ctx.intervals.self_empty() {
+            if let Some(empty) = ctx.intervals.self_empty() {
                 report.kind = VerdictKind::ProvenDisjoint;
                 report.reason = format!(
-                    "region {} provably selects no events ({why}), so the pair cannot intersect",
-                    enc.name
+                    "region {} provably selects no events ({}), so the pair cannot intersect",
+                    enc.name,
+                    empty.human()
                 );
+                self.certify_interval_pair(&mut report, &empty.parts(), ca, cb, origins, internal);
                 return report;
             }
         }
@@ -642,13 +711,8 @@ impl Engine<'_> {
             let (certified, cert_payload) = self.certify_disjoint(core_names.as_deref(), c1, c2);
             self.pop();
             report.certified = certified;
-            if let Some((asserts, cert)) = cert_payload {
-                self.bundles.push(adl_certify::CombineBundle::new(
-                    report.a.clone(),
-                    report.b.clone(),
-                    asserts,
-                    cert,
-                ));
+            if let Some(payload) = cert_payload {
+                self.push_bundle(&report.a, &report.b, &payload, origins, internal);
             }
             if certified == Some(false) {
                 // Solver said UNSAT but the independent exact-rational
@@ -1086,8 +1150,21 @@ impl Engine<'_> {
         sub_overs: impl IntoIterator<Item = &'o Over>,
         sup_unders: &[Under],
     ) -> bool {
+        self.subset_proof(sub_overs, sup_unders).0
+    }
+
+    /// [`Self::subset`] plus the replayable proof behind it, so a caller that
+    /// turns a subset into a *derived fact* can carry the derivation with the
+    /// fact instead of asserting it as a given. The payload is present exactly
+    /// when the claim was certified (so under `--certify` a fact without a
+    /// chain is a fact without a proof, and is refused).
+    fn subset_proof<'o>(
+        &mut self,
+        sub_overs: impl IntoIterator<Item = &'o Over>,
+        sup_unders: &[Under],
+    ) -> (bool, Option<CertPayload>) {
         if self.solver.is_none() {
-            return false;
+            return (false, None);
         }
         self.push();
         let neg = Self::negated_under(sup_unders);
@@ -1116,9 +1193,10 @@ impl Engine<'_> {
             .flatten();
         self.pop();
         if !matches!(result, Some(SatResult::Unsat)) {
-            return false;
+            return (false, None);
         }
-        self.certify_named_formulas(core.as_deref(), &named) != Some(false)
+        let (flag, payload) = self.certify_named_formulas_chain(core.as_deref(), &named);
+        (flag != Some(false), payload)
     }
 
     /// Prove cross/intra collection refinements and assert the derived
@@ -1131,6 +1209,7 @@ impl Engine<'_> {
     fn reconcile(
         &mut self,
         origins: &mut BTreeMap<AssertName, CoreItem>,
+        internal: &mut Vec<String>,
     ) -> BTreeMap<&'static str, usize> {
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
         let Some(recon) = self.recon.take() else {
@@ -1163,7 +1242,16 @@ impl Engine<'_> {
         let existing = self.existing_size_le();
         let mut k = 0usize;
         for cand in &recon.candidates {
-            let (a_in_b, b_in_a) = self.prove_pred_implies(&cand.phi_a, &cand.phi_b);
+            let PredImplies {
+                a_in_b,
+                b_in_a,
+                a_chain,
+                b_chain,
+            } = self.prove_pred_implies(&cand.phi_a, &cand.phi_b);
+            let (label_a, label_b) = (
+                coll_label(self.hir, cand.coll_a),
+                coll_label(self.hir, cand.coll_b),
+            );
             self.recon_ledger.push(crate::report::ReconReport {
                 a: coll_label(self.hir, cand.coll_a),
                 b: coll_label(self.hir, cand.coll_b),
@@ -1180,23 +1268,40 @@ impl Engine<'_> {
                     "neither cut set implies the other".to_owned()
                 },
             });
-            // Directions to emit, as (sub_size, sup_size, catalog id).
-            let facts: &[(QuantityId, QuantityId, AxiomId)] = if a_in_b && b_in_a {
-                &[
-                    (cand.size_a, cand.size_b, AxiomId::Xeq),
-                    (cand.size_b, cand.size_a, AxiomId::Xeq),
-                ]
-            } else if a_in_b {
-                &[(cand.size_a, cand.size_b, AxiomId::Xsub)]
-            } else if b_in_a {
-                &[(cand.size_b, cand.size_a, AxiomId::Xsub)]
-            } else {
-                &[]
-            };
-            for &(sub, sup, id) in facts {
+            // Directions to emit, as (sub_size, sup_size, catalog id, the
+            // subset refutation the direction rests on).
+            let facts: Vec<(QuantityId, QuantityId, AxiomId, Option<&CertPayload>)> =
+                if a_in_b && b_in_a {
+                    vec![
+                        (cand.size_a, cand.size_b, AxiomId::Xeq, a_chain.as_ref()),
+                        (cand.size_b, cand.size_a, AxiomId::Xeq, b_chain.as_ref()),
+                    ]
+                } else if a_in_b {
+                    vec![(cand.size_a, cand.size_b, AxiomId::Xsub, a_chain.as_ref())]
+                } else if b_in_a {
+                    vec![(cand.size_b, cand.size_a, AxiomId::Xsub, b_chain.as_ref())]
+                } else {
+                    Vec::new()
+                };
+            for (sub, sup, id, chain) in facts {
                 // A collection is trivially its own size; an intra-source
                 // SUB fact already carries this refinement.
                 if sub == sup || existing.contains(&(sub, sup)) {
+                    continue;
+                }
+                // Under --certify a fact with no replayable derivation is a
+                // fact with no proof. It is not asserted: everything that
+                // would have leaned on it falls back to POSSIBLY, which is the
+                // honest answer, and the reason is filed rather than silent.
+                // (This is the fail-closed twin of `subset` refusing an
+                // uncertified UNSAT — in practice the two agree, so this
+                // branch fires only if that invariant ever breaks.)
+                if self.certify && chain.is_none() {
+                    internal.push(format!(
+                        "RECONCILIATION FACT WITHHELD for {label_a} / {label_b}: the subset \
+                         refutation behind it produced no replayable certificate, so the \
+                         derived size fact is not asserted."
+                    ));
                     continue;
                 }
                 let fact = derived_size_le(sub, sup);
@@ -1217,6 +1322,47 @@ impl Engine<'_> {
                 // Retained so a certified core containing this fact can map
                 // the name back to its formula (v2 Phase 4).
                 self.recon_facts.push((name.clone(), fact.clone()));
+                // …and, with the certificate, so a bundle can carry the
+                // fact's own derivation instead of asserting it as a given.
+                if let Some(payload) = chain {
+                    let sub_first = sub == cand.size_a;
+                    let (from, to) = if sub_first {
+                        (&label_a, &label_b)
+                    } else {
+                        (&label_b, &label_a)
+                    };
+                    self.recon_chains.insert(
+                        name.clone(),
+                        DerivedFact::new(
+                            name.0.clone(),
+                            id.as_str().to_owned(),
+                            statement.clone(),
+                            &fact,
+                            vec![Derivation::new(
+                                format!(
+                                    "every element passing the cuts of {from} also passes those \
+                                     of {to}, so {from} is a subset of {to} element-wise: \
+                                     UNSAT(over({from}) AND NOT under({to})) over one shared \
+                                     generic element"
+                                ),
+                                payload
+                                    .asserts
+                                    .iter()
+                                    .map(|(n, f)| {
+                                        BundleAssert::new(
+                                            n.0.clone(),
+                                            f,
+                                            AssertSource::Query {
+                                                role: query_role(&n.0, from, to),
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                                payload.cert.clone(),
+                            )],
+                        ),
+                    );
+                }
                 origins.insert(
                     name,
                     CoreItem::Axiom {
@@ -1243,13 +1389,18 @@ impl Engine<'_> {
         &mut self,
         phi_a: &adl_formula::Formula,
         phi_b: &adl_formula::Formula,
-    ) -> (bool, bool) {
+    ) -> PredImplies {
         if !self.frame_sat(phi_a, phi_b) {
-            return (false, false);
+            return PredImplies::default();
         }
-        let a_in_b = self.subset([&phi_a.over()], &[phi_b.under()]);
-        let b_in_a = self.subset([&phi_b.over()], &[phi_a.under()]);
-        (a_in_b, b_in_a)
+        let (a_in_b, a_chain) = self.subset_proof([&phi_a.over()], &[phi_b.under()]);
+        let (b_in_a, b_chain) = self.subset_proof([&phi_b.over()], &[phi_a.under()]);
+        PredImplies {
+            a_in_b,
+            b_in_a,
+            a_chain,
+            b_chain,
+        }
     }
 
     /// Shared fail-closed certification of a claimed-UNSAT formula set.
@@ -1287,6 +1438,26 @@ impl Engine<'_> {
         core: Option<&[AssertName]>,
         extra: &[(AssertName, QFormula)],
     ) -> Certified {
+        self.certify_named_formulas_inner(core, extra, self.combine)
+    }
+
+    /// As [`Self::certify_named_formulas_payload`], but always keeping the
+    /// payload. Used where the certificate is needed for its own sake (a
+    /// derived fact's chain) rather than for a `--combine` bundle.
+    fn certify_named_formulas_chain(
+        &self,
+        core: Option<&[AssertName]>,
+        extra: &[(AssertName, QFormula)],
+    ) -> Certified {
+        self.certify_named_formulas_inner(core, extra, true)
+    }
+
+    fn certify_named_formulas_inner(
+        &self,
+        core: Option<&[AssertName]>,
+        extra: &[(AssertName, QFormula)],
+        keep_payload: bool,
+    ) -> Certified {
         if !self.certify {
             return (None, None);
         }
@@ -1314,9 +1485,10 @@ impl Engine<'_> {
         let (flag, cert) = self.certify_unsat_core(&formulas);
         match (flag, cert) {
             (Some(true), Some(cert)) => {
-                let payload = self.combine.then(|| {
-                    let asserts = named.into_iter().map(|(n, f)| (n.0, f)).collect();
-                    (asserts, cert)
+                let payload = keep_payload.then_some(CertPayload {
+                    asserts: named,
+                    cert,
+                    whole: true,
                 });
                 (Some(true), payload)
             }
@@ -1350,6 +1522,172 @@ impl Engine<'_> {
         c2: &RegionCtx,
     ) -> Certified {
         self.certify_named_unsat(core, &[c1, c2])
+    }
+
+    /// Certify an interval-path refutation. An interval proof is already a
+    /// Farkas certificate of the smallest kind — a lower and an upper bound on
+    /// one quantity, multipliers `1/|c|` — so it is *constructed* directly
+    /// (`adl_certify::certify_bounds`, no solver, no search) and then accepted
+    /// or rejected by the same replay kernel every other tier goes through.
+    ///
+    /// Two shapes are tried, strongest first: the WHOLE over-projections of
+    /// the participating asserts — so the artifact quotes exactly what the
+    /// engine asserts, with nothing extracted — and, when a cut carries
+    /// disjunctive structure a bound pair cannot cross, the spine conjuncts
+    /// that set the bounds (each a top-level conjunct of its cut).
+    ///
+    /// `None` = certification disabled. `Some(Err(_))` = the kernel would not
+    /// confirm what the interval layer proved: a disagreement between two
+    /// pieces of this tool, hence an internal diagnostic. It is deliberately
+    /// NOT a demotion — the interval layer's verdict is unchanged from before
+    /// certification existed, and silently downgrading would bury the bug.
+    fn certify_interval(
+        &self,
+        parts: &[RefutingPart],
+        lookup: impl Fn(&AssertName) -> Option<QFormula>,
+    ) -> Option<Result<CertPayload, String>> {
+        if !self.certify {
+            return None;
+        }
+        if parts.is_empty() {
+            return Some(Err("the interval layer reported no refuting atoms".to_owned()));
+        }
+        let mut whole: Vec<(AssertName, QFormula)> = Vec::new();
+        for p in parts {
+            let name = p.src();
+            if whole.iter().any(|(n, _)| n == name) {
+                continue; // both bounds from one cut: one formula covers both
+            }
+            let Some(f) = lookup(name) else {
+                return Some(Err(format!(
+                    "no over-projection recorded for assert {}",
+                    name.0
+                )));
+            };
+            whole.push((name.clone(), f));
+        }
+        let forms: Vec<QFormula> = whole.iter().map(|(_, f)| f.clone()).collect();
+        if let Some(cert) = adl_certify::certify_bounds(&forms) {
+            return Some(Ok(CertPayload {
+                asserts: whole,
+                cert,
+                whole: true,
+            }));
+        }
+        let mut lean: Vec<(AssertName, QFormula)> = Vec::new();
+        for p in parts {
+            match p {
+                RefutingPart::Conjunct(n, a) => {
+                    lean.push((n.clone(), QFormula::Atom(a.clone())));
+                }
+                // A constant-false cut has no atom to extract; it is refuted
+                // whole or not at all, and `certify_bounds` above already saw
+                // it — so reaching here means the kernel rejected it.
+                RefutingPart::Whole(n) => {
+                    return Some(Err(format!(
+                        "the kernel did not accept the constant-false cut {}",
+                        n.0
+                    )));
+                }
+            }
+        }
+        let forms: Vec<QFormula> = lean.iter().map(|(_, f)| f.clone()).collect();
+        match adl_certify::certify_bounds(&forms) {
+            Some(cert) => Some(Ok(CertPayload {
+                asserts: lean,
+                cert,
+                whole: false,
+            })),
+            None => Some(Err(
+                "the replay kernel did not accept the bound pair the interval layer refuted on"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Record the certification outcome of an interval-path PROVEN DISJOINT
+    /// pair on the report, and emit its bundle under `--combine`.
+    fn certify_interval_pair(
+        &mut self,
+        report: &mut PairReport,
+        parts: &[RefutingPart],
+        ca: &RegionCtx,
+        cb: &RegionCtx,
+        origins: &BTreeMap<AssertName, CoreItem>,
+        internal: &mut Vec<String>,
+    ) {
+        let outcome = {
+            let lookup = |n: &AssertName| over_of(&ca.overs, n).or_else(|| over_of(&cb.overs, n));
+            self.certify_interval(parts, lookup)
+        };
+        match outcome {
+            None => {} // certification disabled
+            Some(Ok(payload)) => {
+                report.certified = Some(true);
+                self.push_bundle(&report.a, &report.b, &payload, origins, internal);
+            }
+            Some(Err(why)) => internal.push(format!(
+                "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT {} vs {}: {why}. The \
+                 interval layer and the replay kernel disagree — one of them is wrong; the \
+                 verdict is left as it was and no certification is claimed.",
+                report.a, report.b
+            )),
+        }
+    }
+
+    /// Assemble and keep the portable bundle for a certified claim. Emits
+    /// nothing (and files a diagnostic) if the assembled bundle does not
+    /// replay — the same defensive gate `certify_unsat` applies to its own
+    /// output, and the one thing standing between an unbacked `XR{k}` given
+    /// and a published artifact.
+    fn push_bundle(
+        &mut self,
+        region_a: &str,
+        region_b: &str,
+        payload: &CertPayload,
+        origins: &BTreeMap<AssertName, CoreItem>,
+        internal: &mut Vec<String>,
+    ) {
+        if !self.combine {
+            return;
+        }
+        let mut asserts = Vec::with_capacity(payload.asserts.len());
+        let mut derived_facts: Vec<DerivedFact> = Vec::new();
+        for (name, f) in &payload.asserts {
+            let source = match self.recon_chains.get(name) {
+                Some(fact) => {
+                    if !derived_facts.iter().any(|d| d.name == fact.name) {
+                        derived_facts.push(fact.clone());
+                    }
+                    AssertSource::Derived {
+                        fact: fact.name.clone(),
+                    }
+                }
+                None => assert_source(origins, name, payload.whole),
+            };
+            asserts.push(BundleAssert::new(name.0.clone(), f, source));
+        }
+        let hir = self.hir;
+        let bundle = adl_certify::CombineBundle::new(
+            BundleParts {
+                region_a: region_a.to_owned(),
+                region_b: region_b.to_owned(),
+                asserts,
+                derived_facts,
+                certificate: payload.cert.clone(),
+            },
+            |q| bundle_label(hir, QuantityId(q)),
+        );
+        if bundle.replay() {
+            self.bundles.push(bundle);
+        } else {
+            internal.push(format!(
+                "BUNDLE WITHHELD for {region_a} vs {region_b}: the assembled certificate \
+                 bundle does not replay (most likely a reconciliation fact used as a given \
+                 without an embedded derivation). The verdict stands on the analysis; the \
+                 portable artifact does not, so none was written."
+            ));
+        }
     }
 
     /// Sampling gate + adversarial refute gate for an UNSAT-side pair.
@@ -1559,7 +1897,12 @@ impl Engine<'_> {
         out
     }
 
-    fn bin_check(&mut self, set: &BinSetEnc, region_ctx: &RegionCtx) -> BinCheckReport {
+    fn bin_check(
+        &mut self,
+        set: &BinSetEnc,
+        region_ctx: &RegionCtx,
+        internal: &mut Vec<String>,
+    ) -> BinCheckReport {
         let region_name = self.unit.regions[set.region_idx].name.clone();
         let n = set.bins.len();
         let overs: Vec<Over> = set.bins.iter().map(adl_formula::Formula::over).collect();
@@ -1569,7 +1912,7 @@ impl Engine<'_> {
         let total = n * n.saturating_sub(1) / 2;
         for i in 0..n {
             for j in i + 1..n {
-                if self.bins_disjoint(region_ctx, &overs[i], &overs[j]) {
+                if self.bins_disjoint(region_ctx, &overs[i], &overs[j], &region_name, internal) {
                     proven += 1;
                 }
             }
@@ -1589,13 +1932,20 @@ impl Engine<'_> {
 
     /// `UNSAT(Ax ∧ R⁺ ∧ Bᵢ⁺ ∧ Bⱼ⁺)` ⇒ bins i, j disjoint within R.
     /// Under `--certify`, an uncertified solver UNSAT is not counted as proven.
-    fn bins_disjoint(&mut self, region_ctx: &RegionCtx, bi: &Over, bj: &Over) -> bool {
+    fn bins_disjoint(
+        &mut self,
+        region_ctx: &RegionCtx,
+        bi: &Over,
+        bj: &Over,
+        region: &str,
+        internal: &mut Vec<String>,
+    ) -> bool {
+        let bi_name = AssertName::new("QBINI");
+        let bj_name = AssertName::new("QBINJ");
         if self.solver.is_some() {
             self.push();
             // Named region overs + bin atoms → core-scoped certification.
             self.assert_overs(&region_ctx.overs, true);
-            let bi_name = AssertName::new("QBINI");
-            let bj_name = AssertName::new("QBINJ");
             let bi_f = bi.qformula().clone();
             let bj_f = bj.qformula().clone();
             if let Some(s) = self.solver.as_deref_mut() {
@@ -1623,12 +1973,38 @@ impl Engine<'_> {
             extra.push((bj_name, bj_f));
             return self.certify_named_formulas(core.as_deref(), &extra) != Some(false);
         }
-        // No-solver / interval fallback: no core to certify.
+        // No-solver / interval fallback. No unsat core here either, but the
+        // bound refutation is certifiable on its own terms — same treatment as
+        // the pairwise interval path.
         let mut a = region_ctx.intervals.clone();
-        a.add_over(bi);
+        a.add_over(&bi_name, bi);
         let mut b = region_ctx.intervals.clone();
-        b.add_over(bj);
-        a.self_empty().is_some() || b.self_empty().is_some() || a.disjoint_with(&b).is_some()
+        b.add_over(&bj_name, bj);
+        let parts = a
+            .self_empty()
+            .map(|e| e.parts())
+            .or_else(|| b.self_empty().map(|e| e.parts()))
+            .or_else(|| a.disjoint_with(&b).map(|d| d.parts));
+        let Some(parts) = parts else {
+            return false;
+        };
+        let lookup = |n: &AssertName| {
+            if n == &bi_name {
+                Some(bi.qformula().clone())
+            } else if n == &bj_name {
+                Some(bj.qformula().clone())
+            } else {
+                over_of(&region_ctx.overs, n)
+            }
+        };
+        if let Some(Err(why)) = self.certify_interval(&parts, lookup) {
+            internal.push(format!(
+                "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region {region}: \
+                 {why}. The interval layer and the replay kernel disagree — one of them is \
+                 wrong; the count is left as it was."
+            ));
+        }
+        true
     }
 
     /// `UNSAT(Ax ∧ R⁺ ∧ ⋀ᵢ ¬(Bᵢ⁻))` ⇒ the bins cover the region; a SAT
@@ -1688,6 +2064,54 @@ impl Engine<'_> {
         };
         self.pop();
         out
+    }
+}
+
+/// What a `subset` query formula plays in the refutation behind a derived
+/// fact — the premise names are the engine's (`QSUB<k>` / `QSUBNEG`), which
+/// say nothing to a reader of the bundle.
+fn query_role(name: &str, sub: &str, sup: &str) -> String {
+    if name == "QSUBNEG" {
+        format!("negation of the under-projection of the {sup} element predicate")
+    } else {
+        format!("over-projection of the {sub} element predicate (conjunct {name})")
+    }
+}
+
+/// The over-projection the engine asserted under `name`, if it is one of
+/// `overs`. Linear scan: a region's statement list is short and this runs once
+/// per proven interval refutation.
+fn over_of(overs: &[(AssertName, Over)], name: &AssertName) -> Option<QFormula> {
+    overs
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, o)| o.qformula().clone())
+}
+
+/// Bundle provenance for an assert, from the same origin map that feeds the
+/// human `--explain` output. `whole` says whether the bundled formula is the
+/// cut's entire over-projection or one spine conjunct of it.
+fn assert_source(
+    origins: &BTreeMap<AssertName, CoreItem>,
+    name: &AssertName,
+    whole: bool,
+) -> AssertSource {
+    match origins.get(name) {
+        Some(CoreItem::Cut { region, line, text }) => AssertSource::Cut {
+            region: region.clone(),
+            line: *line,
+            text: text.clone(),
+            whole,
+        },
+        Some(CoreItem::Axiom { id, statement }) => AssertSource::Axiom {
+            id: id.clone(),
+            statement: statement.clone(),
+            assumption: AxiomId::ALL
+                .into_iter()
+                .find(|a| a.as_str() == id)
+                .map_or_else(String::new, |a| catalog_entry(a).assumption.to_owned()),
+        },
+        None => AssertSource::Unattributed,
     }
 }
 
@@ -1866,9 +2290,11 @@ mod reconcile_solver_tests {
             recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
+            recon_chains: BTreeMap::new(),
         };
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
-        engine.reconcile(&mut origins)
+        let mut internal = Vec::new();
+        engine.reconcile(&mut origins, &mut internal)
     }
 
     fn no_axioms(_: &crate::reconcile::ReconEnc) -> AxiomSet {
@@ -2015,6 +2441,7 @@ mod sampling_gate_tests {
             recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
+            recon_chains: BTreeMap::new(),
         };
         engine.run()
     }
@@ -2087,6 +2514,7 @@ mod sampling_gate_tests {
             recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
+            recon_chains: BTreeMap::new(),
         };
         let r = engine.run();
         assert_eq!(r.pairwise[0].kind, VerdictKind::ProvenDisjoint);
@@ -2125,6 +2553,7 @@ mod sampling_gate_tests {
             recon_near_misses: Vec::new(),
             bundles: Vec::new(),
             recon_facts: Vec::new(),
+            recon_chains: BTreeMap::new(),
         };
         let mut report = PairReport {
             a: "RA".to_owned(),

@@ -96,10 +96,13 @@ enum Command {
         /// of the sampling gate.
         #[arg(long)]
         no_refute_gate: bool,
-        /// Write a portable certificate bundle (JSON, schema smash2-combine/1)
-        /// per certified PROVEN DISJOINT pair into this directory. Each bundle
-        /// carries the certified formula set and the Farkas certificate, and
-        /// re-checks offline with `smash2-recheck` — no solver, no smash2 run.
+        /// Write a portable certificate bundle (JSON, schema smash2-combine/2)
+        /// per PROVEN DISJOINT pair into this directory. Each bundle carries
+        /// the certified formula set with its source provenance, a quantity
+        /// dictionary, the derivation of every reconciliation fact it uses,
+        /// and the Farkas certificate; it re-checks offline with
+        /// `smash2-recheck` — no solver, no smash2 run. Byte-deterministic:
+        /// two runs over the same sources write identical files.
         #[arg(long, value_name = "DIR", conflicts_with = "no_certify")]
         combine: Option<PathBuf>,
     },

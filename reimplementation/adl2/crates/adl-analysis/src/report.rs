@@ -198,13 +198,23 @@ pub struct PairReport {
     /// verdict (opaque quantities) — the witness is a candidate only.
     /// `None`: no witness.
     pub witness_validated: Option<bool>,
-    /// UNSAT-side mirror of `witness_validated` (proof-system v2 Phase 4):
-    /// `Some(true)` = the disjointness proof was verified by the independent
-    /// exact-rational certifier (a replay-checked Farkas certificate over
-    /// the unsat core); `Some(false)` = certification ran and could not
-    /// verify it (the pair reports CANDIDATE DISJOINT); `None` =
-    /// certification did not run (`--certify` off, or the pair is not a
-    /// solver-UNSAT disjointness).
+    /// UNSAT-side mirror of `witness_validated`: `Some(true)` = the
+    /// disjointness proof was verified by the independent exact-rational
+    /// certifier (a replay-checked Farkas certificate); `Some(false)` =
+    /// certification ran and could not verify it (the pair reports CANDIDATE
+    /// DISJOINT); `None` = **certification is disabled** (`--no-certify`).
+    ///
+    /// Since M2 this covers every PROVEN DISJOINT route, not just solver
+    /// cores: an interval fast-path verdict runs no solver but its refutation
+    /// is a two-bound Farkas proof, constructed directly and replayed through
+    /// the same kernel. So with `--certify` on (the default), a PROVEN
+    /// DISJOINT pair carries `certified: true`.
+    ///
+    /// One flagged exception: if the kernel ever refuses an interval
+    /// refutation, the verdict is left alone (that disagreement is a bug in
+    /// one of the two, not evidence about the regions) and `certified` stays
+    /// `None` — always accompanied by an `internal_diagnostics` entry, so it
+    /// is never a silent `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certified: Option<bool>,
     pub core: Vec<CoreItem>,

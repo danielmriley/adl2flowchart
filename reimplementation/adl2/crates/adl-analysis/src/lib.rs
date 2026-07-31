@@ -36,7 +36,7 @@ use adl_sema::{
 };
 use adl_solver::Solver;
 use adl_syntax::diag::Diagnostic;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 /// Crate identity marker used by the bootstrap smoke test.
@@ -270,6 +270,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         refute_gate: opts.refute_gate,
         certify: opts.certify,
         recon_facts: Vec::new(),
+        recon_chains: BTreeMap::new(),
         combine: opts.combine,
         recon_ledger: Vec::new(),
         recon_near_misses: Vec::new(),

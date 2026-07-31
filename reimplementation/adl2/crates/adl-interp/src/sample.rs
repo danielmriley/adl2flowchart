@@ -38,6 +38,22 @@ fn injectible(c: f64) -> bool {
     c.is_finite() && c.abs() <= MAX_INJECT_ABS
 }
 
+/// Clamp a probe value into the non-negative domain the loader enforces for
+/// magnitudes (`pt`, `MET.pt`, HT-family scalars).
+///
+/// Cut anchors are harvested from the source, so a `< 0` cut hands us a
+/// negative constant. Injecting it as a pT would build an event no real
+/// detector produces and no loader accepts — and, worse, the gate would then
+/// "refute" a REGION EMPTY verdict that is actually true, i.e. the net itself
+/// would be unsound. Clamping keeps the closest in-domain probe (0), which is
+/// still the interesting boundary for such a cut.
+#[must_use]
+pub fn clamp_magnitude(v: f64) -> f64 {
+    if v > 0.0 { v } else { 0.0 }
+}
+
+use clamp_magnitude as nneg;
+
 /// SplitMix64 — tiny, deterministic, statistically fine for event synthesis.
 struct Rng(u64);
 
@@ -131,7 +147,7 @@ fn event_json(rng: &mut Rng, pt_pool: &[f64], eta_pool: &[f64], met_pool: &[f64]
         let mut pts: Vec<f64> = (0..n)
             .map(|_| {
                 if rng.next() & 1 == 0 {
-                    pick(rng, pt_pool)
+                    nneg(pick(rng, pt_pool))
                 } else {
                     round3(rng.in_range(0.0, 500.0))
                 }
@@ -166,7 +182,7 @@ fn event_json(rng: &mut Rng, pt_pool: &[f64], eta_pool: &[f64], met_pool: &[f64]
         s.push_str("],");
     }
     let met = if rng.next() & 1 == 0 {
-        pick(rng, met_pool)
+        nneg(pick(rng, met_pool))
     } else {
         round3(rng.in_range(0.0, 600.0))
     };
@@ -182,14 +198,18 @@ fn event_json(rng: &mut Rng, pt_pool: &[f64], eta_pool: &[f64], met_pool: &[f64]
 
 /// Empty-collections skeleton with a chosen MET.pt (and HT=0). Used to
 /// guarantee cut-boundary MET values appear in the battery.
-fn met_boundary_json(met: f64) -> String {
+#[must_use]
+pub fn met_boundary_json(met: f64) -> String {
+    let met = nneg(met);
     format!(
         r#"{{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{{"pt":{met},"phi":0.0}},"HT":0.0,"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
     )
 }
 
 /// Empty-collections skeleton with a chosen HT scalar (MET.pt=0).
-fn ht_boundary_json(ht: f64) -> String {
+#[must_use]
+pub fn ht_boundary_json(ht: f64) -> String {
+    let ht = nneg(ht);
     format!(
         r#"{{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[],"MET":{{"pt":0.0,"phi":0.0}},"HT":{ht},"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
     )
@@ -197,7 +217,9 @@ fn ht_boundary_json(ht: f64) -> String {
 
 /// Single leading Jet/Electron/Muon at a cut-boundary pT (defense-in-depth for
 /// ratio/object cuts the MET/HT-only events cannot refute).
-fn obj_boundary_json(coll: &str, pt: f64) -> String {
+#[must_use]
+pub fn obj_boundary_json(coll: &str, pt: f64) -> String {
+    let pt = nneg(pt);
     let extra = match coll {
         "Electron" | "Muon" | "Tau" => r#","charge":1.0"#,
         "Jet" => r#","btag":0.0,"ctag":0.0"#,
@@ -279,6 +301,7 @@ pub fn battery_with_cuts(ext: &ExtDecls, n: usize, cut_consts: &[f64]) -> Vec<Ev
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adl_sema::Rat;
 
     #[test]
     fn battery_is_deterministic_and_loader_valid() {
@@ -304,10 +327,11 @@ mod tests {
             .filter(|e| e.collections.get("jet").is_none_or(Vec::is_empty))
             .count();
         assert!(empties >= 1, "the all-empty event must be present");
+        let want_pt = Rat::from_decimal_f64(30.0).unwrap();
         let boundary_pt = events.iter().any(|e| {
             e.collections
                 .get("jet")
-                .is_some_and(|js| js.iter().any(|j| j.get("ptof") == Some(30.0)))
+                .is_some_and(|js| js.iter().any(|j| j.get("ptof") == Some(&want_pt)))
         });
         assert!(boundary_pt, "pool draws must land on common cut boundaries");
     }
@@ -321,22 +345,65 @@ mod tests {
         let events = battery_with_cuts(&ext, 8, &[c]);
         let want = [c, c.next_up(), c.next_down()];
         for w in want {
-            let hit = events.iter().any(|e| e.met.get(&pt_key) == Some(&w));
+            let want_r = Rat::from_decimal_f64(w).unwrap();
+            let hit = events.iter().any(|e| e.met.get(&pt_key) == Some(&want_r));
             assert!(
                 hit,
                 "battery must contain an event with MET.{pt_key} = {w:?} (cut 0.5 ± ulp); \
                  met keys present: {:?}",
                 events
                     .iter()
-                    .filter_map(|e| e.met.get(&pt_key).copied())
+                    .filter_map(|e| e.met.get(&pt_key).map(|r| r.to_f64()))
                     .collect::<Vec<_>>()
             );
         }
     }
 
+    /// The net must not manufacture events outside the axioms' domain: such
+    /// an event can "refute" a TRUE claim, which is an unsoundness of the
+    /// gate itself. Anchors from `< 0` cuts are the way in.
+    #[test]
+    fn every_battery_event_is_inside_the_axiom_domain() {
+        let ext = ExtDecls::legacy();
+        let (pt_key, e_key) = (ext.prop_canon("pt").0, ext.prop_canon("e").0);
+        let cuts = [-5.0, -0.5, 0.0, 0.3, 30.0, -1e6];
+        let events = battery_with_cuts(&ext, 64, &cuts);
+        assert!(!events.is_empty());
+        let zero = Rat::zero();
+        for (i, e) in events.iter().enumerate() {
+            for (name, objs) in &e.collections {
+                for (j, o) in objs.iter().enumerate() {
+                    for (k, v) in o.properties() {
+                        if k == pt_key || k == e_key {
+                            assert!(*v >= zero, "event {i} {name}[{j}].{k} = {}", v.to_f64());
+                        }
+                        if ["btag", "ctag", "tautag"].contains(&k) {
+                            assert!(
+                                v.is_zero() || *v == Rat::one(),
+                                "event {i} {name}[{j}].{k} = {}",
+                                v.to_f64()
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(met) = e.met.get(&pt_key) {
+                assert!(*met >= zero, "event {i} MET.pt = {}", met.to_f64());
+            }
+            for (k, v) in &e.scalars {
+                if ext.is_event_scalar(k) {
+                    assert!(*v >= zero, "event {i} scalar {k} = {}", v.to_f64());
+                }
+            }
+            for (k, v) in &e.triggers {
+                assert!(v.is_zero() || *v == Rat::one(), "event {i} trigger {k}");
+            }
+        }
+    }
+
     #[test]
     fn expand_cut_boundaries_is_sorted_deduped_and_capped() {
-        let many: Vec<f64> = (0..100).map(|i| f64::from(i)).collect();
+        let many: Vec<f64> = (0..100).map(f64::from).collect();
         let b = expand_cut_boundaries(&many);
         // Cap at MAX_CUT_CONSTANTS inputs × ≤3, after dedup of overlaps.
         assert!(b.len() <= MAX_CUT_CONSTANTS * 3);

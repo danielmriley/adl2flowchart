@@ -996,3 +996,68 @@ Jet/Electron/Muon boundary events. Locked as CE-14 /
 
 Workspace battery at double-check time: **831 passed / 0 failed**.
 Corpus: **pairs=1893 disjoint=794** (matches post-28859fb baseline).
+
+---
+
+## 15. Resolution (2026-07-30) — M3 removed the cause; M4 realigned the encoder
+
+Sections 2, 12 and 14 all describe **one** defect: the encoder folded cut
+arithmetic exactly while the interpreter evaluated it stepwise in `f64`, so
+their decision boundaries could differ by a half ulp. Every fix so far
+attacked the encoder side — refuse the fold, opaque the operand — which is
+sound but pays for it in completeness on every well-behaved analysis.
+
+**M3** attacked the cause: `adl-interp` now loads event values as `Rat` and
+evaluates the rational fragment exactly (`NumVal::Exact`), keeping `f64`
+only for genuinely irrational values. C1–C6 and CE-14 stop being
+counterexamples at that point — with both sides exact, `MET + 0.5 <= 1`
+really is the complement of `MET > 0.5`, and the historic witnesses are no
+longer members of both regions (verified event by event in
+`f64_fold_regressions.rs`).
+
+**M4** realigned the encoder to the new semantics, in three parts:
+
+1. **One value model.** `NumVal` / `bin_arith` / `num_min` / `num_max` moved
+   to `adl_sema::num` and are used by the interpreter AND by
+   `encode::const_tree_num`. The two had already drifted: the encoder's f64
+   emulation of `0.1 + 0.2` (`0.30000000000000004`) against the
+   interpreter's exact `3/10` was a **live false PROVEN DISJOINT** that no
+   net caught, because the folded constant is not a literal any probe
+   generator can see (CE-15).
+2. **The fold gate became a faithfulness predicate.** `is_exact_f64_linear`
+   → `flattens_faithfully`: fold when the tree is `is_exact_valued` (the
+   interpreter is exact there, so an exact fold *is* its semantics) or when
+   it is approximate with only IEEE-exact steps. This restores §7's
+   completeness losses — linear arithmetic over event data, non-dyadic
+   scaling, and ratio clearing (`(MET+100)/MET`) are all provable again.
+3. **The comparison edge.** An approximate value is compared in `f64`, so
+   its threshold is `fl(k)`, not the decimal `k` (`Encoder::at_edge`). And
+   an exact quantity meeting an approximate one as separate atom *terms*
+   (`dR(a,b) > pT(j0)`) has no faithful linear encoding at all — the
+   interpreter rounds the exact side — so it degrades to Unknown. Both are
+   narrow, adversarial-only seams that the old gate happened to hide behind
+   its conservatism.
+
+**§3 revisited — why the nets missed it, again.** The same reason: both
+batteries derive probe values from the literals in the source. A boundary
+that only exists *after* constant folding is invisible to them. The
+structural answer is the differential oracle added in
+`adl-formula/tests/fold_vs_f64_semantics.rs`, which reads the boundary back
+out of the encoded atom and checks the interpreter against it at that value
+± 1 ulp — a net that cannot miss a folded constant because it asks the
+encoder where its own boundary is.
+
+**A premise bug the audit's own counterexamples relied on.** The C1 witness
+carries `HT = -55.87`, and the widened battery generated negative-pT events
+from `< 0` cut anchors. The `NNEG` axiom asserts those are impossible, so
+those events were never valid counterexamples — and, worse, they let the
+gate *refute true claims* (a REGION EMPTY withdrawn as an "internal
+contradiction"). Loader and axiom domains are now aligned in both
+directions (CE-16): out-of-domain values are hard load errors, probe
+generation clamps into the domain, and `NNEG` dropped the element property
+`m`/`mass`, which real ntuples do sometimes store signed.
+
+Corpus after M3+M4: **pairs=1894 disjoint=794** — PROVEN DISJOINT unchanged
+from the post-28859fb baseline; the recovered precision landed entirely on
+the overlap side (19 pairs POSSIBLY → PROVEN OVERLAPPING, each with an
+interpreter-validated witness).

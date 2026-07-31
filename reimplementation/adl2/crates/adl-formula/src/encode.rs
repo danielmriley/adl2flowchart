@@ -26,8 +26,8 @@ use crate::formula::{DiagId, DiagTable, Formula};
 use crate::lin::{LinAtom, Rel};
 use adl_sema::{
     ArithOp, CombKind, Collection, CollectionId, CompositeBinder, ElemIndex, ElemPred, ElemPredId,
-    Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, ParticleRef, Quantity, QuantityArg,
-    QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource, SymbolTable,
+    Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, NumVal, ParticleRef, Quantity,
+    QuantityArg, QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource, SymbolTable,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -289,8 +289,8 @@ fn reduce_body_key(node: &HNode) -> Option<String> {
 }
 
 /// True when `node` contains no event quantities — only numerals and
-/// arithmetic/`Neg`/`Abs`/`min`/`max` over them. Such trees fold by emulating
-/// the interpreter's stepwise f64 evaluation (see [`eval_const_f64`]).
+/// arithmetic/`Neg`/`Abs`/`min`/`max` over them. Such trees fold through the
+/// interpreter's own value model (see [`const_tree_num`]).
 fn is_const_tree(node: &HNode) -> bool {
     match &node.kind {
         HKind::Num(_) => true,
@@ -322,55 +322,40 @@ fn is_power_of_two_rat(r: &Rat) -> bool {
         || (p.denominator == "1" && is_pow2(&p.numerator))
 }
 
-/// Stepwise f64 evaluation of a constant-only tree, matching
-/// `adl-interp::eval` `num`/`num3` for `Num`/`Neg`/`Abs`/`Binary`/`ScalarMinMax`
-/// (left-to-right operands, `powf` for `^`). Non-finite results are
-/// [`LinErr::NonFinite`] (§4.4).
-fn eval_const_f64(node: &HNode) -> Result<f64, LinErr> {
+/// Fold a constant-only tree through the **interpreter's own value model**
+/// ([`adl_sema::num`]) — leaf for leaf, so `0.1 + 0.2` is `3/10` here exactly
+/// as it is in `adl-interp`, and `2 ^ 0.5` is `Approx` here exactly as it is
+/// there.
+///
+/// Before M3 the interpreter evaluated everything stepwise in f64 and this
+/// function emulated that. It no longer does, and the mismatch was a live
+/// false PROVEN DISJOINT (`MET > 0.1 + 0.2` vs a band at the f64 sum): the
+/// encoder cut at `0.30000000000000004` while the interpreter cut at `3/10`,
+/// so an event between them satisfied both regions the analyzer had proved
+/// disjoint. Keep this in lockstep with `adl_sema::num::bin_arith`.
+fn const_tree_num(node: &HNode) -> Result<NumVal, LinErr> {
     match &node.kind {
-        HKind::Num(s) => {
-            let v = s.parse::<f64>().map_err(|_| LinErr::BadLiteral)?;
-            if v.is_finite() {
-                Ok(v)
-            } else {
-                Err(LinErr::BadLiteral)
-            }
-        }
-        HKind::Neg(a) => Ok(-eval_const_f64(a)?),
-        HKind::Abs(a) => Ok(eval_const_f64(a)?.abs()),
+        HKind::Num(s) => parse_rat(s).map(NumVal::Exact).ok_or(LinErr::BadLiteral),
+        HKind::Neg(a) => Ok(const_tree_num(a)?.negated()),
+        HKind::Abs(a) => Ok(const_tree_num(a)?.abs()),
         HKind::Binary { op, lhs, rhs } => {
-            let a = eval_const_f64(lhs)?;
-            let b = eval_const_f64(rhs)?;
-            let v = match op {
-                ArithOp::Add => a + b,
-                ArithOp::Sub => a - b,
-                ArithOp::Mul => a * b,
-                ArithOp::Div => a / b,
-                ArithOp::Pow => a.powf(b),
-            };
-            if v.is_finite() {
-                Ok(v)
-            } else {
-                Err(LinErr::NonFinite)
-            }
+            let a = const_tree_num(lhs)?;
+            let b = const_tree_num(rhs)?;
+            adl_sema::bin_arith(*op, a, b).ok_or(LinErr::NonFinite)
         }
         HKind::ScalarMinMax { kind, args } => {
-            let mut acc: Option<f64> = None;
+            let mut acc: Option<NumVal> = None;
             for a in args {
-                let v = eval_const_f64(a)?;
+                let v = const_tree_num(a)?;
                 acc = Some(match acc {
                     None => v,
-                    Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
-                    Some(p) => p.max(v),
+                    Some(p) if matches!(kind, ReduceKind::Min) => adl_sema::num_min(p, v),
+                    Some(p) => adl_sema::num_max(p, v),
                 });
             }
-            match acc {
-                Some(v) if v.is_finite() => Ok(v),
-                Some(_) => Err(LinErr::NonFinite),
-                None => Err(LinErr::NonLinear(
-                    "empty scalar min/max has no constant value".to_owned(),
-                )),
-            }
+            acc.ok_or_else(|| {
+                LinErr::NonLinear("empty scalar min/max has no constant value".to_owned())
+            })
         }
         _ => Err(LinErr::NonLinear(
             "not a constant-only arithmetic tree".to_owned(),
@@ -378,73 +363,141 @@ fn eval_const_f64(node: &HNode) -> Result<f64, LinErr> {
     }
 }
 
-/// Rationalize a constant-only tree by f64-emulating the interpreter, then
-/// bridging via [`Rat::from_decimal_f64`] (shortest-decimal).
+/// The rational a folded constant tree contributes to an atom. An `Exact`
+/// fold is used as-is; an `Approx` fold (anything under a `^`) bridges
+/// through the shortest decimal of its `f64`, which is what the *value*
+/// round-trips to. Comparison thresholds get a second, sharper treatment —
+/// see [`Encoder::at_edge`].
 fn const_tree_rat(node: &HNode) -> Result<Rat, LinErr> {
-    let v = eval_const_f64(node)?;
-    Rat::from_decimal_f64(v).ok_or(LinErr::NonFinite)
+    match const_tree_num(node)? {
+        NumVal::Exact(r) => Ok(r),
+        NumVal::Approx(v) => Rat::from_decimal_f64(v).ok_or(LinErr::NonFinite),
+    }
 }
 
-/// Every quantity leaf is [`Quantity::Size`] and every numeric literal is an
-/// integer [`Rat`]. f64 integer arithmetic is exact below 2⁵³, so size
-/// arithmetic may flatten exactly.
-fn is_integer_valued_tree(node: &HNode, table: &QuantityTable) -> bool {
+/// Does the interpreter compute this quantity inside the exact rational
+/// fragment? Event data (element properties, sizes, event scalars, `MET.pt`,
+/// trigger flags) loads as [`Rat`] and stays exact; angular separations and
+/// external functions are `f64` kinematics.
+///
+/// Conservative by construction: anything not listed is treated as
+/// approximate, which only ever *restricts* what the encoder may flatten.
+fn quantity_is_exact(table: &QuantityTable, q: QuantityId) -> bool {
+    matches!(
+        table.quantity(q),
+        Quantity::EventScalar(_) | Quantity::Size(_) | Quantity::ElemProp { .. }
+    )
+}
+
+/// Whether the interpreter evaluates `node` to [`NumVal::Exact`] on every
+/// event — the M4 flattening licence.
+///
+/// When this holds, the interpreter performs *exact rational* arithmetic on
+/// the same values the encoder puts in a [`LinAtom`], so folding the tree
+/// into `Σ cᵢ·qᵢ + k` reproduces the interpreter's decision boundary
+/// identically. No f64-exactness side condition is needed; that condition
+/// existed only because the pre-M3 interpreter rounded at every step.
+fn is_exact_valued(node: &HNode, table: &QuantityTable) -> bool {
     match &node.kind {
-        HKind::Num(s) => parse_rat(s).is_some_and(|r| r.is_integer()),
-        HKind::Quantity(q) => matches!(table.quantity(*q), Quantity::Size(_)),
-        HKind::Neg(a) | HKind::Abs(a) => is_integer_valued_tree(a, table),
+        // A literal is exact whatever it is; one that does not parse finite
+        // is rejected downstream (`lin` → `BadLiteral` → Unknown), and the
+        // interpreter's own literal parse fails on it too.
+        HKind::Num(_) => true,
+        HKind::Quantity(q) => quantity_is_exact(table, *q),
+        // Event properties read straight out of the event: exact.
+        HKind::ElemSelfProp(_) | HKind::ReduceProp(_) | HKind::CollProp { .. } => true,
+        HKind::Neg(a) | HKind::Abs(a) => is_exact_valued(a, table),
+        // `^` always leaves the fragment (irrational / overflow, §4.4).
         HKind::Binary {
-            op: ArithOp::Add | ArithOp::Sub | ArithOp::Mul,
-            lhs,
-            rhs,
-        } => is_integer_valued_tree(lhs, table) && is_integer_valued_tree(rhs, table),
+            op: ArithOp::Pow, ..
+        } => false,
+        HKind::Binary { lhs, rhs, .. } => {
+            is_exact_valued(lhs, table) && is_exact_valued(rhs, table)
+        }
+        HKind::ScalarMinMax { args, .. } => args.iter().all(|a| is_exact_valued(a, table)),
+        // A boolean node used numerically is Exact 1/0; a numeric reducer
+        // folds its body with the same rules.
+        HKind::Bool(_)
+        | HKind::Not(_)
+        | HKind::And(_)
+        | HKind::Or(_)
+        | HKind::Cmp { .. }
+        | HKind::Band { .. }
+        | HKind::RegionPred(_) => true,
+        HKind::Reduce { kind, body, .. } => kind.is_boolean() || is_exact_valued(body, table),
+        HKind::Ternary { then, els, .. } => {
+            is_exact_valued(then, table)
+                && els.as_ref().is_none_or(|e| is_exact_valued(e, table))
+        }
         _ => false,
     }
 }
 
-/// Side of an integer-valued `+`/`-`/`*`: a const integer tree, or a
-/// quantity-bearing exact-f64-linear tree.
-fn integer_side_ok(node: &HNode, table: &QuantityTable) -> bool {
-    if is_const_tree(node) {
-        is_integer_valued_tree(node, table)
+/// How the interpreter decides a comparison against `node`'s value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// Everything stays in the rational fragment: compare exactly.
+    Exact,
+    /// The value is an `f64`, so the threshold is `fl(k)`.
+    F64,
+    /// An exact quantity and an approximate one meet as separate *terms* of
+    /// one atom: the interpreter rounds the exact one at the edge and a
+    /// linear atom over reals cannot express that. Only [`edge_mode_pair`]
+    /// produces this.
+    Unmodelable,
+}
+
+/// The edge of a side that reaches the comparison as a *single value* —
+/// either a flattened [`LinExpr`] or one interned opaque scalar.
+fn edge_mode(node: &HNode, table: &QuantityTable) -> Edge {
+    if is_exact_valued(node, table) {
+        Edge::Exact
     } else {
-        is_exact_f64_linear(node, table)
+        Edge::F64
     }
 }
 
-/// Whether a **quantity-bearing** comparison operand may flatten to an exact
-/// [`LinExpr`] / [`LinAtom`] — every arithmetic step the interpreter would
-/// perform on that tree must be provably exact in f64:
+/// The edge of `lhs ⋈ rhs` when **both** sides flatten into linear
+/// expressions, so their quantity terms sit side by side in one atom.
 ///
-/// 1. bare [`HKind::Quantity`]; `Neg`/`Abs` of an allowed tree;
-/// 2. `*`/`/` of an allowed quantity subtree by a power-of-two constant;
-/// 3. `+`/`-`/`*` over an integer-valued size tree (see
-///    [`is_integer_valued_tree`]).
+/// A constant operand adapts to the other side (its threshold converts). Two
+/// quantity-bearing operands of different kinds do not: `dR(a,b) > pT(j0)` is
+/// decided by the interpreter as `v_dR > fl(pt)`, and the atom
+/// `q_dR − q_pt > 0` uses `pt` unrounded. They disagree exactly when `pt`
+/// rounds onto `v_dR` — rare, reachable, and a false PROVEN under negation.
+fn edge_mode_pair(lhs: &HNode, rhs: &HNode, table: &QuantityTable) -> Edge {
+    match (edge_mode(lhs, table), edge_mode(rhs, table)) {
+        (Edge::Exact, Edge::Exact) => Edge::Exact,
+        (Edge::F64, Edge::F64) => Edge::F64,
+        (Edge::F64, Edge::Exact) if is_const_tree(rhs) => Edge::F64,
+        (Edge::Exact, Edge::F64) if is_const_tree(lhs) => Edge::F64,
+        _ => Edge::Unmodelable,
+    }
+}
+
+/// Whether a **quantity-bearing** operand whose value is *approximate* may
+/// still flatten exactly. The interpreter computes it in f64, so only steps
+/// that are IEEE-exact are allowed:
 ///
-/// Constant-only trees are handled separately ([`const_tree_rat`]). Everything
-/// else must go through structure-keyed [`Encoder::intern_opaque_scalar`].
-fn is_exact_f64_linear(node: &HNode, table: &QuantityTable) -> bool {
+/// 1. a bare quantity / numeric-reducer leaf; `Neg`/`Abs` of an allowed tree;
+/// 2. `*`/`/` by a power-of-two constant.
+///
+/// Anything else (`dR + 1`, `dR / 3`) rounds, and the encoder's exact fold
+/// would sit off the interpreter's boundary — those go opaque.
+fn is_f64_exact_approx(node: &HNode) -> bool {
     match &node.kind {
         HKind::Quantity(_) => true,
         // Numeric reducers intern as one free quantity (`intern_reduce`); as a
         // leaf they behave like a bare `Quantity` for pow2 scaling (`2*min`).
         HKind::Reduce { kind, .. } if !kind.is_boolean() => true,
-        HKind::Neg(a) | HKind::Abs(a) => is_exact_f64_linear(a, table),
+        HKind::Neg(a) | HKind::Abs(a) => is_f64_exact_approx(a),
         HKind::Binary { op, lhs, rhs } => {
             let pow2_scale = |side: &HNode, other: &HNode| -> bool {
                 is_const_tree(side)
                     && const_tree_rat(side).is_ok_and(|c| is_power_of_two_rat(&c))
-                    && is_exact_f64_linear(other, table)
+                    && is_f64_exact_approx(other)
             };
             match op {
-                // Integer-size exemption for `size±size` / `size*2` (f64 int
-                // arithmetic is exact below 2⁵³). Checked before pow2 scale
-                // so `size*2` stays on the integer path.
-                ArithOp::Add | ArithOp::Sub | ArithOp::Mul
-                    if is_integer_valued_tree(node, table) =>
-                {
-                    integer_side_ok(lhs, table) && integer_side_ok(rhs, table)
-                }
                 ArithOp::Mul => pow2_scale(lhs, rhs) || pow2_scale(rhs, lhs),
                 // quantity / pow2 only (pow2 / quantity is a reciprocal).
                 ArithOp::Div => pow2_scale(rhs, lhs),
@@ -453,6 +506,34 @@ fn is_exact_f64_linear(node: &HNode, table: &QuantityTable) -> bool {
         }
         _ => false,
     }
+}
+
+/// Why a fold was refused: the encoder's exact arithmetic would land on a
+/// different boundary than the interpreter's f64 steps.
+const NOT_FAITHFUL: &str =
+    "approximate expression whose f64 arithmetic an exact fold cannot reproduce";
+
+/// Why a comparison was dropped: one side is approximate, the other is an
+/// exact event quantity, and the interpreter rounds the exact side at the
+/// edge — a linear atom over reals cannot express that rounding.
+const MIXED_EDGE: &str =
+    "comparison mixes an exact event quantity with an approximate value \
+     (the interpreter rounds the exact side at the comparison edge)";
+
+/// May a quantity-bearing comparison operand flatten into a [`LinExpr`]?
+///
+/// Two disjoint licences:
+/// - the tree is [`is_exact_valued`] — the interpreter is exact there, so an
+///   exact fold *is* its semantics (this is the M4 relaxation: linear
+///   arithmetic over event data, non-power-of-two scaling, size arithmetic,
+///   `MET/HT` ratios all became faithful when the interpreter went rational);
+/// - the tree is approximate but every f64 step in it is IEEE-exact
+///   ([`is_f64_exact_approx`]).
+///
+/// Constant-only trees are handled separately ([`const_tree_rat`]); anything
+/// else goes through structure-keyed [`Encoder::intern_opaque_scalar`].
+fn flattens_faithfully(node: &HNode, table: &QuantityTable) -> bool {
+    is_exact_valued(node, table) || is_f64_exact_approx(node)
 }
 
 /// Canonical text of a reducer's static slice (`None` ⇒ empty).
@@ -563,6 +644,7 @@ impl Encoder<'_> {
     /// - collection sizes (total on every loader-valid event), and
     /// - MET components (a missing MET vector is a HARD evaluation error —
     ///   the event is decidably in no MET-cutting region).
+    ///
     /// A negation whose scope mentions any other exact atom degrades to
     /// `Unknown` — over-side true, under-side false — which can only weaken
     /// verdicts. Interim until definedness (presence) modeling lands; see
@@ -1608,9 +1690,15 @@ impl Encoder<'_> {
         let r = self.lin_guarded(rhs);
         match (l, r) {
             (Ok(l), Ok(r)) => {
+                // Both sides flattened, so their terms share one atom — that
+                // is the only place the mixed-kind rounding can bite.
+                let mode = edge_mode_pair(lhs, rhs, self.table);
+                if mode == Edge::Unmodelable {
+                    return self.unknown(span, MIXED_EDGE);
+                }
                 // l ⋈ r  ⇔  Σ terms ⋈ −k. Exact: rationals never overflow.
                 let d = l.sub(&r);
-                let k = -&d.k;
+                let k = Self::at_edge(mode, -&d.k);
                 // P3: a positive lower bound on a composite tuple count
                 // (`size(K) >= 1`, `size(K->cand) == 1`, …) gains a 2D
                 // per-candidate-cut existence refinement on the OVER side.
@@ -1646,6 +1734,12 @@ impl Encoder<'_> {
     /// threshold (`Rsq > 0.08` vs `Rsq < 0.05` ⇒ disjoint). Anything that
     /// cannot be rendered injectively stays `Unknown`.
     fn pattern(&mut self, side: &HNode, rel: Rel, c: Rat, why: &str, span: Span) -> Formula {
+        // The side reaches the atom as one value (a ratio rewrite, an
+        // absolute value, or one interned opaque scalar), so its own kind
+        // decides the threshold. Idempotent: a threshold already at an f64
+        // value converts to itself.
+        let mode = edge_mode(side, self.table);
+        let c = Self::at_edge(mode, c);
         match &side.kind {
             HKind::Binary {
                 op: ArithOp::Div,
@@ -1660,6 +1754,16 @@ impl Encoder<'_> {
             // min → this same rule). `==`/`!=` have no monotone reading, so
             // they fall to the opaque leaf below.
             HKind::ScalarMinMax { kind, args } => {
+                // The monotone rewrite compares each argument SEPARATELY, so
+                // a mixed min/max has the same unmodelable rounding as a
+                // mixed comparison: the interpreter folds the exact argument
+                // to f64 *before* taking the min, and a per-argument atom
+                // over that argument's exact value cannot express it.
+                if mode == Edge::F64
+                    && args.iter().any(|a| is_exact_valued(a, self.table))
+                {
+                    return self.unknown(span, MIXED_EDGE);
+                }
                 let or_branch = matches!(
                     (kind, rel),
                     (ReduceKind::Min, Rel::Lt | Rel::Le) | (ReduceKind::Max, Rel::Gt | Rel::Ge)
@@ -1737,9 +1841,13 @@ impl Encoder<'_> {
     /// dispatch (linear atom / ratio / abs / opaque / nested min-max). Mirrors
     /// [`Self::cmp`] with a constant right-hand side.
     fn cmp_node_const(&mut self, node: &HNode, rel: Rel, c: Rat, span: Span) -> Formula {
+        // The node reaches the atom as one value, so its own kind decides
+        // the threshold.
+        let mode = edge_mode(node, self.table);
+        let c = Self::at_edge(mode, c);
         match self.lin_guarded(node) {
             Ok(l) => {
-                let k = &c - &l.k;
+                let k = Self::at_edge(mode, &c - &l.k);
                 if let Some(f) = self.try_comb_existence(&l.terms, rel, &k, span) {
                     return f;
                 }
@@ -1765,6 +1873,20 @@ impl Encoder<'_> {
         c: Rat,
         span: Span,
     ) -> Formula {
+        // Multiplying through is exact-rational algebra, so it reproduces the
+        // interpreter only when the interpreter's own division is exact. Under
+        // M3 that holds for the whole rational fragment (`MET/HT`, `pT/0.3`);
+        // an approximate operand still divides in f64 and rounds, and clearing
+        // that fabricates a false PROVEN DISJOINT (CE-14's family).
+        if !(is_exact_valued(num, self.table) && is_exact_valued(den, self.table)) {
+            return self.opaque_atom(
+                whole,
+                rel,
+                c,
+                "ratio over approximate values cannot be cleared faithfully",
+                span,
+            );
+        }
         let l = match self.lin_or_opaque(num) {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio numerator is not linear", span),
@@ -1774,23 +1896,8 @@ impl Encoder<'_> {
             Err(e) => return self.lin_err(e, "ratio denominator is not linear", span),
         };
         if d.terms.is_empty() {
-            // Constant denominator: `L/d ⋈ c` ⇔ `L ⋈ c·d` is only f64-faithful
-            // when division by `d` is IEEE-exact (d a ±power of two). Exact
-            // rational clearing against a non-dyadic `d` (e.g. `pT/0.3 <= 0.1`)
-            // fabricates a false PROVEN DISJOINT — the interpreter computes
-            // `fl(L)/fl(d)` and half-ulp flat spots dual-satisfy complementary
-            // cleared atoms (AUDIT_2026-07-28 double-check / CE-14).
             if d.k.is_zero() {
                 return Formula::False; // §4.4
-            }
-            if !is_power_of_two_rat(&d.k) {
-                return self.opaque_atom(
-                    whole,
-                    rel,
-                    c,
-                    "ratio with non-power-of-two constant denominator cannot be cleared f64-exactly",
-                    span,
-                );
             }
             let cd = d.scale(&c);
             let e = l.sub(&cd);
@@ -1886,6 +1993,9 @@ impl Encoder<'_> {
         let (Some(lo), Some(hi)) = (parse_rat(lo), parse_rat(hi)) else {
             return self.unknown(span, "non-finite numeric literal cannot construct an atom");
         };
+        // Both bounds are comparison edges (`lo ≤ x ∧ x ≤ hi`).
+        let mode = edge_mode(expr, self.table);
+        let (lo, hi) = (Self::at_edge(mode, lo), Self::at_edge(mode, hi));
         // `lin_guarded` (not `lin`): a non-f64-faithful band expression
         // (`MET+HT-HT [] lo hi`) must route to the opaque/per-bound path, not
         // flatten — else the cancellation false-PROVEN resurfaces in bands.
@@ -1943,6 +2053,23 @@ impl Encoder<'_> {
                 self.unknown(span, "non-finite numeric literal cannot construct an atom")
             }
             LinErr::NonLinear(why) => self.unknown(span, format!("{what}: {why}")),
+        }
+    }
+
+    /// The threshold the interpreter actually compares a value against.
+    ///
+    /// In the rational fragment it is the exact `k` the physicist wrote. At an
+    /// **approximate** edge the interpreter converts Exact→f64 first
+    /// ([`NumVal`]'s mixed rule), so the real boundary is `fl(k)` — and there
+    /// is no f64 strictly between `k` and `fl(k)`, which is precisely why the
+    /// two disagree only there, and precisely why an adversarial probe finds
+    /// it. Converting is idempotent: `fl(k)` maps to itself.
+    fn at_edge(mode: Edge, k: Rat) -> Rat {
+        match mode {
+            Edge::Exact | Edge::Unmodelable => k,
+            // A `k` too large to be an f64 means `fl(k)` is ±inf; keeping the
+            // exact `k` agrees with an infinite bound on every finite value.
+            Edge::F64 => Rat::from_f64_exact(k.to_f64()).unwrap_or(k),
         }
     }
 
@@ -2066,10 +2193,7 @@ impl Encoder<'_> {
         if let Fragment::Unsupported(reason) = &node.tag {
             return Err(LinErr::NonLinear(reason.clone()));
         }
-        // Constant-only: emulate the interpreter's stepwise f64, then
-        // rationalize. Closes C6 / R1; keeps `0.1+0.2` decidable as the
-        // interpreter sees it. Bare `Num` still uses parse_rat via the
-        // same bridge (from_decimal_f64 of the parsed f64).
+        // Constant-only: fold with the interpreter's value model.
         if is_const_tree(node) {
             return Ok(LinExpr::constant(const_tree_rat(node)?));
         }
@@ -2080,12 +2204,8 @@ impl Encoder<'_> {
             },
             HKind::Quantity(q) => Ok(LinExpr::quantity(*q)),
             HKind::Neg(a) => {
-                // Quantity-bearing Neg: only when the inner tree is exact-f64.
-                if !is_exact_f64_linear(node, self.table) {
-                    return Err(LinErr::NonLinear(
-                        "source not exact-f64-linear (fold would diverge from stepwise f64)"
-                            .to_owned(),
-                    ));
+                if !flattens_faithfully(node, self.table) {
+                    return Err(LinErr::NonLinear(NOT_FAITHFUL.to_owned()));
                 }
                 Ok(self.lin(a)?.scale(&Rat::from_i64(-1)))
             }
@@ -2093,14 +2213,11 @@ impl Encoder<'_> {
                 "absolute value (only `|E| ⋈ const` is expanded)".to_owned(),
             )),
             HKind::Binary { op, lhs, rhs } => {
-                // Flatten Add/Sub/Mul/Div only when every interpreter step is
-                // provably IEEE-exact (pow2 scale, size-integer arithmetic).
-                // Reducers / opaque leaves below are unaffected by this gate.
-                if !is_exact_f64_linear(node, self.table) {
-                    return Err(LinErr::NonLinear(
-                        "source not exact-f64-linear (fold would diverge from stepwise f64)"
-                            .to_owned(),
-                    ));
+                // Flatten only when the fold reproduces the interpreter's own
+                // arithmetic: exact-valued trees always do; approximate ones
+                // only under IEEE-exact steps.
+                if !flattens_faithfully(node, self.table) {
+                    return Err(LinErr::NonLinear(NOT_FAITHFUL.to_owned()));
                 }
                 self.lin_binary(*op, lhs, rhs)
             }
@@ -2207,10 +2324,9 @@ impl Encoder<'_> {
                         None => Err(LinErr::NonFinite),
                     };
                 }
-                // Quantity / constant: [`is_exact_f64_linear`] admits only
-                // power-of-two divisors (IEEE-exact scale). Non-pow2 const
-                // denominators fail the gate and reach `pattern` → `ratio`
-                // for multiply-through clearing.
+                // Quantity / constant. Exact-valued numerators divide by any
+                // constant faithfully; approximate ones reached here only via
+                // [`is_f64_exact_approx`], i.e. a power-of-two divisor.
                 match Rat::one().checked_div(&r.k) {
                     Some(inv) => Ok(l.scale(&inv)),
                     None => Err(LinErr::NonFinite),

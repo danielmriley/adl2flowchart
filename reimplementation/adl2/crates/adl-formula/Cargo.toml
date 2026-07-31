@@ -11,4 +11,8 @@ adl-sema.workspace = true
 adl-syntax.workspace = true
 
 [dev-dependencies]
+# Differential oracle (tests/fold_vs_f64_semantics.rs): the encoder's folded
+# boundary is only correct if it matches the reference interpreter's, so the
+# test needs both. Dev-only — the library must not depend on the interpreter.
+adl-interp.workspace = true
 proptest.workspace = true

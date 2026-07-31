@@ -5,8 +5,16 @@ encoder-vs-interpreter battery or the metamorphic battery
 (`crates/adl-difftest/tests/{prop_encoder_vs_interp,metamorphic}.rs`),
 minimized, fixed in engine code, and locked as a regression test in
 `crates/adl-difftest/tests/regressions.rs` (CE-1…CE-7) or
-`crates/adl-analysis/tests/f64_fold_regressions.rs` (CE-8…CE-13).
-Dated 2026-06-11 (CE-1…CE-7) / 2026-07-28 (CE-8…CE-13).
+`crates/adl-analysis/tests/f64_fold_regressions.rs` (CE-8…CE-16).
+Dated 2026-06-11 (CE-1…CE-7) / 2026-07-28 (CE-8…CE-13) /
+2026-07-29 (CE-14) / 2026-07-30 (CE-15, CE-16).
+
+NOTE on CE-8…CE-14: those were fixed at the encoder (refuse the fold)
+while the interpreter still stepped in f64. M3 removed the *cause* —
+the interpreter evaluates the rational fragment exactly — so those
+region pairs are genuine partitions today and the analyzer proves them
+disjoint. The entries below describe the bug as it was; CE-15 records
+the realignment and what replaced each fix.
 
 ## CE-1 — false PROVEN DISJOINT: unguarded negation over missing elements
 
@@ -310,3 +318,87 @@ otherwise intern the whole ratio as a structure-keyed opaque. EPRED
 `clear_ratio` matches. Gate also emits dedicated Jet/Electron/Muon
 boundary events. Regression:
 `f64_fold_regressions::c14_ratio_const_den_not_proven_disjoint`.
+
+## CE-15 — false PROVEN DISJOINT: encoder/interpreter const-fold crossing (M4, 2026-07-30)
+
+The mirror image of CE-8…CE-13, and it arrived *because* those were fixed
+at the encoder. Their fix taught the encoder to fold constant subtrees by
+**emulating stepwise f64** (`0.1 + 0.2 → 0.30000000000000004`). M3b then
+moved the interpreter onto exact rationals, where `0.1 + 0.2` is `3/10`.
+Neither change was wrong on its own; together they put the two sides of
+the proof on different boundaries, which is the whole false-PROVEN
+mechanism running in reverse.
+
+```adl
+region A
+  select MET > 0.1 + 0.2
+
+region B
+  select MET [] 0.30000000000000004 0.30000000000000004
+```
+
+Event `{"MET": 0.30000000000000004}`: `smash2 run` accepts it in BOTH
+regions (it is strictly above `3/10`, and it is exactly B's one-point
+band), while `smash2 verify` reported **proven_disjoint** — the encoder
+cut A at `0.30000000000000004`, so A and B looked adjacent-but-disjoint.
+Every net stayed silent: the sampling and refute batteries only probe
+values derived from the *literals* they can see, and the encoder's folded
+constant is not one of them.
+
+**Fix (M4):** one implementation of the value model, in
+`adl_sema::num` (`NumVal { Exact(Rat), Approx(f64) }`, `bin_arith`,
+`num_min`/`num_max`), used by `adl-interp::eval` AND by
+`adl-formula::encode::const_tree_num`. The exact-f64 fold gate is
+replaced by `flattens_faithfully`: an `is_exact_valued` tree folds
+exactly (the interpreter is exact there), an approximate one only through
+IEEE-exact steps. Thresholds compared against an approximate value
+convert to `fl(k)` (`Encoder::at_edge` / `Rat::from_f64_exact`), and an
+exact quantity meeting an approximate one as separate atom terms
+(`dR(a,b) > pT(j0)`) has no faithful linear encoding — it becomes
+Unknown.
+
+Consequence: C1–C6 and CE-14 are **PROVEN DISJOINT again**, correctly —
+with both sides exact those pairs really are partitions, and their
+historic witnesses are no longer members of both regions. Regressions:
+`adl-formula/tests/fold_vs_f64_semantics.rs` (differential encoder-vs-
+interpreter oracle at every boundary ± 1 ulp),
+`f64_fold_regressions::m4_const_fold_seam_is_overlapping_not_disjoint`,
+golden `examples/golden/features-num_11.adl`.
+
+## CE-16 — false REGION EMPTY: loader admits axiom-violating events (2026-07-30)
+
+Found by the tree's own widened sampling battery, via `cross_oracle`: the
+gate refuted one of the engine's own verdicts, which is the engine
+telling you an axiom is false on a real event.
+
+```adl
+object eles
+  take Ele
+
+region CR
+  select 2 * pT(eles[0]) < 0
+```
+
+`{"Electron":[{"pt":-5.0,...}]}` loaded fine and the region *passed* on
+it — but `NNEG` asserts `pt >= 0`, so the engine proved the region empty.
+Either the loader or the axiom was wrong; they simply disagreed. The same
+class covers tag properties outside `{0,1}` (audit R6) and negative
+HT-family scalars — the historic C1 witness carried `HT = -55.87`, which
+means that "counterexample" was itself outside the asserted domain.
+
+**Fix:** premise alignment in both directions.
+1. `adl_interp::event::check_domain` makes an out-of-domain value a hard
+   load error naming the property, the value, and the axiom.
+2. `NNEG` no longer covers the element property `m`/`mass` — signed and
+   sentinel jet masses exist in real ntuples, and rejecting a real file is
+   worse than losing an axiom nothing proved with. The *computed*
+   `mass(l1+l2)` stays covered (the interpreter derives it as
+   `sqrt(max(0, …))`).
+3. The sampling battery and the refute probes clamp generated values into
+   the domain (`sample::clamp_magnitude`), so a `< 0` cut anchor can no
+   longer manufacture an event that refutes a true claim.
+
+Regressions: `event::tests::parse_event_rejects_negative_object_pt` (and
+MET/HT/tag siblings), `sample::tests::every_battery_event_is_inside_the_axiom_domain`,
+`refute::tests::negative_anchors_are_clamped_into_the_domain`,
+`refute_gate::empty_region_survives_a_negative_cut_anchor`.

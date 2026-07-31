@@ -27,6 +27,13 @@ use adl_solver::{AssertName, Model, QSort, SatResult, Solver};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+/// A certification outcome: `None` = certification off, `Some(true/false)` =
+/// certified / not, plus the portable payload (`--combine`) when there is one.
+type Certified = (
+    Option<bool>,
+    Option<(Vec<(String, QFormula)>, adl_certify::Certificate)>,
+);
+
 pub(crate) struct Engine<'a> {
     pub hir: &'a Hir,
     pub ext: &'a ExtDecls,
@@ -56,9 +63,17 @@ pub(crate) struct Engine<'a> {
     /// through the reference interpreter before being reported. Empty = gate
     /// disabled.
     pub gate_events: Vec<adl_interp::Event>,
-    /// Certify disjointness proofs through the independent exact-rational
-    /// checker (`adl-certify`, proof-system v2 Phase 4): solver-UNSAT pairs
-    /// whose core cannot be certified demote to CANDIDATE DISJOINT.
+    /// Adversarial refute-gate probes (trustworthy-verify M1): cut-anchored
+    /// and flat-spot events searched after the sampling gate. Empty when the
+    /// gate is off or the unit has no usable cut constants.
+    pub refute_probes: Vec<adl_interp::Event>,
+    /// Whether the adversarial refute gate is enabled for this run (drives
+    /// [`Report::refute`] presence even when the probe list is empty).
+    pub refute_gate: bool,
+    /// Certify UNSAT-direction proofs through the independent exact-rational
+    /// checker (`adl-certify`): solver-UNSAT pairwise disjointness,
+    /// emptiness, subset, and bin claims whose core/frame cannot be
+    /// certified demote to a candidate / non-claim.
     pub certify: bool,
     /// The reconciliation facts asserted at the persistent frame, retained by
     /// name so a certified core containing an `XR{k}` member can map it back
@@ -133,13 +148,14 @@ fn snap_model(model: &Model) -> Model {
     const GRID: f64 = 4_194_304.0; // 2^22
     let snapped = model
         .iter()
-        .map(|(q, v)| {
-            let s = if v.is_finite() && v.abs() < 1e9 {
-                (v * GRID).round() / GRID
+        .filter_map(|(q, v)| {
+            let f = v.to_f64();
+            let s = if f.is_finite() && f.abs() < 1e9 {
+                (f * GRID).round() / GRID
             } else {
-                v
+                f
             };
-            (q, s)
+            Rat::from_decimal_f64(s).map(|r| (q, r))
         })
         .collect();
     Model::from_values(snapped)
@@ -150,11 +166,9 @@ fn snap_model(model: &Model) -> Model {
 fn blocking_clause(model: &Model, mentioned: &BTreeSet<QuantityId>) -> Option<QFormula> {
     let mut parts = Vec::new();
     for &q in mentioned {
-        if let Some(v) = model.get(q)
-            && v.is_finite()
-            && let Some(rv) = Rat::from_decimal_f64(v)
-        {
-            let atom = adl_formula::LinAtom::single(q, adl_formula::Rel::Ne, rv);
+        // Model values are already exact Rat — assert ≠ without an f64 bridge.
+        if let Some(v) = model.get(q) {
+            let atom = adl_formula::LinAtom::single(q, adl_formula::Rel::Ne, v);
             parts.push(QFormula::Atom(atom));
         }
     }
@@ -275,11 +289,18 @@ impl Engine<'_> {
 
         // -- region reports (coverage + empty) -------------------------------
         let mut gate_refutations = 0usize;
+        let mut refute_refutations = 0usize;
         let mut region_reports = Vec::new();
         for (r, ctx) in self.unit.regions.iter().zip(&ctxs) {
             let (mut empty, mut empty_core) = self.region_empty(ctx, &origins);
-            if empty == EmptyStatus::Proven
+            if matches!(empty, EmptyStatus::Proven | EmptyStatus::Candidate)
                 && self.gate_empty(r.idx, &interp, &mut internal, &mut gate_refutations)
+            {
+                empty = EmptyStatus::NotProven;
+                empty_core = Vec::new();
+            }
+            if matches!(empty, EmptyStatus::Proven | EmptyStatus::Candidate)
+                && self.refute_empty(r.idx, &interp, &mut internal, &mut refute_refutations)
             {
                 empty = EmptyStatus::NotProven;
                 empty_core = Vec::new();
@@ -324,6 +345,7 @@ impl Engine<'_> {
                     &interp,
                     &mut internal,
                     &mut gate_refutations,
+                    &mut refute_refutations,
                 );
                 pairwise.push(pair);
             }
@@ -376,6 +398,10 @@ impl Engine<'_> {
             sampling: (!self.gate_events.is_empty()).then_some(crate::report::SamplingInfo {
                 events: self.gate_events.len(),
                 refutations: gate_refutations,
+            }),
+            refute: self.refute_gate.then_some(crate::report::RefuteInfo {
+                probes: self.refute_probes.len(),
+                refutations: refute_refutations,
             }),
             solver_degraded: (self.spawn_failures + self.solver_errors > 0).then(|| {
                 format!(
@@ -456,17 +482,6 @@ impl Engine<'_> {
         QFormula::Or(unders.iter().map(|u| u.qformula().clone().not()).collect())
     }
 
-    fn core_items(&mut self, origins: &BTreeMap<AssertName, CoreItem>) -> Vec<CoreItem> {
-        let Some(s) = self.solver.as_deref_mut() else {
-            return Vec::new();
-        };
-        let names = s.unsat_core().unwrap_or_default();
-        names
-            .into_iter()
-            .filter_map(|n| origins.get(&n).cloned())
-            .collect()
-    }
-
     fn core_reason(items: &[CoreItem]) -> String {
         if items.is_empty() {
             return "UNSAT (no core available)".to_owned();
@@ -496,6 +511,7 @@ impl Engine<'_> {
         ctx: &RegionCtx,
         origins: &BTreeMap<AssertName, CoreItem>,
     ) -> (EmptyStatus, Vec<CoreItem>) {
+        // Interval-only emptiness has no solver core to certify — keep Proven.
         if ctx.intervals.self_empty().is_some() {
             return (EmptyStatus::Proven, Vec::new());
         }
@@ -507,8 +523,22 @@ impl Engine<'_> {
         let result = self.check(self.timeout);
         let out = match result {
             Some(SatResult::Unsat) => {
-                let items = self.core_items(origins);
-                (EmptyStatus::Proven, items)
+                let core_names = self
+                    .solver
+                    .as_deref_mut()
+                    .and_then(adl_solver::Solver::unsat_core);
+                let items: Vec<CoreItem> = core_names
+                    .iter()
+                    .flatten()
+                    .filter_map(|n| origins.get(n).cloned())
+                    .collect();
+                let (certified, _) = self.certify_named_unsat(core_names.as_deref(), &[ctx]);
+                let status = if certified == Some(false) {
+                    EmptyStatus::Candidate
+                } else {
+                    EmptyStatus::Proven
+                };
+                (status, items)
             }
             Some(SatResult::Sat) => (EmptyStatus::NotProven, Vec::new()),
             _ => (EmptyStatus::Unknown, Vec::new()),
@@ -973,9 +1003,7 @@ impl Engine<'_> {
         // spawn/error Unknown here still trips solver_degraded.
         let try_with = |engine: &mut Self, atoms: &[&[QFormula]]| -> Option<Model> {
             let timeout = engine.timeout;
-            let Some(s) = engine.solver.as_deref_mut() else {
-                return None;
-            };
+            let s = engine.solver.as_deref_mut()?;
             s.push();
             for group in atoms {
                 for a in *group {
@@ -1051,7 +1079,8 @@ impl Engine<'_> {
     }
 
     /// `UNSAT(Ax ∧ sub⁺ ∧ ¬(sup⁻))` ⇒ sub ⊆ sup. Assertions are unnamed —
-    /// no subset check reads an unsat core.
+    /// no subset check reads an unsat core. Under `--certify`, an uncertified
+    /// solver UNSAT is not a subset claim (fail closed).
     fn subset<'o>(
         &mut self,
         sub_overs: impl IntoIterator<Item = &'o Over>,
@@ -1062,15 +1091,34 @@ impl Engine<'_> {
         }
         self.push();
         let neg = Self::negated_under(sup_unders);
+        // Name every query atom so an unsat core can pin certification to the
+        // small relevant set — dumping Ax∪query into Farkas search is both a
+        // wall-time bomb (cms-scale bins/subsets) and unnecessary.
+        let mut named: Vec<(AssertName, QFormula)> = Vec::new();
         if let Some(s) = self.solver.as_deref_mut() {
-            for o in sub_overs {
-                s.assert(o.qformula(), None);
+            for (k, o) in sub_overs.into_iter().enumerate() {
+                let name = AssertName::new(format!("QSUB{k}"));
+                let f = o.qformula().clone();
+                s.assert(&f, Some(name.clone()));
+                named.push((name, f));
             }
-            s.assert(&neg, None);
+            let neg_name = AssertName::new("QSUBNEG");
+            s.assert(&neg, Some(neg_name.clone()));
+            named.push((neg_name, neg));
         }
         let result = self.check(self.timeout);
+        let core = matches!(result, Some(SatResult::Unsat))
+            .then(|| {
+                self.solver
+                    .as_deref_mut()
+                    .and_then(adl_solver::Solver::unsat_core)
+            })
+            .flatten();
         self.pop();
-        matches!(result, Some(SatResult::Unsat))
+        if !matches!(result, Some(SatResult::Unsat)) {
+            return false;
+        }
+        self.certify_named_formulas(core.as_deref(), &named) != Some(false)
     }
 
     /// Prove cross/intra collection refinements and assert the derived
@@ -1204,30 +1252,50 @@ impl Engine<'_> {
         (a_in_b, b_in_a)
     }
 
-    /// Certify a disjointness UNSAT through the independent exact-rational
-    /// checker (proof-system v2 Phase 4). `None` = certification off;
-    /// `Some(true)` = a replay-checked Farkas certificate verifies the core
-    /// (or the full frame when no core is available); `Some(false)` = the
-    /// proof could not be certified — the caller reports CANDIDATE DISJOINT.
-    /// Certifying the CORE ONLY is sound: UNSAT of a subset implies UNSAT of
-    /// the asserted superset. A core name that maps to no known formula
-    /// fails closed.
-    /// Under `combine`, a certified proof additionally returns its portable
-    /// payload: the named formula set in the exact order handed to the
-    /// certifier, plus the certificate — everything a [`adl_certify::CombineBundle`]
-    /// needs to replay offline.
-    fn certify_disjoint(
-        &mut self,
-        core: Option<&[AssertName]>,
-        c1: &RegionCtx,
-        c2: &RegionCtx,
-    ) -> (Option<bool>, Option<(Vec<(String, QFormula)>, adl_certify::Certificate)>) {
+    /// Shared fail-closed certification of a claimed-UNSAT formula set.
+    /// `None` = certification off; `Some(true)` + optional certificate =
+    /// replay-checked Farkas proof; `Some(false)` = uncertified.
+    fn certify_unsat_core(
+        &self,
+        formulas: &[QFormula],
+    ) -> (Option<bool>, Option<adl_certify::Certificate>) {
         if !self.certify {
             return (None, None);
         }
+        match adl_certify::certify_unsat(formulas, &adl_certify::Budget::default()) {
+            adl_certify::CertifyResult::Certified(cert) => (Some(true), Some(cert)),
+            adl_certify::CertifyResult::Uncertified(_) => (Some(false), None),
+        }
+    }
+
+    /// Resolve a solver unsat core against a named formula map and certify
+    /// **only those formulas**. Fail-closed when the core is missing/empty
+    /// or names an unknown assert — never dump the full axiom frame into
+    /// Farkas search (that path was a multi-minute hang on cms-scale bins).
+    /// Certifying a core subset is sound: UNSAT of a subset ⇒ UNSAT of the
+    /// asserted superset.
+    fn certify_named_formulas(
+        &self,
+        core: Option<&[AssertName]>,
+        extra: &[(AssertName, QFormula)],
+    ) -> Option<bool> {
+        self.certify_named_formulas_payload(core, extra).0
+    }
+
+    fn certify_named_formulas_payload(
+        &self,
+        core: Option<&[AssertName]>,
+        extra: &[(AssertName, QFormula)],
+    ) -> Certified {
+        if !self.certify {
+            return (None, None);
+        }
+        let Some(names) = core.filter(|n| !n.is_empty()) else {
+            return (Some(false), None);
+        };
         let mut fmap: BTreeMap<AssertName, QFormula> = BTreeMap::new();
-        for (n, o) in c1.overs.iter().chain(c2.overs.iter()) {
-            fmap.insert(n.clone(), o.qformula().clone());
+        for (n, f) in extra {
+            fmap.insert(n.clone(), f.clone());
         }
         for (i, inst) in self.axioms.instances.iter().enumerate() {
             fmap.insert(AssertName::new(format!("AX{i}")), inst.formula.clone());
@@ -1235,39 +1303,58 @@ impl Engine<'_> {
         for (n, f) in &self.recon_facts {
             fmap.insert(n.clone(), f.clone());
         }
-        let named: Vec<(AssertName, QFormula)> = match core {
-            Some(names) if !names.is_empty() => {
-                let mut v = Vec::with_capacity(names.len());
-                for n in names {
-                    match fmap.get(n) {
-                        Some(f) => v.push((n.clone(), f.clone())),
-                        None => return (Some(false), None),
-                    }
-                }
-                v
+        let mut named = Vec::with_capacity(names.len());
+        for n in names {
+            match fmap.get(n) {
+                Some(f) => named.push((n.clone(), f.clone())),
+                None => return (Some(false), None),
             }
-            _ => fmap.into_iter().collect(),
-        };
+        }
         let formulas: Vec<QFormula> = named.iter().map(|(_, f)| f.clone()).collect();
-        match adl_certify::certify_unsat(&formulas, &adl_certify::Budget::default()) {
-            adl_certify::CertifyResult::Certified(cert) => {
+        let (flag, cert) = self.certify_unsat_core(&formulas);
+        match (flag, cert) {
+            (Some(true), Some(cert)) => {
                 let payload = self.combine.then(|| {
                     let asserts = named.into_iter().map(|(n, f)| (n.0, f)).collect();
                     (asserts, cert)
                 });
                 (Some(true), payload)
             }
-            adl_certify::CertifyResult::Uncertified(_) => (Some(false), None),
+            (flag, _) => (flag, None),
         }
     }
 
-    /// Sampling gate (proof-system v2, Phase 1): refute an UNSAT-side pair
-    /// verdict against the battery through the reference interpreter. A
-    /// sampled event the interpreter passes through both regions of a
-    /// "proven disjoint" pair — or through `sub` but not `sup` of a proven
-    /// subset — is an internal contradiction: some encoder/axiom fact is
-    /// false on a real event. The verdict demotes (fail closed) and a bug
-    /// diagnostic is filed; interpreter errors carry no information.
+    /// Certify a named UNSAT core drawn from `regions`' overs plus
+    /// axioms/recon facts. Missing/empty cores fail closed (Candidate),
+    /// never fall back to certifying the entire frame.
+    fn certify_named_unsat(
+        &self,
+        core: Option<&[AssertName]>,
+        regions: &[&RegionCtx],
+    ) -> Certified {
+        let mut extra = Vec::new();
+        for ctx in regions {
+            for (n, o) in &ctx.overs {
+                extra.push((n.clone(), o.qformula().clone()));
+            }
+        }
+        self.certify_named_formulas_payload(core, &extra)
+    }
+
+    /// Pairwise disjointness wrapper: certify the two-region named core and
+    /// optionally emit a combine payload.
+    fn certify_disjoint(
+        &self,
+        core: Option<&[AssertName]>,
+        c1: &RegionCtx,
+        c2: &RegionCtx,
+    ) -> Certified {
+        self.certify_named_unsat(core, &[c1, c2])
+    }
+
+    /// Sampling gate + adversarial refute gate for an UNSAT-side pair.
+    /// Sampling runs first (fixed battery); then the cut-anchored refute
+    /// search. Either hit demotes fail-closed and files a diagnostic.
     #[allow(clippy::too_many_arguments)]
     fn gate_pair(
         &self,
@@ -1276,18 +1363,16 @@ impl Engine<'_> {
         ib: usize,
         interp: &Interp<'_>,
         internal: &mut Vec<String>,
-        refutations: &mut usize,
+        sample_refutations: &mut usize,
+        refute_refutations: &mut usize,
     ) {
-        if self.gate_events.is_empty() {
-            return;
-        }
         let memb = |idx: usize, e: &adl_interp::Event| {
             interp.eval_region_membership_idx(idx, e).ok()
         };
-        if report.kind == VerdictKind::ProvenDisjoint {
+        if report.kind == VerdictKind::ProvenDisjoint && !self.gate_events.is_empty() {
             for e in &self.gate_events {
                 if memb(ia, e) == Some(true) && memb(ib, e) == Some(true) {
-                    *refutations += 1;
+                    *sample_refutations += 1;
                     internal.push(format!(
                         "SAMPLING GATE refuted PROVEN DISJOINT for {} vs {}: a sampled \
                          event passes both regions — an encoder/axiom fact is false on \
@@ -1308,30 +1393,77 @@ impl Engine<'_> {
                 }
             }
         }
-        // Subset claims do not set `certified` (certification is wired only
-        // into the pairwise-disjointness path), so there is no G2-style flag
-        // leak on withdrawal — only the boolean claims need clearing.
-        let mut gate_subset = |sub: usize, sup: usize, flag: &mut bool, label: &str| {
-            if !*flag {
-                return;
-            }
-            for e in &self.gate_events {
-                if memb(sub, e) == Some(true) && memb(sup, e) == Some(false) {
-                    *refutations += 1;
+        if report.kind == VerdictKind::ProvenDisjoint
+            && crate::refute::search_shared_membership(interp, ia, ib, &self.refute_probes)
+                .is_some()
+        {
+            *refute_refutations += 1;
+            internal.push(format!(
+                "REFUTE GATE refuted PROVEN DISJOINT for {} vs {}: an adversarial \
+                 probe event passes both regions — an encoder/axiom fact is false on \
+                 a real event; verdict demoted",
+                report.a, report.b
+            ));
+            report.kind = VerdictKind::PossiblyOverlapping;
+            report.reason = "the refute gate refuted a disjointness proof \
+                             (internal contradiction, reported as a bug); capped \
+                             at POSSIBLY"
+                .to_owned();
+            report.core.clear();
+            report.certified = None;
+        }
+        // Subset claims clear their boolean flags only (no pairwise
+        // `certified` field); certification already ran inside `subset`.
+        // Scoped separately so the two closures do not both borrow `internal`.
+        let (mut a_in_b, mut b_in_a) = (report.subset_a_in_b, report.subset_b_in_a);
+        {
+            let mut sample_subset = |sub: usize, sup: usize, flag: &mut bool, label: &str| {
+                if !*flag || self.gate_events.is_empty() {
+                    return;
+                }
+                for e in &self.gate_events {
+                    if memb(sub, e) == Some(true) && memb(sup, e) == Some(false) {
+                        *sample_refutations += 1;
+                        *flag = false;
+                        internal.push(format!(
+                            "SAMPLING GATE refuted PROVEN SUBSET ({label}) for {} vs {}: a \
+                             sampled event is in the subset region but not the superset; \
+                             claim withdrawn",
+                            report.a, report.b
+                        ));
+                        break;
+                    }
+                }
+            };
+            sample_subset(ia, ib, &mut a_in_b, "a within b");
+            sample_subset(ib, ia, &mut b_in_a, "b within a");
+        }
+        {
+            let mut refute_subset = |sub: usize, sup: usize, flag: &mut bool, label: &str| {
+                if !*flag {
+                    return;
+                }
+                if crate::refute::search_subset_counterexample(
+                    interp,
+                    sub,
+                    sup,
+                    &self.refute_probes,
+                )
+                .is_some()
+                {
+                    *refute_refutations += 1;
                     *flag = false;
                     internal.push(format!(
-                        "SAMPLING GATE refuted PROVEN SUBSET ({label}) for {} vs {}: a \
-                         sampled event is in the subset region but not the superset; \
+                        "REFUTE GATE refuted PROVEN SUBSET ({label}) for {} vs {}: an \
+                         adversarial probe is in the subset region but not the superset; \
                          claim withdrawn",
                         report.a, report.b
                     ));
-                    break;
                 }
-            }
-        };
-        let (mut a_in_b, mut b_in_a) = (report.subset_a_in_b, report.subset_b_in_a);
-        gate_subset(ia, ib, &mut a_in_b, "a within b");
-        gate_subset(ib, ia, &mut b_in_a, "b within a");
+            };
+            refute_subset(ia, ib, &mut a_in_b, "a within b");
+            refute_subset(ib, ia, &mut b_in_a, "b within a");
+        }
         report.subset_a_in_b = a_in_b;
         report.subset_b_in_a = b_in_a;
     }
@@ -1356,6 +1488,27 @@ impl Engine<'_> {
                 ));
                 return true;
             }
+        }
+        false
+    }
+
+    /// Adversarial refute gate for a proven/candidate-empty region.
+    fn refute_empty(
+        &self,
+        idx: usize,
+        interp: &Interp<'_>,
+        internal: &mut Vec<String>,
+        refutations: &mut usize,
+    ) -> bool {
+        if crate::refute::search_membership(interp, idx, &self.refute_probes).is_some() {
+            *refutations += 1;
+            internal.push(format!(
+                "REFUTE GATE refuted REGION EMPTY for {}: an adversarial probe is a \
+                 member — an encoder/axiom fact is false on a real event; claim \
+                 withdrawn",
+                self.hir.symbols.display(self.hir.regions[idx].name)
+            ));
+            return true;
         }
         false
     }
@@ -1435,19 +1588,42 @@ impl Engine<'_> {
     }
 
     /// `UNSAT(Ax ∧ R⁺ ∧ Bᵢ⁺ ∧ Bⱼ⁺)` ⇒ bins i, j disjoint within R.
+    /// Under `--certify`, an uncertified solver UNSAT is not counted as proven.
     fn bins_disjoint(&mut self, region_ctx: &RegionCtx, bi: &Over, bj: &Over) -> bool {
         if self.solver.is_some() {
             self.push();
-            self.assert_overs(&region_ctx.overs, false);
+            // Named region overs + bin atoms → core-scoped certification.
+            self.assert_overs(&region_ctx.overs, true);
+            let bi_name = AssertName::new("QBINI");
+            let bj_name = AssertName::new("QBINJ");
+            let bi_f = bi.qformula().clone();
+            let bj_f = bj.qformula().clone();
             if let Some(s) = self.solver.as_deref_mut() {
-                s.assert(bi.qformula(), None);
-                s.assert(bj.qformula(), None);
+                s.assert(&bi_f, Some(bi_name.clone()));
+                s.assert(&bj_f, Some(bj_name.clone()));
             }
             let r = self.check(self.timeout);
+            let core = matches!(r, Some(SatResult::Unsat))
+                .then(|| {
+                    self.solver
+                        .as_deref_mut()
+                        .and_then(adl_solver::Solver::unsat_core)
+                })
+                .flatten();
             self.pop();
-            return matches!(r, Some(SatResult::Unsat));
+            if !matches!(r, Some(SatResult::Unsat)) {
+                return false;
+            }
+            let mut extra: Vec<(AssertName, QFormula)> = region_ctx
+                .overs
+                .iter()
+                .map(|(n, o)| (n.clone(), o.qformula().clone()))
+                .collect();
+            extra.push((bi_name, bi_f));
+            extra.push((bj_name, bj_f));
+            return self.certify_named_formulas(core.as_deref(), &extra) != Some(false);
         }
-        // No-solver fallback: interval spine of (R ∧ Bi) vs (R ∧ Bj).
+        // No-solver / interval fallback: no core to certify.
         let mut a = region_ctx.intervals.clone();
         a.add_over(bi);
         let mut b = region_ctx.intervals.clone();
@@ -1456,7 +1632,8 @@ impl Engine<'_> {
     }
 
     /// `UNSAT(Ax ∧ R⁺ ∧ ⋀ᵢ ¬(Bᵢ⁻))` ⇒ the bins cover the region; a SAT
-    /// answer yields the gap witness (SPEC_ANALYSIS §5).
+    /// answer yields the gap witness (SPEC_ANALYSIS §5). Under `--certify`,
+    /// an uncertified solver UNSAT is reported as [`CoverageStatus::NotProven`].
     fn bin_coverage(
         &mut self,
         set: &BinSetEnc,
@@ -1467,15 +1644,33 @@ impl Engine<'_> {
             return (CoverageStatus::Unknown, Vec::new());
         }
         self.push();
-        self.assert_overs(&region_ctx.overs, false);
+        self.assert_overs(&region_ctx.overs, true);
+        let mut extra: Vec<(AssertName, QFormula)> = region_ctx
+            .overs
+            .iter()
+            .map(|(n, o)| (n.clone(), o.qformula().clone()))
+            .collect();
         if let Some(s) = self.solver.as_deref_mut() {
-            for u in unders {
-                s.assert(&u.qformula().clone().not(), None);
+            for (k, u) in unders.iter().enumerate() {
+                let name = AssertName::new(format!("QBINNEG{k}"));
+                let neg = u.qformula().clone().not();
+                s.assert(&neg, Some(name.clone()));
+                extra.push((name, neg));
             }
         }
         let result = self.check(self.timeout);
         let out = match result {
-            Some(SatResult::Unsat) => (CoverageStatus::Proven, Vec::new()),
+            Some(SatResult::Unsat) => {
+                let core = self
+                    .solver
+                    .as_deref_mut()
+                    .and_then(adl_solver::Solver::unsat_core);
+                if self.certify_named_formulas(core.as_deref(), &extra) == Some(false) {
+                    (CoverageStatus::NotProven, Vec::new())
+                } else {
+                    (CoverageStatus::Proven, Vec::new())
+                }
+            }
             Some(SatResult::Sat) => {
                 let mut bin_qs = BTreeSet::new();
                 for f in &set.bins {
@@ -1527,7 +1722,7 @@ fn validated_witness_values(
     let value_of = |q: QuantityId| -> Option<f64> {
         match interp.eval_quantity(q, &event) {
             Ok(adl_interp::NumOutcome::Value(v)) => Some(v),
-            _ => model.get(q),
+            _ => model.get_f64(q),
         }
     };
     let mut rows: Vec<WitnessValue> = Vec::new();
@@ -1566,7 +1761,7 @@ fn witness_values(hir: &Hir, model: &Model, mentioned: &BTreeSet<QuantityId>) ->
     let mut rows: Vec<WitnessValue> = Vec::new();
     let mut listed: BTreeSet<QuantityId> = BTreeSet::new();
     for &q in mentioned {
-        if let Some(v) = model.get(q)
+        if let Some(v) = model.get_f64(q)
             && listed.insert(q)
         {
             rows.push(WitnessValue {
@@ -1580,7 +1775,7 @@ fn witness_values(hir: &Hir, model: &Model, mentioned: &BTreeSet<QuantityId>) ->
         if let Quantity::ElemProp { coll, .. } = hir.table.quantity(q)
             && let Some(sq) = lookup_size(hir, *coll)
             && !listed.contains(&sq)
-            && let Some(v) = model.get(sq)
+            && let Some(v) = model.get_f64(sq)
         {
             listed.insert(sq);
             rows.push(WitnessValue {
@@ -1663,6 +1858,8 @@ mod reconcile_solver_tests {
             spawn_failures: 0,
             solver_errors: 0,
             gate_events: Vec::new(),
+            refute_probes: Vec::new(),
+            refute_gate: false,
             certify: false,
             combine: false,
             recon_ledger: Vec::new(),
@@ -1810,6 +2007,8 @@ mod sampling_gate_tests {
             spawn_failures: 0,
             solver_errors: 0,
             gate_events,
+            refute_probes: Vec::new(),
+            refute_gate: false,
             certify: false,
             combine: false,
             recon_ledger: Vec::new(),
@@ -1880,6 +2079,8 @@ mod sampling_gate_tests {
             spawn_failures: 0,
             solver_errors: 0,
             gate_events: adl_interp::sample::battery(&ext, 64),
+            refute_probes: Vec::new(),
+            refute_gate: false,
             certify: false,
             combine: false,
             recon_ledger: Vec::new(),
@@ -1916,6 +2117,8 @@ mod sampling_gate_tests {
             spawn_failures: 0,
             solver_errors: 0,
             gate_events,
+            refute_probes: Vec::new(),
+            refute_gate: false,
             certify: false,
             combine: false,
             recon_ledger: Vec::new(),
@@ -1943,17 +2146,19 @@ mod sampling_gate_tests {
         };
         let interp = Interp::new(&hir, &ext);
         let mut internal = Vec::new();
-        let mut refutations = 0;
+        let mut sample_refutations = 0;
+        let mut refute_refutations = 0;
         engine.gate_pair(
             &mut report,
             unit.regions[0].idx,
             unit.regions[1].idx,
             &interp,
             &mut internal,
-            &mut refutations,
+            &mut sample_refutations,
+            &mut refute_refutations,
         );
         assert_eq!(report.kind, VerdictKind::PossiblyOverlapping);
-        assert!(refutations >= 1);
+        assert!(sample_refutations >= 1);
         assert_eq!(
             report.certified, None,
             "demoted verdict must not keep certified: true"

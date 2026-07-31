@@ -171,16 +171,21 @@ pub fn catalog() -> &'static [CatalogEntry] {
         },
         CatalogEntry {
             id: AxiomId::Nneg,
-            statement: "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external \
+            statement: "pt, e, ht-family scalars, MET.pt, dR >= 0; also opaque external \
                         calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)",
             justification: "true of every physical event because these are magnitudes by \
-                            definition: pT, mass and energy of ANY particle combination are \
-                            >= 0 (m and E of a summed four-vector by the timelike/lightlike \
-                            physical-state condition), dR is a metric distance, and sqrt is \
-                            the non-negative real root. The EXACT-NAME rule keeps unrelated \
+                            definition: pT and energy of ANY particle combination are >= 0, \
+                            dR is a metric distance, and sqrt is the non-negative real root. \
+                            A `mass`/`m` EXTERNAL CALL is also covered — it is computed as \
+                            sqrt(max(0, E^2-p^2)), non-negative by construction — but the \
+                            element PROPERTY `m` is deliberately NOT: some ntuple formats \
+                            store a signed or sentinel jet mass, and the loader must accept \
+                            real files (a domain the loader cannot enforce is a domain the \
+                            axiom may not assume). The EXACT-NAME rule keeps unrelated \
                             opaque functions (bdt, aplanarity, ...) free, and excludes \
                             eta/phi-of-sum (no sign axiom)",
-            assumption: "none",
+            assumption: "the loader rejects events outside this domain \
+                         (adl-interp event::check_domain)",
         },
         CatalogEntry {
             id: AxiomId::Dphi,
@@ -505,23 +510,23 @@ struct Emit<'h> {
     ext: &'h ExtDecls,
     pt_key: String,
     nneg_prop_keys: Vec<String>,
-    tag_keys: [&'static str; 3],
     out: Vec<AxiomInstance>,
 }
 
 fn emit_round(hir: &mut Hir, ext: &ExtDecls, qs: &[QuantityId]) -> Vec<AxiomInstance> {
     let pt_key = ext.prop_canon("pt").0;
-    let nneg_prop_keys = vec![
-        ext.prop_canon("pt").0,
-        ext.prop_canon("m").0,
-        ext.prop_canon("e").0,
-    ];
+    // Element properties the loader guarantees are >= 0. Keep this list and
+    // `adl_interp::event::check_domain` in step: an axiom over a domain the
+    // loader does not enforce is a false fact on a real event. `m`/`mass` is
+    // deliberately absent (signed/sentinel jet masses exist in the wild) —
+    // the *computed* mass of a four-vector sum is still covered below, since
+    // the interpreter derives it as a non-negative root.
+    let nneg_prop_keys = vec![ext.prop_canon("pt").0, ext.prop_canon("e").0];
     let mut em = Emit {
         hir,
         ext,
         pt_key,
         nneg_prop_keys,
-        tag_keys: ["btag", "ctag", "tautag"],
         out: Vec::new(),
     };
     em.ord(qs);
@@ -793,7 +798,7 @@ impl Emit<'_> {
         }
     }
 
-    // NNEG: pt/m/e element props, ht-family scalars, MET.pt, dR >= 0;
+    // NNEG: pt/e element props, ht-family scalars, MET.pt, dR >= 0;
     // opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt
     // (case-insensitive symbol key) are magnitudes of SOME particle
     // combination, hence >= 0 regardless of the (opaque) arguments.
@@ -878,7 +883,7 @@ impl Emit<'_> {
         for &q in qs {
             let is_tag = match self.hir.table.quantity(q) {
                 Quantity::ElemProp { prop, .. } => {
-                    self.tag_keys.contains(&self.hir.table.prop_key(*prop))
+                    self.ext.is_tag_property(self.hir.table.prop_key(*prop))
                 }
                 Quantity::EventScalar(ScalarSource::Trigger(_)) => true,
                 _ => false,
@@ -1538,9 +1543,13 @@ fn clear_ratio(
         // `x / 0` is never a member (the interpreter's comparison is false).
         return Some(QFormula::False);
     }
-    // Exact clearing is only f64-faithful for ±power-of-two denominators
-    // (mirrors adl-formula::encode::ratio). Non-pow2 → drop the conjunct
-    // (sound EPRED weakening) rather than assert a too-strong predicate.
+    // Deliberately conservative: the main encoder clears any constant
+    // denominator over the rational fragment now (M4 — the interpreter's
+    // division there is exact), but EPRED does not classify its operands'
+    // Exact/Approx kind, so it keeps the ±power-of-two restriction and drops
+    // the conjunct otherwise. Dropping weakens the element predicate, which
+    // is the safe direction; widening it here would need the encoder's
+    // `is_exact_valued` and buys little.
     if !is_power_of_two_rat(&d.k) {
         return None;
     }
@@ -1559,8 +1568,8 @@ fn clear_ratio(
 }
 
 /// IEEE-exact scale factors: ±2^k (numerator or denominator a power of two,
-/// the other side 1). Used to keep EPRED ratio clearing aligned with the
-/// main encoder's f64-faithfulness gate.
+/// the other side 1). Used by EPRED's deliberately conservative ratio
+/// clearing (see [`clear_ratio`]).
 fn is_power_of_two_rat(r: &Rat) -> bool {
     if r.is_zero() {
         return false;

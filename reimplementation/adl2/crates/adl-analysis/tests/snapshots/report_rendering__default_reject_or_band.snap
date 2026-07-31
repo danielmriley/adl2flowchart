@@ -17,5 +17,6 @@ ADL2 analysis report — reject_or_band.adl (solver: <backend>)
 
 == axioms used ==
   NNEG×1
+  assuming: the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG)
 
 summary: 1 pair — 0 proven disjoint, 1 proven overlapping, 0 possibly overlapping, 0 unknown

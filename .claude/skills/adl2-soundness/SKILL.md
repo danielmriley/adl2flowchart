@@ -179,20 +179,19 @@ event was run through the interpreter. Always do this check before escalating.
 `prev` — a missing-pt element does not reset the descending chain. Do not
 "fix" this into a reset; it would weaken the ordering the axioms rely on.)
 
-## Phase 6: the exact interpreter was tried and REVERTED
+## Phase 6 / M3: rational event model + Exact eval (landed M3a/M3b)
 
-Making `adl-interp` evaluate the rational fragment exactly (to close the residual
-exact-analyzer-vs-f64-interpreter gap) was implemented and then **reverted**. It
-broke witness re-validation: z3 returns exact-rational witnesses, but they realize
-through **f64 events**, so an exact re-check rejects the rounded witness — and it
-fires inconsistently across logically-equivalent renderings (the `metamorphic`
-battery flips PROVEN ↔ POSSIBLY). It is SAT-side, downgrade-only, so it never
-made a verdict *unsound*, but it broke verdict *consistency*. True bit-exact
-parity needs a **rational event model** (event values carried as `Rat` end to
-end: JSON ingest → `Event` → eval → witness realization). That is a whole-pipeline
-change and the right home for Phase 6 if the DISJOINT-side residual ever needs
-closing (it is adversarial-only). See `docs/EXACT_RATIONAL_PLAN.md` §"Phase 6
-deferred". Do NOT re-attempt exact interpretation without the rational event model.
+The earlier Phase-6 attempt (Exact eval over f64 events) was reverted because
+witness re-validation flipped metamorphic PROVEN↔POSSIBLY. **M3a** put `Rat` in
+`Event` props/MET/scalars/triggers; **M3b** evaluates the rational fragment as
+`NumVal::Exact(Rat)` and realizes solver models as `Rat` into `Event` (no f64
+round-trip before membership). Irrationals stay `Approx(f64)`. The encoder f64
+fold gate is GONE as of M4: the encoder folds by `adl_sema::num`'s rules, the
+same code the interpreter uses, so C1–C6 / CE-14 are now PROVEN DISJOINT —
+correctly, because with both sides exact those pairs really are partitions.
+What replaced the gate: `flattens_faithfully` (exact-valued trees fold freely;
+approximate ones only through IEEE-exact steps) and `Encoder::at_edge` (an
+approximate comparison cuts at `fl(k)`, not `k`). See CE-15.
 
 ## Key regression invariant
 

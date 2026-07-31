@@ -22,7 +22,12 @@ const EVENT_SCALAR_KEYS: &[&str] = &["ht", "st", "fht", "scalarht", "delphes_sca
 /// Tag properties keep their exact surface name as identity (the TAG axiom
 /// is exact-name; merging `ctag` into `btag` via the legacy
 /// `ctag -> isBTag` mapping would be an unsound over-merge).
-const EXACT_NAME_PROPS: &[&str] = &["btag", "ctag", "tautag"];
+///
+/// This is the single list of names the `TAG` axiom constrains to `{0,1}`
+/// AND the single list the event loader enforces that domain on — the axiom
+/// is only true because the loader refuses everything else, so the two must
+/// never be separate lists. Read it through [`ExtDecls::is_tag_property`].
+pub const EXACT_NAME_PROPS: &[&str] = &["btag", "ctag", "tautag"];
 
 /// One canonicalized property: identity key + preferred display spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +180,14 @@ impl ExtDecls {
     pub fn is_met_family(&self, name: &str) -> bool {
         self.base_collection(name)
             .is_some_and(|c| c.eq_ignore_ascii_case(MET_FAMILY_KEY))
+    }
+
+    /// Is `canon_key` one of the boolean tag properties the `TAG` axiom
+    /// constrains to `{0, 1}` (exact-name rule — `btagDeepB` and other
+    /// continuous discriminants are deliberately excluded)?
+    #[must_use]
+    pub fn is_tag_property(&self, canon_key: &str) -> bool {
+        EXACT_NAME_PROPS.contains(&canon_key)
     }
 
     /// Is `name` a per-event scalar when used as a bare value?

@@ -11,7 +11,7 @@
 
 use crate::{AssertName, Model, QSort, SatResult, Solver};
 use adl_formula::{LinAtom, QFormula, Rel};
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -409,18 +409,23 @@ fn parse_sexp(toks: &[String], pos: &mut usize) -> Option<Sexp> {
     }
 }
 
-fn sexp_num(s: &Sexp) -> Option<f64> {
+/// Parse an SMT-LIB2 numeral / `(/ n d)` / `(- x)` into an exact [`Rat`].
+/// Decimal atoms use shortest-decimal semantics (`5.0 → 5`, `0.3 → 3/10`).
+fn sexp_rat(s: &Sexp) -> Option<Rat> {
     match s {
-        Sexp::Atom(a) => a.parse::<f64>().ok(),
+        Sexp::Atom(a) => {
+            if let Ok(n) = a.parse::<i64>() {
+                return Some(Rat::from_i64(n));
+            }
+            // `3.0` / `1.5` / bare decimals → shortest-decimal Rat.
+            a.parse::<f64>().ok().and_then(Rat::from_decimal_f64)
+        }
         Sexp::List(items) => match items.as_slice() {
-            [Sexp::Atom(op), x] if op == "-" => Some(-sexp_num(x)?),
+            [Sexp::Atom(op), x] if op == "-" => Some(-&sexp_rat(x)?),
             [Sexp::Atom(op), a, b] if op == "/" => {
-                let d = sexp_num(b)?;
-                if d == 0.0 {
-                    None
-                } else {
-                    Some(sexp_num(a)? / d)
-                }
+                let num = sexp_rat(a)?;
+                let den = sexp_rat(b)?;
+                num.checked_div(&den)
             }
             _ => None,
         },
@@ -448,7 +453,7 @@ fn after_answer_line<'a>(output: &'a str, answer: &str) -> Option<&'a str> {
 
 /// Parse `((q0 v0) (q1 v1) …)` from a `(get-value …)` response (the text
 /// after the check-sat answer line).
-fn parse_get_value(output: &str) -> Option<Vec<(String, f64)>> {
+fn parse_get_value(output: &str) -> Option<Vec<(String, Rat)>> {
     let after = after_answer_line(output, "sat")?;
     let open = after.find('(')?;
     let toks = tokenize(&after[open..]);
@@ -461,7 +466,7 @@ fn parse_get_value(output: &str) -> Option<Vec<(String, f64)>> {
         if let Sexp::List(kv) = p
             && kv.len() == 2
             && let Sexp::Atom(name) = &kv[0]
-            && let Some(v) = sexp_num(&kv[1])
+            && let Some(v) = sexp_rat(&kv[1])
         {
             out.push((name.clone(), v));
         }
@@ -480,10 +485,10 @@ mod tests {
         assert_eq!(
             vals,
             vec![
-                ("q0".to_owned(), 1.5),
-                ("q1".to_owned(), -0.25),
-                ("q2".to_owned(), 5.0),
-                ("q3".to_owned(), -2.0),
+                ("q0".to_owned(), Rat::from_ratio(3, 2).unwrap()),
+                ("q1".to_owned(), Rat::from_ratio(-1, 4).unwrap()),
+                ("q2".to_owned(), Rat::from_i64(5)),
+                ("q3".to_owned(), Rat::from_i64(-2)),
             ]
         );
     }

@@ -28,7 +28,7 @@ pub use native::NativeSolver;
 pub use subprocess::SubprocessSolver;
 
 use adl_formula::QFormula;
-use adl_sema::QuantityId;
+use adl_sema::{QuantityId, Rat};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -84,26 +84,32 @@ pub enum QSort {
     Int,
 }
 
-/// A satisfying assignment, keyed by quantity. Values for `Int`-sorted
-/// quantities are integral `f64`s.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// A satisfying assignment, keyed by quantity. Values are exact rationals
+/// ([`Rat`]); `Int`-sorted quantities are integral `Rat`s.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
-    values: BTreeMap<QuantityId, f64>,
+    values: BTreeMap<QuantityId, Rat>,
 }
 
 impl Model {
     #[must_use]
-    pub fn from_values(values: BTreeMap<QuantityId, f64>) -> Self {
+    pub fn from_values(values: BTreeMap<QuantityId, Rat>) -> Self {
         Self { values }
     }
 
     #[must_use]
-    pub fn get(&self, q: QuantityId) -> Option<f64> {
-        self.values.get(&q).copied()
+    pub fn get(&self, q: QuantityId) -> Option<Rat> {
+        self.values.get(&q).cloned()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (QuantityId, f64)> + '_ {
-        self.values.iter().map(|(&q, &v)| (q, v))
+    /// Lossy f64 view for display / angular realization.
+    #[must_use]
+    pub fn get_f64(&self, q: QuantityId) -> Option<f64> {
+        self.get(q).map(|r| r.to_f64())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (QuantityId, &Rat)> + '_ {
+        self.values.iter().map(|(&q, v)| (q, v))
     }
 
     #[must_use]

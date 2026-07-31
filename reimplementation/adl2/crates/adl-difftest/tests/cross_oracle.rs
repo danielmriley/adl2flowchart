@@ -112,6 +112,7 @@ fn opts() -> AnalysisOptions {
         timeout: Duration::from_secs(20),
         reconcile: true,
         sample_gate: 64,
+        refute_gate: true,
         certify: true,
         ..AnalysisOptions::default()
     }
@@ -834,7 +835,8 @@ fn event_json(e: &Event) -> String {
             .map(|o| {
                 Value::Object(
                     o.properties()
-                        .map(|(k, v)| (k.to_owned(), json_num(v)))
+                        // M3a: Rat → f64 at JSON display edge
+                        .map(|(k, v)| (k.to_owned(), json_num(v.to_f64())))
                         .collect(),
                 )
             })
@@ -844,11 +846,16 @@ fn event_json(e: &Event) -> String {
     if !e.met.is_empty() {
         root.insert(
             "MET".into(),
-            Value::Object(e.met.iter().map(|(k, &v)| (k.clone(), json_num(v))).collect()),
+            Value::Object(
+                e.met
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_num(v.to_f64())))
+                    .collect(),
+            ),
         );
     }
-    for (k, &v) in &e.scalars {
-        root.insert(k.clone(), json_num(v));
+    for (k, v) in &e.scalars {
+        root.insert(k.clone(), json_num(v.to_f64()));
     }
     if !e.triggers.is_empty() {
         root.insert(
@@ -856,7 +863,7 @@ fn event_json(e: &Event) -> String {
             Value::Object(
                 e.triggers
                     .iter()
-                    .map(|(k, &v)| (k.clone(), json_num(v)))
+                    .map(|(k, v)| (k.clone(), json_num(v.to_f64())))
                     .collect(),
             ),
         );

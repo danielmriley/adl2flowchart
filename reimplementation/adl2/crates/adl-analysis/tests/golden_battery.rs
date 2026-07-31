@@ -34,6 +34,7 @@ fn run_with(file: &str, solver: SolverChoice) -> Report {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        refute_gate: true,
         certify: true,
         combine: false,
     };
@@ -244,19 +245,23 @@ fn tag_01_axiom_proves_threshold_complement_disjoint() {
     );
 }
 
-/// `(MET+100)/MET < 1.5` vs `MET < 150` used to prove DISJOINT via exact
-/// denominator clearing (`L/D ⋈ c` ⇒ `L ⋈ c·D`). Under the strict
-/// f64-exactness rule (AUDIT_2026-07-28 §12 — ratio clearing is the same
-/// half-ulp hazard class as C4/C5), that cross-form fold is refused:
-/// completeness sacrifice, not a new unsoundness. Pin POSSIBLY.
+/// `(MET+100)/MET < 1.5` ⇔ `MET > 200` (given `MET >= 0`, which NNEG asserts
+/// and the loader enforces), so it is disjoint from `MET < 150`.
+///
+/// The two-branch clearing `L/D ⋈ c ⇒ L ⋈ c·D` is exact-rational algebra,
+/// which reproduces the interpreter only if the interpreter's own division is
+/// exact. It rounded before M3, so this proof had to be given up (the same
+/// half-ulp hazard class as C4/C5); MET and the literals are exact rationals
+/// now, so the proof is sound again. An APPROXIMATE ratio (`dR/HT`) still
+/// refuses to clear — see `approx_ratio_does_not_clear` in adl-formula.
 #[test]
-fn ratio_cut_gives_up_denominator_clearing() {
+fn ratio_cut_clears_the_denominator_exactly() {
     let r = run("ratio_met.adl");
     let p = pair(&r, "SR_ratio", "SR_lowmet");
     assert_eq!(
         p.kind,
-        VerdictKind::PossiblyOverlapping,
-        "strict f64 guard refuses ratio clearing; got {:?} ({})",
+        VerdictKind::ProvenDisjoint,
+        "exact ratio clearing; got {:?} ({})",
         p.kind,
         p.reason
     );
@@ -495,7 +500,7 @@ fn json_export_carries_the_verdicts() {
     let r = run("disjoint_pt.adl");
     let json = r.to_json();
     assert!(json.contains("\"proven_disjoint\""), "{json}");
-    assert!(json.contains("\"schema_version\": 3"), "{json}");
+    assert!(json.contains("\"schema_version\": 4"), "{json}");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert!(parsed["pairwise"].is_array());
 }

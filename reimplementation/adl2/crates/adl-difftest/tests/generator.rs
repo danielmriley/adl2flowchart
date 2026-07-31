@@ -35,29 +35,34 @@ fn physical_ranges_hold() {
         for (name, objs) in &event.collections {
             let mut prev = f64::INFINITY;
             for obj in objs {
-                let pt_v = obj.get(&pt).expect("pt present");
+                // M3a: Event props are Rat; range checks use to_f64 at the edge.
+                let pt_v = obj.get(&pt).expect("pt present").to_f64();
                 assert!(pt_v >= 0.0, "{name}: pt {pt_v} < 0");
                 assert!(pt_v <= prev, "{name}: not pT-descending");
                 prev = pt_v;
-                let eta_v = obj.get(&eta).expect("eta present");
+                let eta_v = obj.get(&eta).expect("eta present").to_f64();
                 assert!(eta_v.abs() <= ETA_BOUND, "{name}: |eta| {eta_v} unbounded");
-                let phi_v = obj.get(&phi).expect("phi present");
+                let phi_v = obj.get(&phi).expect("phi present").to_f64();
                 assert!(
                     (-std::f64::consts::PI..=std::f64::consts::PI).contains(&phi_v),
                     "{name}: phi {phi_v} out of range"
                 );
-                assert!(obj.get(&m).expect("m present") >= 0.0, "{name}: m < 0");
+                assert!(
+                    obj.get(&m).expect("m present").to_f64() >= 0.0,
+                    "{name}: m < 0"
+                );
                 for tag in tags {
                     if let Some(t) = obj.get(tag) {
-                        assert!(t == 0.0 || t == 1.0, "{name}: tag {tag} = {t}");
+                        let tv = t.to_f64();
+                        assert!(tv == 0.0 || tv == 1.0, "{name}: tag {tag} = {tv}");
                     }
                 }
             }
         }
-        assert!(event.met[&pt] >= 0.0, "MET.pt < 0");
-        assert!(event.scalars["ht"] >= 0.0, "HT < 0");
+        assert!(event.met[&pt].to_f64() >= 0.0, "MET.pt < 0");
+        assert!(event.scalars["ht"].to_f64() >= 0.0, "HT < 0");
         for name in TRIGGER_NAMES {
-            let flag = event.triggers[*name];
+            let flag = event.triggers[*name].to_f64();
             assert!(flag == 0.0 || flag == 1.0, "trigger {name} = {flag}");
         }
     }
@@ -69,9 +74,9 @@ fn ht_is_sum_of_jet_pts() {
     for event in toy_events(5, 50, ext()).unwrap() {
         let sum: f64 = event.collections["jet"]
             .iter()
-            .map(|o| o.get(&pt).unwrap())
+            .map(|o| o.get(&pt).unwrap().to_f64())
             .sum();
-        let ht = event.scalars["ht"];
+        let ht = event.scalars["ht"].to_f64();
         assert!((ht - sum).abs() < 1e-6, "HT {ht} != sum jet pt {sum}");
     }
 }

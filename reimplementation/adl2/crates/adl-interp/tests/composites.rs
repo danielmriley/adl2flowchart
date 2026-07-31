@@ -37,8 +37,11 @@ fn passes(adl: &str, region: &str, json: &str) -> bool {
 
 fn pts(objs: &[EventObject]) -> Vec<f64> {
     // Properties are stored under the canonical key (`pt` → `ptof`).
+    // M3b bridge: Rat stored; f64 for assertion convenience.
     let key = ext().prop_canon("pt").0;
-    objs.iter().map(|o| o.get(&key).unwrap()).collect()
+    objs.iter()
+        .map(|o| o.get(&key).unwrap().to_f64())
+        .collect()
 }
 
 /// Electrons, no cut. Events below keep them pT-descending (loader requires it).

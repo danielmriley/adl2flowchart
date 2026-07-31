@@ -198,23 +198,18 @@ impl Solver for NativeSolver {
         let mut values = BTreeMap::new();
         for (&q, (sort, var)) in &self.vars {
             let v = match (sort, var) {
-                // Prefer the exact rational: `approx_f64` goes through a
-                // truncated decimal string and can be several ulps off,
-                // which breaks bit-exact witness re-evaluation. Integer
-                // → f64 conversion is exact below 2^53 and f64 division
-                // is correctly rounded, so small rationals round-trip
-                // perfectly (dyadics exactly).
-                #[allow(clippy::cast_precision_loss)] // fallback below 2^53 is exact
-                (QSort::Real, Var::R(r)) => model.eval(r, true).map(|x| match x.as_rational() {
-                    Some((n, d)) if d != 0 && n.abs() < (1i64 << 53) && d.abs() < (1i64 << 53) => {
-                        n as f64 / d as f64
-                    }
-                    _ => x.approx_f64(),
+                // Prefer the exact rational from z3's (numer, denom); fall
+                // back to shortest-decimal of `approx_f64` only when the
+                // API cannot return a ratio (huge magnitudes).
+                (QSort::Real, Var::R(r)) => model.eval(r, true).and_then(|x| match x.as_rational()
+                {
+                    Some((n, d)) => Rat::from_ratio(n, d),
+                    None => Rat::from_decimal_f64(x.approx_f64()),
                 }),
                 (QSort::Int, Var::I(i)) => model
                     .eval(i, true)
                     .and_then(|x| x.as_i64())
-                    .map(|x| x as f64),
+                    .map(Rat::from_i64),
                 // Sort/var mismatch cannot happen by construction.
                 _ => None,
             };

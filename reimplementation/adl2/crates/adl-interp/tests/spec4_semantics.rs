@@ -50,7 +50,8 @@ fn coll_pts(adl: &str, name: &str, json: &str) -> Vec<f64> {
         .collection(name, &event(json))
         .expect("collection must materialize")
         .iter()
-        .map(|o| o.get(&pt_key).expect("pt present"))
+        // M3b bridge: Rat stored; f64 for assertion convenience.
+        .map(|o| o.get(&pt_key).expect("pt present").to_f64())
         .collect()
 }
 
@@ -86,7 +87,7 @@ fn event_collections_are_ordered_object_lists() {
     let pt = ext().prop_canon("pt").0;
     let jets: Vec<f64> = ev.collections["jet"]
         .iter()
-        .map(|o| o.get(&pt).unwrap())
+        .map(|o| o.get(&pt).unwrap().to_f64())
         .collect();
     assert_eq!(jets, vec![100.0, 50.0, 40.0, 20.0]);
 }
@@ -102,8 +103,8 @@ fn event_scalars_met_pt_phi_and_ht() {
 #[test]
 fn event_trigger_flags_are_zero_or_one() {
     let ev = event(STD);
-    assert_eq!(ev.triggers["mu_trig"], 1.0);
-    assert_eq!(ev.triggers["el_trig"], 0.0);
+    assert_eq!(ev.triggers["mu_trig"], adl_sema::Rat::one());
+    assert_eq!(ev.triggers["el_trig"], adl_sema::Rat::zero());
     let bad = adl_interp::parse_event(r#"{"triggers": {"x": 0.5}}"#, ext());
     assert!(matches!(
         bad,
@@ -166,8 +167,8 @@ fn read_jsonl_one_event_per_line() {
     let text = "{\"HT\": 10}\n\n{\"HT\": 20}\n";
     let evs = adl_interp::read_jsonl(text, ext()).unwrap();
     assert_eq!(evs.len(), 2);
-    assert_eq!(evs[0].scalars["ht"], 10.0);
-    assert_eq!(evs[1].scalars["ht"], 20.0);
+    assert_eq!(evs[0].scalars["ht"], adl_sema::Rat::from_i64(10));
+    assert_eq!(evs[1].scalars["ht"], adl_sema::Rat::from_i64(20));
 }
 
 /// PHASE0 case rule: resolution is case-insensitive — for event keys too.

@@ -1,5 +1,5 @@
-# GOLDEN R_reassoc_a R_reassoc_b POSSIBLY
-# GROUND-TRUTH: (MET+HT)+0 and MET+(HT) are equal in real arithmetic, so R_reassoc_a ((MET+HT)+HT-HT>200) and R_reassoc_b (MET+HT>180) genuinely overlap (witness MET=300,HT=50: a-form=300+50=350>200 after the +HT-HT cancels, b-form=350>180 — both pass). The analyzer does not reassociate/cancel the extra HT terms, so it soundly returns the conservative POSSIBLY.
+# GOLDEN R_reassoc_a R_reassoc_b OVERLAPPING
+# GROUND-TRUTH: (MET+HT)+HT-HT and MET+HT are equal in real arithmetic, so R_reassoc_a (MET+HT+HT-HT>200) and R_reassoc_b (MET+HT>180) genuinely overlap (witness MET=300,HT=50: a-form=350>200 after the +HT-HT cancels, b-form=350>180 — both pass). Pin was POSSIBLY while the interpreter evaluated cuts stepwise in f64: the extra HT terms did NOT cancel there, so the analyzer could not cancel them either. M3 made event arithmetic exact, so the cancellation is real and the analyzer now returns the pinned-and-validated PROVEN OVERLAPPING.
 object jets
   take Jet
   select pt > 30

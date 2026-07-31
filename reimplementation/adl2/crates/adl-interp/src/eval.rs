@@ -29,8 +29,9 @@
 use crate::event::{Event, EventObject};
 use adl_sema::{
     AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeCandidate, ElemIndex,
-    ElemPredId, ExtDecls, Fragment, HKind, HNode, Hir, HirRegionStmt, ParticleRef, PropId, Quantity,
-    QuantityArg, QuantityId, ReduceKind, ScalarSource, Symbol, SortDir, SortKey,
+    ElemPredId, ExtDecls, Fragment, HKind, HNode, Hir, HirRegionStmt, NumVal, ParticleRef, PropId,
+    Quantity, QuantityArg, QuantityId, Rat, ReduceKind, ScalarSource, Symbol, SortDir, SortKey,
+    num_max, num_min,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -174,15 +175,30 @@ pub fn assign_bin(v: f64, edges: &[f64]) -> Option<usize> {
 }
 
 type EvalResult<T> = Result<T, EvalError>;
-/// Numeric result: a finite value or a soft non-value.
-type NumRes = Result<f64, NonValue>;
 
+/// Numeric result: a finite value or a soft non-value.
+///
+/// The value model itself ([`NumVal`], [`bin_arith`], [`num_min`],
+/// [`num_max`]) lives in `adl_sema::num` because the *encoder* has to fold
+/// constants by exactly these rules — see that module's header.
+type NumRes = Result<NumVal, NonValue>;
+
+fn exact(r: Rat) -> NumRes {
+    Ok(NumVal::Exact(r))
+}
+
+fn approx(v: f64) -> NumRes {
+    NumVal::from_f64(v).ok_or(NonValue::NonFinite)
+}
+
+/// Legacy name kept for LV / irrational call sites that already speak f64.
 fn fin(v: f64) -> NumRes {
-    if v.is_finite() {
-        Ok(v)
-    } else {
-        Err(NonValue::NonFinite)
-    }
+    approx(v)
+}
+
+/// One arithmetic step, lifting the §4.4 non-value into [`NonValue`].
+fn bin_arith(op: adl_sema::ArithOp, a: NumVal, b: NumVal) -> NumRes {
+    adl_sema::bin_arith(op, a, b).ok_or(NonValue::NonFinite)
 }
 
 /// Wrap an angle difference into `[-π, π)` (PHASE0 OPEN-2: oriented
@@ -335,7 +351,7 @@ impl<'h> Interp<'h> {
     /// [`NumOutcome::NonValue`].
     pub fn eval_num(&self, node: &'h HNode, event: &Event) -> EvalResult<NumOutcome> {
         Ok(match Ev::new(self, event).num(node, None)? {
-            Ok(v) => NumOutcome::Value(v),
+            Ok(v) => NumOutcome::Value(v.to_f64()),
             Err(nv) => NumOutcome::NonValue(nv),
         })
     }
@@ -351,7 +367,7 @@ impl<'h> Interp<'h> {
     pub fn eval_quantity(&self, q: QuantityId, event: &Event) -> EvalResult<NumOutcome> {
         Ok(
             match Ev::new(self, event).quantity(q, Span::default(), None)? {
-                Ok(v) => NumOutcome::Value(v),
+                Ok(v) => NumOutcome::Value(v.to_f64()),
                 Err(nv) => NumOutcome::NonValue(nv),
             },
         )
@@ -447,11 +463,14 @@ impl<'h> Interp<'h> {
                 value: None,
                 bin: None,
             },
-            Ok(Ok(v)) => BinOutcome::Boundary {
-                label: label.clone(),
-                value: Some(v),
-                bin: assign_bin(v, &edges),
-            },
+            Ok(Ok(v)) => {
+                let f = v.to_f64();
+                BinOutcome::Boundary {
+                    label: label.clone(),
+                    value: Some(f),
+                    bin: assign_bin(f, &edges),
+                }
+            }
         }
     }
 }
@@ -461,6 +480,18 @@ fn parse_num(text: &str, span: Span) -> EvalResult<f64> {
         span,
         reason: format!("malformed numeric literal `{text}`"),
     })
+}
+
+/// Literal → exact [`Rat`] via shortest-decimal semantics (matches the
+/// analyzer's `parse_rat` / `Rat::from_decimal_f64`).
+fn parse_rat_lit(text: &str, span: Span) -> EvalResult<Rat> {
+    text.parse::<f64>()
+        .ok()
+        .and_then(Rat::from_decimal_f64)
+        .ok_or_else(|| EvalError {
+            span,
+            reason: format!("malformed numeric literal `{text}`"),
+        })
 }
 
 /// 4-vector getter for an external function name applied to a single
@@ -545,7 +576,7 @@ fn flip_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn compare(op: CmpOp, a: f64, b: f64) -> bool {
+fn compare_f64(op: CmpOp, a: f64, b: f64) -> bool {
     match op {
         CmpOp::Gt => a > b,
         CmpOp::Lt => a < b,
@@ -554,6 +585,42 @@ fn compare(op: CmpOp, a: f64, b: f64) -> bool {
         CmpOp::Eq => a == b,
         // `~=` is mapped to `!=` by sema (OPEN-4); keep the defensive arm.
         CmpOp::Ne | CmpOp::ApproxEq => a != b,
+    }
+}
+
+fn compare_rat(op: CmpOp, a: &Rat, b: &Rat) -> bool {
+    match op {
+        CmpOp::Gt => a > b,
+        CmpOp::Lt => a < b,
+        CmpOp::Ge => a >= b,
+        CmpOp::Le => a <= b,
+        CmpOp::Eq => a == b,
+        CmpOp::Ne | CmpOp::ApproxEq => a != b,
+    }
+}
+
+/// Exact vs Exact → [`Rat`] order; any Approx side converts Exact→f64 at
+/// the comparison edge (M3b).
+fn compare_num(op: CmpOp, a: &NumVal, b: &NumVal) -> bool {
+    match (a, b) {
+        (NumVal::Exact(x), NumVal::Exact(y)) => compare_rat(op, x, y),
+        _ => compare_f64(op, a.to_f64(), b.to_f64()),
+    }
+}
+
+fn band_holds(kind: BandKind, v: &NumVal, lo: &Rat, hi: &Rat) -> bool {
+    match v {
+        NumVal::Exact(x) => match kind {
+            BandKind::In => lo <= x && x <= hi,
+            BandKind::Out => x <= lo || x >= hi,
+        },
+        NumVal::Approx(x) => {
+            let (lo_f, hi_f) = (lo.to_f64(), hi.to_f64());
+            match kind {
+                BandKind::In => lo_f <= *x && *x <= hi_f,
+                BandKind::Out => *x <= lo_f || *x >= hi_f,
+            }
+        }
     }
 }
 
@@ -908,7 +975,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                     Ok(None) => match (self.num3(lhs, elem), self.num3(rhs, elem)) {
                         (Ok(Err(_)), _) | (_, Ok(Err(_))) => Tri::False,
                         (Err(e), _) | (_, Err(e)) => Tri::Unknown(e),
-                        (Ok(Ok(a)), Ok(Ok(b))) => Tri::from_bool(compare(*op, a, b)),
+                        (Ok(Ok(a)), Ok(Ok(b))) => Tri::from_bool(compare_num(*op, &a, &b)),
                     },
                 }
             }
@@ -916,18 +983,15 @@ impl<'h, 'e> Ev<'h, 'e> {
                 Err(e) => Tri::Unknown(e),
                 Ok(Err(_)) => Tri::False,
                 Ok(Ok(v)) => {
-                    let lo = match parse_num(lo, node.span) {
+                    let lo = match parse_rat_lit(lo, node.span) {
                         Ok(x) => x,
                         Err(e) => return Tri::Unknown(e),
                     };
-                    let hi = match parse_num(hi, node.span) {
+                    let hi = match parse_rat_lit(hi, node.span) {
                         Ok(x) => x,
                         Err(e) => return Tri::Unknown(e),
                     };
-                    Tri::from_bool(match kind {
-                        BandKind::In => lo <= v && v <= hi,
-                        BandKind::Out => v <= lo || v >= hi,
-                    })
+                    Tri::from_bool(band_holds(*kind, &v, &lo, &hi))
                 }
             },
             // Numeric value used as a predicate: nonzero is true; a soft
@@ -943,7 +1007,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             | HKind::ScalarMinMax { .. }
             | HKind::Binary { .. } => match self.num3(node, elem) {
                 Err(e) => Tri::Unknown(e),
-                Ok(Ok(v)) => Tri::from_bool(v != 0.0),
+                Ok(Ok(v)) => Tri::from_bool(v.is_nonzero()),
                 Ok(Err(_)) => Tri::False,
             },
             // Genuine leaves / out-of-fragment: no inner RegionPred to mask;
@@ -973,8 +1037,8 @@ impl<'h, 'e> Ev<'h, 'e> {
             return self.err(node.span, reason.clone());
         }
         match &node.kind {
-            HKind::Neg(a) => Ok(self.num3(a, elem)?.map(|v| -v)),
-            HKind::Abs(a) => Ok(self.num3(a, elem)?.map(f64::abs)),
+            HKind::Neg(a) => Ok(self.num3(a, elem)?.map(NumVal::negated)),
+            HKind::Abs(a) => Ok(self.num3(a, elem)?.map(NumVal::abs)),
             HKind::Binary { op, lhs, rhs } => {
                 // §4.4: a soft non-value is ABSORBING in arithmetic — it
                 // propagates even past a blocking (opaque) operand. Checked
@@ -987,17 +1051,10 @@ impl<'h, 'e> Ev<'h, 'e> {
                     (Err(e), _) | (_, Err(e)) => return Err(e),
                     (Ok(Ok(a)), Ok(Ok(b))) => (a, b),
                 };
-                let v = match op {
-                    adl_sema::ArithOp::Add => a + b,
-                    adl_sema::ArithOp::Sub => a - b,
-                    adl_sema::ArithOp::Mul => a * b,
-                    adl_sema::ArithOp::Div => a / b,
-                    adl_sema::ArithOp::Pow => a.powf(b),
-                };
-                Ok(fin(v))
+                Ok(bin_arith(*op, a, b))
             }
             HKind::ScalarMinMax { kind, args } => {
-                let mut acc: Option<f64> = None;
+                let mut acc: Option<NumVal> = None;
                 for a in args {
                     let v = match self.num3(a, elem)? {
                         Ok(v) => v,
@@ -1005,12 +1062,12 @@ impl<'h, 'e> Ev<'h, 'e> {
                     };
                     acc = Some(match acc {
                         None => v,
-                        Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
-                        Some(p) => p.max(v),
+                        Some(p) if matches!(kind, ReduceKind::Min) => num_min(p, v),
+                        Some(p) => num_max(p, v),
                     });
                 }
                 match acc {
-                    Some(v) => Ok(fin(v)),
+                    Some(v) => Ok(Ok(v)),
                     None => Ok(Err(NonValue::EmptyReduction { kind: kind.as_str() })),
                 }
             }
@@ -1018,7 +1075,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 Tri::True => self.num3(then, elem),
                 Tri::False => match els {
                     Some(e) => self.num3(e, elem),
-                    None => Ok(Ok(1.0)),
+                    None => Ok(exact(Rat::one())),
                 },
                 // Undecidable guard: still decidable when both branches yield
                 // the same value (or both the same kind of soft non-value), so
@@ -1038,7 +1095,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                     let then_v = self.num3(then, elem)?;
                     let else_v = match els {
                         Some(e2) => self.num3(e2, elem)?,
-                        None => Ok(1.0),
+                        None => exact(Rat::one()),
                     };
                     match (then_v, else_v) {
                         (Ok(a), Ok(b)) if a == b => Ok(Ok(a)),
@@ -1047,21 +1104,21 @@ impl<'h, 'e> Ev<'h, 'e> {
                     }
                 }
             },
-            // Boolean-valued nodes used numerically -> 1.0/0.0, three-valued.
+            // Boolean-valued nodes used numerically → Exact 1/0, three-valued.
             HKind::Not(_)
             | HKind::And(_)
             | HKind::Or(_)
             | HKind::Cmp { .. }
             | HKind::Band { .. }
             | HKind::RegionPred(_) => match self.truth3(node, elem) {
-                Tri::True => Ok(Ok(1.0)),
-                Tri::False => Ok(Ok(0.0)),
+                Tri::True => Ok(exact(Rat::one())),
+                Tri::False => Ok(exact(Rat::zero())),
                 Tri::Unknown(e) => Err(e),
             },
-            // Boolean reducer used as a number ⇒ 1.0/0.0, three-valued.
+            // Boolean reducer used as a number ⇒ Exact 1/0, three-valued.
             HKind::Reduce { kind, .. } if kind.is_boolean() => match self.truth3(node, elem) {
-                Tri::True => Ok(Ok(1.0)),
-                Tri::False => Ok(Ok(0.0)),
+                Tri::True => Ok(exact(Rat::one())),
+                Tri::False => Ok(exact(Rat::zero())),
                 Tri::Unknown(e) => Err(e),
             },
             // Numeric reducer: the Kleene fold (uses num3 on the body).
@@ -1111,7 +1168,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                     return Ok(r);
                 }
                 match (self.num(lhs, elem)?, self.num(rhs, elem)?) {
-                    (Ok(a), Ok(b)) => Ok(compare(*op, a, b)),
+                    (Ok(a), Ok(b)) => Ok(compare_num(*op, &a, &b)),
                     _ => Ok(false),
                 }
             }
@@ -1119,12 +1176,9 @@ impl<'h, 'e> Ev<'h, 'e> {
                 let Ok(v) = self.num(expr, elem)? else {
                     return Ok(false);
                 };
-                let lo = parse_num(lo, node.span)?;
-                let hi = parse_num(hi, node.span)?;
-                Ok(match kind {
-                    BandKind::In => lo <= v && v <= hi,
-                    BandKind::Out => v <= lo || v >= hi,
-                })
+                let lo = parse_rat_lit(lo, node.span)?;
+                let hi = parse_rat_lit(hi, node.span)?;
+                Ok(band_holds(*kind, &v, &lo, &hi))
             }
             // `g ? a : b` ≡ `(g∧a) ∨ (¬g∧b)`; missing branch is true.
             HKind::Ternary { guard, then, els } => {
@@ -1153,7 +1207,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             | HKind::Binary { .. } => {
                 // Numeric value used as a predicate: nonzero is true; a
                 // soft non-value fails the cut.
-                Ok(matches!(self.num(node, elem)?, Ok(v) if v != 0.0))
+                Ok(matches!(self.num(node, elem)?, Ok(v) if v.is_nonzero()))
             }
             HKind::CollProp { .. } => self.err(
                 node.span,
@@ -1172,8 +1226,8 @@ impl<'h, 'e> Ev<'h, 'e> {
             return self.err(node.span, reason.clone());
         }
         match &node.kind {
-            HKind::Num(text) => Ok(fin(parse_num(text, node.span)?)),
-            HKind::Bool(b) => Ok(Ok(f64::from(*b))),
+            HKind::Num(text) => Ok(exact(parse_rat_lit(text, node.span)?)),
+            HKind::Bool(b) => Ok(exact(if *b { Rat::one() } else { Rat::zero() })),
             HKind::Quantity(q) => self.quantity(*q, node.span, elem),
             HKind::ElemSelfProp(prop) => {
                 let Some(obj) = elem else {
@@ -1186,33 +1240,29 @@ impl<'h, 'e> Ev<'h, 'e> {
             }
             HKind::ReduceProp(prop) => self.reduce_prop(node.span, *prop),
             // A numeric reducer used as a value (`sum`/`min`/`max`). A boolean
-            // reducer used numerically is 1.0/0.0 via `truth`.
+            // reducer used numerically is Exact 1/0 via `truth`.
             HKind::Reduce { kind, coll, body, .. } if !kind.is_boolean() => {
                 self.reduce_num(*kind, *coll, body, elem)
             }
-            HKind::Reduce { .. } => Ok(Ok(f64::from(self.truth(node, elem)?))),
-            HKind::Neg(a) => Ok(self.num(a, elem)?.map(|v| -v)),
-            HKind::Abs(a) => Ok(self.num(a, elem)?.map(f64::abs)),
+            HKind::Reduce { .. } => Ok(exact(if self.truth(node, elem)? {
+                Rat::one()
+            } else {
+                Rat::zero()
+            })),
+            HKind::Neg(a) => Ok(self.num(a, elem)?.map(NumVal::negated)),
+            HKind::Abs(a) => Ok(self.num(a, elem)?.map(NumVal::abs)),
             HKind::Binary { op, lhs, rhs } => {
                 let (a, b) = match (self.num(lhs, elem)?, self.num(rhs, elem)?) {
                     (Ok(a), Ok(b)) => (a, b),
                     (Err(nv), _) | (_, Err(nv)) => return Ok(Err(nv)),
                 };
-                let v = match op {
-                    adl_sema::ArithOp::Add => a + b,
-                    adl_sema::ArithOp::Sub => a - b,
-                    adl_sema::ArithOp::Mul => a * b,
-                    // Division by zero yields a non-finite value, which
-                    // `fin` turns into the comparison-false rule (§4.4).
-                    adl_sema::ArithOp::Div => a / b,
-                    adl_sema::ArithOp::Pow => a.powf(b),
-                };
-                Ok(fin(v))
+                // Division by zero → NonFinite via checked_div (§4.4).
+                Ok(bin_arith(*op, a, b))
             }
             // Scalar n-ary min/max: fold the arg values; a missing-element arg
             // is a non-value that makes the enclosing comparison false (§4.4).
             HKind::ScalarMinMax { kind, args } => {
-                let mut acc: Option<f64> = None;
+                let mut acc: Option<NumVal> = None;
                 for a in args {
                     let v = match self.num(a, elem)? {
                         Ok(v) => v,
@@ -1220,12 +1270,12 @@ impl<'h, 'e> Ev<'h, 'e> {
                     };
                     acc = Some(match acc {
                         None => v,
-                        Some(p) if matches!(kind, ReduceKind::Min) => p.min(v),
-                        Some(p) => p.max(v),
+                        Some(p) if matches!(kind, ReduceKind::Min) => num_min(p, v),
+                        Some(p) => num_max(p, v),
                     });
                 }
                 match acc {
-                    Some(v) => Ok(fin(v)),
+                    Some(v) => Ok(Ok(v)),
                     None => Ok(Err(NonValue::EmptyReduction { kind: kind.as_str() })),
                 }
             }
@@ -1236,7 +1286,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                     match els {
                         Some(e) => self.num(e, elem),
                         // Missing branch is `true` (§4.4).
-                        None => Ok(Ok(1.0)),
+                        None => Ok(exact(Rat::one())),
                     }
                 }
             }
@@ -1245,7 +1295,11 @@ impl<'h, 'e> Ev<'h, 'e> {
             | HKind::Or(_)
             | HKind::Cmp { .. }
             | HKind::Band { .. }
-            | HKind::RegionPred(_) => Ok(Ok(f64::from(self.truth(node, elem)?))),
+            | HKind::RegionPred(_) => Ok(exact(if self.truth(node, elem)? {
+                Rat::one()
+            } else {
+                Rat::zero()
+            })),
             HKind::CollProp { .. } => self.err(
                 node.span,
                 "unindexed per-element cut at region level is ambiguous (OPEN-1 unresolved)",
@@ -1259,7 +1313,7 @@ impl<'h, 'e> Ev<'h, 'e> {
     fn object_prop(&self, obj: &EventObject, prop: PropId) -> NumRes {
         let key = self.it.hir.table.prop_key(prop);
         match obj.get(key) {
-            Some(v) => fin(v),
+            Some(v) => exact(v.clone()),
             None => Err(NonValue::MissingProperty {
                 property: self.it.hir.table.prop_display(prop).to_owned(),
             }),
@@ -1289,22 +1343,25 @@ impl<'h, 'e> Ev<'h, 'e> {
     }
 
     /// Eta/phi components of an event object (either may be absent).
+    /// Read as f64: angular ops (`dPhi`/`dEta`/`dR`) are irrational → Approx.
     fn obj_angles(&self, obj: &EventObject) -> Angles {
         Angles {
-            eta: obj.get(&self.it.eta_key),
-            phi: obj.get(&self.it.phi_key),
+            eta: obj.get(&self.it.eta_key).map(Rat::to_f64),
+            phi: obj.get(&self.it.phi_key).map(Rat::to_f64),
         }
     }
 
     /// Lift an event object to a Lorentz 4-vector from its `(pt, eta, phi,
     /// mass)`. A missing `pt`/`eta`/`phi` is a soft non-value (the
     /// comparison fails); a missing `mass` is `MissingProperty` (we never
-    /// assume massless).
+    /// assume massless). LV kinematics are irrational (trig/sinh) → f64.
     fn obj_lorentz(&self, obj: &EventObject) -> Result<LV, NonValue> {
         let need = |key: &str, name: &str| {
-            obj.get(key).ok_or_else(|| NonValue::MissingProperty {
-                property: name.to_owned(),
-            })
+            obj.get(key)
+                .map(Rat::to_f64)
+                .ok_or_else(|| NonValue::MissingProperty {
+                    property: name.to_owned(),
+                })
         };
         let pt = need(&self.it.pt_key, "pt")?;
         let eta = need(&self.it.eta_key, "eta")?;
@@ -1361,8 +1418,9 @@ impl<'h, 'e> Ev<'h, 'e> {
                 if self.event.met.is_empty() {
                     return self.err(span, "event has no MET vector");
                 }
-                let pt = self.event.met.get(&self.it.pt_key).copied();
-                let phi = self.event.met.get(&self.it.phi_key).copied();
+                // LV kinematics stay f64 (trig); MET.pt alone is Exact via EventScalar.
+                let pt = self.event.met.get(&self.it.pt_key).map(Rat::to_f64);
+                let phi = self.event.met.get(&self.it.phi_key).map(Rat::to_f64);
                 match (pt, phi) {
                     (Some(pt), Some(phi)) => Ok(Ok(LV::transverse(pt, phi))),
                     _ => Ok(Err(NonValue::MissingProperty {
@@ -1443,8 +1501,8 @@ impl<'h, 'e> Ev<'h, 'e> {
         elem: Option<&EventObject>,
     ) -> EvalResult<NumRes> {
         let objs = self.materialize(coll)?;
-        let mut acc: Option<f64> = None;
-        let mut sum = 0.0_f64;
+        let mut acc: Option<NumVal> = None;
+        let mut sum = NumVal::Exact(Rat::zero());
         let mut any = false;
         for obj in objs.iter() {
             self.reduce_stack.push(obj.clone());
@@ -1458,19 +1516,22 @@ impl<'h, 'e> Ev<'h, 'e> {
                 Err(nv) => return Ok(Err(nv)),
             };
             any = true;
-            sum += v;
+            sum = match bin_arith(adl_sema::ArithOp::Add, sum, v.clone()) {
+                Ok(s) => s,
+                Err(nv) => return Ok(Err(nv)),
+            };
             acc = Some(match (kind, acc) {
-                (ReduceKind::Min, Some(a)) => a.min(v),
-                (ReduceKind::Max, Some(a)) => a.max(v),
+                (ReduceKind::Min, Some(a)) => num_min(a, v),
+                (ReduceKind::Max, Some(a)) => num_max(a, v),
                 (_, None) => v,
                 (_, Some(a)) => a,
             });
         }
         Ok(match kind {
-            ReduceKind::Sum => fin(sum),
+            ReduceKind::Sum => Ok(sum),
             ReduceKind::Min | ReduceKind::Max => {
                 if any {
-                    fin(acc.unwrap_or(0.0))
+                    Ok(acc.unwrap_or_else(|| NumVal::Exact(Rat::zero())))
                 } else {
                     Err(NonValue::EmptyReduction {
                         kind: kind.as_str(),
@@ -1478,7 +1539,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
             }
             // Unreachable: boolean kinds never call reduce_num.
-            ReduceKind::Any | ReduceKind::All => fin(sum),
+            ReduceKind::Any | ReduceKind::All => Ok(sum),
         })
     }
 
@@ -1492,8 +1553,8 @@ impl<'h, 'e> Ev<'h, 'e> {
             Quantity::EventScalar(src) => self.event_scalar(src, span),
             Quantity::Size(coll) => {
                 let objs = self.materialize(*coll)?;
-                #[allow(clippy::cast_precision_loss)] // realistic sizes are tiny
-                Ok(Ok(objs.len() as f64))
+                let n = i64::try_from(objs.len()).unwrap_or(i64::MAX);
+                Ok(exact(Rat::from_i64(n)))
             }
             Quantity::ElemProp { coll, index, prop } => {
                 let (index, coll, prop) = (*index, *coll, *prop);
@@ -1530,12 +1591,11 @@ impl<'h, 'e> Ev<'h, 'e> {
                 {
                     let arg = arg.clone();
                     let v = match self.arg_num(&arg, span, elem)? {
-                        Ok(v) => v,
+                        Ok(v) => v.to_f64(),
                         Err(nv) => return Ok(Err(nv)),
                     };
-                    // A non-finite result (e.g. sqrt of a negative) ⇒ the
-                    // comparison-false rule via `fin`.
-                    return Ok(fin(f(v)));
+                    // Irrational → Approx; non-finite ⇒ comparison-false (§4.4).
+                    return Ok(approx(f(v)));
                 }
                 self.err(
                     span,
@@ -1553,7 +1613,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
                 let key = self.it.hir.table.prop_key(*prop);
                 match self.event.met.get(key) {
-                    Some(&v) => Ok(fin(v)),
+                    Some(v) => Ok(exact(v.clone())),
                     None => self.err(
                         span,
                         format!(
@@ -1566,7 +1626,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             ScalarSource::EventVar(sym) => {
                 let key = self.it.hir.symbols.key(*sym);
                 match self.event.scalars.get(key) {
-                    Some(&v) => Ok(fin(v)),
+                    Some(v) => Ok(exact(v.clone())),
                     None => self.err(
                         span,
                         format!(
@@ -1579,7 +1639,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             ScalarSource::Trigger(sym) => {
                 let key = self.it.hir.symbols.key(*sym);
                 match self.event.triggers.get(key) {
-                    Some(&v) => Ok(fin(v)),
+                    Some(v) => Ok(exact(v.clone())),
                     None => self.err(
                         span,
                         format!(
@@ -1599,7 +1659,7 @@ impl<'h, 'e> Ev<'h, 'e> {
         elem: Option<&EventObject>,
     ) -> EvalResult<NumRes> {
         match arg {
-            QuantityArg::Num(text) => Ok(fin(parse_num(text, span)?)),
+            QuantityArg::Num(text) => Ok(exact(parse_rat_lit(text, span)?)),
             QuantityArg::Quantity(q) => self.quantity(*q, span, elem),
             _ => self.err(span, "function argument is outside the checked fragment"),
         }
@@ -1628,22 +1688,23 @@ impl<'h, 'e> Ev<'h, 'e> {
         };
         let dphi = || -> NumRes {
             match (pa.phi, pb.phi) {
-                (Some(x), Some(y)) => fin(wrap_dphi(x - y)),
+                (Some(x), Some(y)) => approx(wrap_dphi(x - y)),
                 _ => Err(missing("phi")),
             }
         };
         let deta = || -> NumRes {
             match (pa.eta, pb.eta) {
-                (Some(x), Some(y)) => fin(x - y),
+                // dEta is a difference of (typically irrational) angles → Approx.
+                (Some(x), Some(y)) => approx(x - y),
                 _ => Err(missing("eta")),
             }
         };
         Ok(match kind {
-            // Oriented, signed, range [-π, π) (PHASE0 OPEN-2).
+            // Oriented, signed, range [-π, π) (PHASE0 OPEN-2). Irrational → Approx.
             AngKind::DPhi => dphi(),
             AngKind::DEta => deta(),
             AngKind::DR => match (deta(), dphi()) {
-                (Ok(de), Ok(dp)) => fin(de.hypot(dp)),
+                (Ok(de), Ok(dp)) => approx(de.to_f64().hypot(dp.to_f64())),
                 (Err(nv), _) | (_, Err(nv)) => Err(nv),
             },
         })
@@ -1688,7 +1749,7 @@ impl<'h, 'e> Ev<'h, 'e> {
         };
         let na = self.materialize(a)?.len();
         let nb = self.materialize(b)?.len();
-        let pair = |this: &mut Self, i: usize, j: usize| -> EvalResult<Result<f64, NonValue>> {
+        let pair = |this: &mut Self, i: usize, j: usize| -> EvalResult<NumRes> {
             let pa = ParticleRef::Elem {
                 coll: a,
                 index: ElemIndex::FromFront(i as u32),
@@ -1709,7 +1770,8 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
                 for i in 0..na {
                     for j in 0..nb {
-                        let holds = matches!(pair(self, i, j)?, Ok(d) if compare(op, d, c));
+                        let holds =
+                            matches!(pair(self, i, j)?, Ok(d) if compare_num(op, &d, &c));
                         if forall && !holds {
                             return Ok(Some(false));
                         }
@@ -1728,11 +1790,15 @@ impl<'h, 'e> Ev<'h, 'e> {
                 for i in 0..na {
                     for j in 0..nb {
                         if let Ok(d) = pair(self, i, j)? {
-                            min = min.min(d);
+                            min = min.min(d.to_f64());
                         }
                     }
                 }
-                Ok(Some(compare(op, min, c)))
+                Ok(Some(compare_num(
+                    op,
+                    &NumVal::Approx(min),
+                    &c,
+                )))
             }
         }
     }
@@ -1778,7 +1844,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 }
                 Ok(Ok(Angles {
                     eta: None, // MET has no pseudorapidity
-                    phi: self.event.met.get(&self.it.phi_key).copied(),
+                    phi: self.event.met.get(&self.it.phi_key).map(Rat::to_f64),
                 }))
             }
             // Reducer iteration element (top of the reduce stack).
@@ -1795,8 +1861,8 @@ impl<'h, 'e> Ev<'h, 'e> {
             ParticleRef::Sum(_) => Ok(match self.lorentz(p, span, elem)? {
                 Ok(lv) => match (lv.eta(), lv.phi()) {
                     (Ok(eta), Ok(phi)) => Ok(Angles {
-                        eta: Some(eta),
-                        phi: Some(phi),
+                        eta: Some(eta.to_f64()),
+                        phi: Some(phi.to_f64()),
                     }),
                     _ => Err(NonValue::NonFinite),
                 },
@@ -2021,11 +2087,14 @@ impl<'h, 'e> Ev<'h, 'e> {
         let (Ok(pt), Ok(eta), Ok(phi), Ok(mass)) = (lv.pt(), lv.eta(), lv.phi(), lv.mass()) else {
             return Ok(None);
         };
-        Ok(Some(EventObject::from_props([
-            (self.it.pt_key.clone(), pt),
-            (self.it.eta_key.clone(), eta),
-            (self.it.phi_key.clone(), phi),
-            (self.it.mass_key.clone(), mass),
+        // Composite kinematics are irrational (LV trig/hypot); store as
+        // shortest-decimal Rat so later Exact reads of candidate props are
+        // well-defined (Approx→Exact bridge at the materialization edge).
+        Ok(Some(EventObject::from_f64_props([
+            (self.it.pt_key.clone(), pt.to_f64()),
+            (self.it.eta_key.clone(), eta.to_f64()),
+            (self.it.phi_key.clone(), phi.to_f64()),
+            (self.it.mass_key.clone(), mass.to_f64()),
         ])))
     }
 

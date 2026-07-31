@@ -87,19 +87,38 @@ analyzer already treats as **opaque** — no PROVEN verdict rests on them.
    line ~880); the analyzer masks it and no PROVEN rests on it.
 3. Never round, snap, or ulp-nudge a `Rat`. Exactness is the whole contract.
 
-## Gotcha: the INTERPRETER is still f64
+## Interpreter rational fragment (M3a + M3b)
 
-`adl-interp` event values are `f64` (`Event.weight: f64`, object props `f64`,
-`validate_pt_descending` compares `f64` in `crates/adl-interp/src/event.rs`).
-Making the interpreter evaluate the rational fragment exactly was **tried and
-REVERTED**: z3 returns exact-rational witnesses that realize through f64
-events, so an exact re-check rejects the rounded witness inconsistently across
-equivalent renderings — the metamorphic battery flips PROVEN↔POSSIBLY. It is
-SAT-side downgrade-only (never unsound) but breaks verdict consistency. True
-parity needs a rational EVENT MODEL (event values as `Rat` end to end). See
-`docs/EXACT_RATIONAL_PLAN.md`. Until then: **analysis is exact, witness
-re-validation is f64** — a witness must round-trip through the f64 interpreter,
-so do not assume the interpreter sees the exact rational the solver produced.
+`adl-interp` event values are `Rat` end to end (M3a: JSONL → `Event`; M3b:
+eval + witness). Numeric eval uses `NumVal { Exact(Rat), Approx(f64) }`:
+literals / `+ - * /` / neg / abs / comparisons / bands / size / element props /
+event scalars / `MET.pt` / min-max stay `Exact` when inputs are; irrationals
+(`sqrt`, `dR`/`dPhi`/`dEta`, LV kinematics, `^`) are `Approx`. Mixed
+Exact/Approx comparisons convert Exact→f64 at the comparison edge.
+`Model` stores `Rat`; witness realization writes `Rat` into `Event` without an
+f64→`from_decimal_f64` round-trip (JSON dump for diagnostics may still show
+decimals). `Event.weight` stays `f64` (histo Sumw2).
+
+**M4 — the encoder folds by the same rules.** `NumVal` / `bin_arith` /
+`num_min` / `num_max` live in `adl_sema::num` and are used by BOTH
+`adl-interp::eval` and `adl-formula::encode` (`const_tree_num`), so a constant
+subtree folds identically on both sides — they had diverged (`0.1 + 0.2`:
+encoder `0.30000000000000004`, interpreter `3/10`) and that was a live false
+PROVEN DISJOINT. The old "exact-f64 fold gate" is gone; `flattens_faithfully`
+now allows a fold when EITHER the tree is `is_exact_valued` (the interpreter is
+exact there, so an exact fold IS its semantics — this re-enabled linear
+arithmetic over event data, non-dyadic scaling, `MET/HT` ratio clearing) or the
+tree is approximate with only IEEE-exact steps (`is_f64_exact_approx`: bare
+leaf, neg/abs, power-of-two scale).
+
+Comparison thresholds: `Encoder::at_edge`. An approximate value is compared in
+f64, so its threshold is `fl(k)` (`Rat::from_f64_exact`), NOT the decimal `k`
+— there is no f64 strictly between the two, which is exactly where they would
+otherwise disagree. An exact quantity compared against an approximate one as
+separate ATOM TERMS (`dR(a,b) > pT(j0)`) has no faithful linear encoding at all
+(the interpreter rounds the exact side): that is `Edge::Unmodelable` → Unknown.
+An approximate value interned as ONE opaque scalar is fine — it reaches the
+atom as a single f64, so only its threshold converts.
 
 ## Verify a numeric change
 

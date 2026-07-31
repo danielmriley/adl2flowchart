@@ -27,43 +27,64 @@
 //! Per PHASE0, collections must arrive **pT-descending**; the loader
 //! validates this and refuses unordered input — it never re-sorts.
 
-use adl_sema::ExtDecls;
+use adl_sema::{ExtDecls, Rat};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// One object of a collection: a bag of real-valued properties, keyed by
+/// One object of a collection: a bag of exact-rational properties, keyed by
 /// the *canonical* property identity (same canonicalization the resolver
 /// uses, so `pt`/`pT`/`Pt` in the input all land on one key).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventObject {
-    props: BTreeMap<String, f64>,
+    props: BTreeMap<String, Rat>,
 }
 
 impl EventObject {
-    /// Build a synthetic object from canonical (key, value) pairs — used by
+    /// Build a synthetic object from canonical (key, [`Rat`]) pairs — used by
     /// the interpreter to materialize composite-candidate 4-vectors
     /// (`candidate ll = l1 + l2`) as indexable elements.
     #[must_use]
-    pub fn from_props(props: impl IntoIterator<Item = (String, f64)>) -> Self {
+    pub fn from_props(props: impl IntoIterator<Item = (String, Rat)>) -> Self {
         EventObject {
             props: props.into_iter().collect(),
         }
     }
 
+    /// Build from f64 pairs via [`Rat::from_decimal_f64`] (shortest decimal).
+    /// Panics on a non-finite value — for tests / synthetic builders only.
+    #[must_use]
+    pub fn from_f64_props(props: impl IntoIterator<Item = (String, f64)>) -> Self {
+        EventObject {
+            props: props
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        Rat::from_decimal_f64(v).expect("finite f64 for EventObject"),
+                    )
+                })
+                .collect(),
+        }
+    }
+
     /// Property value by canonical key (see [`ExtDecls::prop_canon`]).
     #[must_use]
-    pub fn get(&self, canon_key: &str) -> Option<f64> {
-        self.props.get(canon_key).copied()
+    pub fn get(&self, canon_key: &str) -> Option<&Rat> {
+        self.props.get(canon_key)
     }
 
     /// All properties, in deterministic (sorted-key) order.
-    pub fn properties(&self) -> impl Iterator<Item = (&str, f64)> {
-        self.props.iter().map(|(k, &v)| (k.as_str(), v))
+    pub fn properties(&self) -> impl Iterator<Item = (&str, &Rat)> {
+        self.props.iter().map(|(k, v)| (k.as_str(), v))
     }
 }
 
 /// A deserialized event record (SPEC_LANGUAGE §4.1).
+///
+/// Numeric event values (object props, MET, scalars, triggers) are exact
+/// rationals ([`Rat`]) end to end through JSONL load. [`Event::weight`] stays
+/// `f64` for histo Sumw2 convenience (M3a blast-radius limit).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// Ordered object lists, keyed by lowercase canonical base name
@@ -71,15 +92,15 @@ pub struct Event {
     pub collections: BTreeMap<String, Vec<EventObject>>,
     /// The event MET vector's components, keyed canonically (`pt`, `phi`).
     /// Empty when the record carries no MET.
-    pub met: BTreeMap<String, f64>,
+    pub met: BTreeMap<String, Rat>,
     /// Per-event scalars (`ht`, ...), keyed by lowercase name.
-    pub scalars: BTreeMap<String, f64>,
-    /// Trigger flags ∈ {0, 1}, keyed by lowercase name.
-    pub triggers: BTreeMap<String, f64>,
+    pub scalars: BTreeMap<String, Rat>,
+    /// Trigger flags ∈ {0, 1} as [`Rat`], keyed by lowercase name.
+    pub triggers: BTreeMap<String, Rat>,
     /// The input event weight (SPEC_EVENT_PIPELINE §4): the JSONL
     /// top-level `weight` key, or what an ingestion profile mapped there
     /// (Delphes `Event.Weight`, NanoAOD `genWeight`). Absent input = 1.0.
-    /// Negative weights are legitimate (NLO generators).
+    /// Negative weights are legitimate (NLO generators). Stays `f64` (M3a).
     pub weight: f64,
 }
 
@@ -115,6 +136,17 @@ pub enum EventError {
         name: String,
         value: f64,
     },
+    /// A value outside the domain the analyzer's axioms assume for it
+    /// (see [`check_domain`]).
+    AxiomDomain {
+        line: usize,
+        /// Where the value sits, e.g. ``collection `Jet`: element 0``.
+        context: String,
+        property: String,
+        value: String,
+        /// What the domain is and which axiom rests on it.
+        requirement: &'static str,
+    },
 }
 
 impl fmt::Display for EventError {
@@ -137,6 +169,16 @@ impl fmt::Display for EventError {
                 f,
                 "line {line}: trigger flag `{name}` is {value}; flags must be 0 or 1"
             ),
+            EventError::AxiomDomain {
+                line,
+                context,
+                property,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "line {line}: {context}: property `{property}` is {value}; {requirement}"
+            ),
         }
     }
 }
@@ -150,7 +192,8 @@ impl EventError {
             EventError::Json { line, .. }
             | EventError::Shape { line, .. }
             | EventError::NotPtDescending { line, .. }
-            | EventError::BadTriggerFlag { line, .. } => *line,
+            | EventError::BadTriggerFlag { line, .. }
+            | EventError::AxiomDomain { line, .. } => *line,
         }
     }
 }
@@ -371,6 +414,63 @@ fn shape(line: usize, message: impl Into<String>) -> EventError {
     }
 }
 
+/// JSON number → [`Rat`] via shortest-decimal (`f64` parse then
+/// [`Rat::from_decimal_f64`]). Rejects non-finite values.
+fn json_rat(line: usize, ctx: impl Into<String>, val: &Value) -> Result<Rat, EventError> {
+    let ctx = ctx.into();
+    let Some(n) = val.as_f64() else {
+        return Err(shape(line, format!("{ctx} must be a number")));
+    };
+    Rat::from_decimal_f64(n).ok_or_else(|| shape(line, format!("{ctx} must be a finite number")))
+}
+
+/// Enforce the domain the analyzer's axioms assume for `key`.
+///
+/// **This is a premise, not a convenience check.** `adl-axioms` asserts
+/// `NNEG` (`pt`, `e`, `MET.pt`, HT-family scalars are `>= 0`) and `TAG`
+/// (`btag`/`ctag`/`tautag` and trigger flags are in `{0,1}`) as *facts about
+/// every event*. If the loader accepted an event outside that domain, those
+/// facts would be false on a real event and the engine would prove regions
+/// empty or disjoint that genuinely have members — with nothing downstream to
+/// catch it. Loader-accepted events must therefore be exactly the events the
+/// axioms describe. (Found live: `{"Electron":[{"pt":-5.0}]}` loaded fine and
+/// `2*pT(eles[0]) < 0` passed, while the engine proved that region empty.)
+///
+/// Deliberately **not** enforced: element `m`/`mass`. NNEG used to cover it
+/// and no longer does — see the `nneg` catalog entry in `adl-axioms`.
+fn check_domain(
+    line: usize,
+    ext: &ExtDecls,
+    context: &str,
+    display: &str,
+    canon_key: &str,
+    value: &Rat,
+) -> Result<(), EventError> {
+    let fail = |requirement| {
+        Err(EventError::AxiomDomain {
+            line,
+            context: context.to_owned(),
+            property: display.to_owned(),
+            value: format!("{}", value.to_f64()),
+            requirement,
+        })
+    };
+    let (pt_key, e_key) = (ext.prop_canon("pt").0, ext.prop_canon("e").0);
+    if (canon_key == pt_key || canon_key == e_key) && value.is_negative() {
+        return fail(
+            "pt/energy are magnitudes and the NNEG axiom asserts they are >= 0 \
+             (a negative value would make the analyzer's proofs unsound)",
+        );
+    }
+    if ext.is_tag_property(canon_key) && !(value.is_zero() || *value == Rat::one()) {
+        return fail(
+            "the TAG axiom asserts btag/ctag/tautag are in {0, 1} \
+             (use a differently-named property for a continuous discriminant)",
+        );
+    }
+    Ok(())
+}
+
 fn event_from_line(line: usize, text: &str, ext: &ExtDecls) -> Result<Event, EventError> {
     let value: Value = serde_json::from_str(text).map_err(|e| EventError::Json {
         line,
@@ -387,6 +487,7 @@ fn event_from_line(line: usize, text: &str, ext: &ExtDecls) -> Result<Event, Eve
         if lk == "triggers" {
             load_triggers(line, &mut ev, val)?;
         } else if lk == "weight" {
+            // Weight stays f64 (histo Sumw2); not part of the Rat event model.
             let Some(w) = val.as_f64() else {
                 return Err(shape(line, "`weight` must be a number"));
             };
@@ -399,7 +500,19 @@ fn event_from_line(line: usize, text: &str, ext: &ExtDecls) -> Result<Event, Eve
             load_met(line, &mut ev, key, val, ext)?;
         } else if let Value::Array(items) = val {
             load_collection(line, &mut ev, key, items, ext)?;
-        } else if let Some(n) = val.as_f64() {
+        } else if val.as_f64().is_some() {
+            let n = json_rat(line, format!("event scalar `{lk}`"), val)?;
+            // HT-family scalars are scalar sums of magnitudes (NNEG).
+            if ext.is_event_scalar(&lk) && n.is_negative() {
+                return Err(EventError::AxiomDomain {
+                    line,
+                    context: "event scalar".to_owned(),
+                    property: key.clone(),
+                    value: format!("{}", n.to_f64()),
+                    requirement: "HT-family scalars are sums of magnitudes and the NNEG \
+                                  axiom asserts they are >= 0",
+                });
+            }
             if ev.scalars.insert(lk.clone(), n).is_some() {
                 return Err(shape(
                     line,
@@ -423,17 +536,12 @@ fn load_triggers(line: usize, ev: &mut Event, val: &Value) -> Result<(), EventEr
         return Err(shape(line, "`triggers` must be an object of 0/1 flags"));
     };
     for (name, fv) in flags {
-        let Some(flag) = fv.as_f64() else {
-            return Err(shape(
-                line,
-                format!("trigger flag `{name}` must be a number"),
-            ));
-        };
-        if flag != 0.0 && flag != 1.0 {
+        let flag = json_rat(line, format!("trigger flag `{name}`"), fv)?;
+        if flag != Rat::zero() && flag != Rat::one() {
             return Err(EventError::BadTriggerFlag {
                 line,
                 name: name.clone(),
-                value: flag,
+                value: flag.to_f64(),
             });
         }
         let lk = name.to_ascii_lowercase();
@@ -460,13 +568,9 @@ fn load_met(
     match val {
         Value::Object(props) => {
             for (pk, pv) in props {
-                let Some(n) = pv.as_f64() else {
-                    return Err(shape(
-                        line,
-                        format!("MET component `{pk}` must be a number"),
-                    ));
-                };
+                let n = json_rat(line, format!("MET component `{pk}`"), pv)?;
                 let (canon, _) = ext.prop_canon(pk);
+                check_domain(line, ext, "MET", pk, &canon, &n)?;
                 if ev.met.insert(canon, n).is_some() {
                     return Err(shape(
                         line,
@@ -476,13 +580,9 @@ fn load_met(
             }
         }
         _ => {
-            let Some(n) = val.as_f64() else {
-                return Err(shape(
-                    line,
-                    format!("MET (key `{key}`) must be an object or a number"),
-                ));
-            };
+            let n = json_rat(line, format!("MET (key `{key}`)"), val)?;
             let (pt_key, _) = ext.prop_canon("pt");
+            check_domain(line, ext, "MET", "pt", &pt_key, &n)?;
             ev.met.insert(pt_key, n);
         }
     }
@@ -509,13 +609,20 @@ fn load_collection(
         };
         let mut obj = EventObject::default();
         for (pk, pv) in props {
-            let Some(n) = pv.as_f64() else {
-                return Err(shape(
-                    line,
-                    format!("collection `{key}`: element {i}: property `{pk}` must be a number"),
-                ));
-            };
+            let n = json_rat(
+                line,
+                format!("collection `{key}`: element {i}: property `{pk}`"),
+                pv,
+            )?;
             let (canon, _) = ext.prop_canon(pk);
+            check_domain(
+                line,
+                ext,
+                &format!("collection `{key}`: element {i}"),
+                pk,
+                &canon,
+                &n,
+            )?;
             if obj.props.insert(canon, n).is_some() {
                 return Err(shape(
                     line,
@@ -545,10 +652,12 @@ fn load_collection(
 /// non-increasing. Resetting on a gap would accept e.g. `[pt=10, {no pt},
 /// pt=100]`, on which `c[0].pt >= c[2].pt` (10 >= 100) is false — letting the
 /// axiom fabricate a false PROVEN DISJOINT/SUBSET.
+///
+/// Comparison is exact [`Rat`] [`Ord`] (no f64).
 fn validate_pt_descending(line: usize, ev: &Event, ext: &ExtDecls) -> Result<(), EventError> {
     let (pt_key, _) = ext.prop_canon("pt");
     for (name, objs) in &ev.collections {
-        let mut prev: Option<f64> = None;
+        let mut prev: Option<&Rat> = None;
         for (i, obj) in objs.iter().enumerate() {
             let Some(pt) = obj.get(&pt_key) else {
                 continue;
@@ -588,7 +697,10 @@ mod tests {
         let ev = parse(r#"{"Weight": -1.5, "HT": 10.0}"#).unwrap();
         assert_eq!(ev.weight, -1.5);
         assert!(!ev.scalars.contains_key("weight"));
-        assert_eq!(ev.scalars.get("ht"), Some(&10.0));
+        assert_eq!(
+            ev.scalars.get("ht"),
+            Some(&Rat::from_decimal_f64(10.0).unwrap())
+        );
     }
 
     #[test]
@@ -638,6 +750,66 @@ mod tests {
                 if collection.as_str() == "jet" && *index == 2),
             "a pt gap must not reset the running max: {err}"
         );
+    }
+
+    // AXIOM PREMISE: the loader's accepted domain must equal the domain
+    // `adl-axioms` asserts (NNEG / TAG). These pins are the other half of
+    // that contract — weaken one and the engine starts proving regions empty
+    // that have real members.
+
+    #[test]
+    fn parse_event_rejects_negative_object_pt() {
+        // Found live: this loaded, `2*pT(eles[0]) < 0` passed on it, and the
+        // engine simultaneously proved that region empty via NNEG.
+        let err = parse(
+            r#"{"Electron":[{"pt":-5.0,"eta":0.1,"phi":0.0}],"MET":{"pt":10.0,"phi":0.0}}"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, EventError::AxiomDomain { property, .. } if property == "pt"),
+            "{err}"
+        );
+        assert!(format!("{err}").contains("NNEG"), "{err}");
+    }
+
+    #[test]
+    fn parse_event_rejects_negative_met_and_ht() {
+        for line in [
+            r#"{"MET":{"pt":-1.0,"phi":0.0}}"#,
+            r#"{"MET":-1.0}"#,
+            r#"{"MET":{"pt":1.0,"phi":0.0},"HT":-3.5}"#,
+        ] {
+            let err = parse(line).unwrap_err();
+            assert!(
+                matches!(err, EventError::AxiomDomain { .. }),
+                "{line} -> {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_event_rejects_non_boolean_tag() {
+        let err = parse(r#"{"Jet":[{"pt":30.0,"btag":0.7}]}"#).unwrap_err();
+        assert!(
+            matches!(&err, EventError::AxiomDomain { property, .. } if property == "btag"),
+            "{err}"
+        );
+        // A continuous discriminant under a different name stays free (the
+        // TAG axiom's exact-name rule excludes it, so the loader must too).
+        assert!(parse(r#"{"Jet":[{"pt":30.0,"btagDeepB":0.7}]}"#).is_ok());
+    }
+
+    #[test]
+    fn parse_event_accepts_the_domain_the_axioms_do_not_constrain() {
+        // Negative eta/phi/charge are physical; a signed element mass is
+        // accepted on purpose (NNEG does not cover it — see the axiom
+        // catalog's `nneg` entry), and -0.0 is zero, not negative.
+        let ev = parse(
+            r#"{"Jet":[{"pt":30.0,"eta":-2.4,"phi":-3.0,"m":-0.001}],
+                "Electron":[{"pt":-0.0,"charge":-1.0}],"MET":{"pt":0.0,"phi":-1.0},"HT":0.0}"#,
+        )
+        .expect("real-file shapes must still load");
+        assert_eq!(ev.collections.get("jet").map(Vec::len), Some(1));
     }
 
     #[test]

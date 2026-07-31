@@ -28,6 +28,7 @@ fn cross(units: &[(&str, &str)]) -> Report {
         fail_on: FailOn::default(),
         reconcile: true,
         sample_gate: 64,
+        refute_gate: true,
         certify: true,
         combine: false,
     };

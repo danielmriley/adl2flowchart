@@ -292,6 +292,17 @@ pub(crate) fn render_default(report: &Report, color: bool) -> String {
         report.unit,
         report.solver
     );
+    // Surface only when the gate demoted something — quiet runs stay
+    // layout-stable; JSON / --explain always carry full RefuteInfo.
+    if let Some(ri) = &report.refute
+        && ri.refutations > 0
+    {
+        let _ = writeln!(
+            s,
+            "refute gate: {} probes, {} refutation(s)",
+            ri.probes, ri.refutations
+        );
+    }
 
     let empty_regions: Vec<&str> = report
         .regions
@@ -554,11 +565,20 @@ fn render_regions(report: &Report, st: &Style, s: &mut String) {
     );
     for (r, lv) in report.regions.iter().zip(&leaves) {
         let mut notes = Vec::new();
-        if r.empty == EmptyStatus::Proven {
-            notes.push(st.verdict(
-                VerdictKind::ProvenOverlapping,
-                "EMPTY — provably selects no events",
-            ));
+        match r.empty {
+            EmptyStatus::Proven => {
+                notes.push(st.verdict(
+                    VerdictKind::ProvenOverlapping,
+                    "EMPTY — provably selects no events",
+                ));
+            }
+            EmptyStatus::Candidate => {
+                notes.push(st.verdict(
+                    VerdictKind::CandidateDisjoint,
+                    "CANDIDATE EMPTY — solver UNSAT, uncertified",
+                ));
+            }
+            EmptyStatus::NotProven | EmptyStatus::Unknown => {}
         }
         if !r.dropped.is_empty() {
             let lines: Vec<String> = r.dropped.iter().map(|d| d.line.to_string()).collect();

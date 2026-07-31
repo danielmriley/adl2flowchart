@@ -214,6 +214,7 @@ pub fn run(
     verbose: bool,
     cross: bool,
     certify: bool,
+    refute_gate: bool,
     combine: Option<&Path>,
 ) -> Result<ExitCode, CliError> {
     // A directory argument contributes its `*.adl` files (sorted), so
@@ -236,6 +237,7 @@ pub fn run(
         },
         fail_on,
         certify,
+        refute_gate,
         combine: combine.is_some(),
         ..AnalysisOptions::default()
     };

@@ -90,6 +90,12 @@ enum Command {
         /// certified: true in --json).
         #[arg(long)]
         no_certify: bool,
+        /// Skip the adversarial refute-gate search (on by default: after every
+        /// UNSAT-side PROVEN, cut-anchored + flat-spot probes are checked
+        /// through the interpreter; a hit demotes the verdict). Independent
+        /// of the sampling gate.
+        #[arg(long)]
+        no_refute_gate: bool,
         /// Write a portable certificate bundle (JSON, schema smash2-combine/1)
         /// per certified PROVEN DISJOINT pair into this directory. Each bundle
         /// carries the certified formula set and the Farkas certificate, and
@@ -188,6 +194,7 @@ fn main() -> ExitCode {
             fail_on,
             cross,
             no_certify,
+            no_refute_gate,
             combine,
         } => cmd::verify::run(
             &files,
@@ -198,6 +205,7 @@ fn main() -> ExitCode {
             verbose,
             cross,
             !no_certify,
+            !no_refute_gate,
             combine.as_deref(),
         ),
         Command::Run {

@@ -24,6 +24,10 @@ fn render(rel: &str) -> String {
     let opts = AnalysisOptions {
         solver: SolverChoice::Auto,
         timeout: Duration::from_secs(20),
+        // Snapshot layout pins: adversarial refute + full UNSAT certification
+        // are covered elsewhere and dominate wall time on large CMS files.
+        refute_gate: false,
+        certify: false,
         ..AnalysisOptions::default()
     };
     let r = analyze_source(&src, &name, &ext, &opts)

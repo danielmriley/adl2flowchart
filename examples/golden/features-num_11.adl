@@ -1,0 +1,17 @@
+# GOLDEN R_fold_sum R_fold_point OVERLAPPING
+# GROUND-TRUTH: a decimal literal denotes its exact decimal value, so 0.1 + 0.2
+# is 3/10 and R_fold_sum is MET > 3/10. The f64 sum of 0.1 and 0.2 is the
+# LARGER value 0.30000000000000004, which is R_fold_point's one-point band. An
+# event with MET = 0.30000000000000004 is therefore in BOTH regions: it is
+# strictly above 3/10 (R_fold_sum) and exactly on the band (R_fold_point).
+# `smash2 run` accepts that event in both regions, and `verify` must agree.
+# REGRESSION: while the encoder folded 0.1 + 0.2 in f64 and the interpreter
+# folded it exactly, verify reported PROVEN DISJOINT for this pair — a false
+# proof no net caught, because the two disagreed about where the cut is
+# (M4 realignment; see COUNTEREXAMPLES.md CE-15).
+
+region R_fold_sum
+  select MET > 0.1 + 0.2
+
+region R_fold_point
+  select MET [] 0.30000000000000004 0.30000000000000004

@@ -47,8 +47,8 @@ fn battery(s: &mut dyn Solver) {
     let m = s.model().expect("model after sat");
     let v = m.get(q(0)).expect("q0 valued");
     assert!(
-        v > 1.0 && v < 3.0,
-        "{}: model in (1,3), got {v}",
+        v > r(1.0) && v < r(3.0),
+        "{}: model in (1,3), got {v:?}",
         s.backend_name()
     );
     s.pop();
@@ -94,7 +94,7 @@ fn battery(s: &mut dyn Solver) {
     let m = s.model().expect("model");
     assert_eq!(
         m.get(q(7)),
-        Some(1.0),
+        Some(Rat::from_i64(1)),
         "{}: int var forced to 1",
         s.backend_name()
     );
@@ -108,7 +108,7 @@ fn battery(s: &mut dyn Solver) {
     let m = s.model().expect("model");
     assert_eq!(
         m.get(q(4)),
-        Some(2.5),
+        Some(r(2.5)),
         "{}: equality propagates",
         s.backend_name()
     );

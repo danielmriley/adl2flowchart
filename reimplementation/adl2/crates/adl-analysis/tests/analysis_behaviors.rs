@@ -19,18 +19,24 @@ fn opts(solver: SolverChoice) -> AnalysisOptions {
         fail_on: FailOn::default(),
         reconcile: false,
         sample_gate: 64,
+        refute_gate: true,
         certify: true,
         combine: false,
     }
 }
 
-/// f64-faithfulness guard: a cut source that is not f64-faithful (≥2 additive
-/// ops, or a non-dyadic additive constant) is interned as a structure-keyed
-/// opaque quantity, so two regions whose sources f64-evaluate differently can
-/// no longer fabricate a false PROVEN DISJOINT. Each family below was a
-/// confirmed false PROVEN before the guard; all must now be POSSIBLY.
+/// Algebraic identities over the rational fragment are *real* identities now.
+///
+/// Each family below was a demonstrated false PROVEN DISJOINT while the
+/// interpreter evaluated cuts stepwise in f64: `MET + HT - HT` did not equal
+/// `MET`, so two regions that look complementary were not. M3 made the
+/// interpreter exact over event data, which makes every one of these pairs a
+/// genuine partition — and M4 lets the encoder say so. The verdict is
+/// gate-checked: `analyze_source` runs the sampling and refute batteries
+/// through the reference interpreter and demotes any PROVEN it can refute,
+/// so ProvenDisjoint here IS the differential claim.
 #[test]
-fn f64_faithfulness_guard_blocks_false_disjoint() {
+fn exact_fragment_identities_are_provable_partitions() {
     let ext = ExtDecls::legacy();
     let jets = "object jets\n  take Jet\n";
     let cases: &[(&str, &str)] = &[
@@ -71,10 +77,47 @@ fn f64_faithfulness_guard_blocks_false_disjoint() {
             eprintln!("SKIP: no solver");
             return;
         }
+        assert_eq!(
+            r.pairwise[0].kind,
+            VerdictKind::ProvenDisjoint,
+            "family `{label}` is an exact partition and must be PROVEN DISJOINT, got {:?} ({})",
+            r.pairwise[0].kind,
+            r.pairwise[0].reason
+        );
+    }
+}
+
+/// The mirror image: the same shapes over an APPROXIMATE value still round in
+/// the interpreter, so the encoder must not prove them disjoint.
+#[test]
+fn approximate_arithmetic_still_blocks_disjoint() {
+    let ext = ExtDecls::legacy();
+    let jets = "object jets\n  take Jet\n";
+    let cases: &[(&str, &str)] = &[
+        (
+            &format!(
+                "{jets}region RA\n  select dR(jets[0], jets[1]) + 0.5 <= 1\nregion RB\n  select dR(jets[0], jets[1]) > 0.5\n"
+            ),
+            "approx-add",
+        ),
+        (
+            &format!(
+                "{jets}region RA\n  select dR(jets[0], jets[1]) * 0.3 <= 1\nregion RB\n  select dR(jets[0], jets[1]) >= 3.3333333333333335\n"
+            ),
+            "approx-mul",
+        ),
+    ];
+    for (src, label) in cases {
+        let r =
+            analyze_source(src, "approx.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+        if r.solver == "none" {
+            eprintln!("SKIP: no solver");
+            return;
+        }
         assert_ne!(
             r.pairwise[0].kind,
             VerdictKind::ProvenDisjoint,
-            "family `{label}` must NOT be PROVEN DISJOINT (f64-unfaithful), got {:?}",
+            "family `{label}` rounds in the interpreter and must NOT be PROVEN DISJOINT, got {:?}",
             r.pairwise[0].kind
         );
     }
@@ -108,15 +151,13 @@ fn f64_faithfulness_guard_preserves_sound_disjoint() {
     }
 }
 
-/// Strict f64-exactness rule (AUDIT_2026-07-28 §12): folding a comparison
-/// operand across *any* rounding op is unsound in general — C4
-/// (`MET + 0.5 <= 1` vs `MET > 0.5`) was a demonstrated false PROVEN at a
-/// half-ulp flat spot. This pair (`MET + 0.5 > 1.5` vs `MET <= 1.0`) *is*
-/// sound under f64 (1.5 representable; exact sum ≤ 1.5 when MET ≤ 1), but
-/// the guard cannot distinguish sound instances without per-boundary
-/// representability analysis, so it intentionally gives up → POSSIBLY.
+/// The completeness the old strict-f64 rule had to sacrifice is back.
+/// `MET + 0.5 > 1.5` vs `MET <= 1.0` is a partition over the rationals; the
+/// guard used to give up on it because it could not tell sound instances of a
+/// cross-form fold from unsound ones. With the interpreter exact there are no
+/// unsound instances left to tell apart.
 #[test]
-fn strict_f64_guard_gives_up_cross_form_folds() {
+fn cross_form_folds_are_provable_again() {
     let ext = ExtDecls::legacy();
     let src = "region RA\n  select MET + 0.5 > 1.5\nregion RB\n  select MET <= 1.0\n";
     let r = analyze_source(src, "cross_form.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
@@ -126,8 +167,8 @@ fn strict_f64_guard_gives_up_cross_form_folds() {
     }
     assert_eq!(
         r.pairwise[0].kind,
-        VerdictKind::PossiblyOverlapping,
-        "cross-form fold must degrade to POSSIBLY (completeness sacrifice), got {:?} ({})",
+        VerdictKind::ProvenDisjoint,
+        "cross-form fold is exact now, got {:?} ({})",
         r.pairwise[0].kind,
         r.pairwise[0].reason
     );
@@ -731,8 +772,8 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     files.sort();
     assert_eq!(
         files.len(),
-        138,
-        "shared corpus has 138 ADL files (68 base + 58 golden + 12 golden-cross)"
+        139,
+        "shared corpus has 139 ADL files (68 base + 59 golden + 12 golden-cross)"
     );
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
@@ -766,7 +807,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 138);
+    assert_eq!(analyzed, 139);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {
@@ -821,6 +862,48 @@ region RB
         lead.value > 100.0,
         "with a pt>100 jet in the event, the displayed leading jet must be it: {:?}",
         p.witness
+    );
+}
+
+/// Trustworthy-verify M2: `--certify` verifies every UNSAT-direction claim,
+/// including region emptiness — integrality-only UNSAT becomes CANDIDATE EMPTY.
+#[test]
+fn certification_tiers_empty_verdicts() {
+    let ext = ExtDecls::legacy();
+    let certify_opts = AnalysisOptions {
+        certify: true,
+        combine: false,
+        ..opts(SolverChoice::Auto)
+    };
+    // Integrality-only emptiness (size > 1 ∧ size < 2 is int-empty but
+    // real-feasible at 1.5) cannot be certified under the real relaxation.
+    let src = "object jets\n  take Jet\nregion DEAD\n  select size(jets) > 1\n  select size(jets) < 2\n";
+    let r = analyze_source(src, "empty_i.adl", &ext, &certify_opts).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver");
+        return;
+    }
+    let dead = r
+        .regions
+        .iter()
+        .find(|x| x.name == "DEAD")
+        .expect("DEAD present");
+    assert_eq!(
+        dead.empty,
+        EmptyStatus::Candidate,
+        "uncertified solver UNSAT must be CANDIDATE EMPTY, got {:?}",
+        dead.empty
+    );
+
+    // With certification OFF the same region reports PROVEN EMPTY.
+    let off_opts = AnalysisOptions {
+        certify: false,
+        ..opts(SolverChoice::Auto)
+    };
+    let r = analyze_source(src, "empty_i.adl", &ext, &off_opts).expect("resolves");
+    assert_eq!(
+        r.regions.iter().find(|x| x.name == "DEAD").unwrap().empty,
+        EmptyStatus::Proven
     );
 }
 

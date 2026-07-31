@@ -1,10 +1,11 @@
 ---
 source: crates/adl-cli/tests/cli.rs
-assertion_line: 225
 expression: stdout(&out)
 ---
 ADL2 analysis report — disjoint_pt.adl
 solver: none
+sampling gate: 124 events, 0 refutation(s)
+refute gate: 64 probes, 0 refutation(s)
 
 == regions ==
 SR_low: encoded leaves 4/4 (exact)
@@ -16,7 +17,7 @@ SR_low vs SR_high: PROVEN DISJOINT — intervals cannot intersect on jets[0].pt:
 == axioms used ==
 SZ0 (2 instances; assumes: none)
 SUB (1 instances; assumes: take = filter)
-NNEG (2 instances; assumes: none)
+NNEG (2 instances; assumes: the loader rejects events outside this domain (adl-interp event::check_domain))
 EPRED (1 instances; assumes: take = filter)
 IDOM (1 instances; assumes: ORD + SUB)
 

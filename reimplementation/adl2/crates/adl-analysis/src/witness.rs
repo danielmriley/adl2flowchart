@@ -17,14 +17,19 @@
 //! properties pinned from the model); anything it cannot realize simply
 //! fails validation — soundness never depends on the builder.
 
-use adl_interp::Interp;
+use adl_interp::{Event, EventObject, Interp};
 use adl_sema::{
     Collection, CollectionId, ElemIndex, ExtDecls, Fragment, HKind, HNode, Hir, Quantity,
-    QuantityId, ScalarSource,
+    QuantityId, Rat, ScalarSource,
 };
 use adl_solver::Model;
 use serde_json::{Map, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Finite f64 → shortest-decimal [`Rat`] (angular/default fill edge).
+fn rat_f64(v: f64) -> Rat {
+    Rat::from_decimal_f64(if v.is_finite() { v } else { 0.0 }).unwrap_or_else(Rat::zero)
+}
 
 /// Largest collection the realizer will materialize.
 const MAX_REALIZED: u64 = 64;
@@ -58,8 +63,8 @@ pub fn validate_witness(
     region_a: usize,
     region_b: usize,
 ) -> Validation {
-    let json = match build_event_json(hir, ext, model, mentioned) {
-        Ok(j) => j,
+    let (mut event, mut json) = match build_event(hir, ext, model, mentioned) {
+        Ok(pair) => pair,
         Err(why) => return Validation::Rejected(format!("witness realization failed: {why}")),
     };
     // A region may reference event-level data through statements the
@@ -67,14 +72,7 @@ pub fn validate_witness(
     // model caveat), so absence in the model is not a failure: default
     // them and re-evaluate. Bounded by the number of distinct missing
     // keys, in practice one or two iterations.
-    let mut json = json;
     for _ in 0..8 {
-        let event = match adl_interp::parse_event(&json, ext) {
-            Ok(e) => e,
-            Err(e) => {
-                return Validation::Rejected(format!("synthetic event failed the loader: {e}"));
-            }
-        };
         let mut opaque: Option<String> = None;
         let mut missing: Option<String> = None;
         for idx in [region_a, region_b] {
@@ -102,9 +100,12 @@ pub fn validate_witness(
                     ));
                 }
                 Err(e) => {
-                    match patch_missing(&json, &e.reason) {
-                        Some(patched) => missing = Some(patched),
-                        None => {
+                    match patch_missing_event(&mut event, &e.reason) {
+                        true => {
+                            json = event_to_json(&event);
+                            missing = Some(json.clone());
+                        }
+                        false => {
                             return Validation::Rejected(format!(
                                 "interpreter cannot evaluate region {name} on the witness: {}",
                                 e.reason
@@ -115,12 +116,12 @@ pub fn validate_witness(
                 }
             }
         }
-        if let Some(patched) = missing {
-            json = patched;
+        if missing.is_some() {
             continue;
         }
         return match opaque {
             Some(why) => Validation::Candidate(why),
+            // Diagnostic JSON may show decimals; membership used exact Rat.
             None => Validation::Validated(json),
         };
     }
@@ -129,11 +130,8 @@ pub fn validate_witness(
 
 /// Patch the synthetic event for a hard "missing event-level data"
 /// evaluation error by defaulting the named datum to 0 (a free value —
-/// the formulas never constrained it). Returns `None` for any other
-/// error.
-fn patch_missing(json: &str, reason: &str) -> Option<String> {
-    let mut v: Value = serde_json::from_str(json).ok()?;
-    let root = v.as_object_mut()?;
+/// the formulas never constrained it). Returns `false` for any other error.
+fn patch_missing_event(event: &mut Event, reason: &str) -> bool {
     let backtick = |s: &str| -> Option<String> {
         let start = s.find('`')? + 1;
         let end = s[start..].find('`')? + start;
@@ -143,28 +141,66 @@ fn patch_missing(json: &str, reason: &str) -> Option<String> {
         .strip_prefix("event has no scalar ")
         .and_then(|_| backtick(reason))
     {
-        root.insert(name, num(0.0));
-    } else if reason.starts_with("event has no trigger flag ") {
-        let name = backtick(reason)?;
-        let trig = root
-            .entry("triggers")
-            .or_insert_with(|| Value::Object(Map::new()));
-        trig.as_object_mut()?.insert(name, num(0.0));
-    } else if reason == "event has no MET vector" || reason.starts_with("event MET has no ") {
-        let component = backtick(reason);
-        let met = root
-            .entry("MET")
-            .or_insert_with(|| Value::Object(Map::new()));
-        let met = met.as_object_mut()?;
-        met.entry("pt").or_insert_with(|| num(0.0));
-        met.entry("phi").or_insert_with(|| num(0.0));
-        if let Some(c) = component {
-            met.entry(c).or_insert_with(|| num(0.0));
-        }
-    } else {
-        return None;
+        event.scalars.entry(name).or_insert_with(Rat::zero);
+        return true;
     }
-    Some(v.to_string())
+    if reason.starts_with("event has no trigger flag ") {
+        let Some(name) = backtick(reason) else {
+            return false;
+        };
+        event.triggers.entry(name).or_insert_with(Rat::zero);
+        return true;
+    }
+    if reason == "event has no MET vector" || reason.starts_with("event MET has no ") {
+        let component = backtick(reason);
+        event.met.entry("pt".to_owned()).or_insert_with(Rat::zero);
+        event.met.entry("phi".to_owned()).or_insert_with(Rat::zero);
+        if let Some(c) = component {
+            event.met.entry(c).or_insert_with(Rat::zero);
+        }
+        return true;
+    }
+    false
+}
+
+/// Diagnostic JSON for a realized event (decimals via [`Rat::to_f64`]).
+fn event_to_json(event: &Event) -> String {
+    let mut root = Map::new();
+    for (coll, objs) in &event.collections {
+        let arr: Vec<Value> = objs
+            .iter()
+            .map(|o| {
+                let mut m = Map::new();
+                for (k, v) in o.properties() {
+                    m.insert(k.to_owned(), num(v.to_f64()));
+                }
+                Value::Object(m)
+            })
+            .collect();
+        let mut display = coll.clone();
+        if let Some(first) = display.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        root.insert(display, Value::Array(arr));
+    }
+    if !event.met.is_empty() {
+        let mut met = Map::new();
+        for (k, v) in &event.met {
+            met.insert(k.clone(), num(v.to_f64()));
+        }
+        root.insert("MET".to_owned(), Value::Object(met));
+    }
+    for (k, v) in &event.scalars {
+        root.entry(k.clone()).or_insert_with(|| num(v.to_f64()));
+    }
+    if !event.triggers.is_empty() {
+        let mut trig = Map::new();
+        for (k, v) in &event.triggers {
+            trig.insert(k.clone(), num(v.to_f64()));
+        }
+        root.insert("triggers".to_owned(), Value::Object(trig));
+    }
+    Value::Object(root).to_string()
 }
 
 /// Which membership statements of `region` fail on `event` (diagnostic
@@ -285,12 +321,12 @@ fn disjoint_source_bases(hir: &Hir) -> BTreeSet<CollectionId> {
     out
 }
 
-fn build_event_json(
+fn build_event(
     hir: &Hir,
     ext: &ExtDecls,
     model: &Model,
     mentioned: &BTreeSet<QuantityId>,
-) -> Result<String, String> {
+) -> Result<(Event, String), String> {
     let met_key = hir.symbols.lookup(adl_sema::ext::MET_FAMILY_KEY);
     let is_met_base = |c: CollectionId| -> bool {
         matches!(hir.table.collection(c), Collection::Base(s) if Some(*s) == met_key)
@@ -299,7 +335,7 @@ fn build_event_json(
     // -- which collections matter, and how big -----------------------------
     let mut needed: BTreeSet<CollectionId> = BTreeSet::new();
     let mut sizes: BTreeMap<CollectionId, u64> = BTreeMap::new();
-    let mut elem_pins: BTreeMap<(CollectionId, u32), Vec<(String, f64)>> = BTreeMap::new();
+    let mut elem_pins: BTreeMap<(CollectionId, u32), Vec<(String, Rat)>> = BTreeMap::new();
 
     // Pass 1: explicit size pins. The encoder's element-existence guards
     // put `size(C)` atoms in every formula that needs an element, so a
@@ -313,7 +349,7 @@ fn build_event_json(
                 continue;
             }
             realizable(hir, *c, &mut needed)?;
-            let n = v.round().max(0.0);
+            let n = v.to_f64().round().max(0.0);
             if n > MAX_REALIZED as f64 {
                 return Err(format!("collection size {n} exceeds the realizer cap"));
             }
@@ -343,7 +379,7 @@ fn build_event_json(
                 elem_pins
                     .entry((*coll, *i))
                     .or_default()
-                    .push((hir.table.prop_key(*prop).to_owned(), v));
+                    .push((hir.table.prop_key(*prop).to_owned(), v.clone()));
             }
             Quantity::AngularSep { a, b, .. } => {
                 for p in [a, b] {
@@ -394,11 +430,11 @@ fn build_event_json(
 
     // -- build objects (phase 1: pins, repair, pT fill) ----------------------
     let pt_key = ext.prop_canon("pt").0;
-    let mut built: BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>> = BTreeMap::new();
+    let mut built: BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>> = BTreeMap::new();
 
     for (base, plan) in &plans {
         let n = plan.family.first().map_or(0, |&(_, n)| n);
-        let mut objs: Vec<BTreeMap<String, f64>> = vec![BTreeMap::new(); n as usize];
+        let mut objs: Vec<BTreeMap<String, Rat>> = vec![BTreeMap::new(); n as usize];
         let mut pinned: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n as usize];
 
         // Pin properties from the model, shallow-to-deep so the deepest
@@ -410,7 +446,7 @@ fn build_event_json(
                 };
                 if let Some(pins) = elem_pins.get(&(c, idx32)) {
                     for (key, v) in pins {
-                        objs[j as usize].insert(key.clone(), *v);
+                        objs[j as usize].insert(key.clone(), v.clone());
                         pinned[j as usize].insert(key.clone());
                     }
                 }
@@ -439,14 +475,14 @@ fn build_event_json(
         // `pT(j[0]) − pT(j[0]) < 25`), and a missing property would
         // soft-fail a comparison the formula proved trivially true.
         {
-            let mut last: Option<f64> = None;
-            let first_set = objs.iter().find_map(|o| o.get(&pt_key).copied());
+            let mut last: Option<Rat> = None;
+            let first_set = objs.iter().find_map(|o| o.get(&pt_key).cloned());
             for o in &mut objs {
                 match o.get(&pt_key) {
-                    Some(&v) => last = Some(v),
+                    Some(v) => last = Some(v.clone()),
                     None => {
-                        let v = last.or(first_set).unwrap_or(50.0);
-                        o.insert(pt_key.clone(), v);
+                        let v = last.clone().or(first_set.clone()).unwrap_or_else(|| Rat::from_i64(50));
+                        o.insert(pt_key.clone(), v.clone());
                         last = Some(v);
                     }
                 }
@@ -455,29 +491,30 @@ fn build_event_json(
         built.insert(*base, objs);
     }
 
-    // -- MET / scalars / triggers -------------------------------------------
-    let mut met = Map::new();
-    let mut scalars: Vec<(String, f64)> = Vec::new();
-    let mut triggers = Map::new();
+    // -- MET / scalars / triggers (exact Rat from model) ---------------------
+    let mut met_rats: BTreeMap<String, Rat> = BTreeMap::new();
+    let mut scalars: Vec<(String, Rat)> = Vec::new();
+    let mut triggers_rats: BTreeMap<String, Rat> = BTreeMap::new();
+    let half = Rat::from_decimal_f64(0.5).unwrap();
     for (q, v) in model.iter() {
         if let Quantity::EventScalar(src) = hir.table.quantity(q) {
             match src {
                 ScalarSource::MetProp(p) => {
-                    met.insert(hir.table.prop_key(*p).to_owned(), num(v));
+                    met_rats.insert(hir.table.prop_key(*p).to_owned(), v.clone());
                 }
                 ScalarSource::EventVar(s) => {
-                    scalars.push((hir.symbols.key(*s).to_owned(), v));
+                    scalars.push((hir.symbols.key(*s).to_owned(), v.clone()));
                 }
                 ScalarSource::Trigger(s) => {
-                    let flag = if v >= 0.5 { 1.0 } else { 0.0 };
-                    triggers.insert(hir.symbols.key(*s).to_owned(), num(flag));
+                    let flag = if v >= &half { Rat::one() } else { Rat::zero() };
+                    triggers_rats.insert(hir.symbols.key(*s).to_owned(), flag);
                 }
             }
         }
     }
 
     // -- phase 2: realize angular model values into phi/eta ------------------
-    realize_angulars(hir, ext, model, mentioned, &mut built, &mut met);
+    realize_angulars(hir, ext, model, mentioned, &mut built, &mut met_rats);
 
     // -- phase 2.5: default the remaining standard properties ----------------
     // (free values; the formulas never constrained them — SPEC §4.1 says
@@ -497,23 +534,24 @@ fn build_event_json(
         let eta_key = ext.prop_canon("eta").0;
         let phi_key = ext.prop_canon("phi").0;
         let m_key = ext.prop_canon("m").0;
-        let const_defaults: [(&str, f64); 6] = [
-            (&eta_key, 0.0),
-            (&phi_key, 0.0),
-            (&m_key, 0.0),
-            ("btag", 0.0),
-            ("ctag", 0.0),
-            ("tautag", 0.0),
+        let zero = Rat::zero();
+        let const_defaults: [(&str, Rat); 6] = [
+            (&eta_key, zero.clone()),
+            (&phi_key, zero.clone()),
+            (&m_key, zero.clone()),
+            ("btag", zero.clone()),
+            ("ctag", zero.clone()),
+            ("tautag", zero),
         ];
         for (base, objs) in built.iter_mut() {
             let distinct_eta = disjoint_source_bases.contains(base);
             for (i, o) in objs.iter_mut().enumerate() {
                 if distinct_eta {
                     #[allow(clippy::cast_precision_loss)]
-                    o.entry(eta_key.clone()).or_insert(0.1 * i as f64);
+                    o.entry(eta_key.clone()).or_insert_with(|| rat_f64(0.1 * i as f64));
                 }
-                for (k, v) in const_defaults {
-                    o.entry(k.to_owned()).or_insert(v);
+                for (k, v) in &const_defaults {
+                    o.entry((*k).to_owned()).or_insert_with(|| v.clone());
                 }
             }
         }
@@ -530,43 +568,64 @@ fn build_event_json(
         let pt_key = ext.prop_canon("pt").0;
         for objs in built.values_mut() {
             objs.sort_by(|a, b| {
-                let pa = a.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
-                let pb = b.get(&pt_key).copied().unwrap_or(f64::NEG_INFINITY);
-                pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+                let pa = a.get(&pt_key);
+                let pb = b.get(&pt_key);
+                match (pa, pb) {
+                    (Some(x), Some(y)) => y.cmp(x),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
             });
         }
     }
 
-    // -- phase 3: serialize ---------------------------------------------------
+    // -- phase 3: Event (exact Rat) + diagnostic JSON (decimals) -------------
+    let mut event = Event::default();
     let mut root = Map::new();
     for (base, objs) in built {
         let display = match hir.table.collection(base) {
             Collection::Base(s) => hir.symbols.display(*s).to_owned(),
             _ => continue,
         };
-        let arr: Vec<Value> = objs
-            .into_iter()
-            .map(|o| {
-                let mut m = Map::new();
-                for (k, v) in o {
-                    m.insert(k, num(v));
-                }
-                Value::Object(m)
-            })
-            .collect();
-        root.insert(display, Value::Array(arr));
+        let key = display.to_ascii_lowercase();
+        let mut arr_json = Vec::new();
+        let mut arr_ev = Vec::new();
+        for o in objs {
+            let mut m = Map::new();
+            let mut props = Vec::new();
+            for (k, v) in o {
+                m.insert(k.clone(), num(v.to_f64()));
+                props.push((k, v));
+            }
+            arr_json.push(Value::Object(m));
+            arr_ev.push(EventObject::from_props(props));
+        }
+        root.insert(display, Value::Array(arr_json));
+        event.collections.insert(key, arr_ev);
     }
-    if !met.is_empty() {
-        root.insert("MET".to_owned(), Value::Object(met));
+    if !met_rats.is_empty() {
+        let mut met_json = Map::new();
+        for (k, v) in &met_rats {
+            met_json.insert(k.clone(), num(v.to_f64()));
+        }
+        root.insert("MET".to_owned(), Value::Object(met_json));
+        event.met = met_rats;
     }
     for (k, v) in scalars {
-        root.entry(k).or_insert_with(|| num(v));
+        root.entry(k.clone()).or_insert_with(|| num(v.to_f64()));
+        event.scalars.entry(k).or_insert(v);
     }
-    if !triggers.is_empty() {
-        root.insert("triggers".to_owned(), Value::Object(triggers));
+    if !triggers_rats.is_empty() {
+        let mut trig_json = Map::new();
+        for (k, v) in &triggers_rats {
+            trig_json.insert(k.clone(), num(v.to_f64()));
+        }
+        root.insert("triggers".to_owned(), Value::Object(trig_json));
+        event.triggers = triggers_rats;
     }
 
-    Ok(Value::Object(root).to_string())
+    Ok((event, Value::Object(root).to_string()))
 }
 
 fn num(v: f64) -> Value {
@@ -590,8 +649,8 @@ fn realize_angulars(
     ext: &ExtDecls,
     model: &Model,
     mentioned: &BTreeSet<QuantityId>,
-    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
-    met: &mut Map<String, Value>,
+    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>,
+    met: &mut BTreeMap<String, Rat>,
 ) {
     use adl_sema::{AngKind, ParticleRef};
     let phi_key = ext.prop_canon("phi").0;
@@ -623,7 +682,7 @@ fn realize_angulars(
             // dPhi = 0 (equal phi) and |dEta| = v, since hypot(v, 0) = v exactly.
             // Only fills UNSET components and only for object anchors (MET has no
             // eta); anything already pinned is left to validation.
-            realize_dr(v, &la, &lb, &eta_key, &phi_key, built);
+            realize_dr(v.to_f64(), &la, &lb, &eta_key, &phi_key, built);
             continue;
         }
         let key = match kind {
@@ -637,12 +696,12 @@ fn realize_angulars(
         // Current values; a missing *element* makes the constraint moot
         // (the existence-guarded formula branch was not taken).
         let read = |loc: &Loc,
-                    built: &BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
-                    met: &Map<String, Value>|
+                    built: &BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>,
+                    met: &BTreeMap<String, Rat>|
          -> Option<Option<f64>> {
             match loc {
-                Loc::Met => Some(met.get(key).and_then(Value::as_f64)),
-                Loc::Obj(base, i) => built.get(base)?.get(*i).map(|o| o.get(key).copied()),
+                Loc::Met => Some(met.get(key).map(|r| r.to_f64())),
+                Loc::Obj(base, i) => built.get(base)?.get(*i).map(|o| o.get(key).map(|r| r.to_f64())),
             }
         };
         let (Some(cur_a), Some(cur_b)) = (read(&la, built, met), read(&lb, built, met)) else {
@@ -650,17 +709,17 @@ fn realize_angulars(
         };
         let write = |loc: &Loc,
                      value: f64,
-                     built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
-                     met: &mut Map<String, Value>| {
+                     built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>,
+                     met: &mut BTreeMap<String, Rat>| {
             match loc {
                 Loc::Met => {
-                    met.insert(key.clone(), num(value));
+                    met.insert(key.clone(), rat_f64(value));
                 }
                 Loc::Obj(base, i) => {
                     if let Some(objs) = built.get_mut(base)
                         && let Some(o) = objs.get_mut(*i)
                     {
-                        o.insert(key.clone(), value);
+                        o.insert(key.clone(), rat_f64(value));
                     }
                 }
             }
@@ -676,23 +735,24 @@ fn realize_angulars(
                 _ => d,
             }
         };
+        let target = v.to_f64();
         let correct = |mut x: f64, other: f64, flip: bool| -> f64 {
             for _ in 0..4 {
                 let got = realized(x, other, flip);
-                if got == v || !(v - got).is_finite() {
+                if got == target || !(target - got).is_finite() {
                     break;
                 }
-                x += if flip { got - v } else { v - got };
+                x += if flip { got - target } else { target - got };
             }
             x
         };
         match (cur_a, cur_b) {
             (Some(_), Some(_)) => {} // both pinned: validation decides
-            (None, Some(vb)) => write(&la, correct(v + vb, vb, false), built, met),
-            (Some(va), None) => write(&lb, correct(va - v, va, true), built, met),
+            (None, Some(vb)) => write(&la, correct(target + vb, vb, false), built, met),
+            (Some(va), None) => write(&lb, correct(va - target, va, true), built, met),
             (None, None) => {
                 write(&lb, 0.0, built, met);
-                write(&la, correct(v, 0.0, false), built, met);
+                write(&la, correct(target, 0.0, false), built, met);
             }
         }
     }
@@ -746,7 +806,7 @@ fn realize_dr(
     lb: &Loc,
     eta_key: &str,
     phi_key: &str,
-    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+    built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>,
 ) {
     if !v.is_finite() || v < 0.0 {
         return;
@@ -757,7 +817,7 @@ fn realize_dr(
     // `Some(None)` = the element exists but the component is unset (free);
     // `None` = the element itself is absent (existence guard not taken).
     let get = |base: &CollectionId, i: usize, key: &str| -> Option<Option<f64>> {
-        built.get(base)?.get(i).map(|o| o.get(key).copied())
+        built.get(base)?.get(i).map(|o| o.get(key).map(|r| r.to_f64()))
     };
     let (Some(eta_a), Some(eta_b)) = (get(base_a, *ia, eta_key), get(base_b, *ib, eta_key)) else {
         return;
@@ -769,7 +829,7 @@ fn realize_dr(
         if let Some(objs) = built.get_mut(base)
             && let Some(o) = objs.get_mut(i)
         {
-            o.insert(key.to_owned(), val);
+            o.insert(key.to_owned(), rat_f64(val));
         }
     };
 
@@ -844,7 +904,7 @@ fn realize_dr(
 // bands and boolean structure over the implicit element's properties
 // (plus model-valued event quantities). `None` = cannot tell.
 
-fn eval_pred(node: &HNode, obj: &BTreeMap<String, f64>, model: &Model, hir: &Hir) -> Option<bool> {
+fn eval_pred(node: &HNode, obj: &BTreeMap<String, Rat>, model: &Model, hir: &Hir) -> Option<bool> {
     if matches!(node.tag, Fragment::Unsupported(_)) {
         return None;
     }
@@ -898,14 +958,14 @@ fn eval_pred(node: &HNode, obj: &BTreeMap<String, f64>, model: &Model, hir: &Hir
     }
 }
 
-fn eval_num(node: &HNode, obj: &BTreeMap<String, f64>, model: &Model, hir: &Hir) -> Option<f64> {
+fn eval_num(node: &HNode, obj: &BTreeMap<String, Rat>, model: &Model, hir: &Hir) -> Option<f64> {
     if matches!(node.tag, Fragment::Unsupported(_)) {
         return None;
     }
     match &node.kind {
         HKind::Num(s) => s.parse().ok(),
-        HKind::ElemSelfProp(p) => obj.get(hir.table.prop_key(*p)).copied(),
-        HKind::Quantity(q) => model.get(*q),
+        HKind::ElemSelfProp(p) => obj.get(hir.table.prop_key(*p)).map(|r| r.to_f64()),
+        HKind::Quantity(q) => model.get_f64(*q),
         HKind::Neg(a) => Some(-eval_num(a, obj, model, hir)?),
         HKind::Abs(a) => Some(eval_num(a, obj, model, hir)?.abs()),
         HKind::Binary { op, lhs, rhs } => {
@@ -926,7 +986,7 @@ fn eval_num(node: &HNode, obj: &BTreeMap<String, f64>, model: &Model, hir: &Hir)
 
 /// Best-effort repair: set free (unpinned) properties so simple
 /// per-property comparisons on the predicate's And-spine hold.
-fn repair(node: &HNode, obj: &mut BTreeMap<String, f64>, pinned: &BTreeSet<String>, hir: &Hir) {
+fn repair(node: &HNode, obj: &mut BTreeMap<String, Rat>, pinned: &BTreeSet<String>, hir: &Hir) {
     match &node.kind {
         HKind::And(v) => {
             for p in v {
@@ -955,7 +1015,7 @@ fn repair(node: &HNode, obj: &mut BTreeMap<String, f64>, pinned: &BTreeSet<Strin
             {
                 let key = hir.table.prop_key(*p);
                 if !pinned.contains(key) {
-                    obj.insert(key.to_owned(), f64::midpoint(lo, hi));
+                    obj.insert(key.to_owned(), rat_f64(f64::midpoint(lo, hi)));
                 }
             }
         }
@@ -977,7 +1037,7 @@ fn flip(op: adl_syntax::ast::CmpOp) -> adl_syntax::ast::CmpOp {
 }
 
 fn repair_prop(
-    obj: &mut BTreeMap<String, f64>,
+    obj: &mut BTreeMap<String, Rat>,
     pinned: &BTreeSet<String>,
     key: &str,
     op: adl_syntax::ast::CmpOp,
@@ -986,7 +1046,7 @@ fn repair_prop(
     if pinned.contains(key) {
         return;
     }
-    let current = obj.get(key).copied();
+    let current = obj.get(key).map(|r| r.to_f64());
     let satisfied = current.is_some_and(|v| match op {
         adl_syntax::ast::CmpOp::Gt => v > k,
         adl_syntax::ast::CmpOp::Lt => v < k,
@@ -1005,7 +1065,7 @@ fn repair_prop(
         adl_syntax::ast::CmpOp::Le => k,
         adl_syntax::ast::CmpOp::Ne | adl_syntax::ast::CmpOp::ApproxEq => k + 1.0,
     };
-    obj.insert(key.to_owned(), v);
+    obj.insert(key.to_owned(), rat_f64(v));
 }
 
 #[cfg(test)]
@@ -1015,7 +1075,7 @@ mod realize_dr_tests {
     //! when z3's model happened to take that shape).
 
     use super::{Loc, realize_dr};
-    use adl_sema::CollectionId;
+    use adl_sema::{CollectionId, Rat};
     use std::collections::BTreeMap;
 
     const ETA: &str = "etaof";
@@ -1024,13 +1084,13 @@ mod realize_dr_tests {
 
     fn built_with(
         elems: &[&[(&str, f64)]],
-    ) -> BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>> {
+    ) -> BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>> {
         let objs = elems
             .iter()
             .map(|props| {
                 props
                     .iter()
-                    .map(|&(k, v)| (k.to_owned(), v))
+                    .map(|&(k, v)| (k.to_owned(), super::rat_f64(v)))
                     .collect::<BTreeMap<_, _>>()
             })
             .collect();
@@ -1038,20 +1098,17 @@ mod realize_dr_tests {
     }
 
     fn interp_dr(
-        built: &BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
+        built: &BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>,
         a: usize,
         b: usize,
     ) -> f64 {
         let o = &built[&BASE];
-        let de = o[a][ETA] - o[b][ETA];
-        let dp = adl_interp::wrap_dphi(o[a][PHI] - o[b][PHI]);
+        let de = o[a][ETA].to_f64() - o[b][ETA].to_f64();
+        let dp = adl_interp::wrap_dphi(o[a][PHI].to_f64() - o[b][PHI].to_f64());
         de.hypot(dp)
     }
 
-    fn realize(
-        v: f64,
-        built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, f64>>>,
-    ) {
+    fn realize(v: f64, built: &mut BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>>) {
         realize_dr(v, &Loc::Obj(BASE, 0), &Loc::Obj(BASE, 1), ETA, PHI, built);
     }
 

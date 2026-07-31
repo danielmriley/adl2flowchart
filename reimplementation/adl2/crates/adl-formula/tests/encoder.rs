@@ -82,12 +82,17 @@ fn select_linear_comparison_is_one_atom() {
 
 #[test]
 fn linear_sums_diffs_const_mults() {
-    // `2*MET - HT` mixes a pow2 scale with an additive cancellation hazard —
-    // not exact-f64-linear. It must intern as one opaque scalar (sound), not
-    // flatten to the exact atom `2·MET − HT < 50`.
+    // M4: MET and HT are exact rationals in the interpreter, so `2*MET - HT`
+    // is exact rational arithmetic end to end and the flattened atom IS the
+    // interpreter's boundary. (Under the pre-M3 stepwise-f64 interpreter this
+    // same expression had to intern opaque — the additive step rounded.)
     let (enc, hir) = encode("region SR\n  select 2*MET - HT < 50\n", 0);
-    let q = opaque_q(&hir);
-    assert_eq!(enc.formula, atom1(q, Rel::Lt, 50.0));
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(enc.formula, atom(&[(2.0, met), (-1.0, ht)], Rel::Lt, 50.0));
+    assert!(
+        !has_opaque(&hir),
+        "exact-valued linear arithmetic must not intern an opaque scalar"
+    );
 }
 
 #[test]
@@ -238,10 +243,13 @@ fn define_encodes_identically_to_textual_paste() {
     );
     let (inline, _) = encode("region SR\n  select HT + 2*MET > 100\n", 0);
     assert_eq!(via_def.formula, inline.formula);
-    // Additive mix is opaque (exact-f64 criterion); define inlining must
-    // still share the same structure-keyed opaque quantity.
-    let q = opaque_q(&hir);
-    assert_eq!(via_def.formula, atom1(q, Rel::Gt, 100.0));
+    // M4: the body is exact-valued linear arithmetic, so it flattens — the
+    // point of the test is that inlining a define changes nothing.
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        via_def.formula,
+        atom(&[(2.0, met), (1.0, ht)], Rel::Gt, 100.0)
+    );
 }
 
 // ---- row: Int-size coercion ----------------------------------------------
@@ -358,29 +366,39 @@ fn nonlinear_ratio_denominator_interns_opaque() {
 
 #[test]
 fn constant_denominator_clears_into_an_exact_atom() {
-    // Power-of-two division is IEEE-exact, so `MET / 2` flattens to the
-    // scaled atom `(1/2)·MET > 50` (equivalent over the reals to `MET > 100`).
-    // Non-pow2 denominators must NOT exact-clear (CE-14): intern the ratio
-    // as a structure-keyed opaque instead of fabricating `MET > 150`.
+    // Division inside the rational fragment is exact, so both a power-of-two
+    // and a non-dyadic divisor flatten to the scaled atom. CE-14 (`pT/0.3`
+    // clearing while the interpreter computed fl(pT)/fl(0.3)) is gone at the
+    // source: the interpreter no longer divides in f64 here.
     let (enc, hir) = encode("region SR\n  select MET / 2 > 50\n", 0);
     assert_eq!(enc.formula, atom(&[(0.5, met_q(&hir))], Rel::Gt, 50.0));
+
     let (enc, hir) = encode("region SR\n  select MET / 3 > 50\n", 0);
-    assert!(
-        !matches!(enc.formula, Formula::Unknown(_)),
-        "non-pow2 ratio must stay decidable via opaque atom, got {:?}",
-        enc.formula
-    );
-    assert!(
-        hir.table.quantities().iter().any(|q| matches!(q,
-            Quantity::ExternalFn { name, .. } if hir.symbols.display(*name) == "opaque.scalar")),
-        "MET/3 must intern as opaque.scalar, not clear to MET > 150"
-    );
-    // opaque_atom yields Formula::Atom over the opaque quantity — that is
-    // fine. The CE-14 bug was clearing to a bare MET atom (`MET > 150`).
-    assert_ne!(
+    let met = met_q(&hir);
+    let third = Rat::one().checked_div(&Rat::from_i64(3)).unwrap();
+    assert_eq!(
         enc.formula,
-        atom(&[(1.0, met_q(&hir))], Rel::Gt, 150.0),
-        "exact-clearing MET/3 → MET>150 is the CE-14 false-PROVEN path"
+        Formula::Atom(LinAtom::new(
+            [(third, met)],
+            Rel::Gt,
+            Rat::from_i64(50)
+        ))
+    );
+    assert!(!has_opaque(&hir), "exact division must not go opaque");
+}
+
+#[test]
+fn approx_ratio_does_not_clear() {
+    // The CE-14 shape over an APPROXIMATE numerator: `dR/0.3` is an f64
+    // division in the interpreter, so multiplying through is not its
+    // boundary — the ratio must intern opaque.
+    let src = "object jets\n  take Jet\n\
+               region SR\n  select dR(jets[0], jets[1]) / 0.3 <= 0.1\n";
+    let (enc, hir) = encode(src, 0);
+    assert!(
+        has_opaque(&hir) || matches!(enc.formula, Formula::Unknown(_)),
+        "approximate ratio must not clear: {:?}",
+        enc.formula
     );
 }
 
@@ -398,6 +416,14 @@ fn constant_division_by_zero_fails_the_cut() {
 
 fn opaque_q(hir: &Hir) -> QuantityId {
     find_q(hir, |q| matches!(q, Quantity::ExternalFn { .. }))
+}
+
+/// Did the encoder fall back to a structure-keyed opaque scalar?
+fn has_opaque(hir: &Hir) -> bool {
+    hir.table
+        .quantities()
+        .iter()
+        .any(|q| matches!(q, Quantity::ExternalFn { .. }))
 }
 
 #[test]
@@ -629,11 +655,22 @@ fn non_finite_literal_is_unknown_not_an_atom() {
 }
 
 #[test]
-fn constant_arithmetic_overflow_matches_interpreter_nonfinite() {
-    // Constant subtrees emulate stepwise f64: ~f64::MAX × 10 → inf → §4.4
-    // makes the enclosing comparison false (same as the interpreter).
+fn constant_arithmetic_matches_the_interpreter_at_the_extremes() {
+    // Exact rational constant arithmetic does not overflow, and neither does
+    // the interpreter's — `f64::MAX * 10` is a perfectly good rational on
+    // both sides, so the encoder keeps the exact atom instead of folding to
+    // False. (It folded to False while both emulated stepwise f64.)
     let max = format!("17976931348623157{}", "0".repeat(292));
     let (enc, _) = encode(&format!("region SR\n  select MET > {max} * 10\n"), 0);
+    assert!(
+        matches!(&enc.formula, Formula::Atom(a) if a.constant() > &Rat::from_decimal_f64(f64::MAX).unwrap()),
+        "got {:?}",
+        enc.formula
+    );
+
+    // `^` is still on the f64 path in both, so it still overflows to the
+    // §4.4 non-value and the comparison is false.
+    let (enc, _) = encode(&format!("region SR\n  select MET > {max} ^ 2\n"), 0);
     assert_eq!(enc.formula, Formula::False, "got {:?}", enc.formula);
 }
 
@@ -658,11 +695,36 @@ fn abs_versus_constant_expands_exactly() {
 }
 
 #[test]
-fn abs_of_additive_inner_is_opaque_not_flattened() {
-    // Audit C3: `abs(MET - 200)` must NOT unguarded-flatten the inner sub.
+fn abs_of_exact_additive_inner_expands() {
+    // Audit C3 was `abs(MET - 200)` flattening while the interpreter rounded
+    // the subtraction. M4: the subtraction is exact rational arithmetic, so
+    // the exact expansion `-50 < MET-200 < 50` is the interpreter's own
+    // predicate. (An APPROXIMATE inner still goes opaque — see
+    // `abs_of_approx_additive_inner_is_opaque`.)
     let (enc, hir) = encode("region SR\n  select abs(MET - 200) < 50\n", 0);
-    let q = opaque_q(&hir);
-    assert_eq!(enc.formula, atom1(q, Rel::Lt, 50.0));
+    let met = met_q(&hir);
+    assert_eq!(
+        enc.formula,
+        Formula::And(vec![
+            atom1(met, Rel::Lt, 250.0),
+            atom1(met, Rel::Gt, 150.0)
+        ])
+    );
+    assert!(!has_opaque(&hir));
+}
+
+#[test]
+fn abs_of_approx_additive_inner_is_opaque() {
+    // `dR` is f64 in the interpreter, so `dR - 0.1` rounds and an exact
+    // expansion would sit off its boundary: intern opaque instead.
+    let src = "object jets\n  take Jet\n\
+               region SR\n  select abs(dR(jets[0], jets[1]) - 0.1) < 0.05\n";
+    let (enc, hir) = encode(src, 0);
+    assert!(
+        has_opaque(&hir) || matches!(enc.formula, Formula::Unknown(_)),
+        "approximate additive inner must not flatten: {:?}",
+        enc.formula
+    );
 }
 
 // `|E| >= 0`, so comparing `|E|` to a NEGATIVE constant is itself constant.

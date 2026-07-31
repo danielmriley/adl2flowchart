@@ -25,6 +25,7 @@ pub mod ext;
 pub mod hir;
 pub mod intern;
 pub mod merge;
+pub mod num;
 pub mod objects;
 pub mod quantity;
 pub mod rat;
@@ -33,6 +34,7 @@ pub mod resolve;
 pub use dump::{collection_ref, hir_dump, quantity_table_dump, render_node};
 pub use rat::{Rat, RatParts};
 pub use merge::merge_hirs;
+pub use num::{NumVal, bin_arith, num_max, num_min};
 pub use objects::object_table;
 pub use ext::ExtDecls;
 pub use hir::{

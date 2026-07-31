@@ -1,14 +1,17 @@
 ---
 source: crates/adl-cli/tests/cli.rs
-assertion_line: 237
 expression: stdout(&out)
 ---
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "unit": "disjoint_pt.adl",
   "solver": "none",
   "sampling": {
     "events": 124,
+    "refutations": 0
+  },
+  "refute": {
+    "probes": 64,
     "refutations": 0
   },
   "regions": [
@@ -69,8 +72,8 @@ expression: stdout(&out)
     },
     {
       "id": "NNEG",
-      "statement": "pt, m, e, ht-family scalars, MET.pt, dR >= 0; also opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)",
-      "assumption": "none",
+      "statement": "pt, e, ht-family scalars, MET.pt, dR >= 0; also opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)",
+      "assumption": "the loader rejects events outside this domain (adl-interp event::check_domain)",
       "instances": 2
     },
     {

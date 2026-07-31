@@ -17,13 +17,15 @@ pub mod encode;
 mod engine;
 pub mod interval;
 mod reconcile;
+pub mod refute;
 mod render;
 pub mod report;
 pub mod witness;
 
 pub use report::{
     AxiomUse, BinCheckReport, CoreItem, CoverageStatus, DroppedLeaf, EmptyStatus, FailOn,
-    OVERLAP_CAVEAT, PairReport, RegionReport, Report, SCHEMA_VERSION, VerdictKind, WitnessValue,
+    OVERLAP_CAVEAT, PairReport, RefuteInfo, RegionReport, Report, SCHEMA_VERSION, SamplingInfo,
+    VerdictKind, WitnessValue,
 };
 pub use witness::Validation;
 
@@ -68,11 +70,11 @@ pub struct AnalysisOptions {
     /// off for single-file analysis, where structural interning already
     /// relates same-source collections.
     pub reconcile: bool,
-    /// Certify disjointness proofs via the independent exact-rational
-    /// checker (adl-certify, v2 Phase 4): solver-UNSAT pairs whose core
-    /// cannot be certified report CANDIDATE DISJOINT instead of PROVEN.
-    /// ON by default (measured 100% certification on the real corpus,
-    /// 255/255 solver-path proofs); disable with --no-certify for speed.
+    /// Certify UNSAT-direction proofs via the independent exact-rational
+    /// checker (adl-certify): solver-UNSAT pairwise disjointness,
+    /// emptiness, subset, and bin claims whose core/frame cannot be
+    /// certified demote to a candidate / non-claim instead of PROVEN.
+    /// ON by default; disable with --no-certify for speed.
     pub certify: bool,
     /// Sampling-gate battery size (proof-system v2 Phase 1): every UNSAT-side
     /// PROVEN verdict (disjoint / empty / subset) is refuted against this many
@@ -81,6 +83,12 @@ pub struct AnalysisOptions {
     /// internal-contradiction diagnostic (an encoder/axiom bug, caught at
     /// verdict time instead of shipped). `0` disables the gate.
     pub sample_gate: usize,
+    /// Adversarial refutation search (trustworthy-verify M1): after every
+    /// UNSAT-side PROVEN, search cut-anchored + flat-spot probe events for
+    /// an interpreter-accepted counterexample and demote on hit. ON by
+    /// default; disable with `--no-refute-gate`. Independent of
+    /// [`Self::sample_gate`].
+    pub refute_gate: bool,
     /// Build a portable certificate bundle ([`adl_certify::CombineBundle`])
     /// for every certified PROVEN DISJOINT pair, surfaced on
     /// [`Report::combine_bundles`](report::Report). Set by `verify --combine`;
@@ -96,6 +104,7 @@ impl Default for AnalysisOptions {
             fail_on: FailOn::default(),
             reconcile: false,
             sample_gate: 64,
+            refute_gate: true,
             certify: true,
             combine: false,
         }
@@ -233,9 +242,14 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
     // when the gate is disabled). Cut constants from the unit's HIR expand
     // to {c, next_up(c), next_down(c)} in the boundary pools so off-pool
     // cut edges (AUDIT_2026-07-28 §3) are exercised.
+    let cuts = cut_constants(hir);
     let gate_events = if opts.sample_gate > 0 {
-        let cuts = cut_constants(hir);
         adl_interp::sample::battery_with_cuts(ext, opts.sample_gate, &cuts)
+    } else {
+        Vec::new()
+    };
+    let refute_probes = if opts.refute_gate {
+        refute::probe_events(ext, &cuts)
     } else {
         Vec::new()
     };
@@ -252,6 +266,8 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         spawn_failures: 0,
         solver_errors: 0,
         gate_events,
+        refute_probes,
+        refute_gate: opts.refute_gate,
         certify: opts.certify,
         recon_facts: Vec::new(),
         combine: opts.combine,
@@ -346,8 +362,8 @@ mod tests {
             &ext,
         );
         let cuts = cut_constants(&hir);
-        assert!(cuts.iter().any(|&v| v == 0.5), "{cuts:?}");
-        assert!(cuts.iter().any(|&v| v == 100.0), "{cuts:?}");
+        assert!(cuts.contains(&0.5), "{cuts:?}");
+        assert!(cuts.contains(&100.0), "{cuts:?}");
     }
 
     /// G6: `--fail-on=gap` must fire on unproven bin-pair disjointness,
@@ -360,6 +376,7 @@ mod tests {
             unit: "t".to_owned(),
             solver: "none".to_owned(),
             sampling: None,
+            refute: None,
             solver_degraded: None,
             regions: Vec::new(),
             pairwise: Vec::new(),

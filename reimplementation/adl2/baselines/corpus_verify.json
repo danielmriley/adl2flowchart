@@ -1,0 +1,12 @@
+{
+  "schema": "smash2-corpus-verify/1",
+  "source": "remeasured after M3 (rational event model + NumVal interpreter) and M4 (encoder fold realignment). PROVEN DISJOINT is unchanged at 794 across HEAD 9a5650c, pre-M4 and post-M4 — the M4 relaxation recovered precision only on the overlap side: 19 pairs POSSIBLY -> PROVEN OVERLAPPING (each with an interpreter-validated witness) and 1 POSSIBLY -> CANDIDATE, in the three copies of CMS-SUS-16-032 plus small_samples/cms.adl (HT01 = jets[0]+jets[1] flattens to a linear atom over exact element pT, so the witness realizes), golden features-num_10 (the reassociated HT terms cancel exactly now) and tutorials/ex04. files/pairs are +1 for the new golden features-num_11 (the CE-15 kill case).",
+  "files": 139,
+  "files_exit_0": 139,
+  "pairs": 1894,
+  "proven_disjoint": 794,
+  "proven_overlapping": 72,
+  "candidate_overlapping": 45,
+  "possibly": 983,
+  "unknown": 0
+}

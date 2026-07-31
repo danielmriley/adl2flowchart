@@ -22,7 +22,13 @@ use serde::Serialize;
 /// Still v3 after the reconciliation ledger: `reconciliations` and
 /// `recon_near_misses` are ADDITIVE and omitted when empty, so no existing
 /// field changed meaning and single-file output is byte-identical.
-pub const SCHEMA_VERSION: u32 = 3;
+///
+/// v4 (trustworthy verify M2): region `empty` gained `"candidate"` (a
+/// solver-UNSAT emptiness the independent certifier could not verify —
+/// mirrors pairwise `candidate_disjoint`). Consumers that only knew
+/// `proven` / `not_proven` / `unknown` must treat the new variant as a
+/// non-claim (not Proven).
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +118,15 @@ pub struct SamplingInfo {
     pub refutations: usize,
 }
 
+/// Adversarial refute-gate accounting (see [`Report::refute`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RefuteInfo {
+    /// Probe events searched for each UNSAT-side PROVEN claim.
+    pub probes: usize,
+    /// Verdicts the adversarial search demoted.
+    pub refutations: usize,
+}
+
 /// values for quantities introduced by axioms rather than the regions'
 /// own cuts.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -125,10 +140,31 @@ pub struct WitnessValue {
 #[serde(rename_all = "snake_case")]
 pub enum EmptyStatus {
     /// UNSAT(Ax ∧ R⁺): no physical event can satisfy a superset of R.
+    /// Solver-path proofs additionally require independent Farkas
+    /// certification when `--certify` is on; interval-only emptiness
+    /// (empty unsat core) remains Proven without a certificate.
     Proven,
+    /// The solver reported UNSAT for the emptiness query, but the
+    /// independent exact-rational certifier could not verify the proof
+    /// — a candidate, NOT a proof. Only produced under `--certify`
+    /// (mirrors [`VerdictKind::CandidateDisjoint`]); with certification
+    /// off, solver-UNSAT still reports [`EmptyStatus::Proven`].
+    Candidate,
     NotProven,
     /// Solver inconclusive / unavailable for this check.
     Unknown,
+}
+
+impl EmptyStatus {
+    #[must_use]
+    pub fn human(self) -> &'static str {
+        match self {
+            EmptyStatus::Proven => "PROVEN EMPTY",
+            EmptyStatus::Candidate => "CANDIDATE EMPTY",
+            EmptyStatus::NotProven => "NOT PROVEN EMPTY",
+            EmptyStatus::Unknown => "UNKNOWN EMPTY",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -141,7 +177,8 @@ pub struct RegionReport {
     pub dual_hedges: usize,
     pub dropped: Vec<DroppedLeaf>,
     pub empty: EmptyStatus,
-    /// Explanation when `empty == Proven`.
+    /// Explanation when `empty` is [`EmptyStatus::Proven`] or
+    /// [`EmptyStatus::Candidate`] (solver unsat core mapped to origins).
     pub empty_core: Vec<CoreItem>,
 }
 
@@ -291,6 +328,11 @@ pub struct Report {
     /// bug, not a user error). Absent when the gate is disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<SamplingInfo>,
+    /// Adversarial refute-gate accounting (trustworthy-verify M1): cut-
+    /// anchored + flat-spot probe count and demotions. Absent when
+    /// `--no-refute-gate` / `refute_gate: false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refute: Option<RefuteInfo>,
     pub regions: Vec<RegionReport>,
     pub pairwise: Vec<PairReport>,
     pub bin_checks: Vec<BinCheckReport>,
@@ -453,6 +495,20 @@ impl Report {
         let mut s = String::new();
         let _ = writeln!(s, "ADL2 analysis report — {}", self.unit);
         let _ = writeln!(s, "solver: {}", self.solver);
+        if let Some(si) = &self.sampling {
+            let _ = writeln!(
+                s,
+                "sampling gate: {} events, {} refutation(s)",
+                si.events, si.refutations
+            );
+        }
+        if let Some(ri) = &self.refute {
+            let _ = writeln!(
+                s,
+                "refute gate: {} probes, {} refutation(s)",
+                ri.probes, ri.refutations
+            );
+        }
         let _ = writeln!(s, "\n== regions ==");
         for r in &self.regions {
             let mut line = format!(
@@ -472,18 +528,34 @@ impl Report {
             for d in &r.dropped {
                 let _ = writeln!(s, "  dropped (line {}): {}", d.line, d.reason);
             }
-            if r.empty == EmptyStatus::Proven {
-                let core = r
-                    .empty_core
-                    .iter()
-                    .map(CoreItem::human)
-                    .collect::<Vec<_>>()
-                    .join(" with ");
-                let _ = writeln!(
-                    s,
-                    "  region {} provably selects no events — UNSAT: {core}",
-                    r.name
-                );
+            match r.empty {
+                EmptyStatus::Proven => {
+                    let core = r
+                        .empty_core
+                        .iter()
+                        .map(CoreItem::human)
+                        .collect::<Vec<_>>()
+                        .join(" with ");
+                    let _ = writeln!(
+                        s,
+                        "  region {} provably selects no events — UNSAT: {core}",
+                        r.name
+                    );
+                }
+                EmptyStatus::Candidate => {
+                    let core = r
+                        .empty_core
+                        .iter()
+                        .map(CoreItem::human)
+                        .collect::<Vec<_>>()
+                        .join(" with ");
+                    let _ = writeln!(
+                        s,
+                        "  region {} may be empty (solver UNSAT, uncertified) — {core}",
+                        r.name
+                    );
+                }
+                EmptyStatus::NotProven | EmptyStatus::Unknown => {}
             }
         }
         if !self.bin_checks.is_empty() {

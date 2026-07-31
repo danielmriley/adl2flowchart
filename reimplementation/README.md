@@ -102,14 +102,16 @@ and a streaming chunked-parallel run loop that is byte-deterministic at any
 `--jobs`. The numeric core of the analyzer is **exact rational** (`0.3` is
 `3/10`, not an f64); merged-unit **cross-file** verdicts (`verify --cross`)
 with same-base collection reconciliation are shipped; and every
-disjointness proof is **independently re-checked** by a self-contained
-exact-rational certifier (`adl-certify`) that replays a Farkas certificate
-against a small trusted kernel — the solver's *search* is never taken on
-its word (what the certificate covers, and what stays trusted around it,
-is spelled out in "Trust surface after certification" below). End-to-end validated on the real 20k-event T2tt Delphes sample
+solver UNSAT-direction claim (pairwise disjointness, emptiness, subset,
+bin disjointness/coverage) is **independently re-checked** by a
+self-contained exact-rational certifier (`adl-certify`) that replays a
+Farkas certificate against a small trusted kernel — the solver's
+*search* is never taken on its word (what the certificate covers, and
+what stays trusted around it, is spelled out in "Trust surface after
+certification" below). End-to-end validated on the real 20k-event T2tt Delphes sample
 against independent uproot/numpy oracles (see
-[`PIPELINE_REPORT.md`](../docs/archive/adl2/PIPELINE_REPORT.md)) — 751 tests across 71 suites, a
-138-file corpus (68 base + 58 pinned-verdict golden + 12 cross-file golden),
+[`PIPELINE_REPORT.md`](../docs/archive/adl2/PIPELINE_REPORT.md)) — 870 tests across 81 suites, a
+139-file corpus (68 base + 59 pinned-verdict golden + 12 cross-file golden),
 the full legacy golden battery on both solver backends, a 100k-case
 property oracle against the interpreter, and a verdict-parity comparison
 against the legacy tool with zero legacy-better differences
@@ -180,6 +182,7 @@ smash2 verify --explain analysis.adl                # full proof chains: unsat c
 smash2 verify --json analysis.adl > report.json     # versioned schema (v3)
 smash2 verify --no-solver analysis.adl              # interval heuristic only
 smash2 verify --no-certify analysis.adl             # skip the independent certifier (see below)
+smash2 verify --no-refute-gate analysis.adl         # skip the adversarial refute gate (on by default)
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
 smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
 smash2 verify --cross a.adl b.adl                   # merged unit: cross-FILE overlap matrix
@@ -214,24 +217,27 @@ validated witness event for overlap). Per `bin` set: pairwise disjointness
 and region coverage with gap witnesses. Output is deterministic — two runs
 are byte-identical.
 
-**Two independent nets sit behind every PROVEN verdict**, on by default:
+**Three independent nets sit behind every PROVEN verdict**, on by default:
 
-- **Certification** (`adl-certify`). When the solver returns UNSAT for a
-  pairwise **disjointness** query, the unsat core is handed to a self-
-  contained exact-rational checker that must produce a replayable Farkas
+- **Certification** (`adl-certify`). When the solver returns UNSAT for any
+  claim in the UNSAT direction — pairwise **disjointness**, region
+  **emptiness**, **subset**, or **bin** disjointness/coverage — the
+  unsat core (or full query frame) is handed to a self-contained
+  exact-rational checker that must produce a replayable Farkas
   certificate — a proof re-checked by a small trusted kernel, in exact
-  arithmetic, with no dependence on the solver. Emptiness, subset, and bin
-  UNSAT verdicts are not yet certified — they still rest on the solver plus
-  the sampling gate (an open item). Scope, stated precisely: the
-  certificate makes the *solver's claim about the encoded formula*
-  independently checkable — it removes solver search from the trusted
-  base, not the encoder, polarity projection, or axiom catalog, which
-  remain the meaning of "regions disjoint" and are audited by the testing
-  nets (differential oracle, metamorphic battery, sampling gate — testing,
-  not proof). A pair the checker cannot
-  certify (budget, shape, or an integrality-only refutation) is reported as
-  **CANDIDATE DISJOINT** — an honest "the solver says so but we could not
-  independently prove it" rather than a bare PROVEN. Certified pairs carry
+  arithmetic, with no dependence on the solver. Interval-only emptiness
+  / disjointness (no solver core) stays Proven without a certificate.
+  Scope, stated precisely: the certificate makes the *solver's claim
+  about the encoded formula* independently checkable — it removes
+  solver search from the trusted base, not the encoder, polarity
+  projection, or axiom catalog, which remain the meaning of the claim
+  and are audited by the testing nets (differential oracle, metamorphic
+  battery, sampling/refute gates — testing, not proof). A claim the
+  checker cannot certify (budget, shape, or an integrality-only
+  refutation) is reported as **CANDIDATE** rather than PROVEN:
+  pairwise **CANDIDATE DISJOINT**, emptiness **CANDIDATE EMPTY**
+  (`EmptyStatus::Candidate`), and uncertified **subset** / **bin**
+  claims are cleared (not counted as Proven). Certified pairs carry
   `certified: true` in `--json`. Turn it off with `--no-certify`.
 - **Sampling gate.** Every PROVEN pair is additionally checked against a
   deterministic battery of boundary events pushed through the reference
@@ -239,6 +245,12 @@ are byte-identical.
   regions of a "disjoint" pair is an internal contradiction, so the verdict
   fails closed to POSSIBLY and a bug diagnostic is filed. (No real event
   should ever trip this — it is a live self-audit of the encoder/axioms.)
+- **Refute gate** (adversarial boundary search). After every UNSAT-side
+  PROVEN (disjoint / empty / subset), cut-anchored and flat-spot probes
+  are checked through the interpreter; a hit demotes the verdict,
+  clears `certified`, and drops any combine bundle. On by default;
+  disable only with `--no-refute-gate`. Independent of the sampling
+  gate — both stay on unless you ask otherwise.
 
 **The reconciliation ledger (cross-file runs).** `verify --cross` reports a
 `== collection reconciliation ==` section showing how each analysis's
@@ -321,14 +333,14 @@ fragment status, and derived size facts (subset of parent, union bounds).
 
 ### Reading verdicts
 
-| Verdict | Matrix | Claim | Sound because |
+| Verdict | Matrix | Claim | Evidence / honesty |
 |---|---|---|---|
-| PROVEN DISJOINT | `D` | no event can pass both regions | checked on an over-approximation of each region: if even the supersets cannot intersect, the regions cannot — and the unsat core is independently certified in exact arithmetic |
-| CANDIDATE DISJOINT | `d` | the solver reports the regions disjoint, but the proof could not be independently certified — **not a certified proof** | the uncertified tier is reported separately instead of overclaiming PROVEN; disable the certifier with `--no-certify` to collapse it back into PROVEN |
-| PROVEN OVERLAPPING | `O` | a concrete event passes both | checked on under-approximations; the realized witness event is accepted by the reference interpreter in both regions (`witness_validated = true`) |
-| CANDIDATE OVERLAPPING | `c` | a joint model exists, but it rests on an opaque quantity the interpreter cannot decide — **not a proof of overlap** | the unvalidated tier is reported separately instead of overclaiming PROVEN; conservative for combination studies |
-| PROVEN SUBSET A⊆B | `s` | every event passing A passes B | UNSAT(A⁺ ∧ ¬B⁻) |
-| region EMPTY | `E` | the region's cuts contradict physical axioms | UNSAT(R⁺ ∧ axioms) |
+| PROVEN DISJOINT | `D` | no event can pass both *encoded* region supersets | Certified unsat of the encoding (Farkas) **plus** in-verify sampling/refute gates found no interpreter counterexample. Rational-fragment events/interp share `Rat` with the analyzer; irrationals (`dR`, `sqrt`, …) and encoder coverage remain trusted for *meaning* outside that fragment. |
+| CANDIDATE DISJOINT | `d` | solver UNSAT, but uncertified — **not a certified proof** | Reported separately instead of overclaiming PROVEN; `--no-certify` collapses this tier back into PROVEN |
+| PROVEN OVERLAPPING | `O` | a concrete shared event exists | **Interpreter-validated** event evidence (`witness_validated = true`) — the strongest product claim today |
+| CANDIDATE OVERLAPPING | `c` | a joint model exists, but rests on an opaque the interpreter cannot decide — **not a proof of overlap** | Unvalidated tier; conservative for combination studies |
+| PROVEN SUBSET A⊆B | `s` | every event passing A passes B | Certified UNSAT(A⁺ ∧ ¬B⁻) when certifier is on; uncertified solver UNSAT is cleared (not Proven) |
+| region EMPTY | `E` / candidate | cuts contradict physical axioms | Certified UNSAT(R⁺ ∧ axioms) → PROVEN EMPTY; uncertified solver UNSAT → **CANDIDATE EMPTY** |
 | POSSIBLY / UNKNOWN | `?` / `U` | no claim | — |
 
 Anything the tool cannot encode faithfully becomes an explicit `Unknown`
@@ -582,28 +594,38 @@ test), against the native libz3 backend or a conformance-equivalent
 SMT-LIB subprocess backend. Every overlap witness is converted to a
 synthetic event and re-validated through the interpreter; a witness the
 interpreter rejects downgrades the verdict and files an internal
-diagnostic. Every disjointness UNSAT is then handed to **`adl-certify`**, a
-self-contained exact-rational checker independent of the solver: it
-searches for a Farkas certificate over the rationals and replays it through
-a small trusted kernel, so a PROVEN DISJOINT never rests on the solver's
-word alone — an uncertifiable core is reported as CANDIDATE DISJOINT
-instead. Certification replaced trust in solver *search* with trust in a
-small arithmetic kernel — half the old trusted base, not all of it; the
-encoder, polarity projection, and axioms remain trusted for what the
-certified formula *means* (see "Trust surface after certification" below). On the SAT side, a deterministic **sampling gate** pushes boundary
-events through the interpreter and fails any PROVEN pair closed to POSSIBLY
-if a sampled event lands in both regions.
+diagnostic. Every solver UNSAT-direction claim (pairwise disjointness,
+emptiness, subset, bin disjointness/coverage) is then handed to
+**`adl-certify`**, a self-contained exact-rational checker independent of
+the solver: it searches for a Farkas certificate over the rationals and
+replays it through a small trusted kernel, so a PROVEN claim never rests
+on the solver's word alone — an uncertifiable core is reported as
+CANDIDATE (or the subset/bin claim is cleared) instead. Certification
+replaced trust in solver *search* with trust in a small arithmetic
+kernel — half the old trusted base, not all of it; the encoder, polarity
+projection, and axioms remain trusted for what the certified formula
+*means* (see "Trust surface after certification" below). On the SAT side,
+a deterministic **sampling gate** pushes boundary events through the
+interpreter and fails any PROVEN pair closed to POSSIBLY if a sampled
+event lands in both regions.
 
 The numeric core is **exact rational** (`adl_sema::Rat`, a `BigRational`
 newtype with shortest-round-trip decimal semantics — `0.3` is exactly
 `3/10`), so boundary folding never invents an f64 seam that the legacy
-tool's stepwise floats once turned into false PROVEN verdicts. Where the
-analyzer's flattened canonical form *could* diverge from the interpreter's
-stepwise f64 — an additive expression that is not f64-faithful (more than
-one add/sub, or a non-dyadic additive constant) — an **f64-faithfulness
-guard** interns the operand as a structure-keyed opaque scalar instead of
-a shared linear atom, so two regions that round differently can never
-unify into a false disjoint. The encodable fragment now covers ratio cuts
+tool's stepwise floats once turned into false PROVEN verdicts. The
+**interpreter** shares that core: event values load as `Rat` and the
+rational fragment (literals, element properties, sizes, event scalars,
+`MET.pt`, and `+ - * /` over them) evaluates exactly, so the analyzer's
+flattened canonical form and the interpreter's evaluation are the same
+arithmetic — the encoder's constant folding literally calls the
+interpreter's `adl_sema::num::bin_arith`. Genuinely irrational values
+(`dR`/`dPhi`/`dEta`, `sqrt`, Lorentz kinematics, `^`) stay `f64` on both
+sides, and there the encoder is conservative: it flattens only IEEE-exact
+steps (bare leaf, `neg`/`abs`, power-of-two scaling), cuts at the `f64`
+threshold `fl(k)` rather than the decimal `k` (the interpreter compares in
+`f64` there), and refuses a comparison that would put an exact quantity
+and an approximate one in one atom, since the interpreter rounds the exact
+side at that edge. The encodable fragment now covers ratio cuts
 and ratio-bands (exact denominator clearing; nonlinear denominators stay
 opaque), inclusive/excluded bands (`[]`/`][`), scalar n-ary `min`/`max`,
 `abs`, bare and back-indexed elements (`jets[-1]`), static slices, and
@@ -625,10 +647,16 @@ corpus** (`../../examples/golden/`, 58 single-file + 12 cross-file across 6
 merge groups) pins fully-known disjoint/overlapping/empty ground truth:
 each file declares its expected verdict in a `# GOLDEN` / `# GOLDEN-CROSS`
 header and `golden_regions.rs` / `golden_cross.rs` assert the analyzer
-reproduces it exactly. Paired with the property oracle (which guarantees no
-false PROVEN) and the independent certifier, a green golden run means those
-PROVEN headers are real. Every confirmed counterexample the batteries have
-ever found is regression-locked in `../docs/archive/adl2/COUNTEREXAMPLES.md` + `regressions.rs`.
+reproduces it exactly. Paired with the differential property oracle
+(sampling + metamorphic audits of encoder↔interpreter agreement — **not**
+a proof that no false PROVEN exists outside the generated shape × event
+grid), the independent certifier, and the in-verify sampling/refute
+gates, a green golden run is strong evidence those PROVEN headers are
+real. Every confirmed counterexample the batteries have ever found is
+regression-locked in `../docs/archive/adl2/COUNTEREXAMPLES.md` +
+`regressions.rs`. The corpus verify gate
+(`adl2/scripts/verify_corpus_gate.sh`) additionally pins PROVEN DISJOINT
+against a committed baseline so the count cannot rise unnoticed.
 
 ### Trust surface after certification
 
@@ -640,17 +668,27 @@ each piece:
 
 | Still trusted | What it decides | Audited by (testing, not proof) |
 |---|---|---|
-| encoder (HIR → formula) | that the formula *means* the regions | differential oracle (encoder vs interpreter, 100k cases) |
-| polarity / over-approximation | that R⁺ really is a superset | type-enforced construction + sampling gate |
-| axiom catalog + reconciliation facts | the background physics handed to the solver | per-axiom event tests, metamorphic battery, sampling gate |
+| encoder (HIR → formula) | that the formula *means* the regions | differential oracle, fold-vs-f64 unit nets, sampling + refute gates |
+| polarity / over-approximation | that R⁺ really is a superset | type-enforced construction + sampling/refute gates |
+| axiom catalog + reconciliation facts | the background physics handed to the solver | per-axiom event tests, metamorphic battery, sampling/refute gates |
 | `adl_sema::Rat` + the certify replay kernel | that certificate checking is itself correct | property tests (sat-by-construction never certifies, tamper suite), z3 agreement |
 | reference interpreter | the meaning of every region (overlap witnesses, sampling) | uproot/numpy pipeline oracles, legacy golden battery |
+
+**PROVEN OVERLAPPING** is interpreter-validated event evidence — the SAT
+side's product claim. **PROVEN DISJOINT** is certified unsat of the
+encoding plus the in-verify sampling/refute gates; on the rational
+fragment, events and interp share `Rat` with the analyzer, so meaning
+alignment holds there. Irrationals and incomplete encoder coverage remain
+trusted for meaning outside that fragment. Neither the differential
+oracle nor the gates *prove* absence of false PROVEN outside their
+search budgets.
 
 The honest summary: certification replaced trust in solver search with
 trust in a small arithmetic kernel — half the old trusted base, not all
 of it. The remaining rows are covered by nets that *audit* them
 continuously; none of those nets constitute proof, which is exactly why
-they all stay on by default.
+they all stay on by default (`--no-certify` / `--no-refute-gate` to
+disable).
 
 ---
 
@@ -736,8 +774,9 @@ Build history lives in `../docs/archive/adl2/`: `BUILD_NOTES.md`, `BUILD_REPORT.
 `../docs/archive/adl2/PIPELINE_REPORT.md` (Phase 10 real-sample e2e).
 
 ```bash
-cargo test --workspace          # full battery (751 tests / 71 suites, subprocess backend)
-scripts/corpus_gate.sh          # all 136 example files parse + resolve
+cargo test --workspace          # full battery (870 tests / 81 suites, subprocess backend)
+scripts/corpus_gate.sh          # all example files parse + resolve
+scripts/verify_corpus_gate.sh   # full `verify` sweep; FAIL if PROVEN DISJOINT rises vs baselines/corpus_verify.json
 cargo test -p adl-analysis --test golden_regions # single-file golden verdict corpus (needs a solver)
 cargo test -p adl-analysis --test golden_cross    # cross-file (merged/reconciled) golden corpus
 cargo test -p adl-certify        # the independent exact-rational certifier (kernel, replay, tamper)
@@ -762,9 +801,9 @@ SMASH2_RUN_DELPHES_E2E=1 cargo test -p adl-cli --test ingest
   element is a sound free leaf on the disjoint/empty side, but the witness
   builder cannot realize it, so an overlap that depends on it caps at
   POSSIBLY.
-- Known residual soundness boundary (out of corpus, monitored by the
-  property oracle): single-subtraction catastrophic cancellation `q1 - q2`
-  with `q1 ≈ q2` huge passes the f64-faithfulness guard.
+- Integer powers are not in the rational fragment: `pt^2` goes through
+  `powf` in the interpreter, so the encoder treats any `^` as approximate
+  and a cut like `ptErr / pt^2 < 10` interns opaque rather than clearing.
 - Legacy feature not yet ported: the object-pair disjointness printout
   (still in `../../legacy_parser/`). The object-attributes listing *is*
   ported — `smash2 objects`.

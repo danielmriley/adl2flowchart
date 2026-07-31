@@ -43,6 +43,19 @@ impl Rat {
         Rat(BigRational::from_integer(BigInt::from(n)))
     }
 
+    /// Exact fraction `numer/denom` in lowest terms. `None` when `denom == 0`.
+    /// Sign may live on either part; [`BigRational`] normalizes it.
+    #[must_use]
+    pub fn from_ratio(numer: i64, denom: i64) -> Option<Self> {
+        if denom == 0 {
+            return None;
+        }
+        Some(Rat(BigRational::new(
+            BigInt::from(numer),
+            BigInt::from(denom),
+        )))
+    }
+
     /// The exact rational of a finite `f64`, read as its **shortest
     /// round-trip decimal** (`0.3 → 3/10`, `100.0 → 100`, `-1.5 → -3/2`).
     /// Returns `None` for a non-finite `f64` — non-finite values cannot
@@ -66,6 +79,46 @@ impl Rat {
         }
         let denom: BigInt = num_traits::pow(BigInt::from(10), frac_part.len());
         Some(Rat(BigRational::new(numer, denom)))
+    }
+
+    /// The **exact dyadic value** of a finite `f64` — `0.3` becomes
+    /// `5404319552844595/2^54`, not `3/10`.
+    ///
+    /// This is the opposite reading from [`Self::from_decimal_f64`] and is
+    /// wanted in exactly one place: the *approximate* comparison edge. When
+    /// the interpreter compares an `Approx` value against a threshold it does
+    /// so in `f64`, i.e. against `fl(k)` — so the encoder's atom for such a
+    /// comparison must use `fl(k)`'s exact value, or the two disagree in the
+    /// half-ulp window between `k` and `fl(k)` (M4).
+    ///
+    /// `None` for a non-finite `f64`.
+    #[must_use]
+    pub fn from_f64_exact(v: f64) -> Option<Self> {
+        if !v.is_finite() {
+            return None;
+        }
+        let bits = v.to_bits();
+        let negative = bits >> 63 == 1;
+        let raw_exp = ((bits >> 52) & 0x7ff) as i32;
+        let raw_mant = bits & 0x000f_ffff_ffff_ffff;
+        // Subnormal (raw_exp == 0) has no implicit leading 1 and a fixed scale.
+        let (mant, exp2) = if raw_exp == 0 {
+            (raw_mant, -1074_i32)
+        } else {
+            (raw_mant | 0x0010_0000_0000_0000, raw_exp - 1075)
+        };
+        let mut numer = BigInt::from(mant);
+        if negative {
+            numer = -numer;
+        }
+        let two = BigInt::from(2);
+        Some(if exp2 >= 0 {
+            let scale = num_traits::pow(two, exp2.unsigned_abs() as usize);
+            Rat(BigRational::from_integer(numer * scale))
+        } else {
+            let denom = num_traits::pow(two, exp2.unsigned_abs() as usize);
+            Rat(BigRational::new(numer, denom))
+        })
     }
 
     #[must_use]
@@ -293,6 +346,40 @@ mod tests {
         assert_eq!(inv.to_parts().numerator, "1");
         assert_eq!(inv.to_parts().denominator, "49");
         assert!(one.checked_div(&Rat::zero()).is_none());
+    }
+
+    #[test]
+    fn from_f64_exact_reads_the_dyadic_value_not_the_decimal() {
+        // The two readings of 0.3 must be different — and ordered, since
+        // fl(0.3) rounds down.
+        let dec = Rat::from_decimal_f64(0.3).unwrap();
+        let dyadic = Rat::from_f64_exact(0.3).unwrap();
+        assert_ne!(dec, dyadic);
+        assert!(dyadic < dec, "fl(0.3) < 3/10");
+        assert_eq!(dyadic.to_parts().denominator, "18014398509481984"); // 2^54
+        // No f64 lies strictly between them: that half-open window is exactly
+        // where an exact-boundary atom would disagree with an f64 compare.
+        assert!(Rat::from_f64_exact(0.3_f64.next_up()).unwrap() > dec);
+    }
+
+    #[test]
+    fn from_f64_exact_round_trips_every_shape() {
+        for v in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.5,
+            0.1,
+            f64::MIN_POSITIVE,
+            f64::MIN_POSITIVE / 4.0, // subnormal
+            f64::MAX,
+            -f64::MAX,
+        ] {
+            let r = Rat::from_f64_exact(v).unwrap();
+            assert_eq!(r.to_f64(), v, "round trip {v:?}");
+        }
+        assert!(Rat::from_f64_exact(f64::NAN).is_none());
+        assert!(Rat::from_f64_exact(f64::INFINITY).is_none());
     }
 
     #[test]

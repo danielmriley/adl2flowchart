@@ -100,11 +100,11 @@ fn ce4_event_loader_floats_roundtrip() {
     .unwrap();
     let eta_key = ext().prop_canon("eta").0;
     let eta = e.collections["electron"][0].get(&eta_key).unwrap();
-    assert_eq!(
-        eta, 50.999_999_046_325_684_f64,
-        "loader must not perturb values"
-    );
-    assert_eq!(e.scalars["ht"], 25.999_999_046_325_684_f64);
+    // M3a: values load as shortest-decimal Rat (float_roundtrip → from_decimal_f64).
+    let want_eta = adl_sema::Rat::from_decimal_f64(50.999_999_046_325_684).unwrap();
+    let want_ht = adl_sema::Rat::from_decimal_f64(25.999_999_046_325_684).unwrap();
+    assert_eq!(eta, &want_eta, "loader must not perturb values");
+    assert_eq!(e.scalars["ht"], want_ht);
 }
 
 /// CE-5 (verdict stability): swap(A,B) flipped PROVEN OVERLAPPING to
@@ -176,6 +176,7 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         solver: "synthetic".to_owned(),
         solver_degraded: None,
         sampling: None,
+        refute: None,
         regions: Vec::new(),
         pairwise: vec![pair],
         bin_checks: Vec::new(),

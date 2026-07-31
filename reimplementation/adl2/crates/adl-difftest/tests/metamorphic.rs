@@ -40,6 +40,12 @@ fn config() -> ProptestConfig {
         c.cases = DEFAULT_CASES;
     }
     c.failure_persistence = None;
+    // Each shrink candidate re-runs TWO full solver analyses, and a failing
+    // case is by construction one the certifier finds expensive — the
+    // default budget (cases × 4 = 1000) turned one CI failure into an
+    // hour-long shrink loop. 128 keeps minimization useful while bounding
+    // a failing run to minutes (CI post-mortem, hotfix `002301f`).
+    c.max_shrink_iters = 128;
     c
 }
 

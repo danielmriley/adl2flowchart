@@ -192,7 +192,8 @@ enum Command {
     },
 }
 
-/// Restore the default SIGPIPE disposition.
+/// Exit 141 quietly when stdout's reader goes away, WITHOUT touching the
+/// process SIGPIPE disposition.
 ///
 /// Rust sets `SIGPIPE` to `SIG_IGN` before `main`, which turns a closed pipe
 /// into an `EPIPE` write error — and `println!` *panics* on write errors. So
@@ -200,33 +201,39 @@ enum Command {
 /// `failed printing to stdout: Broken pipe` and exit 101, a panic on entirely
 /// ordinary shell usage.
 ///
-/// Restoring `SIG_DFL` makes smash2 behave like every other unix filter: once
-/// the reader goes away the process is terminated by the signal, silently, at
-/// whichever write hits the closed pipe. It is preferred over catching
-/// `ErrorKind::BrokenPipe` per write for two reasons: it covers every current
-/// and future stdout write in the tree (there are ~15 `print!` sites across
-/// four subcommands, and missing one reintroduces the panic), and it does not
-/// convert a truncated pipe into exit 0, which would mask a real `--fail-on`
-/// verdict from a CI pipeline.
+/// An earlier fix restored `SIG_DFL` process-wide. That covered every stdout
+/// write, but the disposition applies to EVERY pipe in the process — and the
+/// persistent z3 backend (`adl-solver`) writes to its child's stdin and
+/// RELIES on a dead child surfacing as an `EPIPE` `io::Error` so it can fail
+/// closed (`Unknown` + respawn accounting). Under `SIG_DFL`, the first write
+/// to a crashed solver killed smash2 outright — the broken-solver report
+/// never printed (caught by `verify_reports_a_broken_solver_loudly_…`).
 ///
-/// The tradeoff: signal disposition is process-global. If this crate's logic
-/// were ever hosted in-process by another program, that host would inherit the
-/// disposition — which is exactly why this lives in `main` and not in any
-/// library crate.
-#[cfg(unix)]
-fn restore_sigpipe() {
-    // SAFETY: `signal` with `SIG_DFL` is async-signal-safe and this runs once,
-    // at the top of `main`, before any thread exists.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+/// So instead: keep `SIG_IGN`, and install a panic hook that recognizes the
+/// stdlib's broken-pipe print panic and exits with 141 — the same status a
+/// SIGPIPE kill produces, so `smash2 … | head` still looks like every other
+/// unix filter to the shell, a truncated pipe is never exit 0 (no masked
+/// `--fail-on`), and solver-child pipes stay ordinary handled errors. Any
+/// other panic is passed to the previous hook unchanged.
+fn exit_quietly_on_broken_stdout() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if msg.contains("Broken pipe") && msg.contains("printing") {
+            // 128 + SIGPIPE(13): what a real signal kill reports to the shell.
+            std::process::exit(141);
+        }
+        previous(info);
+    }));
 }
 
-#[cfg(not(unix))]
-fn restore_sigpipe() {}
-
 fn main() -> ExitCode {
-    restore_sigpipe();
+    exit_quietly_on_broken_stdout();
     let cli = Cli::parse();
     let verbose = cli.verbose;
     let result = match cli.command {

@@ -1004,3 +1004,79 @@ fn guarded_negation_is_rewrite_invariant() {
     let plain = enc(&format!("select {x}"));
     assert_eq!(n1, plain, "reject not X must encode exactly as select X");
 }
+
+/// Inheritance is a *spelling*, not a semantics: `region RB / RA / …` and the
+/// same cuts pasted into `RB` must encode identically, statement for
+/// statement.
+///
+/// Why byte-identity and not just "same conjunction": an `Inherit` used to
+/// collapse the whole inherited region into ONE named assert, while pasting
+/// produced one per cut. Both assert the same conjunction, so the solver
+/// agrees — but an unsat core can only drop what it can name, so the fused
+/// form handed the independent certifier *every* inherited cut. Past the
+/// certifier's budget that demoted a certifiable PROVEN SUBSET to no claim at
+/// all, and the metamorphic `inherit ≡ paste` invariant caught the divergence
+/// (CE-17; `ce17_inherit_vs_paste_subset_claim_survives_certification` in
+/// adl-difftest). Equal formulas make every downstream query equal by
+/// construction.
+#[test]
+fn inherit_and_paste_encode_identically() {
+    use adl_analysis::encode::encode_unit;
+    let ext = ExtDecls::legacy();
+    // Every statement kind that can sit in an inherited region: a plain cut,
+    // a disjunction, a `reject` (guarded negation), a back-indexed element,
+    // and a `bin` — which partitions the region that DECLARES it and must
+    // not follow the inheritance edge.
+    let head = "object jets\n  take Jet\nobject eles\n  take Ele\n";
+    let ra_cuts = "  select MET > 400\n  select (HT > 100 or size(jets) >= 2)\n  \
+                   reject BTag(jets[-1]) == 1\n";
+    let ra = format!("region RA\n{ra_cuts}  bin \"lo\" HT < 500\n");
+    let rb_cuts = "  select HT < 800\n  select Eta(eles[0]) [] -2 2\n";
+
+    let enc = |src: &str, region: usize| {
+        let mut hir = adl_sema::analyze_str(src, "u", &ext);
+        assert!(!adl_syntax::diag::has_errors(&hir.diags), "{:?}", hir.diags);
+        let unit = encode_unit(&mut hir, src);
+        let r = &unit.regions[region];
+        let stmts: Vec<_> = r
+            .stmts
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.over().qformula().clone(),
+                    s.under().qformula().clone(),
+                )
+            })
+            .collect();
+        let bins = unit
+            .bin_sets
+            .iter()
+            .filter(|b| b.region_idx == region)
+            .count();
+        (stmts, bins, r.leaves_total, r.leaves_encoded)
+    };
+
+    let inherit = format!("{head}{ra}region RB\n  RA\n{rb_cuts}");
+    let paste = format!("{head}{ra}region RB\n{ra_cuts}{rb_cuts}");
+    let inherited = enc(&inherit, 1);
+    assert_eq!(
+        inherited,
+        enc(&paste, 1),
+        "an inherited region must encode exactly as the pasted one"
+    );
+    // Sanity: the expansion really happened (5 cuts, not RB's own 2).
+    assert_eq!(inherited.0.len(), 5);
+    // The inherited `bin` stayed with RA.
+    assert_eq!(inherited.1, 0, "inherited bins must not follow");
+
+    // Transitive: RC inherits RB inherits RA ≡ everything pasted into RC.
+    let rc_cuts = "  select size(eles) >= 1\n";
+    let chain = format!("{head}{ra}region RB\n  RA\n{rb_cuts}region RC\n  RB\n{rc_cuts}");
+    let flat = format!("{head}{ra}region RB\n  RA\n{rb_cuts}region RC\n{ra_cuts}{rb_cuts}{rc_cuts}");
+    assert_eq!(
+        enc(&chain, 2),
+        enc(&flat, 2),
+        "inheritance must expand transitively"
+    );
+}

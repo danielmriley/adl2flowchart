@@ -208,10 +208,12 @@ impl Summary {
     ///   legitimately differ with the solver's model / region order.
     /// - PROVEN vs CANDIDATE DISJOINT: the UNSAT itself is deterministic,
     ///   but the *certificate* search runs on the solver's minimized core,
-    ///   and core CHOICE is not invariant under statement inlining — a
-    ///   paste-variant core of two small facts can certify while the
-    ///   inherit-variant core (one monolithic region-reference conjunction)
-    ///   exceeds the case-split budget. CANDIDATE is the honest downgrade.
+    ///   and core CHOICE is not invariant under every rewrite — a core of two
+    ///   small facts certifies instantly where a differently-grouped one can
+    ///   exceed the case-split budget. CANDIDATE is the honest downgrade.
+    ///   (Inheritance used to be the worst offender, fusing a whole inherited
+    ///   region into one unnameable conjunct; that is canonicalized away in
+    ///   the encoder now — CE-17 — so inherit ⇄ paste agrees exactly.)
     ///
     /// The strict interpreter-membership check in the battery remains the
     /// real net.

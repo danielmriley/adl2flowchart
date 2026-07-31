@@ -402,3 +402,46 @@ Regressions: `event::tests::parse_event_rejects_negative_object_pt` (and
 MET/HT/tag siblings), `sample::tests::every_battery_event_is_inside_the_axiom_domain`,
 `refute::tests::negative_anchors_are_clamped_into_the_domain`,
 `refute_gate::empty_region_survives_a_negative_cut_anchor`.
+
+## CE-17 — subset claim lost under inheritance: fused region encoding (2026-07-31)
+
+CE-7 again, on the flag that has no "candidate" tier to absorb it. Found
+by the metamorphic battery in CI (`inherit_vs_paste`): the same pair kind
+both ways, but `rb_in_ra` was `true` for the paste rendering and `false`
+for the inherit one.
+
+```adl
+region RA
+  select MET > 400
+  select (MET > 1 or HT > 1)     # x20 — each implied by MET > 400
+  ...
+
+region RB
+  RA                             # inherit; paste inlines RA's selects
+  select HT < 800
+```
+
+`RB ⊆ RA` holds by construction, and the paste rendering proved it: z3's
+minimized core is `{MET > 400, ¬RA⁻}` and `adl-certify` refutes that
+instantly. The inherit rendering could not — `adl-formula`'s region
+encoder turns an `Inherit` into ONE conjunction, so the analysis engine
+asserted the whole inherited region under a single name, and a solver
+core can only drop what it can name. The certifier therefore had to
+refute every inherited cut, 2²⁰ case splits, past its 100 000-branch
+budget. Since M1 an uncertifiable subset UNSAT is **no claim**, so the
+tier difference became a hard verdict difference.
+
+**Fix (canonicalize the encoding, not the assertion):**
+`adl_analysis::encode::flatten_inherits` expands inheritance to the same
+per-statement granularity that pasting produces, transitively, before
+anything is encoded — inherited `bin`s stay with the region that declares
+them, and an unknown/cyclic parent yields the same `Unknown` leaf the
+fused encoder produced. The two renderings now emit byte-identical
+formulas, so solver script, unsat core and certificate are the same
+object; nothing is asserted that was not asserted before (`over`/`under`
+distribute over `And`), so no verdict is strengthened by new information.
+
+Regressions: `regressions::ce17_inherit_vs_paste_subset_claim_survives_certification`
+(both renderings, exact source, no proptest), and the encoder-level pin
+`analysis_behaviors::inherit_and_paste_encode_identically`. CE-7's own
+test now asserts exact summary equality rather than class consistency.

@@ -208,10 +208,11 @@ fn check_sound_flags_mislabelled_validated_candidate() {
 /// under inlining — the inherit core was {one select, the monolithic RA
 /// reference conjunction} and the certificate search exceeded its case-split
 /// budget on it, while the paste core was two small facts (`d0 ∧ ¬d0`) that
-/// certify instantly. Certification strength is core-shape-dependent by
-/// design, so `Summary::consistent` treats {PROVEN, CANDIDATE} DISJOINT as
-/// one class — this pins both that equivalence and the still-strict facts
-/// (disjointness itself, empties, subsets).
+/// certify instantly. `Summary::consistent` was widened to treat {PROVEN,
+/// CANDIDATE} DISJOINT as one class — which held only until the same core
+/// sensitivity surfaced on the subset flag, where there is no candidate tier
+/// (CE-17). Inheritance is now canonicalized in the encoder, so this case
+/// agrees EXACTLY; the assertion below says so.
 #[test]
 fn ce7_inherit_vs_paste_certification_tier_wobble() {
     let define =
@@ -244,10 +245,63 @@ fn ce7_inherit_vs_paste_certification_tier_wobble() {
     // CE-7's actual regression content — inherit vs paste consistency and
     // the soundness oracle — is asserted below regardless.
     assert_eq!(s1.empty_ra, EmptyStatus::NotProven, "{s1:?}");
-    assert!(
-        s1.consistent(&s2),
-        "inherit vs paste must stay consistent:\n  {s1:?}\n  {s2:?}"
+    // Since CE-17 canonicalized the encoding, inheritance no longer changes
+    // the core the certifier sees, so the two renderings agree EXACTLY here —
+    // stronger than the `consistent` class equality the battery still needs
+    // for the rewrites that do legitimately move the core (define inlining).
+    assert_eq!(
+        s1, s2,
+        "inherit vs paste must produce the same verdict:\n  {s1:?}\n  {s2:?}"
     );
+    check_sound(&r1).unwrap();
+    check_sound(&r2).unwrap();
+}
+
+/// CE-17: CE-7's core-shape sensitivity, this time on the SUBSET flag —
+/// where there is no "candidate" tier to absorb it. `RB` inherits `RA` and
+/// adds a cut, so `RB ⊆ RA` holds by construction; the paste rendering
+/// claimed it and the inherit rendering did not.
+///
+/// Why: an `Inherit` used to encode as ONE named assert holding the whole
+/// inherited region, so the solver's minimized unsat core could not drop a
+/// single inherited cut, and `adl-certify` had to refute all of them —
+/// 2²⁰ case splits here, past its 100 000-branch budget. The paste core is
+/// `{MET > 400, ¬RA⁻}` and certifies instantly. Since M1 an uncertifiable
+/// subset UNSAT is no claim at all, so the tiers diverged into a hard
+/// `rb_in_ra` mismatch (CI, 2026-07-31, metamorphic `inherit_vs_paste`).
+///
+/// Fixed by canonicalizing the *encoding*, not the assertion:
+/// `encode::flatten_inherits` expands inheritance to the same per-statement
+/// granularity pasting produces, so both renderings emit byte-identical
+/// formulas and every downstream query — solver, core, certificate — is the
+/// same one (`inherit_and_paste_encode_identically` in adl-analysis pins the
+/// encoder-level identity).
+#[test]
+fn ce17_inherit_vs_paste_subset_claim_survives_certification() {
+    // Twenty disjunctions each implied by `MET > 400`: redundant for the
+    // subset proof, so a minimized core drops them — but only if it can name
+    // them one by one.
+    let redundant: String = (1..=20)
+        .map(|i| format!("  select (MET > {i} or HT > {i})\n"))
+        .collect();
+    let ra_body = format!("  select MET > 400\n{redundant}");
+    let rb_extra = "  select HT < 800\n";
+    let inherit = format!("{HEAD}region RA\n{ra_body}\nregion RB\n  RA\n{rb_extra}");
+    let paste = format!("{HEAD}region RA\n{ra_body}\nregion RB\n{ra_body}{rb_extra}");
+
+    let r1 = run(&inherit);
+    let r2 = run(&paste);
+    assert_eq!(r1.passes, r2.passes, "interpreter membership must not move");
+    let s1 = summary(&r1.report).unwrap();
+    let s2 = summary(&r2.report).unwrap();
+    // The whole summary, not just `consistent`: subset flags are hard facts.
+    assert_eq!(s1, s2, "inherit and paste must produce the same verdict");
+    assert!(
+        s1.rb_in_ra,
+        "RB adds a cut to RA, so RB ⊆ RA — and it is provable: {s1:?}"
+    );
+    // The claim itself is checked against the sampled events, so a "fix" that
+    // made both sides claim a FALSE subset would fail here, not pass.
     check_sound(&r1).unwrap();
     check_sound(&r2).unwrap();
 }

@@ -7,6 +7,11 @@
 //! per-statement formulas is the region formula by construction
 //! (region encoding ≡ conjunction of statement encodings).
 //!
+//! Inheritance is expanded to that same granularity before encoding
+//! ([`flatten_inherits`]), so a region that inherits and one that pastes the
+//! inherited cuts produce identical encodings — the statement list is the
+//! canonical form, not the source spelling.
+//!
 //! Also hosts the documented **opaque-external re-tag pass**: for the
 //! verifier, a comparison over an undeclared external function is an
 //! exact atom over an opaque interned quantity (the per-event value
@@ -147,6 +152,66 @@ fn encode_synthetic(hir: &mut Hir, stmts: Vec<HirRegionStmt>, span: Span) -> Enc
     enc
 }
 
+/// A region's statement list with every `Inherit` replaced, in place, by the
+/// inherited region's own membership statements (transitively).
+///
+/// `adl-formula`'s region encoder turns an `Inherit` into a single
+/// conjunction, so without this the engine would see the whole inherited
+/// region as ONE named assert while the textually pasted equivalent yields one
+/// per cut. The conjunction is the same formula either way — `over`/`under`
+/// distribute over `And` — but a solver unsat core can only drop what it can
+/// name: under the fused form the core drags in every inherited cut, and the
+/// independent certifier then has to refute that much larger (`Or`-heavy) set,
+/// which can exceed its budget and demote an otherwise certified subset claim
+/// to no claim at all. Expanding here makes `region RB / RA / …` and the
+/// pasted equivalent encode identically (metamorphic invariant
+/// `inherit ≡ paste`; pinned by `inherit_and_paste_encode_identically`).
+///
+/// An inherited `bin` is dropped, exactly as before: bins partition the region
+/// that declares them and never contributed to the fused membership formula.
+fn flatten_inherits(
+    hir: &Hir,
+    stmts: &[HirRegionStmt],
+    stack: &mut Vec<usize>,
+    out: &mut Vec<HirRegionStmt>,
+) {
+    for stmt in stmts {
+        let HirRegionStmt::Inherit { region, span } = stmt else {
+            out.push(stmt.clone());
+            continue;
+        };
+        // Both arms mirror `adl_formula`'s region encoder exactly: the same
+        // reason text at the same span, so the Unknown leaf the user sees is
+        // unchanged.
+        let Some(parent) = hir.regions.get(*region) else {
+            out.push(opaque_stmt(*span, "reference to an unknown region"));
+            continue;
+        };
+        if stack.contains(region) {
+            out.push(opaque_stmt(*span, "region inheritance cycle"));
+            continue;
+        }
+        let inherited: Vec<HirRegionStmt> = parent
+            .stmts
+            .iter()
+            .filter(|s| !matches!(s, HirRegionStmt::Bin { .. } | HirRegionStmt::BinCond { .. }))
+            .cloned()
+            .collect();
+        stack.push(*region);
+        flatten_inherits(hir, &inherited, stack, out);
+        stack.pop();
+    }
+}
+
+/// A statement that encodes to exactly `Formula::Unknown(reason)` at `span`.
+fn opaque_stmt(span: Span, reason: &str) -> HirRegionStmt {
+    HirRegionStmt::NonMembership {
+        kind: "inherit",
+        tag: Fragment::Unsupported(reason.to_owned()),
+        span,
+    }
+}
+
 fn stmt_span(stmt: &HirRegionStmt) -> Span {
     match stmt {
         HirRegionStmt::Select(n) | HirRegionStmt::Reject(n) | HirRegionStmt::Trigger(n) => n.span,
@@ -230,7 +295,9 @@ pub fn encode_unit(hir: &mut Hir, src: &str) -> UnitEnc {
 
     for ridx in 0..hir.regions.len() {
         let name = hir.symbols.display(hir.regions[ridx].name).to_owned();
-        let stmt_list: Vec<HirRegionStmt> = hir.regions[ridx].stmts.clone();
+        let own: Vec<HirRegionStmt> = hir.regions[ridx].stmts.clone();
+        let mut stmt_list: Vec<HirRegionStmt> = Vec::with_capacity(own.len());
+        flatten_inherits(hir, &own, &mut vec![ridx], &mut stmt_list);
         let mut enc = RegionEnc {
             idx: ridx,
             name,

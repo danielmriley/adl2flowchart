@@ -486,12 +486,13 @@ impl Engine<'_> {
     /// `refined_model`) must route through this so spawn/error failures
     /// cannot stay silent (G7).
     fn note_check_result(&mut self, result: &SatResult) {
-        let SatResult::Unknown(reason) = result else {
-            return;
-        };
-        if reason.contains("spawn") {
+        // The two classes live with the backend that writes the reasons
+        // (`adl_solver`), so a new failure mode cannot drift out of the
+        // accounting: process failures first, broken-solver errors second,
+        // and hard-query `unknown`/`timeout` counted by neither.
+        if result.is_process_failure() {
             self.spawn_failures += 1;
-        } else if reason.contains("solver reported an error") {
+        } else if result.is_solver_error() {
             self.solver_errors += 1;
         }
     }

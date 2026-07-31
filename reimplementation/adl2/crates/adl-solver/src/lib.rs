@@ -5,11 +5,12 @@
 //!   bindings). Typed terms, incremental push/pop, models and unsat cores
 //!   without string protocols — malformed input is unrepresentable
 //!   (legacy audit Bug 5 layer 2).
-//! - **Secondary**: [`SubprocessSolver`] speaking SMT-LIB2 to a solver
-//!   binary on `PATH` (z3 by default). Any `(error …)` output makes the
-//!   check come back [`SatResult::Unknown`] — **never** something
-//!   silently weaker (legacy audit Bug 5: a dropped assert produced a
-//!   false PROVEN OVERLAPPING).
+//! - **Secondary**: [`SubprocessSolver`] speaking SMT-LIB2 over the stdin
+//!   of one persistent solver child on `PATH` (z3 by default), which
+//!   serves every query of that solver instance. Any `(error …)` output
+//!   makes the check come back [`SatResult::Unknown`] — **never**
+//!   something silently weaker (legacy audit Bug 5: a dropped assert
+//!   produced a false PROVEN OVERLAPPING).
 //!
 //! Both backends must pass the same conformance battery
 //! (`tests/conformance.rs`): sat/unsat, models, unsat cores, push/pop,
@@ -73,6 +74,26 @@ impl SatResult {
     #[must_use]
     pub fn is_unsat(&self) -> bool {
         matches!(self, SatResult::Unsat)
+    }
+
+    /// Is this an `Unknown` because the backend *process* failed — spawn,
+    /// I/O, EOF, child death — rather than because the query was hard?
+    /// The analysis counts these toward its degraded-solver warning; the
+    /// legacy `"spawn"` marker is still honoured so any reason string
+    /// written before [`subprocess::PROCESS_FAILURE`] existed still counts.
+    #[must_use]
+    pub fn is_process_failure(&self) -> bool {
+        matches!(self, SatResult::Unknown(reason)
+            if reason.contains(subprocess::PROCESS_FAILURE) || reason.contains("spawn"))
+    }
+
+    /// Is this an `Unknown` because the solver answered our script with an
+    /// `(error …)` line (a reachable but broken solver)? Timeouts and plain
+    /// `unknown` answers are neither — those are legitimate outcomes.
+    #[must_use]
+    pub fn is_solver_error(&self) -> bool {
+        matches!(self, SatResult::Unknown(reason)
+            if reason.contains(subprocess::SOLVER_ERROR))
     }
 }
 

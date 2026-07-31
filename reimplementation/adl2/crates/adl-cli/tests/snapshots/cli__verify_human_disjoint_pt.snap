@@ -4,6 +4,14 @@ expression: body
 ---
 ADL2 analysis report — disjoint_pt.adl (solver: none)
 
+== trust ==
+  solver        none
+  nets          certification on · sampling gate 124 events · refute gate 64 probes
+  proven        1 disjoint (1/1 certified, 100%) · 0 overlapping
+  unproven      0 possibly · 0 unknown
+  refutations   0 sampling · 0 adversarial
+  assumes       take = filter (SUB, EPRED); the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG); ORD + SUB (IDOM)
+
 == findings ==
   (none)
 
@@ -13,10 +21,9 @@ ADL2 analysis report — disjoint_pt.adl (solver: none)
   SR_high  2/2     yes
 
 == pairwise (1 pair, 1 group) ==
-  SR_low vs SR_high: PROVEN DISJOINT — jets[0].pt: (100, 200) vs (300, inf]
+  SR_low vs SR_high: PROVEN DISJOINT [certified · gate 124/124 · probes 64] — jets[0].pt: (100, 200) vs (300, inf]
 
 == axioms used ==
   SZ0×2, SUB×1, NNEG×2, EPRED×1, IDOM×1
-  assuming: take = filter (SUB, EPRED); the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG); ORD + SUB (IDOM)
 
 summary: 1 pair — 1 proven disjoint, 0 proven overlapping, 0 possibly overlapping, 0 unknown

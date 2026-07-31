@@ -18,12 +18,14 @@
 //! determinism test) takes the plain path.
 //!
 //! Exit codes: 1 on parse/sema errors (the analysis did not run); 4 when a
-//! selected `--fail-on` finding fired (SPEC_ANALYSIS §6); else 0; for
-//! several files, the worst code wins. The report (human or JSON) is the
+//! selected `--fail-on` finding fired (SPEC_ANALYSIS §6) — including
+//! `--fail-on=unknown`, which fires on any UNKNOWN pair or a run whose
+//! solver produced no usable answers; else 0; for several files, the worst
+//! code wins. The report (human or JSON) is the
 //! only thing on stdout; everything else is stderr.
 
 use crate::cmd::{CliError, read_file, unit_name};
-use adl_analysis::report::FailOn;
+use adl_analysis::report::{FailOn, ReconFilter, RenderOptions};
 use adl_analysis::{AnalysisOptions, SolverChoice, analyze_hir, analyze_source};
 use adl_sema::{ExtDecls, analyze_str, merge_hirs, object_table};
 use std::io::IsTerminal as _;
@@ -167,7 +169,7 @@ fn warn_if_no_solver(name: &str, report: &adl_analysis::Report, no_solver: bool)
     // vanished after the probe): the silent symptom is every verdict
     // degrading to UNKNOWN — warn exactly as loudly as no-solver-found.
     if let Some(why) = &report.solver_degraded {
-        eprintln!("{name}: WARNING — {why}");
+        eprintln!("{name}: WARNING — {why}. Gate CI on this with --fail-on=unknown.");
     }
 }
 
@@ -219,29 +221,51 @@ fn expand_adl_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    files: &[PathBuf],
-    json: bool,
-    explain: bool,
-    no_solver: bool,
-    fail_on: Option<&str>,
-    verbose: bool,
-    cross: bool,
-    certify: bool,
-    refute_gate: bool,
-    combine: Option<&Path>,
-) -> Result<ExitCode, CliError> {
+/// Everything `verify` needs from the command line, so the flag list can
+/// keep growing without a twelve-positional signature.
+pub struct Args<'a> {
+    pub files: &'a [PathBuf],
+    pub json: bool,
+    pub explain: bool,
+    pub no_solver: bool,
+    pub fail_on: Option<&'a str>,
+    /// Force the verdict matrix past its region-count limit.
+    pub matrix: bool,
+    /// Reconciliation ledger filter (`all` | `related`).
+    pub recon: Option<&'a str>,
+    pub verbose: bool,
+    pub cross: bool,
+    pub certify: bool,
+    pub refute_gate: bool,
+    pub combine: Option<&'a Path>,
+}
+
+pub fn run(args: &Args<'_>) -> Result<ExitCode, CliError> {
+    let &Args {
+        json,
+        explain,
+        no_solver,
+        verbose,
+        cross,
+        certify,
+        refute_gate,
+        combine,
+        ..
+    } = args;
     // A directory argument contributes its `*.adl` files (sorted), so
     // `--cross analyses/` reconciles a whole folder as well as an explicit
     // file list. Remember whether a directory was given: the `--json` shape
     // must not depend on how many files the folder happens to contain.
-    let had_dir_input = files.iter().any(|p| p.is_dir());
-    let expanded = expand_adl_inputs(files)?;
+    let had_dir_input = args.files.iter().any(|p| p.is_dir());
+    let expanded = expand_adl_inputs(args.files)?;
     let files = expanded.as_slice();
-    let fail_on = match fail_on {
+    let fail_on = match args.fail_on {
         Some(s) => FailOn::parse(s).map_err(CliError::Usage)?,
         None => FailOn::default(),
+    };
+    let recon = match args.recon {
+        Some(s) => ReconFilter::parse(s).map_err(CliError::Usage)?,
+        None => ReconFilter::default(),
     };
     let ext = ExtDecls::legacy();
     let opts = AnalysisOptions {
@@ -256,11 +280,15 @@ pub fn run(
         combine: combine.is_some(),
         ..AnalysisOptions::default()
     };
+    let render = RenderOptions {
+        color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+        force_matrix: args.matrix,
+        recon,
+    };
     if cross {
-        return run_cross(files, &ext, &opts, json, explain, verbose, combine);
+        return run_cross(files, &ext, &opts, json, explain, verbose, combine, &render);
     }
     let multi = files.len() > 1;
-    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     // Disambiguate same-basename inputs the same way `--cross` does, so
     // multi-file `--combine` filenames (and `--json` `"unit"` fields) never
     // collide / overwrite.
@@ -319,15 +347,15 @@ pub fn run(
                 println!("==== {name} ====");
             }
             if explain {
-                print!("{}", report.human());
+                print!("{}", report.render_explain(&render));
                 // The object-attribute summary is a pure function of the
                 // resolved HIR; re-resolve (deterministic, cheap) and append
                 // it as an `== objects ==` section.
-                let hir = analyze_str(&src, &name, &ext);
+                let hir = analyze_str(&src, name, &ext);
                 println!();
-                print!("{}", object_table(&hir, color));
+                print!("{}", object_table(&hir, render.color));
             } else {
-                print!("{}", report.human_default(color));
+                print!("{}", report.render_default(&render));
             }
         }
 
@@ -395,6 +423,7 @@ fn unit_labels(files: &[PathBuf]) -> Vec<String> {
 /// Soundness comes from structural interning in `merge_hirs` — two quantities
 /// unify iff structurally identical, so a cross-file PROVEN can only fire on
 /// genuinely-shared quantities.
+#[allow(clippy::too_many_arguments)]
 fn run_cross(
     files: &[PathBuf],
     ext: &ExtDecls,
@@ -403,6 +432,7 @@ fn run_cross(
     explain: bool,
     verbose: bool,
     combine: Option<&Path>,
+    render: &RenderOptions,
 ) -> Result<ExitCode, CliError> {
     // Resolve every unit; refuse if any has errors (merge needs clean units).
     // Unit labels are basenames qualified only as far as needed to be unique,
@@ -450,16 +480,15 @@ fn run_cross(
         );
     }
 
-    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     if json {
         println!("{}", report.to_json());
         for d in &report.internal_diagnostics {
             eprintln!("internal: {d}");
         }
     } else if explain {
-        print!("{}", report.human());
+        print!("{}", report.render_explain(render));
     } else {
-        print!("{}", report.human_default(color));
+        print!("{}", report.render_default(render));
     }
 
     let findings = report.findings(&opts.fail_on);

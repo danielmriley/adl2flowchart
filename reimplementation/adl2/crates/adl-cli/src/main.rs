@@ -3,9 +3,9 @@
 //! Subcommands:
 //! - `check`  — parse + resolve; report diagnostics. Exit 1 on errors.
 //! - `verify` — full pairwise/region/bin analysis; grouped human report
-//!   (default), full per-pair proof chains (`--explain`), or `--json`;
-//!   `--fail-on=...` gates CI on physics findings; `--no-solver` caps
-//!   verdicts at POSSIBLY. (The legacy `smash -r`.)
+//!   with per-claim trust annotations (default), full per-claim evidence
+//!   (`--explain`), or `--json`; `--fail-on=...` gates CI on findings;
+//!   `--no-solver` caps verdicts at POSSIBLY. (The legacy `smash -r`.)
 //! - `run`    — evaluate regions over a JSONL event file (or a ROOT file
 //!   via `--profile`): per-region pass/fail and bin assignment.
 //! - `ingest` — converter-profile ingestion (SPEC_EVENT_PIPELINE §1):
@@ -65,8 +65,10 @@ enum Command {
         /// Emit the versioned JSON report instead of the human report.
         #[arg(long)]
         json: bool,
-        /// Full per-pair detail: complete unsat cores, witness values,
-        /// per-axiom statements (the proof chains behind the default
+        /// Full per-claim evidence: proof route and certificate size,
+        /// complete unsat cores with the statement and assumption of every
+        /// axiom they use, gate/probe coverage, witness provenance, and the
+        /// reconciliation ledger (the proof chains behind the default
         /// report's findings).
         #[arg(long, conflicts_with = "json")]
         explain: bool,
@@ -74,10 +76,20 @@ enum Command {
         /// POSSIBLY (same degradation as the legacy no-solver mode).
         #[arg(long)]
         no_solver: bool,
-        /// Gate the exit code on physics findings (comma-separated):
-        /// `overlap`, `gap`, `empty`, `non-exact`.
+        /// Gate the exit code on findings (comma-separated): `overlap`,
+        /// `gap`, `empty`, `non-exact`, `unknown` (any UNKNOWN pair, or a
+        /// run whose solver produced no usable answers).
         #[arg(long, value_name = "KINDS")]
         fail_on: Option<String>,
+        /// Print the verdict matrix even above the region-count limit at
+        /// which it is normally replaced by a note (20 regions).
+        #[arg(long, conflicts_with = "json")]
+        matrix: bool,
+        /// Which reconciliation ledger rows to show in a `--cross` run:
+        /// `all` (default) or `related` (only pairs a refinement was proven
+        /// for).
+        #[arg(long, value_name = "WHICH", conflicts_with = "json")]
+        recon: Option<String>,
         /// Merge all inputs (files and/or directories of `*.adl`) into one
         /// shared identity space and analyze region relations ACROSS files
         /// (the cross-analysis overlap matrix); regions are reported as
@@ -195,22 +207,26 @@ fn main() -> ExitCode {
             explain,
             no_solver,
             fail_on,
+            matrix,
+            recon,
             cross,
             no_certify,
             no_refute_gate,
             combine,
-        } => cmd::verify::run(
-            &files,
+        } => cmd::verify::run(&cmd::verify::Args {
+            files: &files,
             json,
             explain,
             no_solver,
-            fail_on.as_deref(),
+            fail_on: fail_on.as_deref(),
+            matrix,
+            recon: recon.as_deref(),
             verbose,
             cross,
-            !no_certify,
-            !no_refute_gate,
-            combine.as_deref(),
-        ),
+            certify: !no_certify,
+            refute_gate: !no_refute_gate,
+            combine: combine.as_deref(),
+        }),
         Command::Run {
             file,
             events,

@@ -265,6 +265,7 @@ pub fn analyze_hir(hir: &mut Hir, src: &str, ext: &ExtDecls, opts: &AnalysisOpti
         recon,
         spawn_failures: 0,
         solver_errors: 0,
+        first_solver_failure: None,
         gate_events,
         refute_probes,
         refute_gate: opts.refute_gate,
@@ -379,6 +380,8 @@ mod tests {
             sampling: None,
             refute: None,
             solver_degraded: None,
+            solver_failures: None,
+            certification: false,
             regions: Vec::new(),
             pairwise: Vec::new(),
             bin_checks: vec![BinCheckReport {
@@ -394,6 +397,7 @@ mod tests {
             recon_near_misses: Vec::new(),
             axioms_used: Vec::new(),
             internal_diagnostics: Vec::new(),
+            diagnostics: Vec::new(),
             combine_bundles: Vec::new(),
         };
         let f = FailOn::parse("gap").unwrap();

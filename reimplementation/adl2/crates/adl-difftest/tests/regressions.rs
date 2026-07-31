@@ -169,12 +169,16 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         witness_validated: Some(true),
         certified: None,
         core: Vec::new(),
+        proof_path: None,
+        certificate_size: None,
     };
     let report = Report {
         schema_version: SCHEMA_VERSION,
         unit: "synthetic".to_owned(),
         solver: "synthetic".to_owned(),
         solver_degraded: None,
+        solver_failures: None,
+        certification: false,
         sampling: None,
         refute: None,
         regions: Vec::new(),
@@ -184,6 +188,7 @@ fn check_sound_flags_mislabelled_validated_candidate() {
         recon_near_misses: Vec::new(),
         axioms_used: Vec::new(),
         internal_diagnostics: Vec::new(),
+        diagnostics: Vec::new(),
         combine_bundles: Vec::new(),
     };
     let run = CaseRun {

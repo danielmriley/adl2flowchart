@@ -7,6 +7,10 @@
 //! findings), CMS-SUS-16-033 (13 regions, overlap/subset groups), and a
 //! tiny two-region file (no matrix, singleton group). The solver label is
 //! normalized so the snapshot is backend-independent; verdicts are not.
+//!
+//! They also pin the TRUST SURFACE: the `== trust ==` block and the
+//! per-claim `[certified · gate n/n · probes p]` annotations. A diff here
+//! that weakens a claim's evidence is the failure these exist to catch.
 
 use adl_analysis::{AnalysisOptions, SolverChoice, analyze_source};
 use adl_sema::ExtDecls;
@@ -21,13 +25,12 @@ fn render(rel: &str) -> String {
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let ext = ExtDecls::legacy();
+    // Full defaults: the trust annotations ARE the thing under test, so the
+    // snapshots must pin what a user actually sees — certification on, both
+    // gates on. (~4 s per file; the layout pin is worth it.)
     let opts = AnalysisOptions {
         solver: SolverChoice::Auto,
         timeout: Duration::from_secs(20),
-        // Snapshot layout pins: adversarial refute + full UNSAT certification
-        // are covered elsewhere and dominate wall time on large CMS files.
-        refute_gate: false,
-        certify: false,
         ..AnalysisOptions::default()
     };
     let r = analyze_source(&src, &name, &ext, &opts)
@@ -46,8 +49,9 @@ fn render(rel: &str) -> String {
         !plain.contains('\u{1b}'),
         "{name}: color=false must emit no ANSI escapes"
     );
-    // Backend-independent snapshot body: normalize the solver label only.
-    plain.replace(&format!("(solver: {})", r.solver), "(solver: <backend>)")
+    // Backend-independent snapshot body: normalize the solver label wherever
+    // it appears (report header AND the trust block's `solver` row).
+    plain.replace(&r.solver, "<backend>")
 }
 
 #[test]

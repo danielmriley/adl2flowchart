@@ -28,7 +28,82 @@ use serde::Serialize;
 /// mirrors pairwise `candidate_disjoint`). Consumers that only knew
 /// `proven` / `not_proven` / `unknown` must treat the new variant as a
 /// non-claim (not Proven).
+///
+/// Still v4 after the trust-surface work (report layer only — no verdict,
+/// encoding, axiom, or solver behaviour changed). Every field below is
+/// ADDITIVE; nothing existing changed name, type, or meaning:
+/// - top level: `certification` (was the independent certifier enabled),
+///   `solver_failures` (`{spawn, errors, first_reason}`, omitted in healthy
+///   runs), `diagnostics` (`internal_diagnostics` classified into
+///   `fail_closed` / `contradiction`, same messages, same order — the flat
+///   `internal_diagnostics` array stays exactly as it was);
+/// - pairwise rows: `proof_path` (`interval` | `solver_core`) and
+///   `certificate_size` (formulas the replay kernel checked), both omitted
+///   when there is no UNSAT-side proof;
+/// - region rows: `empty_proof` (same `proof_path` domain), omitted when the
+///   region is not proven/candidate empty;
+/// - reconciliation rows: `a_units` / `b_units`, the analysis units whose
+///   regions mention each collection (file attribution for `C1#name` ids),
+///   omitted when empty.
 pub const SCHEMA_VERSION: u32 = 4;
+
+/// How an UNSAT-side claim was obtained. Descriptive provenance: it names
+/// the route, never the confidence (the certificate does that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofPath {
+    /// The solver-free interval layer refuted the claim on a bound pair.
+    Interval,
+    /// The solver returned UNSAT and the claim rests on its unsat core.
+    SolverCore,
+}
+
+impl ProofPath {
+    #[must_use]
+    pub fn human(self) -> &'static str {
+        match self {
+            ProofPath::Interval => "interval bounds",
+            ProofPath::SolverCore => "solver unsat core",
+        }
+    }
+}
+
+/// Severity of an internal diagnostic. The distinction is the whole point
+/// of splitting the section: a fail-closed note is the tool declining to
+/// claim something it cannot back (working as designed); a contradiction is
+/// the tool refuting its OWN conclusion (a bug).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticClass {
+    /// A claim was withheld / capped because its evidence did not hold up.
+    /// No conclusion was contradicted; the conservative answer was taken.
+    FailClosed,
+    /// One part of the engine refuted a conclusion another part had already
+    /// reached (a gate refuting a PROVEN, the replay kernel refusing an
+    /// interval refutation, an interpreter rejecting a witness for a fully
+    /// decidable region). Release-blocking.
+    Contradiction,
+}
+
+/// One internal diagnostic with its severity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Diagnostic {
+    pub class: DiagnosticClass,
+    pub message: String,
+}
+
+/// Solver checks that could not run to a usable answer. Present only when
+/// something actually failed, so a healthy run's JSON is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SolverFailures {
+    /// Checks whose solver process could not run at all (spawn/IO).
+    pub spawn: usize,
+    /// Checks answered `Unknown("solver reported an error: …")`.
+    pub errors: usize,
+    /// The first failure reason verbatim, so a reader can act on it
+    /// without re-running under `--verbose`.
+    pub first_reason: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,6 +255,9 @@ pub struct RegionReport {
     /// Explanation when `empty` is [`EmptyStatus::Proven`] or
     /// [`EmptyStatus::Candidate`] (solver unsat core mapped to origins).
     pub empty_core: Vec<CoreItem>,
+    /// Route the emptiness claim took. `None` when there is no claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_proof: Option<ProofPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -218,6 +296,15 @@ pub struct PairReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certified: Option<bool>,
     pub core: Vec<CoreItem>,
+    /// Route an UNSAT-side verdict (PROVEN / CANDIDATE DISJOINT) took.
+    /// `None` for every other kind — there is no UNSAT-side proof to place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_path: Option<ProofPath>,
+    /// How many formulas the replay kernel was handed for this claim (the
+    /// unsat core's size on the solver path, the refuting bound set's on the
+    /// interval path). `None` when nothing was certified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -295,6 +382,14 @@ pub struct ReconReport {
     /// Why a pair was skipped / left unrelated; empty otherwise.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// Analysis units whose regions mention `a` — the file attribution for
+    /// its `C<id>#name` label. Usually one; a collection two files define
+    /// identically interns to ONE id and legitimately lists both.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub a_units: Vec<String>,
+    /// Analysis units whose regions mention `b`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub b_units: Vec<String>,
 }
 
 /// An advisory: two collections whose cuts are structurally identical but
@@ -331,6 +426,16 @@ pub struct Report {
     /// no-solver-found. Absent in healthy runs (omitted from JSON).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solver_degraded: Option<String>,
+    /// Structured twin of [`Self::solver_degraded`]: the two failure counts
+    /// plus the first reason verbatim. Present exactly when
+    /// `solver_degraded` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_failures: Option<SolverFailures>,
+    /// Was the independent exact-rational certifier enabled for this run
+    /// (`--certify`, the default)? Without it, `certified` is `None`
+    /// everywhere and no tier carries a receipt — a fact about the RUN that
+    /// no per-pair field can express.
+    pub certification: bool,
     /// Sampling-gate accounting (proof-system v2 Phase 1): how many synthetic
     /// events every UNSAT-side PROVEN verdict was refuted against, and how
     /// many verdicts the gate demoted (each demotion also files an
@@ -356,9 +461,16 @@ pub struct Report {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recon_near_misses: Vec<ReconNearMissReport>,
     pub axioms_used: Vec<AxiomUse>,
-    /// Internal-error diagnostics (e.g. a witness the interpreter
-    /// rejected — TESTING §3; each one is a bug report, not user error).
+    /// Every internal diagnostic as a flat message list, in emission order.
+    /// Kept verbatim for existing consumers; [`Self::diagnostics`] carries
+    /// the same messages with their severity.
     pub internal_diagnostics: Vec<String>,
+    /// The same diagnostics, classified: `fail_closed` (a claim withheld or
+    /// capped — working as designed) vs `contradiction` (the engine refuting
+    /// its own conclusion — a bug). Same order as
+    /// [`Self::internal_diagnostics`], one entry each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
     /// Portable certificate bundles (`--combine`), one per certified
     /// PROVEN DISJOINT pair that survived to the final report. Not part
     /// of the versioned `--json` output — the CLI writes each bundle to
@@ -379,11 +491,15 @@ pub struct FailOn {
     pub gap: bool,
     pub empty: bool,
     pub non_exact: bool,
+    /// Gate on the analysis having been unable to answer: any UNKNOWN pair,
+    /// or a run whose solver failed to produce usable answers. A systematically
+    /// broken solver otherwise yields an all-UNKNOWN report at exit 0.
+    pub unknown: bool,
 }
 
 impl FailOn {
     /// Parse a `--fail-on` value: comma-separated
-    /// `overlap|gap|empty|non-exact`.
+    /// `overlap|gap|empty|non-exact|unknown`.
     ///
     /// # Errors
     /// Returns the offending token.
@@ -395,6 +511,7 @@ impl FailOn {
                 "gap" => out.gap = true,
                 "empty" => out.empty = true,
                 "non-exact" | "non_exact" => out.non_exact = true,
+                "unknown" => out.unknown = true,
                 other => return Err(format!("unknown --fail-on value `{other}`")),
             }
         }
@@ -402,7 +519,125 @@ impl FailOn {
     }
 }
 
+/// Which reconciliation ledger rows to show (`--recon`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReconFilter {
+    /// Every enumerated candidate pair, related or not (the default).
+    #[default]
+    All,
+    /// Only the pairs a refinement was proven for (`≡` / `⊆` / `⊇`).
+    Related,
+}
+
+impl ReconFilter {
+    /// Parse a `--recon` value.
+    ///
+    /// # Errors
+    /// Returns the offending token.
+    pub fn parse(s: &str) -> Result<ReconFilter, String> {
+        match s.trim() {
+            "all" => Ok(ReconFilter::All),
+            "related" => Ok(ReconFilter::Related),
+            other => Err(format!("unknown --recon value `{other}` (all|related)")),
+        }
+    }
+}
+
+/// Presentation knobs for the human renderings. Defaults reproduce the
+/// pre-existing behaviour exactly.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderOptions {
+    /// ANSI styling (callers must pass `false` off-tty / under `NO_COLOR`).
+    pub color: bool,
+    /// Print the verdict matrix regardless of region count (`--matrix`).
+    pub force_matrix: bool,
+    /// Reconciliation ledger filter (`--recon`).
+    pub recon: ReconFilter,
+}
+
+/// Counts behind the trust summary block. Pure view over the report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrustStats {
+    pub proven_disjoint: usize,
+    pub candidate_disjoint: usize,
+    pub proven_overlapping: usize,
+    pub candidate_overlapping: usize,
+    pub possibly: usize,
+    pub unknown: usize,
+    /// PROVEN DISJOINT pairs carrying a replay-checked certificate.
+    pub certified: usize,
+    /// PROVEN OVERLAPPING pairs whose witness the interpreter accepted.
+    pub witness_validated: usize,
+    pub proven_subsets: usize,
+    pub proven_empty: usize,
+    pub candidate_empty: usize,
+}
+
+impl TrustStats {
+    /// Percent of PROVEN DISJOINT pairs with a certificate, rounded down.
+    /// `None` when there are no such pairs (no denominator to speak of).
+    #[must_use]
+    pub fn certified_pct(&self) -> Option<usize> {
+        (self.proven_disjoint > 0).then(|| self.certified * 100 / self.proven_disjoint)
+    }
+}
+
 impl Report {
+    /// Verdict/evidence counts for the trust summary.
+    #[must_use]
+    pub fn trust_stats(&self) -> TrustStats {
+        let mut t = TrustStats::default();
+        for p in &self.pairwise {
+            match p.kind {
+                VerdictKind::ProvenDisjoint => {
+                    t.proven_disjoint += 1;
+                    if p.certified == Some(true) {
+                        t.certified += 1;
+                    }
+                }
+                VerdictKind::CandidateDisjoint => t.candidate_disjoint += 1,
+                VerdictKind::ProvenOverlapping => {
+                    t.proven_overlapping += 1;
+                    if p.witness_validated == Some(true) {
+                        t.witness_validated += 1;
+                    }
+                }
+                VerdictKind::CandidateOverlapping => t.candidate_overlapping += 1,
+                VerdictKind::PossiblyOverlapping => t.possibly += 1,
+                VerdictKind::Unknown => t.unknown += 1,
+            }
+            t.proven_subsets += usize::from(p.subset_a_in_b) + usize::from(p.subset_b_in_a);
+        }
+        for r in &self.regions {
+            match r.empty {
+                EmptyStatus::Proven => t.proven_empty += 1,
+                EmptyStatus::Candidate => t.candidate_empty += 1,
+                EmptyStatus::NotProven | EmptyStatus::Unknown => {}
+            }
+        }
+        t
+    }
+
+    /// The distinct soundness assumptions in force, as `assumption (IDS)`
+    /// clauses in axiom-catalog order. Axioms assuming nothing are omitted.
+    #[must_use]
+    pub fn assumption_clauses(&self) -> Vec<String> {
+        let mut by_assumption: Vec<(&str, Vec<&str>)> = Vec::new();
+        for a in &self.axioms_used {
+            if a.assumption == "none" {
+                continue;
+            }
+            match by_assumption.iter_mut().find(|(k, _)| *k == a.assumption) {
+                Some((_, ids)) => ids.push(&a.id),
+                None => by_assumption.push((&a.assumption, vec![&a.id])),
+            }
+        }
+        by_assumption
+            .into_iter()
+            .map(|(k, ids)| format!("{k} ({})", ids.join(", ")))
+            .collect()
+    }
+
     /// The findings selected by `fail_on`, as human lines. Empty ⇒ the
     /// run passes the gate.
     #[must_use]
@@ -461,6 +696,16 @@ impl Report {
                 }
             }
         }
+        if fail_on.unknown {
+            if let Some(why) = &self.solver_degraded {
+                out.push(format!("unknown: {why}"));
+            }
+            for p in &self.pairwise {
+                if p.kind == VerdictKind::Unknown {
+                    out.push(format!("unknown: {} vs {}", p.a, p.b));
+                }
+            }
+        }
         out
     }
 
@@ -485,194 +730,39 @@ impl Report {
         serde_json::to_string_pretty(self).expect("report serializes")
     }
 
-    /// The default human report: findings first, aligned region table,
-    /// verdict matrix (3–20 regions), pairwise verdicts grouped by
-    /// identical (verdict, reason-signature). Deterministic; `color`
-    /// adds ANSI styling (callers must pass `false` off-tty / under
-    /// `NO_COLOR`). Full per-pair detail stays in [`Report::human`]
+    /// The default human report: trust summary, findings, aligned region
+    /// table, verdict matrix, pairwise verdicts grouped by identical
+    /// (verdict, trust annotation, reason-signature). Deterministic;
+    /// `color` adds ANSI styling (callers must pass `false` off-tty / under
+    /// `NO_COLOR`). Full per-claim evidence stays in [`Report::human`]
     /// (`--explain`).
     #[must_use]
     pub fn human_default(&self, color: bool) -> String {
-        crate::render::render_default(self, color)
+        self.render_default(&RenderOptions {
+            color,
+            ..RenderOptions::default()
+        })
     }
 
-    /// Deterministic human report with full per-pair detail (complete
-    /// unsat cores, witnesses, per-axiom statements) — the `--explain`
-    /// rendering.
+    /// [`Self::human_default`] with the presentation flags (`--matrix`,
+    /// `--recon`) the CLI exposes.
+    #[must_use]
+    pub fn render_default(&self, opts: &RenderOptions) -> String {
+        crate::render::render_default(self, opts)
+    }
+
+    /// Deterministic human report with full per-claim evidence (proof route,
+    /// certificate size, complete unsat cores with their axiom statements,
+    /// gate coverage, witnesses) — the `--explain` rendering.
     #[must_use]
     pub fn human(&self) -> String {
-        use std::fmt::Write as _;
-        let mut s = String::new();
-        let _ = writeln!(s, "ADL2 analysis report — {}", self.unit);
-        let _ = writeln!(s, "solver: {}", self.solver);
-        if let Some(si) = &self.sampling {
-            let _ = writeln!(
-                s,
-                "sampling gate: {} events, {} refutation(s)",
-                si.events, si.refutations
-            );
-        }
-        if let Some(ri) = &self.refute {
-            let _ = writeln!(
-                s,
-                "refute gate: {} probes, {} refutation(s)",
-                ri.probes, ri.refutations
-            );
-        }
-        let _ = writeln!(s, "\n== regions ==");
-        for r in &self.regions {
-            let mut line = format!(
-                "{}: encoded leaves {}/{}",
-                r.name, r.leaves_encoded, r.leaves_total
-            );
-            if r.exact {
-                line.push_str(" (exact)");
-            }
-            if r.or_clauses > 0 {
-                let _ = write!(line, " ({} OR)", r.or_clauses);
-            }
-            if r.dual_hedges > 0 {
-                let _ = write!(line, " ({} dual)", r.dual_hedges);
-            }
-            let _ = writeln!(s, "{line}");
-            for d in &r.dropped {
-                let _ = writeln!(s, "  dropped (line {}): {}", d.line, d.reason);
-            }
-            match r.empty {
-                EmptyStatus::Proven => {
-                    let core = r
-                        .empty_core
-                        .iter()
-                        .map(CoreItem::human)
-                        .collect::<Vec<_>>()
-                        .join(" with ");
-                    let _ = writeln!(
-                        s,
-                        "  region {} provably selects no events — UNSAT: {core}",
-                        r.name
-                    );
-                }
-                EmptyStatus::Candidate => {
-                    let core = r
-                        .empty_core
-                        .iter()
-                        .map(CoreItem::human)
-                        .collect::<Vec<_>>()
-                        .join(" with ");
-                    let _ = writeln!(
-                        s,
-                        "  region {} may be empty (solver UNSAT, uncertified) — {core}",
-                        r.name
-                    );
-                }
-                EmptyStatus::NotProven | EmptyStatus::Unknown => {}
-            }
-        }
-        if !self.bin_checks.is_empty() {
-            let _ = writeln!(s, "\n== bins ==");
-            for b in &self.bin_checks {
-                let coverage = match b.coverage {
-                    CoverageStatus::Proven => "proven".to_owned(),
-                    CoverageStatus::NotProven => {
-                        let mut t = "not proven".to_owned();
-                        if !b.gap_witness.is_empty() {
-                            let vals = b
-                                .gap_witness
-                                .iter()
-                                .map(|w| format!("{} = {}", w.quantity, w.value))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            let _ = write!(t, " (gap witness: {vals})");
-                        }
-                        t
-                    }
-                    CoverageStatus::Unknown => "unknown".to_owned(),
-                };
-                let _ = writeln!(
-                    s,
-                    "{} [{}]: {} bins; disjoint {}/{} pairs; coverage: {}",
-                    b.region,
-                    b.variable,
-                    b.n_bins,
-                    b.disjoint_pairs_proven,
-                    b.disjoint_pairs_total,
-                    coverage
-                );
-            }
-        }
-        let _ = writeln!(s, "\n== pairwise ==");
-        for p in &self.pairwise {
-            let _ = writeln!(s, "{} vs {}: {} — {}", p.a, p.b, p.kind.human(), p.reason);
-            if !p.witness.is_empty() {
-                let vals = p
-                    .witness
-                    .iter()
-                    .map(|w| {
-                        if w.derived {
-                            format!("{} = {} (axiom-derived)", w.quantity, w.value)
-                        } else {
-                            format!("{} = {}", w.quantity, w.value)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let validated = match p.witness_validated {
-                    Some(true) => " [witness validated by interpreter]",
-                    Some(false) => " [witness is a candidate (not interpreter-checkable)]",
-                    None => "",
-                };
-                let _ = writeln!(s, "  witness: {vals}{validated}");
-            }
-            if p.subset_a_in_b {
-                let _ = writeln!(s, "  PROVEN SUBSET: {} within {}", p.a, p.b);
-            }
-            if p.subset_b_in_a {
-                let _ = writeln!(s, "  PROVEN SUBSET: {} within {}", p.b, p.a);
-            }
-        }
-        let _ = writeln!(s, "\n== axioms used ==");
-        for a in &self.axioms_used {
-            let _ = writeln!(
-                s,
-                "{} ({} instances; assumes: {})",
-                a.id, a.instances, a.assumption
-            );
-        }
-        if !self.internal_diagnostics.is_empty() {
-            let _ = writeln!(s, "\n== INTERNAL DIAGNOSTICS (bugs, please report) ==");
-            for d in &self.internal_diagnostics {
-                let _ = writeln!(s, "{d}");
-            }
-        }
-        let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
-        for p in &self.pairwise {
-            match p.kind {
-                VerdictKind::ProvenDisjoint => counts.0 += 1,
-                VerdictKind::ProvenOverlapping => counts.1 += 1,
-                VerdictKind::CandidateOverlapping => counts.2 += 1,
-                VerdictKind::CandidateDisjoint => counts.3 += 1,
-                VerdictKind::PossiblyOverlapping => counts.4 += 1,
-                VerdictKind::Unknown => counts.5 += 1,
-            }
-        }
-        // The candidate-disjoint segment only appears when the tier exists
-        // (certification runs), keeping the pre-Phase-4 summary byte-stable.
-        let cand_dis = if counts.3 > 0 {
-            format!("; candidate disjoint: {}", counts.3)
-        } else {
-            String::new()
-        };
-        let _ = writeln!(
-            s,
-            "\n== summary ==\npairs: {}; proven disjoint: {}{cand_dis}; proven overlapping: {}; candidate overlapping: {}; possibly overlapping: {}; unknown: {}",
-            self.pairwise.len(),
-            counts.0,
-            counts.1,
-            counts.2,
-            counts.4,
-            counts.5
-        );
-        crate::render::fix_negative_zero(&s)
+        self.render_explain(&RenderOptions::default())
+    }
+
+    /// [`Self::human`] with the presentation flags the CLI exposes.
+    #[must_use]
+    pub fn render_explain(&self, opts: &RenderOptions) -> String {
+        crate::render::render_explain(self, opts)
     }
 }
 

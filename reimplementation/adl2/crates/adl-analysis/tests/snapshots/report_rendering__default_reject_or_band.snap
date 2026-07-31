@@ -4,6 +4,14 @@ expression: "render(\"legacy_parser/tests/golden/reject_or_band.adl\")"
 ---
 ADL2 analysis report — reject_or_band.adl (solver: <backend>)
 
+== trust ==
+  solver        <backend>
+  nets          certification on · sampling gate 124 events · refute gate 64 probes
+  proven        0 disjoint · 1 overlapping (1/1 witness-validated) · 1 subset
+  unproven      0 possibly · 0 unknown
+  refutations   0 sampling · 0 adversarial
+  assumes       the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG)
+
 == findings ==
   (none)
 
@@ -13,10 +21,9 @@ ADL2 analysis report — reject_or_band.adl (solver: <backend>)
   SR_mid   2/2     yes
 
 == pairwise (1 pair, 1 group) ==
-  SR_band vs SR_mid: PROVEN OVERLAPPING — cut sets satisfiable together (witness validated by interpreter); subset: SR_mid within SR_band
+  SR_band vs SR_mid: PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together (witness validated by interpreter); subset: SR_mid within SR_band [gate 124/124 · probes 64]
 
 == axioms used ==
   NNEG×1
-  assuming: the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG)
 
 summary: 1 pair — 0 proven disjoint, 1 proven overlapping, 0 possibly overlapping, 0 unknown

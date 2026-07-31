@@ -15,8 +15,9 @@
 use crate::encode::{BinSetEnc, RegionEnc, UnitEnc};
 use crate::interval::{IntervalMap, RefutingPart};
 use crate::report::{
-    AxiomUse, BinCheckReport, CoreItem, CoverageStatus, EmptyStatus, OVERLAP_CAVEAT, PairReport,
-    RegionReport, Report, SCHEMA_VERSION, VerdictKind, WitnessValue,
+    AxiomUse, BinCheckReport, CoreItem, CoverageStatus, Diagnostic, DiagnosticClass, EmptyStatus,
+    OVERLAP_CAVEAT, PairReport, ProofPath, RegionReport, Report, SCHEMA_VERSION, VerdictKind,
+    WitnessValue,
 };
 use crate::witness::{Validation, validate_witness};
 use adl_axioms::{AxiomId, AxiomSet, catalog_entry, derived_size_le, quantity_label, twin_pairs};
@@ -71,6 +72,9 @@ pub(crate) struct Engine<'a> {
     /// `solver_degraded` warning (G7). Timeouts / `unknown` answers are
     /// NOT counted — those are legitimate hard-query outcomes.
     pub solver_errors: usize,
+    /// The reason string of the FIRST failed check, kept so the report can
+    /// name it instead of only counting failures.
+    pub first_solver_failure: Option<String>,
     /// The sampling-gate battery (proof-system v2 Phase 1): deterministic
     /// loader-valid events every UNSAT-side PROVEN verdict is refuted against
     /// through the reference interpreter before being reported. Empty = gate
@@ -119,6 +123,38 @@ pub(crate) struct Engine<'a> {
 /// realize before downgrading to POSSIBLY.
 const MAX_WITNESS_ATTEMPTS: u32 = 6;
 
+/// Internal-diagnostic sink. Identical to the `Vec<String>` it replaces
+/// except that each entry is filed with its severity at the point that
+/// knows it — the alternative (re-deriving severity from message prefixes
+/// in the renderer) would rot the first time a message is reworded.
+#[derive(Default)]
+pub(crate) struct Diagnostics {
+    items: Vec<Diagnostic>,
+}
+
+impl Diagnostics {
+    /// A claim was withheld or capped because its evidence did not hold up.
+    /// Nothing was contradicted; the conservative outcome was taken.
+    fn fail_closed(&mut self, message: String) {
+        self.items.push(Diagnostic {
+            class: DiagnosticClass::FailClosed,
+            message,
+        });
+    }
+
+    /// One part of the engine refuted a conclusion another part reached.
+    fn contradiction(&mut self, message: String) {
+        self.items.push(Diagnostic {
+            class: DiagnosticClass::Contradiction,
+            message,
+        });
+    }
+
+    fn messages(&self) -> Vec<String> {
+        self.items.iter().map(|d| d.message.clone()).collect()
+    }
+}
+
 /// ε for the interior-model wish: far above any f64 rounding error the
 /// interpreter's re-evaluation can accumulate (≤ ~1e-12 for sums of
 /// physical magnitudes), far below any physical cut granularity, and
@@ -165,6 +201,35 @@ fn bundle_label(hir: &Hir, q: QuantityId) -> String {
 /// two files' same-named-but-differently-cut collections stay distinct.
 fn coll_label(hir: &Hir, c: adl_sema::CollectionId) -> String {
     adl_sema::collection_ref(hir, c)
+}
+
+/// The analysis units whose regions mention a collection — the ledger's file
+/// attribution for a `C<id>#name` label. A merged unit namespaces its regions
+/// `<unit>::<region>`, so the unit is the part before the LAST `::` (a unit
+/// label can itself be a path containing `::`; a region identifier cannot).
+///
+/// Descriptive only: it reads the encoded quantity sets the analysis already
+/// built, and answers "where was this declared", never "what is it".
+fn coll_units(hir: &Hir, unit: &UnitEnc, c: adl_sema::CollectionId) -> Vec<String> {
+    let mentions = |q: QuantityId| match hir.table.quantity(q) {
+        Quantity::Size(x) => *x == c,
+        Quantity::ElemProp { coll, .. } => *coll == c,
+        _ => false,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for r in &unit.regions {
+        let Some((file, _)) = r.name.rsplit_once("::") else {
+            continue;
+        };
+        if out.iter().any(|u| u == file) {
+            continue;
+        }
+        if r.quantities.iter().copied().any(mentions) {
+            out.push(file.to_owned());
+        }
+    }
+    out.sort();
+    out
 }
 
 /// The detector base a collection flattens to, for the ledger's `base`
@@ -251,7 +316,7 @@ struct RegionCtx {
 impl Engine<'_> {
     pub fn run(mut self) -> Report {
         let interp = Interp::new(self.hir, self.ext);
-        let mut internal: Vec<String> = Vec::new();
+        let mut internal = Diagnostics::default();
 
         // Name -> origin map for core explanations.
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
@@ -340,19 +405,21 @@ impl Engine<'_> {
         let mut refute_refutations = 0usize;
         let mut region_reports = Vec::new();
         for (r, ctx) in self.unit.regions.iter().zip(&ctxs) {
-            let (mut empty, mut empty_core) =
+            let (mut empty, mut empty_core, mut empty_proof) =
                 self.region_empty(ctx, &r.name, &origins, &mut internal);
             if matches!(empty, EmptyStatus::Proven | EmptyStatus::Candidate)
                 && self.gate_empty(r.idx, &interp, &mut internal, &mut gate_refutations)
             {
                 empty = EmptyStatus::NotProven;
                 empty_core = Vec::new();
+                empty_proof = None;
             }
             if matches!(empty, EmptyStatus::Proven | EmptyStatus::Candidate)
                 && self.refute_empty(r.idx, &interp, &mut internal, &mut refute_refutations)
             {
                 empty = EmptyStatus::NotProven;
                 empty_core = Vec::new();
+                empty_proof = None;
             }
             region_reports.push(RegionReport {
                 name: r.name.clone(),
@@ -371,6 +438,7 @@ impl Engine<'_> {
                     .collect(),
                 empty,
                 empty_core,
+                empty_proof,
             });
         }
 
@@ -462,13 +530,25 @@ impl Engine<'_> {
                     self.solver_errors
                 )
             }),
+            solver_failures: (self.spawn_failures + self.solver_errors > 0).then(|| {
+                crate::report::SolverFailures {
+                    spawn: self.spawn_failures,
+                    errors: self.solver_errors,
+                    first_reason: self
+                        .first_solver_failure
+                        .clone()
+                        .unwrap_or_else(|| "reason not recorded".to_owned()),
+                }
+            }),
+            certification: self.certify,
             regions: region_reports,
             pairwise,
             bin_checks,
             reconciliations: std::mem::take(&mut self.recon_ledger),
             recon_near_misses: std::mem::take(&mut self.recon_near_misses),
             axioms_used,
-            internal_diagnostics: internal,
+            internal_diagnostics: internal.messages(),
+            diagnostics: internal.items,
             combine_bundles,
         }
     }
@@ -490,10 +570,19 @@ impl Engine<'_> {
         // (`adl_solver`), so a new failure mode cannot drift out of the
         // accounting: process failures first, broken-solver errors second,
         // and hard-query `unknown`/`timeout` counted by neither.
+        let failed = result.is_process_failure() || result.is_solver_error();
         if result.is_process_failure() {
             self.spawn_failures += 1;
         } else if result.is_solver_error() {
             self.solver_errors += 1;
+        }
+        // Keep the FIRST reason verbatim: a report that only says "12 checks
+        // failed" leaves the reader no way to act without re-running.
+        if failed
+            && self.first_solver_failure.is_none()
+            && let SatResult::Unknown(why) = result
+        {
+            self.first_solver_failure = Some(why.clone());
         }
     }
 
@@ -561,8 +650,8 @@ impl Engine<'_> {
         ctx: &RegionCtx,
         region: &str,
         origins: &BTreeMap<AssertName, CoreItem>,
-        internal: &mut Vec<String>,
-    ) -> (EmptyStatus, Vec<CoreItem>) {
+        internal: &mut Diagnostics,
+    ) -> (EmptyStatus, Vec<CoreItem>, Option<ProofPath>) {
         // Interval-only emptiness runs no solver, but it is still a bound
         // refutation the kernel can check — so check it. A rejection is a
         // kernel/interval disagreement (a bug), reported rather than used to
@@ -570,17 +659,21 @@ impl Engine<'_> {
         if let Some(empty) = ctx.intervals.self_empty() {
             let lookup = |n: &AssertName| over_of(&ctx.overs, n);
             if let Some(Err(why)) = self.certify_interval(&empty.parts(), lookup) {
-                internal.push(format!(
+                internal.contradiction(format!(
                     "INTERVAL CERTIFICATE unavailable for the emptiness of region {region}: \
                      {why}. The interval layer refuted the region's own spine but the replay \
                      kernel would not confirm it — one of the two is wrong; the verdict is \
                      left as it was."
                 ));
             }
-            return (EmptyStatus::Proven, Vec::new());
+            return (
+                EmptyStatus::Proven,
+                Vec::new(),
+                Some(ProofPath::Interval),
+            );
         }
         if self.solver.is_none() {
-            return (EmptyStatus::Unknown, Vec::new());
+            return (EmptyStatus::Unknown, Vec::new(), None);
         }
         self.push();
         self.assert_overs(&ctx.overs, true);
@@ -602,10 +695,10 @@ impl Engine<'_> {
                 } else {
                     EmptyStatus::Proven
                 };
-                (status, items)
+                (status, items, Some(ProofPath::SolverCore))
             }
-            Some(SatResult::Sat) => (EmptyStatus::NotProven, Vec::new()),
-            _ => (EmptyStatus::Unknown, Vec::new()),
+            Some(SatResult::Sat) => (EmptyStatus::NotProven, Vec::new(), None),
+            _ => (EmptyStatus::Unknown, Vec::new(), None),
         };
         self.pop();
         out
@@ -620,7 +713,7 @@ impl Engine<'_> {
         cb: &RegionCtx,
         origins: &BTreeMap<AssertName, CoreItem>,
         interp: &Interp<'_>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) -> PairReport {
         let shared: Vec<QuantityId> = ra
             .quantities
@@ -645,6 +738,8 @@ impl Engine<'_> {
             witness_validated: None,
             certified: None,
             core: Vec::new(),
+            proof_path: None,
+            certificate_size: None,
         };
 
         // 1. Interval fast path (also the no-solver fallback). No solver runs
@@ -661,6 +756,7 @@ impl Engine<'_> {
                 rb.name,
                 d.b.human()
             );
+            report.proof_path = Some(ProofPath::Interval);
             self.certify_interval_pair(&mut report, &d.parts, ca, cb, origins, internal);
             return report;
         }
@@ -672,6 +768,7 @@ impl Engine<'_> {
                     enc.name,
                     empty.human()
                 );
+                report.proof_path = Some(ProofPath::Interval);
                 self.certify_interval_pair(&mut report, &empty.parts(), ca, cb, origins, internal);
                 return report;
             }
@@ -712,6 +809,12 @@ impl Engine<'_> {
             let (certified, cert_payload) = self.certify_disjoint(core_names.as_deref(), c1, c2);
             self.pop();
             report.certified = certified;
+            report.proof_path = Some(ProofPath::SolverCore);
+            // The certified set IS the unsat core (certifying a subset of an
+            // UNSAT set is sound), so its size is the core's.
+            if certified == Some(true) {
+                report.certificate_size = core_names.as_ref().map(Vec::len);
+            }
             if let Some(payload) = cert_payload {
                 self.push_bundle(&report.a, &report.b, &payload, origins, internal);
             }
@@ -913,8 +1016,15 @@ impl Engine<'_> {
                                         "overlap model found, but witness re-validation failed; \
                                          downgraded to POSSIBLY ({why})"
                                     );
-                                    internal.push(format!(
-                                        "INTERNAL: witness validation failed for {} vs {}: {why}",
+                                    // Fail-closed, not a contradiction: the
+                                    // engine reached no overlap conclusion to
+                                    // refute — the SAT-direction search ran out
+                                    // of realizable models and capped.
+                                    internal.fail_closed(format!(
+                                        "WITNESS NOT REALIZED for {} vs {}: witness validation \
+                                         failed for every model tried within the retry budget, \
+                                         so the overlap is capped at POSSIBLY and no claim is \
+                                         made — {why}",
                                         ra.name, rb.name
                                     ));
                                 }
@@ -1210,7 +1320,7 @@ impl Engine<'_> {
     fn reconcile(
         &mut self,
         origins: &mut BTreeMap<AssertName, CoreItem>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) -> BTreeMap<&'static str, usize> {
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
         let Some(recon) = self.recon.take() else {
@@ -1226,6 +1336,8 @@ impl Engine<'_> {
                 outcome: crate::report::ReconOutcome::Skipped,
                 base: None,
                 note: s.reason.clone(),
+                a_units: coll_units(self.hir, self.unit, s.coll_a),
+                b_units: coll_units(self.hir, self.unit, s.coll_b),
             });
         }
         for n in &recon.near_misses {
@@ -1268,6 +1380,8 @@ impl Engine<'_> {
                 } else {
                     "neither cut set implies the other".to_owned()
                 },
+                a_units: coll_units(self.hir, self.unit, cand.coll_a),
+                b_units: coll_units(self.hir, self.unit, cand.coll_b),
             });
             // Directions to emit, as (sub_size, sup_size, catalog id, the
             // subset refutation the direction rests on).
@@ -1298,7 +1412,7 @@ impl Engine<'_> {
                 // uncertified UNSAT — in practice the two agree, so this
                 // branch fires only if that invariant ever breaks.)
                 if self.certify && chain.is_none() {
-                    internal.push(format!(
+                    internal.fail_closed(format!(
                         "RECONCILIATION FACT WITHHELD for {label_a} / {label_b}: the subset \
                          refutation behind it produced no replayable certificate, so the \
                          derived size fact is not asserted."
@@ -1615,7 +1729,7 @@ impl Engine<'_> {
         ca: &RegionCtx,
         cb: &RegionCtx,
         origins: &BTreeMap<AssertName, CoreItem>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) {
         let outcome = {
             let lookup = |n: &AssertName| over_of(&ca.overs, n).or_else(|| over_of(&cb.overs, n));
@@ -1625,9 +1739,10 @@ impl Engine<'_> {
             None => {} // certification disabled
             Some(Ok(payload)) => {
                 report.certified = Some(true);
+                report.certificate_size = Some(payload.asserts.len());
                 self.push_bundle(&report.a, &report.b, &payload, origins, internal);
             }
-            Some(Err(why)) => internal.push(format!(
+            Some(Err(why)) => internal.contradiction(format!(
                 "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT {} vs {}: {why}. The \
                  interval layer and the replay kernel disagree — one of them is wrong; the \
                  verdict is left as it was and no certification is claimed.",
@@ -1647,7 +1762,7 @@ impl Engine<'_> {
         region_b: &str,
         payload: &CertPayload,
         origins: &BTreeMap<AssertName, CoreItem>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) {
         if !self.combine {
             return;
@@ -1682,7 +1797,7 @@ impl Engine<'_> {
         if bundle.replay() {
             self.bundles.push(bundle);
         } else {
-            internal.push(format!(
+            internal.fail_closed(format!(
                 "BUNDLE WITHHELD for {region_a} vs {region_b}: the assembled certificate \
                  bundle does not replay (most likely a reconciliation fact used as a given \
                  without an embedded derivation). The verdict stands on the analysis; the \
@@ -1701,7 +1816,7 @@ impl Engine<'_> {
         ia: usize,
         ib: usize,
         interp: &Interp<'_>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
         sample_refutations: &mut usize,
         refute_refutations: &mut usize,
     ) {
@@ -1712,7 +1827,7 @@ impl Engine<'_> {
             for e in &self.gate_events {
                 if memb(ia, e) == Some(true) && memb(ib, e) == Some(true) {
                     *sample_refutations += 1;
-                    internal.push(format!(
+                    internal.contradiction(format!(
                         "SAMPLING GATE refuted PROVEN DISJOINT for {} vs {}: a sampled \
                          event passes both regions — an encoder/axiom fact is false on \
                          a real event; verdict demoted",
@@ -1727,7 +1842,10 @@ impl Engine<'_> {
                     // G2: a retracted PROVEN must not keep advertising a
                     // replay-checked certificate — `certified: true` with
                     // `kind: possibly_overlapping` would lie to JSON consumers.
+                    // The proof provenance goes with it, for the same reason.
                     report.certified = None;
+                    report.proof_path = None;
+                    report.certificate_size = None;
                     break;
                 }
             }
@@ -1737,7 +1855,7 @@ impl Engine<'_> {
                 .is_some()
         {
             *refute_refutations += 1;
-            internal.push(format!(
+            internal.contradiction(format!(
                 "REFUTE GATE refuted PROVEN DISJOINT for {} vs {}: an adversarial \
                  probe event passes both regions — an encoder/axiom fact is false on \
                  a real event; verdict demoted",
@@ -1750,6 +1868,8 @@ impl Engine<'_> {
                 .to_owned();
             report.core.clear();
             report.certified = None;
+            report.proof_path = None;
+            report.certificate_size = None;
         }
         // Subset claims clear their boolean flags only (no pairwise
         // `certified` field); certification already ran inside `subset`.
@@ -1764,7 +1884,7 @@ impl Engine<'_> {
                     if memb(sub, e) == Some(true) && memb(sup, e) == Some(false) {
                         *sample_refutations += 1;
                         *flag = false;
-                        internal.push(format!(
+                        internal.contradiction(format!(
                             "SAMPLING GATE refuted PROVEN SUBSET ({label}) for {} vs {}: a \
                              sampled event is in the subset region but not the superset; \
                              claim withdrawn",
@@ -1792,7 +1912,7 @@ impl Engine<'_> {
                 {
                     *refute_refutations += 1;
                     *flag = false;
-                    internal.push(format!(
+                    internal.contradiction(format!(
                         "REFUTE GATE refuted PROVEN SUBSET ({label}) for {} vs {}: an \
                          adversarial probe is in the subset region but not the superset; \
                          claim withdrawn",
@@ -1813,13 +1933,13 @@ impl Engine<'_> {
         &self,
         idx: usize,
         interp: &Interp<'_>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
         refutations: &mut usize,
     ) -> bool {
         for e in &self.gate_events {
             if interp.eval_region_membership_idx(idx, e).ok() == Some(true) {
                 *refutations += 1;
-                internal.push(format!(
+                internal.contradiction(format!(
                     "SAMPLING GATE refuted REGION EMPTY for {}: a sampled event is a \
                      member — an encoder/axiom fact is false on a real event; claim \
                      withdrawn",
@@ -1836,12 +1956,12 @@ impl Engine<'_> {
         &self,
         idx: usize,
         interp: &Interp<'_>,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
         refutations: &mut usize,
     ) -> bool {
         if crate::refute::search_membership(interp, idx, &self.refute_probes).is_some() {
             *refutations += 1;
-            internal.push(format!(
+            internal.contradiction(format!(
                 "REFUTE GATE refuted REGION EMPTY for {}: an adversarial probe is a \
                  member — an encoder/axiom fact is false on a real event; claim \
                  withdrawn",
@@ -1902,7 +2022,7 @@ impl Engine<'_> {
         &mut self,
         set: &BinSetEnc,
         region_ctx: &RegionCtx,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) -> BinCheckReport {
         let region_name = self.unit.regions[set.region_idx].name.clone();
         let n = set.bins.len();
@@ -1939,7 +2059,7 @@ impl Engine<'_> {
         bi: &Over,
         bj: &Over,
         region: &str,
-        internal: &mut Vec<String>,
+        internal: &mut Diagnostics,
     ) -> bool {
         let bi_name = AssertName::new("QBINI");
         let bj_name = AssertName::new("QBINJ");
@@ -1999,7 +2119,7 @@ impl Engine<'_> {
             }
         };
         if let Some(Err(why)) = self.certify_interval(&parts, lookup) {
-            internal.push(format!(
+            internal.contradiction(format!(
                 "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region {region}: \
                  {why}. The interval layer and the replay kernel disagree — one of them is \
                  wrong; the count is left as it was."
@@ -2282,6 +2402,7 @@ mod reconcile_solver_tests {
             recon: Some(recon),
             spawn_failures: 0,
             solver_errors: 0,
+            first_solver_failure: None,
             gate_events: Vec::new(),
             refute_probes: Vec::new(),
             refute_gate: false,
@@ -2294,7 +2415,7 @@ mod reconcile_solver_tests {
             recon_chains: BTreeMap::new(),
         };
         let mut origins: BTreeMap<AssertName, CoreItem> = BTreeMap::new();
-        let mut internal = Vec::new();
+        let mut internal = Diagnostics::default();
         engine.reconcile(&mut origins, &mut internal)
     }
 
@@ -2433,6 +2554,7 @@ mod sampling_gate_tests {
             recon: None,
             spawn_failures: 0,
             solver_errors: 0,
+            first_solver_failure: None,
             gate_events,
             refute_probes: Vec::new(),
             refute_gate: false,
@@ -2506,6 +2628,7 @@ mod sampling_gate_tests {
             recon: None,
             spawn_failures: 0,
             solver_errors: 0,
+            first_solver_failure: None,
             gate_events: adl_interp::sample::battery(&ext, 64),
             refute_probes: Vec::new(),
             refute_gate: false,
@@ -2545,6 +2668,7 @@ mod sampling_gate_tests {
             recon: None,
             spawn_failures: 0,
             solver_errors: 0,
+            first_solver_failure: None,
             gate_events,
             refute_probes: Vec::new(),
             refute_gate: false,
@@ -2573,9 +2697,11 @@ mod sampling_gate_tests {
                 line: 1,
                 text: "MET > 100".to_owned(),
             }],
+            proof_path: Some(ProofPath::SolverCore),
+            certificate_size: Some(1),
         };
         let interp = Interp::new(&hir, &ext);
-        let mut internal = Vec::new();
+        let mut internal = Diagnostics::default();
         let mut sample_refutations = 0;
         let mut refute_refutations = 0;
         engine.gate_pair(

@@ -180,20 +180,25 @@ resynchronizes at statement boundaries), and go to stderr.
 
 ```bash
 smash2 verify analysis.adl
-smash2 verify --explain analysis.adl                # full proof chains: unsat cores, witness values, per-axiom statements
-smash2 verify --json analysis.adl > report.json     # versioned schema (v3)
+smash2 verify --explain analysis.adl                # full per-claim evidence: proof route, certificate size, unsat cores WITH axiom statements, gate coverage, witnesses, ledger
+smash2 verify --json analysis.adl > report.json     # versioned schema (v4)
+smash2 verify --matrix analysis.adl                 # print the verdict matrix past its 20-region limit
 smash2 verify --no-solver analysis.adl              # interval heuristic only
 smash2 verify --no-certify analysis.adl             # skip the independent certifier (see below)
 smash2 verify --no-refute-gate analysis.adl         # skip the adversarial refute gate (on by default)
 smash2 verify --fail-on=overlap,empty analysis.adl  # CI gating on findings
+smash2 verify --fail-on=unknown analysis.adl        # CI gating on "the analysis could not answer"
 smash2 verify a.adl b.adl                           # each analyzed independently (per-unit reports)
 smash2 verify --cross a.adl b.adl                   # merged unit: cross-FILE overlap matrix
-smash2 verify --cross analyses/                     # a directory expands to its *.adl files
+smash2 verify --cross --recon=related analyses/     # ledger: only the pairs a refinement was proven for
 ```
 
-`--fail-on` kinds are `overlap`, `gap`, `empty`, `non-exact` (comma-
-separated); the exit code is nonzero if any listed finding is present, for
-CI gating.
+`--fail-on` kinds are `overlap`, `gap`, `empty`, `non-exact`, `unknown`
+(comma-separated); the exit code is nonzero if any listed finding is
+present, for CI gating. `unknown` fires on any UNKNOWN pair **and** on a run
+whose solver produced no usable answers — the one failure mode that
+otherwise looks like a clean result (a broken solver yields an all-UNKNOWN
+report at exit 0 with a healthy-looking header).
 
 A directory argument contributes its `*.adl` files (sorted, non-recursive,
 deduped against the other inputs). Without `--cross`, several files are
@@ -218,6 +223,69 @@ with an explanation (unsat core mapped to source lines for disjointness; a
 validated witness event for overlap). Per `bin` set: pairwise disjointness
 and region coverage with gap witnesses. Output is deterministic — two runs
 are byte-identical.
+
+**Reading the report.** Every report opens with a `== trust ==` block: the
+solver, which of the three nets ran, the verdict counts by tier with the
+share of PROVEN DISJOINT that carries a certificate, how many claims the
+gates refuted, and the soundness assumptions in force. Then every
+proven-tier line carries its own evidence inline:
+
+```
+== trust ==
+  solver        smtlib-subprocess(z3)
+  nets          certification on · sampling gate 334 events · refute gate 64 probes
+  proven        35 disjoint (35/35 certified, 100%) · 28 overlapping (28/28 witness-validated) · 31 subset
+  unproven      15 possibly · 0 unknown
+  refutations   0 sampling · 0 adversarial
+  assumes       take = filter (SUB); the loader rejects events outside this domain (NNEG); both sign conventions (OPEN-2) (DPHI)
+
+  10 pairs PROVEN DISJOINT [certified · gate 334/334 · probes 64] — size(bjets): [0, 0] vs [2, inf]
+  SR6 vs SR8: PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together
+  compressednb1 vs compressednbnc0: PROVEN DISJOINT [certified · gate 484/484 · probes 64 · assumes: tags boolean; discriminants excluded by exact-name rule] — core: compressednb1 line 111 ∧ compressednbnc0 line 146 (+1 axioms)
+```
+
+`certified` = a replay-checked Farkas certificate backs the claim
+(`UNCERTIFIED` / `no certificate` / `certification off` otherwise);
+`gate e/e` = it survived every event of the sampling battery; `probes p` =
+it survived p adversarial probes; `assumes:` lists only the assumptions
+**that claim's own unsat core** consumes (an interval-bounds proof uses no
+axiom and shows none). Overlap claims take the witness form instead —
+`[witness validated]` / `[witness unvalidated]` — because the gates are
+UNSAT-side only, and claiming gate coverage there would be the exact
+overclaim the annotation exists to prevent. Pairs merge into one grouped
+line only when their annotation matches, so a group never hides differing
+evidence.
+
+`--explain` expands each annotation: the proof route (interval bounds vs
+solver unsat core), the certificate's size, the full core with **every
+axiom's statement and physical assumption** spelled out, gate/probe
+coverage, and witness provenance (whether the displayed values were read
+back from an interpreter-accepted event or straight off the solver model).
+It also carries the reconciliation ledger and its advisories.
+
+The verdict matrix is drawn for 3–20 regions; above that the section says
+so and names `--matrix`, which prints it in full — it is never dropped
+silently. When truncating row labels to the 24-column width would make two
+regions print identically (routine for cross-file `file.adl::region`
+labels), the names move into a numbered legend and the rows carry only
+their index, so the matrix can never show two regions under one string.
+
+Internal diagnostics are split by severity. **Fail-closed notes** are the
+tool declining to claim what it could not back — a witness that would not
+realize, a reconciliation fact without a certificate, a bundle that would
+not replay — and are worded neutrally, because nothing was contradicted.
+**INTERNAL CONTRADICTIONS** are the tool refuting its own conclusion (a
+gate finding a counterexample to a PROVEN, the replay kernel refusing an
+interval refutation) and keep the loud wording: those are bugs. Exit codes
+are unaffected by either.
+
+`--json` carries all of it too. The schema stays **v4**; the trust surface
+added keys only, so a v4 consumer keeps working unchanged: `certification`
+(was the certifier on), `solver_failures` (`{spawn, errors, first_reason}`,
+absent in healthy runs), `diagnostics` (the same messages as
+`internal_diagnostics`, each with `class: fail_closed | contradiction`),
+per-pair `proof_path` (`interval` | `solver_core`) and `certificate_size`,
+per-region `empty_proof`, and per-ledger-row `a_units` / `b_units`.
 
 **Three independent nets sit behind every PROVEN verdict**, on by default:
 
@@ -265,11 +333,18 @@ collections were related to the other's — the identity work that powers
 cross-analysis verdicts, made visible:
 
 ```
-  1 of 1 candidate pair(s) related
-  C1#ajets  ≡  C2#bjets  XEQ  (base jet)      # equivalent: both directions proven
-  C14#jets  ⊇  C15#bjets XSUB (base jet)      # one refines the other
-  C9#jets   ?  C14#jets  — neither cut set implies the other
+  6 of 12 candidate pair(s) related
+  legend: `C<id>#name [file]` = the collection with that internal id, named `name`, declared in `file`; ≡ equivalent (XEQ)  ⊆/⊇ refines (XSUB)  ? unrelated  ⊘ skipped
+  C1#jets [a.adl]   ⊇  C6#bjets [a.adl]   XSUB  (base jet)   # one refines the other
+  C1#jets [a.adl]   ⊆  C7#jets [b.adl]    XSUB  (base jet)   # …across files
+  C11#bjets [b.adl] ?  C12#cjets [b.adl]  — neither cut set implies the other
 ```
+
+Rows carry the analysis unit each collection was declared in, so a
+`C<id>#name` id is never ambiguous, and the legend that explains the
+notation is printed with the section. `--recon=related` drops the
+unrelated/skipped rows (on a large cross run they are the overwhelming
+majority); `--recon=all` is the default. `--explain` shows the ledger too.
 
 Collection *names* never matter — identity is structural — so two files
 calling the same object `ajets` and `bjets` still reconcile. Pairs that

@@ -6,6 +6,7 @@ expression: stdout(&out)
   "schema_version": 4,
   "unit": "disjoint_pt.adl",
   "solver": "none",
+  "certification": true,
   "sampling": {
     "events": 124,
     "refutations": 0
@@ -54,7 +55,9 @@ expression: stdout(&out)
       "witness": [],
       "witness_validated": null,
       "certified": true,
-      "core": []
+      "core": [],
+      "proof_path": "interval",
+      "certificate_size": 2
     }
   ],
   "bin_checks": [],

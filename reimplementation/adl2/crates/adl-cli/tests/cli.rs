@@ -284,6 +284,109 @@ fn verify_bad_fail_on_value_is_usage_error() {
     assert!(stderr(&out).contains("bogus"));
 }
 
+// --- verify: trust surface flags -----------------------------------------
+
+#[test]
+fn verify_matrix_flag_forces_the_matrix_past_the_limit() {
+    let file = corpus("cl_examples/CMS-SUS-21-006.adl");
+    let plain = run(&["verify", "--no-solver", file.to_str().unwrap()]);
+    assert_eq!(code(&plain), 0);
+    let body = stdout(&plain);
+    assert!(body.contains("== verdict matrix =="), "{body}");
+    assert!(
+        body.contains("re-run with --matrix to print it in full"),
+        "suppression must never be silent:\n{body}"
+    );
+    let forced = run(&["verify", "--no-solver", "--matrix", file.to_str().unwrap()]);
+    assert_eq!(code(&forced), 0);
+    assert!(stdout(&forced).contains("D disjoint   O overlapping"));
+}
+
+#[test]
+fn verify_recon_filter_is_validated_and_applied() {
+    let bad = run(&[
+        "verify",
+        "--no-solver",
+        "--recon=sideways",
+        golden("disjoint_pt.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&bad), 2);
+    assert!(stderr(&bad).contains("sideways"), "{}", stderr(&bad));
+
+    let ok = run(&[
+        "verify",
+        "--cross",
+        "--recon=related",
+        corpus("CMS/CMS-SUS-16-033_Delphes.adl").to_str().unwrap(),
+        corpus("Examples/CMS-SUS-16-032.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&ok), 0);
+    let body = stdout(&ok);
+    assert!(body.contains("== collection reconciliation =="), "{body}");
+    assert!(body.contains("legend: `C<id>#name [file]`"), "{body}");
+    assert!(body.contains("--recon=all for every candidate"), "{body}");
+    assert!(
+        !body.contains("neither cut set implies the other"),
+        "--recon=related must drop the unrelated rows:\n{body}"
+    );
+    // Ledger ids carry the file they were declared in.
+    assert!(body.contains("[CMS-SUS-16-032.adl]"), "{body}");
+}
+
+#[test]
+fn verify_fail_on_unknown_is_accepted_and_quiet_on_a_clean_run() {
+    let out = run(&[
+        "verify",
+        "--fail-on=unknown",
+        golden("disjoint_pt.adl").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+/// A solver that answers `-version` and then fails every script used to
+/// produce an all-UNKNOWN report at exit 0 under a healthy-looking header.
+/// It must now be loud in the report AND gateable.
+#[test]
+fn verify_reports_a_broken_solver_loudly_and_gates_on_it() {
+    let dir = std::env::temp_dir().join(format!("smash2_fakez3_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let shim = dir.join("z3");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\ncase \"$*\" in *version*) echo 'Z3 version 4.12.2 - 64 bit'; exit 0;; esac\n\
+         echo '(error \"sabotage\")'\nexit 1\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let file = corpus("CMS/CMS-SUS-16-033_Delphes.adl");
+    let out = Command::new(bin())
+        .args(["verify", "--fail-on=unknown", file.to_str().unwrap()])
+        .env("PATH", &path)
+        .output()
+        .expect("spawn smash2");
+    let body = stdout(&out);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        body.lines().nth(1).is_some_and(|l| l.contains("SOLVER FAILED")),
+        "the header must say the solver produced nothing:\n{body}"
+    );
+    assert!(
+        body.contains("first reason: "),
+        "the report must name the failure, not only count it:\n{body}"
+    );
+    assert_eq!(code(&out), 4, "--fail-on=unknown must gate on it:\n{body}");
+}
+
 // --- run -----------------------------------------------------------------
 
 #[test]

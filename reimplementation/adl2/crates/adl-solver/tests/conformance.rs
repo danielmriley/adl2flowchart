@@ -194,6 +194,104 @@ fn subprocess_error_output_is_unknown_not_weaker() {
     );
 }
 
+/// The Bug-5 error verdict is **sticky**: every check made while the
+/// offending command is still on the frame stack comes back `Unknown`, not
+/// just the first one. This is the property that would break under a
+/// stream-the-deltas backend, where the solver reports the bad command once
+/// and every later check silently answers a script it quietly dropped a
+/// command from (the legacy false-PROVEN shape).
+#[test]
+fn subprocess_error_stays_unknown_until_the_frame_pops() {
+    if !subprocess_available("z3") {
+        eprintln!("SKIP: no z3 binary on PATH (sticky error)");
+        return;
+    }
+    let mut s = SubprocessSolver::z3();
+    s.assert(&atom(0, Rel::Ge, 0.0), None);
+    s.push();
+    s.inject_raw("(assert (this_is_not_a_function q0))");
+    for i in 0..3 {
+        let r = s.check(T);
+        assert!(matches!(r, SatResult::Unknown(_)), "check {i}: {r:?}");
+        assert!(
+            r.is_solver_error(),
+            "check {i} must count as a solver error: {r:?}"
+        );
+    }
+    s.pop();
+    assert_eq!(
+        s.check(T),
+        SatResult::Sat,
+        "popping the frame removes the bad command"
+    );
+}
+
+/// A child that dies mid-run degrades that one query to `Unknown` (accounted
+/// as a process failure — never a verdict), then the next query respawns and
+/// replays the recorded frame stack: same declarations, same named asserts,
+/// same answers.
+#[test]
+fn subprocess_survives_child_death_and_replays_state() {
+    if !subprocess_available("z3") {
+        eprintln!("SKIP: no z3 binary on PATH (child death)");
+        return;
+    }
+    let mut s = SubprocessSolver::z3();
+    s.declare(q(7), QSort::Int);
+    s.push();
+    s.assert(&atom(0, Rel::Gt, 1.0), name("lo"));
+    s.assert(&atom(0, Rel::Lt, 3.0), name("hi"));
+    assert_eq!(s.check(T), SatResult::Sat);
+
+    assert!(s.kill_child_for_test(), "there was a live child");
+    let dead = s.check(T);
+    assert!(
+        dead.is_process_failure(),
+        "a dead child is a process failure, not a verdict: {dead:?}"
+    );
+    assert!(s.model().is_none(), "no model to fetch from a dead child");
+
+    // Respawn + replay: the state is exactly what it was before the death.
+    assert_eq!(s.check(T), SatResult::Sat, "replayed state is still sat");
+    let m = s.model().expect("model after replay");
+    let v = m.get(q(0)).expect("q0 valued");
+    assert!(v > r(1.0) && v < r(3.0), "replayed model in (1,3): {v:?}");
+    assert!(
+        m.get(q(7)).is_some(),
+        "a quantity declared before the death is declared again"
+    );
+    s.assert(&atom(0, Rel::Gt, 5.0), None);
+    assert_eq!(s.check(T), SatResult::Unsat, "replayed asserts still bite");
+    let core = s.unsat_core().expect("core after replay");
+    assert!(core.contains(&AssertName::new("hi")), "{core:?}");
+    s.pop();
+}
+
+/// `pop` drops a frame's assertions but never its declarations: the backend's
+/// declaration set is global and monotone, and it is what `model()` asks for.
+/// A quantity first mentioned inside a popped frame must therefore still be
+/// valued afterwards — otherwise the next `(get-value …)` hits `unknown
+/// constant` and every model silently disappears.
+#[test]
+fn subprocess_keeps_declarations_from_popped_frames() {
+    if !subprocess_available("z3") {
+        eprintln!("SKIP: no z3 binary on PATH (declaration scope)");
+        return;
+    }
+    let mut s = SubprocessSolver::z3();
+    s.push();
+    s.assert(&atom(4, Rel::Gt, 2.0), None); // q4 first mentioned inside the frame
+    assert_eq!(s.check(T), SatResult::Sat);
+    s.pop();
+    s.assert(&atom(0, Rel::Ge, 0.0), None);
+    assert_eq!(s.check(T), SatResult::Sat);
+    let m = s.model().expect("model after pop");
+    assert!(
+        m.get(q(4)).is_some(),
+        "q4 must survive the pop that removed its frame"
+    );
+}
+
 /// A missing solver binary degrades to `Unknown`, never panics.
 #[test]
 fn subprocess_missing_binary_is_unknown() {

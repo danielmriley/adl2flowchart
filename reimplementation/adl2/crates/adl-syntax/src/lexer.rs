@@ -139,18 +139,49 @@ impl<'s> Lexer<'s> {
 
     fn lex_number(&mut self) {
         let start = self.pos;
-        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-            self.pos += 1;
-        }
+        self.eat_digits();
         let mut is_real = false;
         if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
             is_real = true;
             self.pos += 1;
-            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                self.pos += 1;
-            }
+            self.eat_digits();
         }
-        let text = &self.src[start..self.pos];
+
+        // `1_000`: ADL has no numeric separators, and `_<digit>` is the
+        // underscore-indexing operator — so this used to lex as `1` `_` `000`
+        // and *parse*, silently, into `1[000]`-shaped nonsense with no
+        // diagnostic at all. Reject it, and recover by reading the literal the
+        // way it was obviously meant (separators removed) so the rest of the
+        // statement still produces useful diagnostics.
+        let separated =
+            self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit());
+        let text = if separated {
+            let mut digits = self.src[start..self.pos].to_string();
+            while self.peek() == Some(b'_') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
+                self.pos += 1; // `_`
+                let seg = self.pos;
+                self.eat_digits();
+                digits.push_str(&self.src[seg..self.pos]);
+            }
+            // A separator inside the fraction (`1.0_5`) leaves `is_real` set,
+            // which is what we want; the joined text stays a valid literal.
+            let raw = &self.src[start..self.pos];
+            self.diags.push(
+                Diagnostic::error(
+                    Span::new(start as u32, self.pos as u32),
+                    format!("`_` is not a digit separator in `{}`", elide(raw)),
+                )
+                .with_label("`_<digit>` is the underscore-indexing operator")
+                .with_help(format!("write `{}`", elide(&digits))),
+            );
+            digits
+        } else {
+            self.src[start..self.pos].to_string()
+        };
+        let text = text.as_str();
+        // End of the literal proper; the exponent scan below moves `self.pos`
+        // past a rejected exponent, which must not widen the token's span.
+        let num_end = self.pos;
 
         // Scientific notation is a lexical error (SPEC_LANGUAGE §2, corpus-checked unused).
         if matches!(self.peek(), Some(b'e' | b'E')) {
@@ -169,7 +200,7 @@ impl<'s> Lexer<'s> {
                 self.diags.push(
                     Diagnostic::error(
                         Span::new(start as u32, self.pos as u32),
-                        format!("scientific notation `{full}` is not supported"),
+                        format!("scientific notation `{}` is not supported", elide(full)),
                     )
                     .with_label("exponent starts here")
                     .with_help(format!("write the value out, e.g. `{expanded:.1}`")),
@@ -182,8 +213,14 @@ impl<'s> Lexer<'s> {
         if is_real {
             // Mantissa text always parses as f64.
             let mut value: f64 = text.parse().unwrap_or(0.0);
-            let end = start + text.len();
-            let span = Span::new(start as u32, end as u32);
+            let span = Span::new(start as u32, num_end as u32);
+            // An over-large literal parses to +inf, and that is deliberate: the
+            // encoder turns a non-finite constant into `Unknown("non-finite")`
+            // — explicit ignorance — rather than an atom (audit Bug 5). Do not
+            // reject it here; a lexer-level "too large" error would replace a
+            // sound "I don't know" with a recovered 0.0, which is a *wrong*
+            // cut rather than an absent one.
+            //
             // A subnormal literal (nonzero, magnitude below the smallest normal
             // f64 ~2.2e-308) is a lexical error. The analyzer models cuts in
             // exact real arithmetic while the interpreter evaluates them in f64;
@@ -195,7 +232,7 @@ impl<'s> Lexer<'s> {
                 self.diags.push(
                     Diagnostic::error(
                         span,
-                        format!("subnormal literal `{text}` is not supported"),
+                        format!("subnormal literal `{}` is not supported", elide(text)),
                     )
                     .with_label("magnitude is below the smallest normal f64")
                     .with_help("use a representable magnitude (≥ 2.3e-308) or 0"),
@@ -209,15 +246,26 @@ impl<'s> Lexer<'s> {
                 text: text.to_string(),
             });
         } else {
+            let span = Span::new(start as u32, num_end as u32);
+            // Saturating on overflow is intentional. The token's `u64` is only
+            // consulted where an integer is required (indices, counts), which
+            // reject an absurd value on their own; every *numeric* path reads
+            // `text` instead and keeps full precision (an f64::MAX-sized
+            // literal must still encode exactly — see the encoder's
+            // `constant_arithmetic_matches_the_interpreter_at_the_extremes`).
             let value: u64 = text.parse().unwrap_or(u64::MAX);
-            let end = start + text.len();
-            let span = Span::new(start as u32, end as u32);
             self.tokens.push(Token {
                 kind: TokKind::Int(value),
                 span,
                 line: self.line,
                 text: text.to_string(),
             });
+        }
+    }
+
+    fn eat_digits(&mut self) {
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.pos += 1;
         }
     }
 
@@ -328,4 +376,15 @@ impl<'s> Lexer<'s> {
         self.pos += len;
         self.push(kind, start);
     }
+}
+
+/// Shorten a literal quoted inside a diagnostic message. Nothing stops an input
+/// from carrying a 10 000-digit numeral, and the error text must not reproduce
+/// it in full. Call sites pass digit/operator runs, so byte slicing is safe.
+fn elide(s: &str) -> String {
+    const KEEP: usize = 24;
+    if s.len() <= KEEP * 2 + 5 {
+        return s.to_string();
+    }
+    format!("{}...{}", &s[..KEEP], &s[s.len() - KEEP..])
 }

@@ -8,7 +8,7 @@
 //! ~few-hundred-line proof accepted, not "the solver said so".
 
 use adl_formula::QFormula;
-use adl_sema::Rat;
+use adl_sema::{Rat, RatParts};
 use serde::{Deserialize, Serialize};
 
 use crate::MAX_DEPTH;
@@ -20,10 +20,9 @@ use crate::saturate::{
 /// A serializable exact rational: an [`adl_sema::Rat`] that (de)serializes as
 /// the string `"[-]numerator[/denominator]"` in lowest terms.
 ///
-/// Serialization goes through [`Rat::to_parts`]; deserialization rebuilds the
-/// value with a digit fold over `Rat`'s public exact arithmetic (`*10`,
-/// `+digit`, `/denominator`), so arbitrarily large multipliers round-trip
-/// exactly without reaching into `BigRational` internals.
+/// Serialization goes through [`Rat::to_parts`] and deserialization through its
+/// inverse [`Rat::from_decimal_parts`], so multipliers round-trip exactly, up to
+/// [`MAX_NUMERAL_DIGITS`] digits per part.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QRat(pub Rat);
 
@@ -43,36 +42,38 @@ impl QRat {
     }
 
     fn from_repr(s: &str) -> Option<Rat> {
-        let (neg, body) = match s.strip_prefix('-') {
+        let (negative, body) = match s.strip_prefix('-') {
             Some(rest) => (true, rest),
             None => (false, s),
         };
         let (num_s, den_s) = body.split_once('/').unwrap_or((body, "1"));
-        let num = parse_uint(num_s)?;
-        let den = parse_uint(den_s)?;
-        let mut v = num.checked_div(&den)?; // None if denominator is zero
-        if neg {
-            v = -&v;
+        if num_s.len() > MAX_NUMERAL_DIGITS || den_s.len() > MAX_NUMERAL_DIGITS {
+            return None;
         }
-        Some(v)
+        Rat::from_decimal_parts(&RatParts {
+            negative,
+            numerator: num_s.to_owned(),
+            denominator: den_s.to_owned(),
+        })
     }
 }
 
-/// Parse a non-empty decimal digit string into an exact [`Rat`] using only
-/// `Rat`'s public arithmetic — no dependency on `BigRational` internals, and
-/// exact for arbitrarily large integers.
-fn parse_uint(s: &str) -> Option<Rat> {
-    if s.is_empty() {
-        return None;
-    }
-    let ten = Rat::from_i64(10);
-    let mut acc = Rat::zero();
-    for ch in s.chars() {
-        let d = ch.to_digit(10)?;
-        acc = &(&acc * &ten) + &Rat::from_i64(i64::from(d));
-    }
-    Some(acc)
-}
+/// Longest digit run accepted in one numerator or denominator.
+///
+/// This used to be unbounded, and the parse was a digit fold over
+/// `BigRational` (`acc*10 + d`) whose every step re-normalized through a `gcd`
+/// — measured ~n^2.7. That made the *trusted* checker its own denial of
+/// service: an 11 KB bundle carrying one 10 000-digit numeral burned ~18 s of
+/// CPU before a single validation step ran, with no bound at all as the numeral
+/// grew. The fold is now `BigInt`'s subquadratic radix conversion
+/// ([`Rat::from_decimal_parts`]), and this cap bounds what a bundle is even
+/// allowed to claim.
+///
+/// 4096 digits is far beyond anything smash2 emits — Farkas multipliers and cut
+/// constants derive from shortest-round-trip `f64` decimals, whose exact
+/// rational form tops out near 1100 digits. Everything under the cap stays
+/// bit-exact; no real bundle is affected.
+pub(crate) const MAX_NUMERAL_DIGITS: usize = 4096;
 
 impl Serialize for QRat {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -83,9 +84,19 @@ impl Serialize for QRat {
 impl<'de> Deserialize<'de> for QRat {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        QRat::from_repr(&s)
-            .map(QRat)
-            .ok_or_else(|| serde::de::Error::custom(format!("invalid rational literal: {s:?}")))
+        QRat::from_repr(&s).map(QRat).ok_or_else(|| {
+            // Say *why* when the input is merely oversized, and never echo a
+            // multi-kilobyte numeral back into the error message.
+            if s.len() > MAX_NUMERAL_DIGITS {
+                serde::de::Error::custom(format!(
+                    "rational literal is {} characters; the limit is {MAX_NUMERAL_DIGITS} \
+                     digits per numerator/denominator",
+                    s.len()
+                ))
+            } else {
+                serde::de::Error::custom(format!("invalid rational literal: {s:?}"))
+            }
+        })
     }
 }
 

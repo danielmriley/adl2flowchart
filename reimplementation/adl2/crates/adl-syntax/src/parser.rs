@@ -18,6 +18,45 @@ pub struct ParseResult {
     pub diags: Vec<Diagnostic>,
 }
 
+/// Hard ceiling on the depth of any expression tree the parser will build.
+///
+/// Two different things are bounded by this one number, and both have to be,
+/// because untrusted ADL is a real input surface:
+///
+/// - **The parser's own stack.** `parse_primary` recurses back into
+///   `parse_condition` through `(`, call arguments and `|…|`, so `((((…))))`
+///   is unbounded recursion. Parenthesis nesting builds no AST node, so it is
+///   counted separately (`rec`) against the same ceiling.
+/// - **Every consumer's stack.** `resolve`, the encoder, the DOT/AST dump, the
+///   interpreter, and the derived `Clone`/`Drop` on `Expr` all recurse over the
+///   tree, so an accepted tree's *depth* is the number that has to be small —
+///   and it is not bounded by nesting alone: `1+1+1+…` is depth-linear in the
+///   term count while the parser stays at constant recursion depth.
+///
+/// # Why 64
+///
+/// The value is set by the **worst** configuration, not the typical one: a
+/// debug build on a 2 MiB thread stack, which is what `cargo test` runs on.
+/// Bisected there (`ulimit -s 2048`, one nesting level at a time):
+///
+/// | shape | binding component | overflows at |
+/// |-------|-------------------|--------------|
+/// | `((((…1…))))` | this parser's own recursion (~11 frames/level) | **144** |
+/// | `1+1+1+…` | a consumer walking the tree (parser depth stays flat) | **237** |
+///
+/// So parenthesis nesting binds first, at 144. 64 keeps a 2.25x margin on that
+/// while still admitting 7x the deepest expression in the 139-file example
+/// corpus (measured: 9, in `CMS-SUS-21-009_Delphes.adl`). In a release build on
+/// the 8 MiB main stack the real headroom is far larger; the limit is set for
+/// the small-stack case because it has to hold everywhere.
+///
+/// The deepest tree the parser will *hand back* is `MAX_EXPR_DEPTH + 1`: the
+/// node whose construction detects the breach has already been built when the
+/// limit is consulted. The `+ 1` is constant — [`Parser::built`] refuses to
+/// grow the tree further while unwinding — and is pinned by
+/// `expr_depth_is_bounded_for_every_hostile_shape`.
+pub const MAX_EXPR_DEPTH: u32 = 64;
+
 #[must_use]
 pub fn parse(src: &str) -> ParseResult {
     let lexed = lexer::lex(src);
@@ -28,6 +67,9 @@ pub fn parse(src: &str) -> ParseResult {
         diags: lexed.diags,
         last_span: Span::default(),
         tilde_warned: false,
+        rec: 0,
+        last_depth: 1,
+        aborted: false,
     };
     let file = p.parse_file();
     ParseResult {
@@ -43,6 +85,18 @@ struct Parser<'s> {
     diags: Vec<Diagnostic>,
     last_span: Span,
     tilde_warned: bool,
+    /// Current recursion depth of the expression grammar. Bounds the parser's
+    /// own stack, including nesting that produces no AST node (`((((…))))`).
+    rec: u32,
+    /// Depth of the expression most recently returned by an expression
+    /// production — the parser's running, exact equivalent of
+    /// [`crate::ast::Expr::depth`]. Every production that returns an `Expr`
+    /// sets it; `expr_depth_is_tracked_exactly` pins the two together.
+    last_depth: u32,
+    /// Set once the depth budget is exhausted: the cursor is parked on EOF and
+    /// further diagnostics are suppressed, so a hostile file yields exactly one
+    /// located error instead of a cascade of hundreds.
+    aborted: bool,
 }
 
 impl<'s> Parser<'s> {
@@ -136,10 +190,91 @@ impl<'s> Parser<'s> {
 
     fn error_here(&mut self, message: impl Into<String>) -> Span {
         let span = self.peek().span;
+        if self.aborted {
+            // Post-abort: the cursor sits on EOF and every enclosing production
+            // is unwinding. Their `expected ...` complaints are noise about a
+            // failure already reported once.
+            return span;
+        }
         let found = self.peek().describe();
         self.diags
             .push(Diagnostic::error(span, message).with_label(format!("found {found}")));
         span
+    }
+
+    // ---------- expression depth budget ----------
+
+    /// Enter one level of expression-grammar recursion; `false` means the
+    /// budget is gone and the caller must return an `Expr::Error` immediately.
+    /// Pair every `true` with [`Parser::rec_exit`].
+    ///
+    /// Charged in exactly the four places the grammar can cycle — `parse_postfix`
+    /// (which every `(`, call-argument and `|…|` descent runs through) and the
+    /// three prefix/infix self-recursions `-`, `not` and `?:` — so one unit is
+    /// one level of nesting, whether or not that level builds a node.
+    fn rec_enter(&mut self) -> bool {
+        self.rec += 1;
+        if self.rec > MAX_EXPR_DEPTH {
+            self.abort_too_deep();
+            return false;
+        }
+        true
+    }
+
+    fn rec_exit(&mut self) {
+        self.rec -= 1;
+    }
+
+    /// Record that a node was just built over children whose deepest is
+    /// `child_max`, and return the new node's depth. Aborts the parse when the
+    /// tree would grow past [`MAX_EXPR_DEPTH`], which parks the cursor on EOF
+    /// so every enclosing loop stops folding and the tree stops growing.
+    fn built(&mut self, child_max: u32) -> u32 {
+        if self.aborted {
+            // Already at the ceiling and unwinding: the nodes closing over the
+            // truncated subtree must not grow it any further, or the accepted
+            // depth would be `MAX_EXPR_DEPTH` plus the nesting depth.
+            return self.last_depth;
+        }
+        let d = child_max.saturating_add(1);
+        self.last_depth = d;
+        if d > MAX_EXPR_DEPTH {
+            self.abort_too_deep();
+        }
+        d
+    }
+
+    /// Record that a leaf was just built.
+    fn leaf(&mut self) -> u32 {
+        self.last_depth = 1;
+        1
+    }
+
+    /// Hostile input: report once, then stop parsing the file.
+    ///
+    /// Recovering *within* a 10 000-level expression is not worth the
+    /// complexity or the risk — every recovery point is itself inside the
+    /// recursion we are trying to leave. Parking the cursor on the EOF token
+    /// makes every loop and every `while !self.at_eof()` terminate on its next
+    /// test, so the parse unwinds without consuming anything further and the
+    /// caller gets one precise diagnostic and a well-formed (truncated) AST.
+    fn abort_too_deep(&mut self) {
+        if !self.aborted {
+            let span = self.last_span;
+            self.diags.push(
+                Diagnostic::error(span, "expression nested too deeply")
+                    .with_label(format!(
+                        "expression structure exceeds the {MAX_EXPR_DEPTH}-level limit here"
+                    ))
+                    .with_help(
+                        "split the expression across several `define`s; \
+                         the rest of this file was not parsed",
+                    ),
+            );
+            self.aborted = true;
+        }
+        // Park on the EOF token (`lex` always emits one, so this index exists).
+        self.pos = self.toks.len() - 1;
     }
 
     /// Skip to the next statement keyword or the start of the next line.
@@ -459,10 +594,13 @@ impl<'s> Parser<'s> {
             return first;
         }
         let start = first.span();
+        let mut depth = self.last_depth;
         let mut items = vec![first];
         while !self.nl_before() && self.at_postfix_start() {
             items.push(self.parse_postfix());
+            depth = depth.max(self.last_depth);
         }
+        self.built(depth);
         Expr::ParticleList {
             span: start.to(self.last_span),
             items,
@@ -677,12 +815,15 @@ impl<'s> Parser<'s> {
             self.expect_ident("a source collection name")
         };
         if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
-            let args = self.parse_paren_args();
+            let (args, arg_depth) = self.parse_paren_args();
+            self.built(arg_depth);
             TakeSource::Call { name, args }
         } else if !self.nl_before() && matches!(self.peek().kind, TokKind::LBracket) {
             // `take coll[2:]` / `take coll[:4]`: a postfix slice/index source.
             let base = Expr::Ident(name);
             let expr = self.parse_index_suffix(base);
+            let base_depth = self.leaf();
+            self.built(base_depth);
             TakeSource::Expr(Box::new(expr))
         } else {
             TakeSource::Ident(name)
@@ -970,14 +1111,16 @@ impl<'s> Parser<'s> {
         } else if matches!(self.peek().kind, TokKind::Ident(_)) {
             let id = self.expect_ident("a weight value");
             if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
-                let args = self.parse_paren_args();
+                let (args, arg_depth) = self.parse_paren_args();
                 let span = id.span.to(self.last_span);
+                self.built(arg_depth);
                 WeightValue::Expr(Box::new(Expr::Call {
                     name: id,
                     args,
                     span,
                 }))
             } else {
+                self.leaf();
                 WeightValue::Expr(Box::new(Expr::Ident(id)))
             }
         } else {
@@ -1081,18 +1224,32 @@ impl<'s> Parser<'s> {
     }
 
     /// `ternary = or-expr [ "?" ternary [ ":" ternary ] ]`
+    ///
+    /// The recursion guard sits on the `?` branch, not on entry: an ordinary
+    /// non-ternary expression passes through here on its way down and must not
+    /// be charged for a level it does not nest.
     fn parse_ternary(&mut self) -> Expr {
         let guard = self.parse_or_expr();
         if matches!(self.peek().kind, TokKind::Question) {
+            if !self.rec_enter() {
+                self.leaf();
+                return Expr::Error(self.last_span);
+            }
+            let mut deepest = self.last_depth;
             self.bump();
             let then = self.parse_ternary();
+            deepest = deepest.max(self.last_depth);
             let els = if matches!(self.peek().kind, TokKind::Colon) {
                 self.bump();
-                Some(Box::new(self.parse_ternary()))
+                let e = self.parse_ternary();
+                deepest = deepest.max(self.last_depth);
+                Some(Box::new(e))
             } else {
                 None
             };
             let span = guard.span().to(self.last_span);
+            self.built(deepest);
+            self.rec_exit();
             Expr::Ternary {
                 guard: Box::new(guard),
                 then: Box::new(then),
@@ -1108,10 +1265,12 @@ impl<'s> Parser<'s> {
     /// `and` (divergence 1).
     fn parse_or_expr(&mut self) -> Expr {
         let mut lhs = self.parse_and_expr();
+        let mut depth = self.last_depth;
         while matches!(self.peek().kind, TokKind::Kw(Kw::Or) | TokKind::PipePipe) {
             self.bump();
             let rhs = self.parse_and_expr();
             let span = lhs.span().to(rhs.span());
+            depth = self.built(depth.max(self.last_depth));
             lhs = Expr::Binary {
                 op: BinOp::Or,
                 lhs: Box::new(lhs),
@@ -1119,16 +1278,19 @@ impl<'s> Parser<'s> {
                 span,
             };
         }
+        self.last_depth = depth;
         lhs
     }
 
     /// `and-expr = not-expr { ("and"|"&&") not-expr }`
     fn parse_and_expr(&mut self) -> Expr {
         let mut lhs = self.parse_not_expr();
+        let mut depth = self.last_depth;
         while matches!(self.peek().kind, TokKind::Kw(Kw::And) | TokKind::AmpAmp) {
             self.bump();
             let rhs = self.parse_not_expr();
             let span = lhs.span().to(rhs.span());
+            depth = self.built(depth.max(self.last_depth));
             lhs = Expr::Binary {
                 op: BinOp::And,
                 lhs: Box::new(lhs),
@@ -1136,6 +1298,7 @@ impl<'s> Parser<'s> {
                 span,
             };
         }
+        self.last_depth = depth;
         lhs
     }
 
@@ -1143,9 +1306,15 @@ impl<'s> Parser<'s> {
     /// (divergence 2: `not not x` parses).
     fn parse_not_expr(&mut self) -> Expr {
         if matches!(self.peek().kind, TokKind::Kw(Kw::Not) | TokKind::Bang) {
+            if !self.rec_enter() {
+                self.leaf();
+                return Expr::Error(self.last_span);
+            }
             let start = self.bump().span;
             let inner = self.parse_not_expr();
             let span = start.to(inner.span());
+            self.built(self.last_depth);
+            self.rec_exit();
             Expr::Unary {
                 op: UnaryOp::Not,
                 expr: Box::new(inner),
@@ -1186,6 +1355,7 @@ impl<'s> Parser<'s> {
         if self.peek_cmp_op().is_none() {
             return self.parse_band_suffix(first);
         }
+        let mut operand_max = self.last_depth;
         // Parse one-or-more `cmp-op additive` links, folding into a chain.
         let mut links: Vec<(CmpOp, Expr)> = Vec::new();
         while let Some(op) = self.peek_cmp_op() {
@@ -1199,12 +1369,23 @@ impl<'s> Parser<'s> {
                 );
             }
             let operand = self.parse_additive();
+            operand_max = operand_max.max(self.last_depth);
             links.push((op, operand));
+            // The fold below runs over this vector, not over the token stream,
+            // so `abort_too_deep` parking the cursor on EOF would *not* stop it
+            // — the budget has to be enforced while the links are still being
+            // collected. `L` links desugar to `L-1` nested `And`s above one
+            // `Cmp`, i.e. a tree of depth `operand_max + L`.
+            if operand_max + links.len() as u32 > MAX_EXPR_DEPTH {
+                self.abort_too_deep();
+                break;
+            }
         }
         // Single comparison: the common case, no cloning.
         if links.len() == 1 {
             let (op, rhs) = links.into_iter().next().expect("len checked");
             let span = first.span().to(rhs.span());
+            self.built(operand_max);
             return Expr::Cmp {
                 op,
                 lhs: Box::new(first),
@@ -1216,6 +1397,10 @@ impl<'s> Parser<'s> {
         // adjacent operands. `prev` is the left operand of the next link.
         let mut prev = first;
         let mut conj: Option<Expr> = None;
+        // Each `Cmp` sits one above the deepest operand; each `And` one above
+        // the conjunction so far.
+        let cmp_depth = operand_max + 1;
+        let mut depth = cmp_depth;
         for (op, operand) in links {
             let lhs = prev.clone();
             let span = lhs.span().to(operand.span());
@@ -1229,6 +1414,7 @@ impl<'s> Parser<'s> {
                 None => cmp,
                 Some(acc) => {
                     let span = acc.span().to(cmp.span());
+                    depth = self.built(depth.max(cmp_depth));
                     Expr::Binary {
                         op: BinOp::And,
                         lhs: Box::new(acc),
@@ -1239,6 +1425,7 @@ impl<'s> Parser<'s> {
             });
             prev = operand;
         }
+        self.last_depth = depth;
         conj.expect("chain has at least two links")
     }
 
@@ -1250,10 +1437,12 @@ impl<'s> Parser<'s> {
             _ => None,
         };
         if let Some(kind) = band {
+            let inner = self.last_depth;
             self.bump();
             let lo = self.parse_signed_num();
             let hi = self.parse_signed_num();
             let span = lhs.span().to(self.last_span);
+            self.built(inner);
             return Expr::Band {
                 kind,
                 expr: Box::new(lhs),
@@ -1268,6 +1457,7 @@ impl<'s> Parser<'s> {
     /// `additive = multiplicative { ("+"|"-") multiplicative }`
     fn parse_additive(&mut self) -> Expr {
         let mut lhs = self.parse_multiplicative();
+        let mut depth = self.last_depth;
         loop {
             let op = match self.peek().kind {
                 TokKind::Plus => BinOp::Add,
@@ -1277,6 +1467,7 @@ impl<'s> Parser<'s> {
             self.bump();
             let rhs = self.parse_multiplicative();
             let span = lhs.span().to(rhs.span());
+            depth = self.built(depth.max(self.last_depth));
             lhs = Expr::Binary {
                 op,
                 lhs: Box::new(lhs),
@@ -1284,12 +1475,14 @@ impl<'s> Parser<'s> {
                 span,
             };
         }
+        self.last_depth = depth;
         lhs
     }
 
     /// `multiplicative = unary { ("*"|"/"|"^") unary }`
     fn parse_multiplicative(&mut self) -> Expr {
         let mut lhs = self.parse_unary();
+        let mut depth = self.last_depth;
         loop {
             let op = match self.peek().kind {
                 TokKind::Star => BinOp::Mul,
@@ -1300,6 +1493,7 @@ impl<'s> Parser<'s> {
             self.bump();
             let rhs = self.parse_unary();
             let span = lhs.span().to(rhs.span());
+            depth = self.built(depth.max(self.last_depth));
             lhs = Expr::Binary {
                 op,
                 lhs: Box::new(lhs),
@@ -1307,15 +1501,22 @@ impl<'s> Parser<'s> {
                 span,
             };
         }
+        self.last_depth = depth;
         lhs
     }
 
     /// `unary = "-" unary | postfix` (divergence 4: no signed literals).
     fn parse_unary(&mut self) -> Expr {
         if matches!(self.peek().kind, TokKind::Minus) {
+            if !self.rec_enter() {
+                self.leaf();
+                return Expr::Error(self.last_span);
+            }
             let start = self.bump().span;
             let inner = self.parse_unary();
             let span = start.to(inner.span());
+            self.built(self.last_depth);
+            self.rec_exit();
             Expr::Unary {
                 op: UnaryOp::Neg,
                 expr: Box::new(inner),
@@ -1329,13 +1530,31 @@ impl<'s> Parser<'s> {
     /// `postfix = primary { "." ident | "->" ident | "[" index [":" index] "]"
     ///                    | "_" index | "_" }`
     fn parse_postfix(&mut self) -> Expr {
+        // Every cycle in the expression grammar that is not a direct
+        // self-recursion (`-`, `not`, `?:`) runs through `parse_primary`, which
+        // is only ever called from here — so guarding this one function bounds
+        // parenthesis, call-argument and `|…|` nesting all at once.
+        if !self.rec_enter() {
+            self.leaf();
+            return Expr::Error(self.last_span);
+        }
+        let e = self.parse_postfix_inner();
+        self.rec_exit();
+        e
+    }
+
+    fn parse_postfix_inner(&mut self) -> Expr {
         let mut expr = self.parse_primary();
         loop {
+            // Each suffix wraps the expression built so far, so the base depth
+            // for this round is whatever the previous round recorded.
+            let depth = self.last_depth;
             match self.peek().kind {
                 TokKind::Dot => {
                     self.bump();
                     let field = self.expect_ident("a property name after `.`");
                     let span = expr.span().to(field.span);
+                    self.built(depth);
                     expr = Expr::Dot {
                         base: Box::new(expr),
                         field,
@@ -1346,6 +1565,7 @@ impl<'s> Parser<'s> {
                     self.bump();
                     let field = self.expect_ident("a member name after `->`");
                     let span = expr.span().to(field.span);
+                    self.built(depth);
                     expr = Expr::Member {
                         base: Box::new(expr),
                         field,
@@ -1354,9 +1574,11 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::LBracket if !self.nl_before() => {
                     expr = self.parse_index_suffix(expr);
+                    self.built(depth);
                 }
                 TokKind::Underscore if !self.nl_before() => {
                     self.bump();
+                    self.built(depth);
                     if self.at_index_val() {
                         let index = self.parse_index_val();
                         let span = expr.span().to(self.last_span);
@@ -1467,18 +1689,24 @@ impl<'s> Parser<'s> {
     ///          | "all" | "none" | "true" | "false"`
     fn parse_primary(&mut self) -> Expr {
         match self.peek().kind.clone() {
-            TokKind::Int(_) | TokKind::Real(_) => Expr::Num(self.parse_signed_num()),
+            TokKind::Int(_) | TokKind::Real(_) => {
+                let n = self.parse_signed_num();
+                self.leaf();
+                Expr::Num(n)
+            }
             TokKind::Ident(_) => {
                 let id = self.expect_ident("an expression");
                 if !self.nl_before() && matches!(self.peek().kind, TokKind::LParen) {
-                    let args = self.parse_paren_args();
+                    let (args, arg_depth) = self.parse_paren_args();
                     let span = id.span.to(self.last_span);
+                    self.built(arg_depth);
                     Expr::Call {
                         name: id,
                         args,
                         span,
                     }
                 } else {
+                    self.leaf();
                     Expr::Ident(id)
                 }
             }
@@ -1489,21 +1717,34 @@ impl<'s> Parser<'s> {
                         name: "all".to_string(),
                         span,
                     };
-                    let args = self.parse_paren_args();
+                    let (args, arg_depth) = self.parse_paren_args();
+                    self.built(arg_depth);
                     Expr::Call {
                         name,
                         args,
                         span: span.to(self.last_span),
                     }
                 } else {
+                    self.leaf();
                     Expr::All(span)
                 }
             }
-            TokKind::Kw(Kw::None) => Expr::NoneKw(self.bump().span),
-            TokKind::Kw(Kw::True) => Expr::True(self.bump().span),
-            TokKind::Kw(Kw::False) => Expr::False(self.bump().span),
+            TokKind::Kw(Kw::None) => {
+                self.leaf();
+                Expr::NoneKw(self.bump().span)
+            }
+            TokKind::Kw(Kw::True) => {
+                self.leaf();
+                Expr::True(self.bump().span)
+            }
+            TokKind::Kw(Kw::False) => {
+                self.leaf();
+                Expr::False(self.bump().span)
+            }
             TokKind::LParen => {
                 self.bump();
+                // Parentheses build no node, so `last_depth` passes through
+                // unchanged; the nesting itself is charged against `rec`.
                 let inner = self.parse_condition();
                 self.expect_tok(&TokKind::RParen, "`)` to close the parenthesis");
                 inner
@@ -1512,6 +1753,7 @@ impl<'s> Parser<'s> {
                 let start = self.bump().span;
                 let inner = self.parse_additive();
                 self.expect_tok(&TokKind::Pipe, "`|` to close the absolute value");
+                self.built(self.last_depth);
                 Expr::Abs {
                     expr: Box::new(inner),
                     span: start.to(self.last_span),
@@ -1520,12 +1762,15 @@ impl<'s> Parser<'s> {
             TokKind::LBrace => {
                 let start = self.bump().span;
                 let mut args = vec![self.parse_arg()];
+                let mut arg_depth = self.last_depth;
                 while matches!(self.peek().kind, TokKind::Comma) {
                     self.bump();
                     args.push(self.parse_arg());
+                    arg_depth = arg_depth.max(self.last_depth);
                 }
                 self.expect_tok(&TokKind::RBrace, "`}` to close the braced object list");
                 let prop = self.expect_ident("a property name after `}`");
+                self.built(arg_depth);
                 Expr::Braced {
                     args,
                     prop,
@@ -1534,6 +1779,7 @@ impl<'s> Parser<'s> {
             }
             _ => {
                 let span = self.error_here("expected an expression");
+                self.leaf();
                 Expr::Error(span)
             }
         }
@@ -1583,26 +1829,37 @@ impl<'s> Parser<'s> {
 
     // ---------- arguments ----------
 
-    fn parse_paren_args(&mut self) -> Vec<Arg> {
+    /// Returns the arguments and the depth of the deepest one (0 when none of
+    /// them is an expression).
+    fn parse_paren_args(&mut self) -> (Vec<Arg>, u32) {
         self.bump(); // `(`
         let mut args = Vec::new();
+        let mut depth = 0;
         if !matches!(self.peek().kind, TokKind::RParen) {
             args.push(self.parse_arg());
+            depth = depth.max(self.last_depth);
             while matches!(self.peek().kind, TokKind::Comma) {
                 self.bump();
                 args.push(self.parse_arg());
+                depth = depth.max(self.last_depth);
             }
         }
         self.expect_tok(&TokKind::RParen, "`)` to close the argument list");
-        args
+        (args, depth)
     }
 
     /// `arg = particle-list | condition | string | path-token`
+    ///
+    /// Sets `last_depth` to 0 for the non-expression forms, so they contribute
+    /// nothing to the enclosing call's depth.
     fn parse_arg(&mut self) -> Arg {
         if matches!(self.peek().kind, TokKind::Str(_)) {
-            return Arg::Str(self.expect_string("a string argument"));
+            let s = self.expect_string("a string argument");
+            self.last_depth = 0;
+            return Arg::Str(s);
         }
         if let Some(path) = self.try_path_token() {
+            self.last_depth = 0;
             return Arg::Path(path);
         }
         let expr = self.parse_condition();

@@ -17,7 +17,7 @@ pub mod span;
 pub mod token;
 
 pub use diag::{Diagnostic, Severity, has_errors};
-pub use parser::{ParseResult, parse};
+pub use parser::{MAX_EXPR_DEPTH, ParseResult, parse};
 pub use span::{LineMap, Span};
 
 /// Crate identity marker used by the bootstrap smoke test.

@@ -84,7 +84,8 @@ pub fn render(src: &str, file_name: &str, diags: &[Diagnostic]) -> String {
     let mut out = String::new();
     for d in diags {
         let (line, col) = map.line_col(d.span.start);
-        let text = map.line_text(src, d.span.start);
+        let full = map.line_text(src, d.span.start);
+        let (text, col) = window(full, col as usize);
         let _ = writeln!(out, "{}: {}", d.severity.as_str(), d.message);
         let _ = writeln!(out, "  --> {file_name}:{line}:{col}");
         let gutter = format!("{line}");
@@ -93,17 +94,56 @@ pub fn render(src: &str, file_name: &str, diags: &[Diagnostic]) -> String {
         let _ = writeln!(out, "{gutter} | {text}");
         let width = (d.span.end.saturating_sub(d.span.start)).max(1) as usize;
         // Clamp the caret run to the visible line.
-        let width = width.min(text.len().saturating_sub(col as usize - 1).max(1));
+        let width = width.min(text.len().saturating_sub(col - 1).max(1));
         let carets = "^".repeat(width);
         let label = d.label.as_deref().unwrap_or("");
-        let _ = writeln!(
-            out,
-            "{pad} | {}{carets} {label}",
-            " ".repeat(col as usize - 1)
-        );
+        let _ = writeln!(out, "{pad} | {}{carets} {label}", " ".repeat(col - 1));
         if let Some(help) = &d.help {
             let _ = writeln!(out, "{pad} = help: {help}");
         }
     }
     out
+}
+
+/// Longest source line echoed under a diagnostic, in bytes.
+const MAX_SNIPPET: usize = 160;
+
+/// Clip a source line to a window around the caret, returning the visible text
+/// and the caret's 1-based column within it.
+///
+/// A hostile file is entitled to be one 10 MB line. Echoing it verbatim — plus a
+/// 10 MB run of padding spaces under it — for every diagnostic turns a parse
+/// error into megabytes of terminal output. Lines up to `MAX_SNIPPET` are shown
+/// exactly as before, so ordinary output is unchanged.
+fn window(line: &str, col: usize) -> (String, usize) {
+    if line.len() <= MAX_SNIPPET {
+        return (line.to_string(), col);
+    }
+    const LEAD: usize = 32;
+    let caret = col - 1; // byte offset of the caret within the line
+    let start = floor_boundary(line, caret.saturating_sub(LEAD));
+    let end = floor_boundary(line, (start + MAX_SNIPPET).min(line.len()));
+    let mut text = String::new();
+    if start > 0 {
+        text.push_str("...");
+    }
+    text.push_str(&line[start..end]);
+    if end < line.len() {
+        text.push_str("...");
+    }
+    // The caret keeps its offset relative to the window, shifted by the
+    // leading ellipsis.
+    let lead = if start > 0 { 3 } else { 0 };
+    (text, caret - start + lead + 1)
+}
+
+/// Round `i` down to the nearest UTF-8 character boundary of `s`.
+fn floor_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }

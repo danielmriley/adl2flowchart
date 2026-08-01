@@ -11,7 +11,8 @@
 //! crate. Probe builders reuse [`adl_interp::sample`] boundary JSON helpers.
 
 use adl_interp::sample::{
-    clamp_magnitude, ht_boundary_json, met_boundary_json, obj_boundary_json, MAX_CUT_CONSTANTS,
+    absence_family, clamp_magnitude, ht_boundary_json, met_boundary_json, obj_boundary_json,
+    MAX_CUT_CONSTANTS,
 };
 use adl_interp::{parse_event, Event, Interp};
 use adl_sema::ExtDecls;
@@ -140,7 +141,11 @@ fn push_event(ext: &ExtDecls, events: &mut Vec<Event>, line: String) {
 ///
 /// Deterministic, budget-aware order: for every scalar emit MET then Jet
 /// first (covers scalar cuts and object-pT ratio cuts), then a second pass
-/// for HT / Electron / Muon. Cap [`MAX_REFUTE_PROBES`].
+/// for HT / Electron / Muon. The cut-anchored part is capped at
+/// [`MAX_REFUTE_PROBES`]; the fixed **absence family**
+/// ([`adl_interp::sample::absence_family`]) is appended OUTSIDE that budget
+/// so an f64-heavy unit can never crowd out the absent-property probes —
+/// they are anchors of a different axis, not speculative neighbours.
 #[must_use]
 pub fn probe_events(ext: &ExtDecls, cut_consts: &[f64]) -> Vec<Event> {
     let scalars = probe_scalars(cut_consts);
@@ -161,6 +166,12 @@ pub fn probe_events(ext: &ExtDecls, cut_consts: &[f64]) -> Vec<Event> {
         push_event(ext, &mut events, ht_boundary_json(v));
         push_event(ext, &mut events, obj_boundary_json("Electron", v));
         push_event(ext, &mut events, obj_boundary_json("Muon", v));
+    }
+    // Pass 3 — the absence axis (SPEC_PRESENCE_MODEL §9 step 1).
+    for line in absence_family() {
+        let e = parse_event(&line, ext)
+            .unwrap_or_else(|err| panic!("refute-gate absence probe failed the loader: {err}\n{line}"));
+        events.push(e);
     }
     events
 }
@@ -262,8 +273,28 @@ mod tests {
         let ext = ExtDecls::legacy();
         let many: Vec<f64> = (0..40).map(f64::from).collect();
         let events = probe_events(&ext, &many);
-        assert!(events.len() <= MAX_REFUTE_PROBES);
+        assert!(events.len() <= MAX_REFUTE_PROBES + absence_family().len());
         assert!(!events.is_empty());
+    }
+
+    /// The absence axis must survive a unit with a hundred cut constants —
+    /// it is an anchor family, not a speculative neighbour.
+    #[test]
+    fn absence_probes_survive_a_saturated_cut_budget() {
+        let ext = ExtDecls::legacy();
+        let many: Vec<f64> = (0..40).map(f64::from).collect();
+        let events = probe_events(&ext, &many);
+        assert!(
+            events.iter().any(|e| e.met.is_empty()),
+            "MET-less probe crowded out by cut anchors"
+        );
+        assert!(
+            events.iter().any(|e| e
+                .collections
+                .get("jet")
+                .is_some_and(|js| !js.is_empty() && js.iter().all(|j| j.get("btag").is_none()))),
+            "btag-less jet probe crowded out by cut anchors"
+        );
     }
 
     /// The budget must be spent on the cuts the region actually names, not on

@@ -39,12 +39,38 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+/// Why an evaluation could not be completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalErrorKind {
+    /// An out-of-fragment construct, an unknown name, or an ambiguous
+    /// semantics the interpreter refuses to guess at. Reaching one from a
+    /// generator or a realizer is a BUG in that producer.
+    OutOfFragment,
+    /// The event carries no MET vector / event scalar / trigger flag the cut
+    /// reads. This is a property of the DATA, not of the ADL: such an event
+    /// is legitimately loader-valid, the interpreter decides nothing, and the
+    /// event is therefore `In` no region that reads the missing datum.
+    /// (Contrast a missing *object property*, which is a soft non-value and
+    /// makes the enclosing comparison decidably false.)
+    MissingEventData,
+}
+
 /// A diagnosed evaluation error (out-of-fragment construct, ambiguous
 /// semantics, or missing event-level data).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError {
     pub span: Span,
     pub reason: String,
+    pub kind: EvalErrorKind,
+}
+
+impl EvalError {
+    /// Is this the "the event does not carry that datum" error (as opposed to
+    /// a construct the interpreter refuses)?
+    #[must_use]
+    pub fn is_missing_event_data(&self) -> bool {
+        self.kind == EvalErrorKind::MissingEventData
+    }
 }
 
 impl fmt::Display for EvalError {
@@ -254,7 +280,8 @@ impl<'h> Interp<'h> {
         let idx = self.region_index(name).ok_or_else(|| EvalError {
             span: Span::default(),
             reason: format!("no region named `{name}`"),
-        })?;
+                kind: EvalErrorKind::OutOfFragment,
+            })?;
         Ev::new(self, event).region(idx)
     }
 
@@ -276,7 +303,8 @@ impl<'h> Interp<'h> {
         let idx = self.region_index(name).ok_or_else(|| EvalError {
             span: Span::default(),
             reason: format!("no region named `{name}`"),
-        })?;
+                kind: EvalErrorKind::OutOfFragment,
+            })?;
         Ev::new(self, event).region3(idx).into_result()
     }
 
@@ -296,6 +324,7 @@ impl<'h> Interp<'h> {
             return Err(EvalError {
                 span: Span::default(),
                 reason: format!("region index {idx} out of range"),
+                kind: EvalErrorKind::OutOfFragment,
             });
         }
         Ev::new(self, event).region3(idx).into_result()
@@ -383,7 +412,8 @@ impl<'h> Interp<'h> {
         let id = self.collection_id(name).ok_or_else(|| EvalError {
             span: Span::default(),
             reason: format!("no collection named `{name}`"),
-        })?;
+                kind: EvalErrorKind::OutOfFragment,
+            })?;
         Ok(Ev::new(self, event).materialize(id)?.as_ref().clone())
     }
 
@@ -479,7 +509,8 @@ fn parse_num(text: &str, span: Span) -> EvalResult<f64> {
     text.parse::<f64>().map_err(|_| EvalError {
         span,
         reason: format!("malformed numeric literal `{text}`"),
-    })
+                kind: EvalErrorKind::OutOfFragment,
+            })
 }
 
 /// Literal → exact [`Rat`] via shortest-decimal semantics (matches the
@@ -491,7 +522,8 @@ fn parse_rat_lit(text: &str, span: Span) -> EvalResult<Rat> {
         .ok_or_else(|| EvalError {
             span,
             reason: format!("malformed numeric literal `{text}`"),
-        })
+                kind: EvalErrorKind::OutOfFragment,
+            })
 }
 
 /// 4-vector getter for an external function name applied to a single
@@ -770,6 +802,20 @@ impl<'h, 'e> Ev<'h, 'e> {
         Err(EvalError {
             span,
             reason: reason.into(),
+            kind: EvalErrorKind::OutOfFragment,
+        })
+    }
+
+    /// The event does not carry a datum the cut reads (MET vector, event
+    /// scalar, trigger flag). Distinct from [`EvalErrorKind::OutOfFragment`]:
+    /// the ADL is fine, the DATA is incomplete, and the event is `In` no
+    /// region that reads it (SPEC_PRESENCE_MODEL §3.4 — this is what makes
+    /// event scalars possibly-absent for the prover, not total).
+    fn missing_data<T>(&self, span: Span, reason: impl Into<String>) -> EvalResult<T> {
+        Err(EvalError {
+            span,
+            reason: reason.into(),
+            kind: EvalErrorKind::MissingEventData,
         })
     }
 
@@ -866,7 +912,8 @@ impl<'h, 'e> Ev<'h, 'e> {
                         Tri::Unknown(EvalError {
                             span: *span,
                             reason: format!("cannot evaluate region: {reason}"),
-                        })
+                kind: EvalErrorKind::OutOfFragment,
+            })
                     } else {
                         continue;
                     }
@@ -900,6 +947,7 @@ impl<'h, 'e> Ev<'h, 'e> {
             return Tri::Unknown(EvalError {
                 span: node.span,
                 reason: reason.clone(),
+                kind: EvalErrorKind::OutOfFragment,
             });
         }
         match &node.kind {
@@ -1609,12 +1657,12 @@ impl<'h, 'e> Ev<'h, 'e> {
         match src {
             ScalarSource::MetProp(prop) => {
                 if self.event.met.is_empty() {
-                    return self.err(span, "event has no MET vector");
+                    return self.missing_data(span, "event has no MET vector");
                 }
                 let key = self.it.hir.table.prop_key(*prop);
                 match self.event.met.get(key) {
                     Some(v) => Ok(exact(v.clone())),
-                    None => self.err(
+                    None => self.missing_data(
                         span,
                         format!(
                             "event MET has no `{}` component",
@@ -1627,7 +1675,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 let key = self.it.hir.symbols.key(*sym);
                 match self.event.scalars.get(key) {
                     Some(v) => Ok(exact(v.clone())),
-                    None => self.err(
+                    None => self.missing_data(
                         span,
                         format!(
                             "event has no scalar `{}`",
@@ -1640,7 +1688,7 @@ impl<'h, 'e> Ev<'h, 'e> {
                 let key = self.it.hir.symbols.key(*sym);
                 match self.event.triggers.get(key) {
                     Some(v) => Ok(exact(v.clone())),
-                    None => self.err(
+                    None => self.missing_data(
                         span,
                         format!(
                             "event has no trigger flag `{}`",

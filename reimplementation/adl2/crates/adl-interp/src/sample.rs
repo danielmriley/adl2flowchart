@@ -174,8 +174,16 @@ fn event_json(rng: &mut Rng, pt_pool: &[f64], eta_pool: &[f64], met_pool: &[f64]
                 let q = if rng.next() & 1 == 0 { 1.0 } else { -1.0 };
                 let _ = write!(s, ",\"charge\":{q}");
             }
+            // Tags are emitted only ~3/4 of the time. A real ntuple need not
+            // carry `btag` on every jet, and the interpreter reads an absent
+            // property as a decidable soft-false — so a battery that ALWAYS
+            // writes tags is blind to the whole absent-property class (that
+            // blindness is what let a false `subset` over `BTag(jets[-1])`
+            // ship; SPEC_PRESENCE_MODEL §1).
             for tag in tags {
-                let _ = write!(s, ",\"{tag}\":{}", rng.flag());
+                if rng.below(4) != 0 {
+                    let _ = write!(s, ",\"{tag}\":{}", rng.flag());
+                }
             }
             s.push('}');
         }
@@ -238,9 +246,103 @@ pub fn obj_boundary_json(coll: &str, pt: f64) -> String {
     )
 }
 
+/// Which standard properties a collection actually carries, so an omission
+/// event is a genuine "this element lacks a property it normally has" and not
+/// a duplicate of the boundary event. `charge` is deliberately excluded: no
+/// axiom covers it, so omitting it adds no reach.
+fn absence_keys_for(coll: &str) -> &'static [&'static str] {
+    match coll {
+        "Jet" => &["pt", "eta", "phi", "m", "btag", "ctag"],
+        "Tau" => &["pt", "eta", "phi", "m", "tautag"],
+        _ => &["pt", "eta", "phi", "m"],
+    }
+}
+
+/// One leading object of `coll` carrying the standard property set MINUS
+/// `missing`. The interpreter reads the missing property as a soft non-value,
+/// so every comparison over it is a decidable false — which is exactly the
+/// event shape the pre-Phase-B battery could never produce.
+///
+/// Loader-legal even for `missing == "pt"`: `validate_pt_descending` skips
+/// pt-less elements without resetting the descending chain.
+#[must_use]
+pub fn obj_absence_json(coll: &str, missing: &str) -> String {
+    let mut props: Vec<String> = Vec::new();
+    for (k, v) in [("pt", "50.0"), ("eta", "0.0"), ("phi", "0.0"), ("m", "0.0")] {
+        if k != missing {
+            props.push(format!("\"{k}\":{v}"));
+        }
+    }
+    match coll {
+        "Electron" | "Muon" | "Tau" => props.push("\"charge\":1.0".to_owned()),
+        _ => {}
+    }
+    for tag in absence_keys_for(coll).iter().filter(|k| k.ends_with("tag")) {
+        if *tag != missing {
+            props.push(format!("\"{tag}\":0.0"));
+        }
+    }
+    let one = format!("[{{{}}}]", props.join(","));
+    let empty = "[]".to_owned();
+    let (jet, ele, muo, tau, pho) = match coll {
+        "Jet" => (one, empty.clone(), empty.clone(), empty.clone(), empty),
+        "Electron" => (empty.clone(), one, empty.clone(), empty.clone(), empty),
+        "Muon" => (empty.clone(), empty.clone(), one, empty.clone(), empty),
+        "Tau" => (empty.clone(), empty.clone(), empty.clone(), one, empty),
+        _ => (empty.clone(), empty.clone(), empty.clone(), empty.clone(), one),
+    };
+    format!(
+        r#"{{"Jet":{jet},"Electron":{ele},"Muon":{muo},"Tau":{tau},"Photon":{pho},"MET":{{"pt":0.0,"phi":0.0}},"HT":0.0,"triggers":{{"mu_trig":0,"el_trig":0}}}}"#
+    )
+}
+
+/// Event-level absence: a loader-valid event that lacks the MET vector, the
+/// HT scalar or the trigger block. Missing event-level data is a HARD
+/// evaluation error, so such an event is `In` no region that reads it — which
+/// makes it a counterexample to any cross-region claim that assumed the datum
+/// (`select HT >= 0` is not a superset of `select size(jets) >= 1`).
+#[must_use]
+pub fn event_absence_json(missing: &str) -> String {
+    let met = if missing == "MET" { "" } else { r#""MET":{"pt":50.0,"phi":0.0},"# };
+    let ht = if missing == "HT" { "" } else { r#""HT":100.0,"# };
+    let trig = if missing == "triggers" {
+        ""
+    } else {
+        r#""triggers":{"mu_trig":1,"el_trig":0},"#
+    };
+    let mut s = format!(
+        r#"{{"Jet":[{{"pt":100.0,"eta":0.0,"phi":0.0,"m":0.0,"btag":1.0,"ctag":0.0}}],"Electron":[{{"pt":40.0,"eta":0.0,"phi":0.0,"m":0.0,"charge":1.0}}],"Muon":[],"Tau":[],"Photon":[],{met}{ht}{trig}"#
+    );
+    // trim the trailing comma left by the last emitted block
+    while s.ends_with(',') {
+        s.pop();
+    }
+    s.push('}');
+    s
+}
+
+/// The fixed absence family: one event per (collection, omitted property),
+/// plus the three event-level omissions. Deterministic and small (≈29
+/// events); appended to every battery so the absent-property class is always
+/// in the gate's reach, not only when a random draw happens to skip a tag.
+#[must_use]
+pub fn absence_family() -> Vec<String> {
+    let mut out = Vec::new();
+    for coll in ["Jet", "Electron", "Muon", "Tau", "Photon"] {
+        for key in absence_keys_for(coll) {
+            out.push(obj_absence_json(coll, key));
+        }
+    }
+    for what in ["MET", "HT", "triggers"] {
+        out.push(event_absence_json(what));
+    }
+    out
+}
+
 /// The gate battery: `n` deterministic loader-valid events (plus the all-empty
 /// event, which refutes many "provably empty" mistakes for free), then
-/// dedicated MET/HT events at every injected cut boundary (±1 ulp).
+/// dedicated MET/HT events at every injected cut boundary (±1 ulp), then the
+/// fixed absence family ([`absence_family`]).
 ///
 /// `cut_consts` are the unit's comparison numeric literals (as f64); pass
 /// `&[]` for the fixed-pool-only battery. Events that fail the loader are a
@@ -295,6 +397,11 @@ pub fn battery_with_cuts(ext: &ExtDecls, n: usize, cut_consts: &[f64]) -> Vec<Ev
             }));
         }
     }
+    for line in absence_family() {
+        events.push(parse_event(&line, ext).unwrap_or_else(|e| {
+            panic!("absence-family battery event failed the loader: {e}\n{line}")
+        }));
+    }
     events
 }
 
@@ -308,7 +415,8 @@ mod tests {
         let ext = ExtDecls::legacy();
         let a = battery(&ext, 32);
         let b = battery(&ext, 32);
-        assert_eq!(a.len(), 32);
+        assert_eq!(a.len(), 32 + absence_family().len());
+        assert_eq!(a.len(), b.len());
         // Determinism proxy: same jet multiplicities and MET across runs.
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(
@@ -399,6 +507,40 @@ mod tests {
                 assert!(v.is_zero() || *v == Rat::one(), "event {i} trigger {k}");
             }
         }
+    }
+
+    /// The gate can only refute what it can SEE. Before the absence family
+    /// every battery jet carried `btag`, so a false `subset` over
+    /// `BTag(jets[-1])` shipped with `refutations: 0`
+    /// (SPEC_PRESENCE_MODEL §1, running example P1).
+    #[test]
+    fn battery_contains_property_less_and_datum_less_events() {
+        let ext = ExtDecls::legacy();
+        let events = battery(&ext, 64);
+        let jet_without_btag = events.iter().any(|e| {
+            e.collections
+                .get("jet")
+                .is_some_and(|js| !js.is_empty() && js.iter().all(|j| j.get("btag").is_none()))
+        });
+        assert!(jet_without_btag, "no btag-less jet in the battery");
+        let ele_without_pt = events.iter().any(|e| {
+            e.collections.get("electron").is_some_and(|es| {
+                !es.is_empty() && es.iter().all(|x| x.get(&ext.prop_canon("pt").0).is_none())
+            })
+        });
+        assert!(ele_without_pt, "no pt-less electron in the battery");
+        assert!(
+            events.iter().any(|e| e.met.is_empty()),
+            "no MET-less event in the battery"
+        );
+        assert!(
+            events.iter().any(|e| !e.scalars.contains_key("HT")),
+            "no HT-less event in the battery"
+        );
+        assert!(
+            events.iter().any(|e| e.triggers.is_empty()),
+            "no trigger-less event in the battery"
+        );
     }
 
     #[test]

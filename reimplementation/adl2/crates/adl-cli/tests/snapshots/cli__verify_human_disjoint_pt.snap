@@ -6,7 +6,7 @@ ADL2 analysis report — disjoint_pt.adl (solver: none)
 
 == trust ==
   solver        none
-  nets          certification on · sampling gate 124 events · refute gate 64 probes
+  nets          certification on · sampling gate 150 events · refute gate 90 probes
   proven        1 disjoint (1/1 certified, 100%) · 0 overlapping
   unproven      0 possibly · 0 unknown
   refutations   0 sampling · 0 adversarial
@@ -21,7 +21,7 @@ ADL2 analysis report — disjoint_pt.adl (solver: none)
   SR_high  2/2     yes
 
 == pairwise (1 pair, 1 group) ==
-  SR_low vs SR_high: PROVEN DISJOINT [certified · gate 124/124 · probes 64] — jets[0].pt: (100, 200) vs (300, inf]
+  SR_low vs SR_high: PROVEN DISJOINT [certified · gate 150/150 · probes 90] — jets[0].pt: (100, 200) vs (300, inf]
 
 == axioms used ==
   SZ0×2, SUB×1, NNEG×2, EPRED×1, IDOM×1

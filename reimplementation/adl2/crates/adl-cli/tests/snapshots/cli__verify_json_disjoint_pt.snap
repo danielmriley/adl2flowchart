@@ -8,11 +8,11 @@ expression: stdout(&out)
   "solver": "none",
   "certification": true,
   "sampling": {
-    "events": 124,
+    "events": 150,
     "refutations": 0
   },
   "refute": {
-    "probes": 64,
+    "probes": 90,
     "refutations": 0
   },
   "regions": [

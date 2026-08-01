@@ -21,7 +21,8 @@ mod weights;
 
 pub use cutflow::{BinFlow, Counts, CutStep, CutflowSet, RegionFlow};
 pub use eval::{
-    BinOutcome, EvalError, Interp, NonValue, NumOutcome, RegionResult, StepEval, assign_bin,
+    BinOutcome, EvalError, EvalErrorKind, Interp, NonValue, NumOutcome, RegionResult, StepEval,
+    assign_bin,
     wrap_dphi,
 };
 pub use event::{

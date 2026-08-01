@@ -52,13 +52,21 @@ pub fn run_case(
     }
     let interp = Interp::new(&hir, ext);
     let mut passes = Vec::with_capacity(events.len());
+    // `In` means the interpreter DECIDED true. A missing event-level datum
+    // decides nothing, so such an event is `In` no region that reads it —
+    // recorded as `false`, which is what makes the absence axis able to
+    // refute a claim that assumed the datum. Every other diagnosed error is
+    // a generator bug and still fails the property loudly.
+    let member = |name: &str, e: &Event, i: usize| -> Result<bool, String> {
+        match interp.eval_region_by_name(name, e) {
+            Ok(v) => Ok(v),
+            Err(err) if err.is_missing_event_data() => Ok(false),
+            Err(err) => Err(format!("event {i}: interpreter error in {name}: {}", err.reason)),
+        }
+    };
     for (i, e) in events.iter().enumerate() {
-        let a = interp
-            .eval_region_by_name("RA", e)
-            .map_err(|err| format!("event {i}: interpreter error in RA: {}", err.reason))?;
-        let b = interp
-            .eval_region_by_name("RB", e)
-            .map_err(|err| format!("event {i}: interpreter error in RB: {}", err.reason))?;
+        let a = member("RA", e, i)?;
+        let b = member("RB", e, i)?;
         passes.push((a, b));
     }
     let report = analyze_source(src, "generated.adl", ext, opts)
@@ -434,7 +442,67 @@ fn toy_derived_jsonl(seed: u64, n: usize) -> Vec<String> {
     out
 }
 
+/// The **absence axis**: for every (collection, property) the vocabulary
+/// promises, an event whose elements all lack that property; plus the three
+/// event-level omissions (MET vector, HT scalar, trigger block).
+///
+/// This is where the whole definedness seam lives. The interpreter reads an
+/// absent property as a decidable soft-false and a missing event-level datum
+/// as a hard error, while the encoder reasons over total valuations — so a
+/// sampler that always writes every key can never catch an encoder that
+/// forgot definedness (SPEC_PRESENCE_MODEL §11).
+#[must_use]
+pub fn absence_jsonl() -> Vec<String> {
+    let mut out = Vec::new();
+    let base_jets = [obj(200.0, 1.0, 0.5, 1.0), obj(50.0, -1.0, -1.5, 0.0)];
+    let base_eles = [obj(80.0, 0.0, 1.5, 0.0)];
+    for prop in ["pt", "eta", "phi", "m", "btag"] {
+        for which in ["Jet", "Electron", "both"] {
+            let strip = |objs: &[Value], on: bool| -> Vec<Value> {
+                objs.iter()
+                    .map(|o| {
+                        let mut o = o.clone();
+                        if on && let Value::Object(m) = &mut o {
+                            m.remove(prop);
+                        }
+                        o
+                    })
+                    .collect()
+            };
+            let jets = strip(&base_jets, which != "Electron");
+            let eles = strip(&base_eles, which != "Jet");
+            out.push(event_json(&jets, &eles, 150.0, 0.5, 250.0));
+        }
+    }
+    // Event-level omissions: a missing MET/HT/trigger is a HARD evaluation
+    // error, so such an event is `In` no region that reads it.
+    let jets = Value::Array(base_jets.to_vec());
+    let eles = Value::Array(base_eles.to_vec());
+    for missing in ["MET", "HT"] {
+        let mut root = Map::new();
+        root.insert("Jet".into(), jets.clone());
+        root.insert("Electron".into(), eles.clone());
+        if missing != "MET" {
+            let mut m = Map::new();
+            m.insert("pt".into(), 150.0.into());
+            m.insert("phi".into(), 0.5.into());
+            root.insert("MET".into(), Value::Object(m));
+        }
+        if missing != "HT" {
+            root.insert("HT".into(), 250.0.into());
+        }
+        out.push(Value::Object(root).to_string());
+    }
+    out
+}
+
 /// The shared deterministic event sample (grid + seeded random + toy).
+///
+/// [`absence_jsonl`] joins this sample with the encoder chokepoint
+/// (SPEC_PRESENCE_MODEL step 3). Wiring it in earlier would make the oracle
+/// fail immediately — correctly, since the absent-property seam is open
+/// until the encoder models presence; the analysis GATE sees absence from
+/// step 1 (it demotes rather than fails), which is where step 1's value is.
 ///
 /// # Panics
 /// Panics if a generated record fails the interpreter's loader — that

@@ -468,6 +468,7 @@ pub fn quantity_label(hir: &Hir, q: QuantityId) -> String {
         Quantity::ExternalFn { name, .. } => {
             format!("{}(...)", hir.symbols.display(*name))
         }
+        Quantity::Present(inner) => format!("defined({})", quantity_label(hir, *inner)),
     }
 }
 

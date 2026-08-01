@@ -50,8 +50,10 @@ fn hkind_tag(k: &HKind) -> &'static str {
 
 /// Every `Quantity` constructor. New arm checklist: identity (structural
 /// fields only — never a lossy render), `existence_floor` (does it depend
-/// on element presence?), axiom emitters (may any family constrain it, and
-/// only in guarded form?), witness realizer, interpreter.
+/// on element presence?), **`QuantityTable::absence` (can it fail to have a
+/// value, and is the failure soft or hard?)**, axiom emitters (may any
+/// family constrain it, and only in guarded form?), witness realizer,
+/// interpreter.
 fn quantity_tag(q: &Quantity) -> &'static str {
     match q {
         Quantity::EventScalar(_) => "event-scalar",
@@ -59,6 +61,19 @@ fn quantity_tag(q: &Quantity) -> &'static str {
         Quantity::ElemProp { .. } => "elem-prop",
         Quantity::AngularSep { .. } => "angular-sep",
         Quantity::ExternalFn { .. } => "external-fn",
+        Quantity::Present(_) => "present",
+    }
+}
+
+/// The presence classifier is a chokepoint, so it gets its own exhaustive
+/// census: a new `Quantity` arm must state whether it can be absent and how
+/// (SPEC_PRESENCE_MODEL §3.4). A wrong answer here is a false PROVEN, not a
+/// missing feature.
+fn absence_tag(a: adl_sema::Absence) -> &'static str {
+    match a {
+        adl_sema::Absence::Never => "never",
+        adl_sema::Absence::Soft => "soft(comparison-false)",
+        adl_sema::Absence::Hard => "hard(unknown)",
     }
 }
 
@@ -115,7 +130,8 @@ fn ir_constructor_counts_are_pinned() {
     // Compile-time exhaustiveness is the real gate; these pins make the
     // grow-event visible in the diff. Update deliberately.
     const HKIND_VARIANTS: usize = 21;
-    const QUANTITY_VARIANTS: usize = 5;
+    const QUANTITY_VARIANTS: usize = 6;
+    const ABSENCE_VARIANTS: usize = 3;
     const COLLECTION_VARIANTS: usize = 7;
     const PARTICLE_VARIANTS: usize = 7;
     const QUANTITY_ARG_VARIANTS: usize = 6;
@@ -132,6 +148,18 @@ fn ir_constructor_counts_are_pinned() {
     assert_eq!(collection_tag(some_coll), "filtered");
     let some_q = &hir.table.quantities()[0];
     assert!(!quantity_tag(some_q).is_empty());
+    for a in [
+        adl_sema::Absence::Never,
+        adl_sema::Absence::Soft,
+        adl_sema::Absence::Hard,
+    ] {
+        assert!(!absence_tag(a).is_empty());
+    }
+    // Every interned quantity answers the presence question.
+    for i in 0..hir.table.quantities().len() {
+        let id = adl_sema::QuantityId(u32::try_from(i).unwrap());
+        assert!(!absence_tag(hir.table.absence(id)).is_empty());
+    }
     let stmt = &hir.regions[0].stmts[0];
     if let adl_sema::HirRegionStmt::Select(n) = stmt {
         assert!(!hkind_tag(&n.kind).is_empty());
@@ -141,6 +169,7 @@ fn ir_constructor_counts_are_pinned() {
 
     // The pins (grep-able record of the IR's size at census time).
     let _ = (
+        ABSENCE_VARIANTS,
         HKIND_VARIANTS,
         QUANTITY_VARIANTS,
         COLLECTION_VARIANTS,

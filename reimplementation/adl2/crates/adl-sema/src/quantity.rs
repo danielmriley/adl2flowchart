@@ -197,6 +197,50 @@ pub enum Quantity {
         name: Symbol,
         args: Vec<QuantityArg>,
     },
+    /// The **definedness indicator** of another quantity: `1` at events
+    /// where the interpreter obtains a value for `inner`, `0` at events
+    /// where it does not — a soft non-value (missing property / missing
+    /// element / non-finite / empty reduction) or a hard evaluation error
+    /// (missing MET vector / event scalar / trigger flag).
+    ///
+    /// This is the one variant that makes the prover's *total* rational
+    /// valuation faithful to the interpreter's *partial* one: a cut over a
+    /// possibly-absent quantity encodes as `p ≥ 1 ∧ atom`, so absence is
+    /// expressible instead of being silently modelled as some junk value
+    /// (SPEC_PRESENCE_MODEL §2/§3). Interning gives `p_q ≡ p_q′ iff q ≡ q′`
+    /// for free, so P1 (quantity denotation) carries over unchanged.
+    Present(QuantityId),
+}
+
+/// Can a quantity fail to have a value at a loader-valid event, and how does
+/// the interpreter react when it does?
+///
+/// The two absent kinds are NOT interchangeable — they differ in exactly the
+/// cell that decides how a negation encodes:
+///
+/// | | absent ⇒ enclosing comparison | absent ⇒ `reject`/`not` over it |
+/// |---|---|---|
+/// | [`Absence::Soft`] | decidably **false** | **holds** (the reject is a no-op) |
+/// | [`Absence::Hard`] | **Unknown** | **Unknown** (the event is `In` no such region) |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Absence {
+    /// Total: defined at every loader-valid event. No indicator is needed
+    /// and none is emitted.
+    Never,
+    /// A soft non-value (`adl_interp::NonValue`): the enclosing comparison
+    /// evaluates to a decidable **false**, so a `reject` over it HOLDS.
+    Soft,
+    /// A hard evaluation error: the interpreter decides nothing, so the
+    /// event is `In` no region that reads the datum — in EITHER polarity.
+    Hard,
+}
+
+impl Absence {
+    /// Is an indicator needed at all?
+    #[must_use]
+    pub fn possible(self) -> bool {
+        !matches!(self, Absence::Never)
+    }
 }
 
 /// Sort direction of a [`Collection::Sorted`].
@@ -445,6 +489,60 @@ impl QuantityTable {
     /// floor. Opaque `ExternalFn` quantities contribute nothing — their
     /// missing-element behaviour is unknown and their values are already
     /// declared free (SPEC_ANALYSIS §2).
+    /// Can `q` fail to have a value at a loader-valid event? THE single
+    /// source for the encoder's presence chokepoint and the axiom emitter's
+    /// presence guards — the same discipline [`Self::existence_floor`]
+    /// carries for element existence, and for the same reason: two copies
+    /// would eventually disagree, and the disagreement would be a false
+    /// PROVEN.
+    ///
+    /// Every row is justified against the reference interpreter
+    /// (`adl-interp/src/eval.rs`), which is the meaning:
+    ///
+    /// - [`Quantity::Size`] — **never**. `Event::collections` absent means
+    ///   the empty list, so `size` is defined on every loader-valid event.
+    /// - [`Quantity::Present`] — **never**. An indicator is 0 or 1 by
+    ///   construction.
+    /// - [`Quantity::ElemProp`] — **soft**. `object_prop` yields
+    ///   `MissingProperty`, `elem_position` yields `MissingElement`.
+    /// - [`Quantity::AngularSep`] — **soft**. Any absent `eta`/`phi` leg
+    ///   soft-non-values, and so does the whole separation.
+    /// - [`Quantity::ExternalFn`] — **soft**, conservatively. It covers
+    ///   `reduce.*` and `opaque.scalar`, whose bodies may reference absent
+    ///   leaves, plus `EmptyReduction`; a genuinely total external loses
+    ///   only precision.
+    /// - [`Quantity::EventScalar`] — **hard**. A missing MET vector /
+    ///   event scalar / trigger flag is `EvalErrorKind::MissingEventData`.
+    ///
+    /// The EventScalar row deliberately DIVERGES from SPEC_PRESENCE_MODEL
+    /// §3.4, which listed all three sources as total on the argument that a
+    /// hard error makes the event "`In` no region at all". That argument is
+    /// false across regions, and the divergence is not academic: on
+    /// 2026-07-31 both `A: select size(jets) >= 1` vs `B: select HT >= 0`
+    /// and the same pair with `MET` shipped `subset A-in-B: true` with
+    /// `refutations: 0`, while an event with a jet and no `HT` scalar (resp.
+    /// no MET vector) is In A and In no region reading the missing datum.
+    /// NNEG supplies the `>= 0` exactly as TAG supplies the `btag >= 0` of
+    /// the spec's own running example P1. The gates cannot hold this class:
+    /// the interpreter answers Unknown, never `false`, so a subset
+    /// counterexample search can never fire.
+    #[must_use]
+    pub fn absence(&self, q: QuantityId) -> Absence {
+        match self.quantity(q) {
+            Quantity::Size(_) | Quantity::Present(_) => Absence::Never,
+            Quantity::EventScalar(_) => Absence::Hard,
+            Quantity::ElemProp { .. }
+            | Quantity::AngularSep { .. }
+            | Quantity::ExternalFn { .. } => Absence::Soft,
+        }
+    }
+
+    /// Shorthand for `self.absence(q).possible()`.
+    #[must_use]
+    pub fn may_be_absent(&self, q: QuantityId) -> bool {
+        self.absence(q).possible()
+    }
+
     pub fn existence_floor(&self, q: QuantityId, out: &mut BTreeMap<CollectionId, u32>) {
         let mut need = |coll: CollectionId, i: u32| {
             let e = out.entry(coll).or_insert(i);
@@ -471,7 +569,15 @@ impl QuantityTable {
                     }
                 }
             }
-            _ => {}
+            // A presence indicator inherits its subject's element-existence
+            // requirement, so the size guards on `p_q` match those on the
+            // atom it guards (SPEC_PRESENCE_MODEL §3.1). Copied out first to
+            // release the borrow before recursing.
+            Quantity::Present(inner) => {
+                let inner = *inner;
+                self.existence_floor(inner, out);
+            }
+            Quantity::Size(_) | Quantity::EventScalar(_) | Quantity::ExternalFn { .. } => {}
         }
     }
 

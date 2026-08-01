@@ -90,6 +90,9 @@ impl RenderCtx<'_> {
                 let args: Vec<String> = args.iter().map(|a| self.arg(a)).collect();
                 format!("{}({})", self.symbols.display(*name), args.join(", "))
             }
+            Quantity::Present(inner) => {
+                format!("defined({})", self.quantity(self.table.quantity(*inner)))
+            }
         }
     }
 
@@ -266,6 +269,7 @@ pub fn quantity_table_dump(hir: &Hir) -> String {
                 Quantity::AngularSep { oriented: true, .. } => "ang(or)",
                 Quantity::AngularSep { .. } => "ang    ",
                 Quantity::ExternalFn { .. } => "extfn  ",
+                Quantity::Present(_) => "present",
             };
             format!("{variant} {}", rc.quantity(q))
         })

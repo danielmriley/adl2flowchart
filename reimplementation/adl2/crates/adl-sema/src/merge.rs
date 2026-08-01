@@ -334,6 +334,12 @@ impl Merger {
                         .map(|a| self.remap_arg(src, memo, a))
                         .collect(),
                 },
+                // A presence indicator IS its subject's identity: remapping
+                // the subject and re-interning keeps `p_q ≡ p_q′ iff q ≡ q′`
+                // across the merge, so P1m needs no separate argument.
+                Quantity::Present(inner) => {
+                    Quantity::Present(self.remap_quant(src, memo, *inner))
+                }
             };
             self.table.intern_quantity(new)
         };

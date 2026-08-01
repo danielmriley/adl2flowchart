@@ -1619,6 +1619,18 @@ impl<'h, 'e> Ev<'h, 'e> {
                 let (kind, a, b) = (*kind, a.clone(), b.clone());
                 self.angular(kind, &a, &b, span, elem)
             }
+            // The definedness indicator: 1 where the interpreter obtains a
+            // value for the subject, 0 where it does not. TOTAL by
+            // construction — a soft non-value AND a hard evaluation error
+            // both mean "no usable value here", so neither propagates out.
+            // This is the interpreter-side definition the encoder's
+            // `QuantityTable::absence` classifier must agree with
+            // (SPEC_PRESENCE_MODEL §2.1, extended to hard errors).
+            Quantity::Present(inner) => {
+                let inner = *inner;
+                let present = matches!(self.quantity(inner, span, elem), Ok(Ok(_)));
+                Ok(exact(if present { Rat::one() } else { Rat::zero() }))
+            }
             Quantity::ExternalFn { name, args } => {
                 let fname = self.it.hir.symbols.key(*name).to_owned();
                 // 4-vector-sum / element getter: `mass(l1+l2)`, `pt(jet)` inside

@@ -436,6 +436,9 @@ fn render_quantity(hir: &Hir, q: &Quantity) -> String {
             let args: Vec<String> = args.iter().map(|a| render_arg(hir, a)).collect();
             format!("{}({})", hir.symbols.display(*name), args.join(", "))
         }
+        Quantity::Present(inner) => {
+            format!("defined({})", render_quantity(hir, hir.table.quantity(*inner)))
+        }
     }
 }
 

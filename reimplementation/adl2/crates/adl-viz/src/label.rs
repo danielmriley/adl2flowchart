@@ -106,6 +106,9 @@ impl<'h> Labeler<'h> {
                 let args: Vec<String> = args.iter().map(|a| self.arg(a)).collect();
                 format!("{}({})", self.hir.symbols.display(*name), args.join(", "))
             }
+            Quantity::Present(inner) => {
+                format!("defined({})", self.quantity(t.quantity(*inner)))
+            }
         }
     }
 

@@ -235,6 +235,17 @@ fn collect_used_collections(hir: &Hir, node: &HNode, out: &mut Vec<usize>) {
                         push(c, out);
                     }
                 }
+                // A presence indicator uses its subject's collection, so a
+                // `defined(jets[0].pt)` node draws the same edge as the
+                // property it guards.
+                Quantity::Present(inner) => {
+                    let inner = *inner;
+                    if let Quantity::Size(c) | Quantity::ElemProp { coll: c, .. } =
+                        hir.table.quantity(inner)
+                    {
+                        push(*c, out);
+                    }
+                }
                 Quantity::EventScalar(_) | Quantity::ExternalFn { .. } => {}
             }
         }

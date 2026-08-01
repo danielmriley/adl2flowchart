@@ -337,6 +337,35 @@ fn build_event(
     let mut sizes: BTreeMap<CollectionId, u64> = BTreeMap::new();
     let mut elem_pins: BTreeMap<(CollectionId, u32), Vec<(String, Rat)>> = BTreeMap::new();
 
+    // -- presence decisions: which properties the model says are ABSENT ------
+    // A `p < 1` model value is a decision, not a free choice: the realizer
+    // must OMIT the key, or the interpreter would read a value the formula
+    // said was not there and reject an otherwise-good witness. Before the
+    // presence model the realizer unconditionally wrote a fixed 7-key
+    // property set, so an absence witness was literally unrepresentable —
+    // which is why the complement pins had to be pinned instead of validated
+    // (SPEC_PRESENCE_MODEL §6).
+    let mut elem_absent: BTreeMap<(CollectionId, u32), BTreeSet<String>> = BTreeMap::new();
+    for (q, v) in model.iter() {
+        let Quantity::Present(inner) = hir.table.quantity(q) else {
+            continue;
+        };
+        if !mentioned.contains(&q) || v >= &Rat::one() {
+            continue;
+        }
+        if let Quantity::ElemProp {
+            coll,
+            index: ElemIndex::FromFront(i),
+            prop,
+        } = hir.table.quantity(*inner)
+        {
+            elem_absent
+                .entry((*coll, *i))
+                .or_default()
+                .insert(hir.table.prop_key(*prop).to_owned());
+        }
+    }
+
     // Pass 1: explicit size pins. The encoder's element-existence guards
     // put `size(C)` atoms in every formula that needs an element, so a
     // model size value is authoritative — including size = 0 (a region
@@ -431,14 +460,29 @@ fn build_event(
     // -- build objects (phase 1: pins, repair, pT fill) ----------------------
     let pt_key = ext.prop_canon("pt").0;
     let mut built: BTreeMap<CollectionId, Vec<BTreeMap<String, Rat>>> = BTreeMap::new();
+    let mut absent_by_base: BTreeMap<CollectionId, Vec<BTreeSet<String>>> = BTreeMap::new();
 
     for (base, plan) in &plans {
         let n = plan.family.first().map_or(0, |&(_, n)| n);
         let mut objs: Vec<BTreeMap<String, Rat>> = vec![BTreeMap::new(); n as usize];
         let mut pinned: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n as usize];
 
+        // Which keys the model DECIDED absent, per element of this family.
+        let mut omitted: Vec<BTreeSet<String>> = vec![BTreeSet::new(); n as usize];
+        for &(c, n_c) in &plan.family {
+            for j in 0..n_c.min(n) {
+                let Ok(idx32) = u32::try_from(j) else { continue };
+                if let Some(keys) = elem_absent.get(&(c, idx32)) {
+                    omitted[j as usize].extend(keys.iter().cloned());
+                }
+            }
+        }
+
         // Pin properties from the model, shallow-to-deep so the deepest
-        // (most-constrained, formula-visible) value wins.
+        // (most-constrained, formula-visible) value wins. A key the model
+        // decided ABSENT is "pinned" in the sense that matters here —
+        // DECIDED — so the repair pass leaves it alone; the value itself is
+        // stripped after all the fill phases.
         for &(c, n_c) in &plan.family {
             for j in 0..n_c {
                 let Ok(idx32) = u32::try_from(j) else {
@@ -446,11 +490,17 @@ fn build_event(
                 };
                 if let Some(pins) = elem_pins.get(&(c, idx32)) {
                     for (key, v) in pins {
+                        if omitted[j as usize].contains(key) {
+                            continue;
+                        }
                         objs[j as usize].insert(key.clone(), v.clone());
                         pinned[j as usize].insert(key.clone());
                     }
                 }
             }
+        }
+        for (j, keys) in omitted.iter().enumerate() {
+            pinned[j].extend(keys.iter().cloned());
         }
 
         // Repair pass: make every element satisfy every filter predicate
@@ -489,6 +539,7 @@ fn build_event(
             }
         }
         built.insert(*base, objs);
+        absent_by_base.insert(*base, omitted);
     }
 
     // -- MET / scalars / triggers (exact Rat from model) ---------------------
@@ -553,6 +604,27 @@ fn build_event(
                 for (k, v) in &const_defaults {
                     o.entry((*k).to_owned()).or_insert_with(|| v.clone());
                 }
+            }
+        }
+    }
+
+    // -- phase 2.6: honour the model's ABSENCE decisions ---------------------
+    // Every fill phase above (model pins, filter repair, pT fill, angular
+    // realization, the standard-property defaults) writes keys unaware of
+    // presence; this is the single place that takes them back out, so a
+    // future fill phase cannot silently resurrect a property the model said
+    // the element does not have. Removing `pt` cannot break the loader's
+    // pT-descending rule — `validate_pt_descending` SKIPS pt-less elements
+    // without resetting the chain — and `validate_witness` re-runs the
+    // interpreter over the result regardless, so a bad omission costs a
+    // verdict, never a false claim.
+    for (base, objs) in built.iter_mut() {
+        let Some(omitted) = absent_by_base.get(base) else {
+            continue;
+        };
+        for (o, keys) in objs.iter_mut().zip(omitted) {
+            for k in keys {
+                o.remove(k);
             }
         }
     }

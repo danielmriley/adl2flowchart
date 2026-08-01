@@ -43,9 +43,9 @@ pub use hir::{
 };
 pub use intern::{Symbol, SymbolTable};
 pub use quantity::{
-    AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder, CompositeCandidate,
-    ElemIndex, ElemPredId, MAX_SOURCE_ELEM_INDEX, ParticleRef, PropId, Quantity, QuantityArg,
-    QuantityId, QuantityTable, ScalarSource, SortDir, SortKey,
+    Absence, AngKind, CombAxis, CombKind, Collection, CollectionId, CompositeBinder,
+    CompositeCandidate, ElemIndex, ElemPredId, MAX_SOURCE_ELEM_INDEX, ParticleRef, PropId,
+    Quantity, QuantityArg, QuantityId, QuantityTable, ScalarSource, SortDir, SortKey,
 };
 pub use resolve::{analyze, analyze_str};
 

@@ -264,6 +264,7 @@ fn quant_colls(
                 }
             }
         }
+        Quantity::Present(inner) => quant_colls(m, *inner, out, seen),
     }
 }
 

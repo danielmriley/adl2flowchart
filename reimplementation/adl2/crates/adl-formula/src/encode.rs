@@ -771,9 +771,6 @@ impl Encoder<'_> {
     /// Presence-faithful negation (`reject c`, `not c`) — replaces the
     /// Phase-A `guarded_not` hedge.
     ///
-    /// The two absence kinds diverge here, which is the whole reason
-    /// [`Absence`] distinguishes them:
-    ///
     /// - **Soft** (element properties, angular separations, opaque
     ///   externals): an absent value makes the inner comparison a decidable
     ///   FALSE, so the negation HOLDS. Plain De Morgan over the guarded leaf
@@ -782,29 +779,144 @@ impl Encoder<'_> {
     ///   hedge, no `Dual`, and the negated leaf stays EXACT (this is what
     ///   restores subset inners and complement emptiness through `reject`).
     /// - **Hard** (missing MET vector / event scalar / trigger flag): the
-    ///   interpreter raises an evaluation error, so the enclosing statement
-    ///   is Unknown and the event is `In` no such region — in EITHER
-    ///   polarity. `¬Unknown` is Unknown, so `In(¬c)` still REQUIRES the
-    ///   datum: the presence literal is conjoined ON TOP of the negation
-    ///   rather than being flipped by it.
+    ///   interpreter raises an evaluation error, so that operand is Unknown
+    ///   and `¬Unknown` is Unknown. The presence literal is CONJOINED rather
+    ///   than flipped by De Morgan — but only for the quantities
+    ///   [`Self::forced_by_falsity`] says every route to `f` being false
+    ///   actually reads. The rest go UNDER-only, via a polarity-split
+    ///   `Dual`: shrinking a subset is always sound, whereas an OVER side
+    ///   demanding a datum the interpreter never read EXCLUDES A GENUINE
+    ///   MEMBER, which fabricates a subset rather than losing a proof.
     fn negate(&mut self, f: Formula) -> Formula {
         let mut hard = BTreeSet::new();
         self.hard_quantities(&f, &mut hard);
-        let n = f.not();
         if hard.is_empty() {
-            return n;
+            return f.not();
         }
-        let present: BTreeSet<QuantityId> = hard
-            .iter()
-            .map(|&q| self.table.intern_quantity(Quantity::Present(q)))
-            .collect();
-        let n = Self::drop_absent(&n, &present);
-        let mut parts: Vec<Formula> = present
+        let forced: BTreeSet<QuantityId> = self
+            .forced_by_falsity(&f)
             .into_iter()
-            .map(|p| Formula::Atom(LinAtom::single(p, Rel::Ge, Rat::one())))
+            .filter(|q| hard.contains(q))
             .collect();
-        parts.push(n);
-        fand(parts)
+        let n = f.not();
+        let mut both: BTreeSet<QuantityId> = BTreeSet::new();
+        for &q in &forced {
+            let p = self.table.intern_quantity(Quantity::Present(q));
+            both.insert(p);
+        }
+        let mut all: BTreeSet<QuantityId> = BTreeSet::new();
+        for &q in &hard {
+            let p = self.table.intern_quantity(Quantity::Present(q));
+            all.insert(p);
+        }
+        // `p < 1` disjuncts De Morgan produced are contradicted by the
+        // conjunct we add, so drop them — that is what keeps `MET ≤ 100` a
+        // top-level conjunct instead of hiding it inside a disjunction the
+        // interval layer skips. Only sound on a projection that asserts it.
+        let guarded = |present: &BTreeSet<QuantityId>| -> Formula {
+            let mut parts: Vec<Formula> = present
+                .iter()
+                .map(|&p| Formula::Atom(LinAtom::single(p, Rel::Ge, Rat::one())))
+                .collect();
+            parts.push(Self::drop_absent(&n, present));
+            fand(parts)
+        };
+        if both == all {
+            return guarded(&both);
+        }
+        let plus = guarded(&both);
+        let minus = guarded(&all);
+        let why = self.diags.push(
+            Span::default(),
+            "negation over an event-level datum the interpreter may never read \
+             (one decidably-false conjunct of an `and`, or a reducer over an \
+             empty collection, settles the negation without it): the superset \
+             requires only the data every false-route reads, the subset requires \
+             all of it",
+        );
+        Formula::Dual {
+            plus: Box::new(plus),
+            minus: Box::new(minus),
+            why,
+        }
+    }
+
+    /// The quantities that EVERY route to `f` being decidably FALSE must
+    /// read — the set `In(¬f)` genuinely forces to be present.
+    ///
+    /// This is a MEET-semilattice, and getting it wrong is a false PROVEN
+    /// SUBSET in one direction or the other. Three boolean approximations of
+    /// it were tried and each had a counterexample (K10, `reject_or_band`,
+    /// K13); the set is the actual semantics:
+    ///
+    /// - **`Atom`** — a comparison evaluates its whole expression, so it
+    ///   reads every quantity it mentions. UNLESS it also mentions a
+    ///   SOFT-absent one: the interpreter's soft non-value beats a blocking
+    ///   hard error in the same comparison (`eval.rs`'s `Cmp` arm tests
+    ///   `Ok(Err(_))` before `Err(_)`), so the comparison can be decidably
+    ///   false with nothing else read. Then it forces NOTHING.
+    /// - **`Or`** — false requires EVERY disjunct false, so every disjunct's
+    ///   reads happen: the UNION.
+    /// - **`And`** — false requires only ONE member false, so the guarantee
+    ///   is the INTERSECTION. `reject (MET > 1 and HT > 2)` forces neither:
+    ///   a present MET of 1 settles it without HT ever being read (K13).
+    ///   Presence literals are excluded from the meet — they are this
+    ///   encoder's own bookkeeping, not independently-evaluated conjuncts,
+    ///   which is what keeps the guarded leaf `p ≥ 1 ∧ MET > 100` forcing
+    ///   MET and `reject MET > 100` exact with its And-spine bound.
+    /// - **`Dual`** — a bounded expansion is CONDITIONAL: a reducer over an
+    ///   EMPTY collection decides vacuously without reading its body (K10).
+    ///   Forces nothing.
+    /// - **`Unknown`** — never decidably false, so the negation is never In;
+    ///   forcing nothing is vacuously safe.
+    ///
+    /// An element-existence guard needs no special case: `size(C) ≤ i` alone
+    /// makes the source cut soft-false, and a `Size` atom forces only
+    /// `size(C)`, which meets to nothing against the leaf's own quantities.
+    fn forced_by_falsity(&self, f: &Formula) -> BTreeSet<QuantityId> {
+        match f {
+            Formula::Atom(a) => {
+                if a
+                    .terms()
+                    .iter()
+                    .any(|(_, q)| self.table.absence(*q) == Absence::Soft)
+                {
+                    BTreeSet::new()
+                } else {
+                    a.terms().iter().map(|&(_, q)| q).collect()
+                }
+            }
+            Formula::Or(v) => v
+                .iter()
+                .flat_map(|p| self.forced_by_falsity(p))
+                .collect(),
+            Formula::And(v) => {
+                let mut members = v
+                    .iter()
+                    .filter(|p| !Self::is_presence_atom(&self.table, p));
+                let Some(first) = members.next() else {
+                    return BTreeSet::new();
+                };
+                let mut acc = self.forced_by_falsity(first);
+                for p in members {
+                    if acc.is_empty() {
+                        break;
+                    }
+                    let s = self.forced_by_falsity(p);
+                    acc = acc.intersection(&s).copied().collect();
+                }
+                acc
+            }
+            Formula::True | Formula::False | Formula::Unknown(_) | Formula::Dual { .. } => {
+                BTreeSet::new()
+            }
+        }
+    }
+
+    /// Is `f` a bare `defined(q) ⋈ 1` literal this encoder emitted?
+    fn is_presence_atom(table: &QuantityTable, f: &Formula) -> bool {
+        matches!(f, Formula::Atom(a)
+            if matches!(a.terms(), [(_, q)] if matches!(table.quantity(*q), Quantity::Present(_))))
     }
 
     // ---- regions --------------------------------------------------------

@@ -296,6 +296,19 @@ pub fn obj_absence_json(coll: &str, missing: &str) -> String {
     )
 }
 
+/// An EMPTY-collection event that also lacks the MET vector and HT scalar.
+///
+/// The combination is what matters, and the battery had neither half of it
+/// together: a reducer over an empty collection decides VACUOUSLY without
+/// reading its body, so `reject any(pT(jets) + MET > 50)` is `In` on this
+/// event while every region that reads MET is Unknown on it. That is the
+/// shape of kill case K10, and with no such event the gates were blind to
+/// the whole class (`refutations: 0` on a false subset).
+#[must_use]
+pub fn empty_and_datum_less_json() -> String {
+    r#"{"Jet":[],"Electron":[],"Muon":[],"Tau":[],"Photon":[]}"#.to_owned()
+}
+
 /// Event-level absence: a loader-valid event that lacks the MET vector, the
 /// HT scalar or the trigger block. Missing event-level data is a HARD
 /// evaluation error, so such an event is `In` no region that reads it — which
@@ -336,6 +349,7 @@ pub fn absence_family() -> Vec<String> {
     for what in ["MET", "HT", "triggers"] {
         out.push(event_absence_json(what));
     }
+    out.push(empty_and_datum_less_json());
     out
 }
 

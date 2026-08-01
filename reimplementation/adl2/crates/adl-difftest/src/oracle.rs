@@ -56,16 +56,34 @@ pub fn run_case(
     }
     let interp = Interp::new(&hir, ext);
     let mut passes = Vec::with_capacity(events.len());
-    // `In` means the interpreter DECIDED true. A missing event-level datum
-    // decides nothing, so such an event is `In` no region that reads it —
-    // recorded as `false`, which is what makes the absence axis able to
-    // refute a claim that assumed the datum. Every other diagnosed error is
-    // a generator bug and still fails the property loudly.
+    // Membership is the THREE-VALUED `region3`, not the two-valued `region`.
+    //
+    // The soundness contract quantifies over "`e` is in `R`", and the proof
+    // document defines that as `I(R, e) = In` under the Kleene layer — the
+    // same layer witness re-validation uses. The two-valued path is stricter
+    // in a way the engine never claims: it propagates a hard evaluation error
+    // out of an `or` even when another disjunct is decidably TRUE, so
+    // `(HT > 50) or (size(eles) >= 0)` "fails" on an event with no HT scalar
+    // while `region3` correctly decides it True. Checking the engine against
+    // the stricter notion reports false-subset violations the engine is not
+    // responsible for. (Found the hard way: this oracle used
+    // `eval_region_by_name`, which panicked on any error, so the difference
+    // was invisible until the absence axis started producing such events.)
+    //
+    // An Unknown region is `In` NO region, which is the point: it is recorded
+    // as `false`, so the absence axis can still refute a claim that assumed a
+    // datum the event does not carry.
     let member = |name: &str, e: &Event, i: usize| -> Result<bool, String> {
-        match interp.eval_region_by_name(name, e) {
+        match interp.eval_region_membership(name, e) {
             Ok(v) => Ok(v),
-            Err(err) if err.is_missing_event_data() => Ok(false),
-            Err(err) => Err(format!("event {i}: interpreter error in {name}: {}", err.reason)),
+            // Unknown (missing datum, opaque external, out-of-fragment cut)
+            // is not `In`. A misnamed region would land here too, so the
+            // caller's `col()` check on the report's region names is what
+            // keeps a generator bug from hiding as "not a member".
+            Err(_) => {
+                let _ = i;
+                Ok(false)
+            }
         }
     };
     for (i, e) in events.iter().enumerate() {
@@ -478,6 +496,11 @@ pub fn absence_jsonl() -> Vec<String> {
             out.push(event_json(&jets, &eles, 150.0, 0.5, 250.0));
         }
     }
+    // EMPTY collections AND no event-level data: a reducer over an empty
+    // collection decides vacuously without reading its body, so this event
+    // is `In` a `reject any(… MET …)` region while every region that reads
+    // MET is Unknown on it (kill case K10).
+    out.push(r#"{"Jet":[],"Electron":[]}"#.to_owned());
     // Event-level omissions: a missing MET/HT/trigger is a HARD evaluation
     // error, so such an event is `In` no region that reads it.
     let jets = Value::Array(base_jets.to_vec());

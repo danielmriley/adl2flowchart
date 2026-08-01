@@ -155,47 +155,95 @@ fn i1_no_unguarded_possibly_absent_atom_in_the_corpus() {
     eprintln!("I-1: {checked} corpus regions satisfy E-i");
 }
 
-/// **I-4 — negation is exact.**
+/// **I-4 — negation is exact where the restoration claim needs it.**
 ///
-/// The Phase-A hedge made `reject c` non-exact whenever `c` mentioned a
+/// The Phase-A hedge made `reject c` non-exact whenever `c` mentioned ANY
 /// possibly-absent quantity, which poisoned every subset inner and region
-/// emptiness that ran through a `reject`. Under the presence model absence
-/// is expressible, so `reject c` is exact exactly when `c` is. This test
-/// pins the disappearance of the `Dual` hedge from the negation path.
+/// emptiness that ran through a `reject` — 18 corpus proofs and three
+/// complement pins. What restores them is that a SOFT-absent scope negates
+/// exactly: absence is expressible, so `p < 1 ∨ ¬φ` is the interpreter's own
+/// rule and no `Dual` is needed.
+///
+/// A HARD-absent scope is different and the difference is not a hedge, it is
+/// the semantics: a missing event-level datum makes the operand Unknown, and
+/// `In(¬c)` requires the datum only when EVERY route to `c` being decidably
+/// FALSE reads it. Where it does — a bare comparison, a disjunction of them,
+/// or either wrapped in this encoder's own presence guards — the literal is
+/// conjoined on both projections and the encoding stays exact (that is what
+/// keeps `reject MET > 100`'s bound on the And-spine). Where it does not —
+/// an `And` that can absorb, a bounded-expansion `Dual`, or a comparison
+/// that ALSO mentions a soft-absent quantity — the literal is under-only and
+/// the encoding is a `Dual`. Kill cases K10-K12: conjoining it on the over
+/// side there excluded a genuine member and fabricated a subset.
 #[test]
-fn i4_reject_is_exact_iff_its_scope_is() {
+fn i4a_soft_absent_scopes_negate_exactly() {
     let ext = ExtDecls::legacy();
-    let cases = [
+    for c in [
         "BTag(jets[0]) >= 1",
         "pT(jets[0]) > 30",
         "dR(jets, eles) < 0.4",
         "abs(Eta(jets[0])) < 2.4",
-        "MET > 100",
-        "size(jets) >= 2",
-        "pT(jets[0]) + MET > 200",
-        "pT(jets[0]) / MET > 0.5",
         "Eta(jets[0]) [] 0 2",
         "min(pT(jets[0]), pT(jets[1])) > 30",
-    ];
-    for c in cases {
-        let src = format!(
-            "object jets\n  take Jet\n  select pt > 30\n\
-             object eles\n  take Ele\n  select pt > 20\n\
-             region RSel\n  select {c}\n\
-             region RRej\n  reject {c}\n"
-        );
-        let mut hir = analyze_str(&src, "i4.adl", &ext);
-        let regions = encode_regions(&mut hir);
-        let sel = regions.iter().find(|r| r.name == "RSel").expect("RSel");
-        let rej = regions.iter().find(|r| r.name == "RRej").expect("RRej");
+        "size(jets) >= 2",
+    ] {
+        let (sel, rej) = encode_select_reject(&ext, c);
         assert_eq!(
-            sel.is_exact(),
-            rej.is_exact(),
-            "`reject {c}` exactness ({}) must match `select {c}` ({})",
-            rej.is_exact(),
-            sel.is_exact()
+            sel, rej,
+            "`reject {c}` exactness ({rej}) must match `select {c}` ({sel}) — \
+             this is what restores subset inners through a reject"
         );
     }
+}
+
+#[test]
+fn i4b_hard_absent_scopes_stay_exact_where_the_datum_is_forced() {
+    let ext = ExtDecls::legacy();
+    for c in ["MET > 100", "HT > 50", "MET > 100 or HT > 50"] {
+        let (sel, rej) = encode_select_reject(&ext, c);
+        assert!(sel, "`select {c}` should encode exactly");
+        assert!(
+            rej,
+            "`reject {c}` must stay EXACT: every route to `{c}` being false \
+             reads the datum, so the presence literal is conjoined on both \
+             projections and the And-spine bound survives"
+        );
+    }
+}
+
+#[test]
+fn i4c_hard_absent_scopes_split_polarity_where_the_datum_is_conditional() {
+    let ext = ExtDecls::legacy();
+    for c in [
+        // soft co-mention: the soft non-value beats the hard error
+        "pT(jets[0]) + MET > 200",
+        // `And` absorption: one false conjunct settles it
+        "MET > 1 and size(jets) > 99",
+    ] {
+        let (sel, rej) = encode_select_reject(&ext, c);
+        assert!(sel, "`select {c}` should encode exactly");
+        assert!(
+            !rej,
+            "`reject {c}` must be a polarity-split Dual: the datum may never \
+             be read, so demanding it on the OVER side would exclude a \
+             genuine member (K10-K12)"
+        );
+    }
+}
+
+/// `(select c exact, reject c exact)`.
+fn encode_select_reject(ext: &ExtDecls, c: &str) -> (bool, bool) {
+    let src = format!(
+        "object jets\n  take Jet\n  select pt > 30\n\
+         object eles\n  take Ele\n  select pt > 20\n\
+         region RSel\n  select {c}\n\
+         region RRej\n  reject {c}\n"
+    );
+    let mut hir = analyze_str(&src, "i4.adl", ext);
+    let regions = encode_regions(&mut hir);
+    let sel = regions.iter().find(|r| r.name == "RSel").expect("RSel");
+    let rej = regions.iter().find(|r| r.name == "RRej").expect("RRej");
+    (sel.is_exact(), rej.is_exact())
 }
 
 /// **Rewrite invariance under the presence model.** `reject c`,
@@ -207,7 +255,14 @@ fn i4_reject_is_exact_iff_its_scope_is() {
 fn negation_placement_is_rewrite_invariant() {
     let ext = ExtDecls::legacy();
     let head = "object jets\n  take Jet\n  select pt > 30\n";
-    for c in ["BTag(jets[0]) >= 1", "MET > 100", "pT(jets[0]) > 30"] {
+    for c in [
+        "BTag(jets[0]) >= 1",
+        "MET > 100",
+        "pT(jets[0]) > 30",
+        // K13's shape: the presence split must not depend on where the
+        // author put the negation either.
+        "MET > 1 and HT > 2",
+    ] {
         let f = |stmt: String| {
             let src = format!("{head}region R\n  {stmt}\n");
             let mut hir = analyze_str(&src, "rw.adl", &ext);

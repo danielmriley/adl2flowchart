@@ -4,12 +4,12 @@ expression: stdout(&out)
 ---
 ADL2 analysis report — disjoint_pt.adl
 solver: none
-sampling gate: 150 events, 0 refutation(s)
-refute gate: 90 probes, 0 refutation(s)
+sampling gate: 151 events, 0 refutation(s)
+refute gate: 91 probes, 0 refutation(s)
 
 == trust ==
   solver        none
-  nets          certification on · sampling gate 150 events · refute gate 90 probes
+  nets          certification on · sampling gate 151 events · refute gate 91 probes
   proven        1 disjoint (1/1 certified, 100%) · 0 overlapping
   unproven      0 possibly · 0 unknown
   refutations   0 sampling · 0 adversarial
@@ -21,7 +21,7 @@ SR_low: encoded leaves 4/4 (exact)
 SR_high: encoded leaves 2/2 (exact)
 
 == pairwise ==
-SR_low vs SR_high: PROVEN DISJOINT [certified · gate 150/150 · probes 90] — intervals cannot intersect on jets[0].pt: SR_low requires (100, 200), SR_high requires (300, inf]
+SR_low vs SR_high: PROVEN DISJOINT [certified · gate 151/151 · probes 91] — intervals cannot intersect on jets[0].pt: SR_low requires (100, 200), SR_high requires (300, inf]
   proof: interval bounds; certificate: 2 formula(s) replay-checked
 
 == axioms used ==

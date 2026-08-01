@@ -307,3 +307,56 @@ fn ce17_inherit_vs_paste_subset_claim_survives_certification() {
     check_sound(&r1).unwrap();
     check_sound(&r2).unwrap();
 }
+
+/// **Oracle-membership regression** (2026-08-01). The generated case
+///
+/// ```text
+/// region RA  select size(jets) >= 0
+/// region RB  select (HT > 50) or (size(eles) >= 0)
+/// ```
+///
+/// reported `PROVEN SUBSET RA ⊆ RB, but sampled event N is a counterexample`
+/// on an event with no `HT` scalar — and the engine was right, the ORACLE was
+/// wrong.
+///
+/// The soundness contract quantifies over "`e` is in `R`", which the proof
+/// document defines as `I(R, e) = In` under the KLEENE layer (`region3`) —
+/// the same layer witness re-validation uses. `run_case` was asking the
+/// TWO-VALUED `eval_region_by_name`, which propagates a hard evaluation error
+/// out of an `or` even when another disjunct is decidably TRUE. Under the
+/// definition, `Unknown ∨ True = True`, so RB really is `In` and the subset
+/// really holds.
+///
+/// The difference was invisible while the oracle PANICKED on any interpreter
+/// error; it only surfaced once the absence axis started producing events
+/// that legitimately lack event-level data. This test pins the notion
+/// directly so the oracle cannot drift back to the stricter one and start
+/// reporting engine bugs that are not.
+#[test]
+fn oracle_membership_is_kleene_not_two_valued() {
+    let src = "\
+object jets
+  take Jet
+
+object eles
+  take Ele
+
+region RA
+  select size(jets) >= 0
+
+region RB
+  select (HT > 50) or (size(eles) >= 0)
+";
+    let ext = ExtDecls::legacy();
+    // One jet, no `HT` scalar: the first disjunct raises a hard evaluation
+    // error, the second is decidably true.
+    let line = r#"{"Jet":[{"pt":100.0,"eta":0.0,"phi":0.0,"m":0.0,"btag":0.0,"ctag":0.0}],"Electron":[],"MET":{"pt":10.0,"phi":0.0}}"#;
+    let events = vec![adl_interp::parse_event(line, &ext).expect("loader-valid")];
+    let run = run_case(src, &ext, &events, &AnalysisOptions::default()).expect("analyzes");
+    assert_eq!(
+        run.passes[0],
+        (true, true),
+        "a decidably-true disjunct must absorb the erroring one (Unknown ∨ True = True)"
+    );
+    check_sound(&run).expect("no soundness violation: the subset genuinely holds");
+}

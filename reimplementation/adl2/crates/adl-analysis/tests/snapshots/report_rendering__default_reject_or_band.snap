@@ -6,7 +6,7 @@ ADL2 analysis report — reject_or_band.adl (solver: <backend>)
 
 == trust ==
   solver        <backend>
-  nets          certification on · sampling gate 150 events · refute gate 90 probes
+  nets          certification on · sampling gate 151 events · refute gate 91 probes
   proven        0 disjoint · 1 overlapping (1/1 witness-validated) · 1 subset
   unproven      0 possibly · 0 unknown
   refutations   0 sampling · 0 adversarial
@@ -21,7 +21,7 @@ ADL2 analysis report — reject_or_band.adl (solver: <backend>)
   SR_mid   2/2     yes
 
 == pairwise (1 pair, 1 group) ==
-  SR_band vs SR_mid: PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together (witness validated by interpreter); subset: SR_mid within SR_band [gate 150/150 · probes 90]
+  SR_band vs SR_mid: PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together (witness validated by interpreter); subset: SR_mid within SR_band [gate 151/151 · probes 91]
 
 == axioms used ==
   NNEG×1, PRES×1

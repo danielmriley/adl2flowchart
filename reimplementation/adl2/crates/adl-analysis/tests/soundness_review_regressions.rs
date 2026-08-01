@@ -498,3 +498,283 @@ region R
         hir.diags
     );
 }
+
+/// Vacuous-reducer hard-presence (CRITICAL, 2026-08-01, found during the
+/// Phase B landing review): `negate` conjoined `p_MET >= 1` onto the
+/// over-side of `reject any(pT(jets) + MET > 50)` — but a reducer over an
+/// EMPTY collection decides vacuously without ever reading its body, so the
+/// empty-jets/no-MET event IS in the region while the encoded superset
+/// excluded it. Combined with NNEG(MET), that shipped a false PROVEN SUBSET
+/// against `select MET >= 0` (the interpreter errors that region on the
+/// same event). Fix: `hard_quantities` must not descend into `Dual` — a
+/// bounded-expansion hedge marks CONDITIONAL evaluation, and inside it the
+/// positive encoding's own presence literal negates by plain De Morgan to
+/// the sound `p < 1 ∨ ¬atom`. This is the shape the difftest oracle
+/// plausibly tripped on in the un-persisted failing run.
+#[test]
+fn vacuous_reducer_must_not_claim_hard_presence_under_negation() {
+    let src = "\
+object jets
+  take Jet
+region A
+  reject any(pT(jets) + MET > 50)
+region B
+  select MET >= 0
+";
+    let ext = ExtDecls::legacy();
+    let r = analyze_source(src, "vacred.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        eprintln!("SKIP: no solver (encoding-side pin below still meaningful via NoSolver)");
+    } else {
+        let p = find_pair(&r.pairwise, "A", "B");
+        assert!(
+            !p.subset_a_in_b,
+            "the empty-jets/no-MET event is in A but errors in B — A ⊄ B: {}",
+            p.reason
+        );
+        assert_eq!(
+            r.sampling.as_ref().map(|s| s.refutations),
+            Some(0),
+            "prevention, not gate reliance"
+        );
+    }
+    // Solver-free arm: the claim must be underivable via intervals too.
+    let r0 = analyze_source(src, "vacred.adl", &ext, &opts(SolverChoice::NoSolver))
+        .expect("resolves");
+    let p0 = find_pair(&r0.pairwise, "A", "B");
+    assert!(!p0.subset_a_in_b, "{}", p0.reason);
+}
+
+/// The other two shapes of the same class, found while fixing the one above
+/// (2026-08-01). `In(¬f)` requires a hard-absent datum only when EVERY route
+/// to `f` being decidably FALSE evaluates it. Three routes do not, and the
+/// first version of `Encoder::negate` conjoined presence on the over side
+/// regardless — excluding a genuine member, which fabricates a subset rather
+/// than losing a proof:
+///
+/// - a `Dual` (the vacuous reducer, pinned above);
+/// - an `And`, where one decidably-false conjunct settles it while a sibling
+///   stays Unknown;
+/// - an atom that ALSO mentions a soft-absent quantity, whose soft non-value
+///   beats the blocking hard error in the same comparison.
+///
+/// A fix that instead drops the conjunct from BOTH projections is not
+/// sufficient: the under side would then admit the `p < 1` disjunct De
+/// Morgan produced, claiming membership on an event the interpreter answers
+/// Unknown on. Hence over-classical / under-guarded, and hence these pins.
+#[test]
+fn negation_over_a_conditional_hard_datum_must_not_claim_presence() {
+    let ext = ExtDecls::legacy();
+    // (name, RA, RB) — RA ⊄ RB must stay underivable in every row.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "and-absorbs-unknown",
+            "  reject (MET > 1 and size(jets) > 99)",
+            "  select MET >= 0",
+        ),
+        (
+            "soft-beats-hard-in-one-cmp",
+            "  reject BTag(jets[0]) - MET > 0",
+            "  select MET >= 0",
+        ),
+        (
+            "vacuous-reducer-as-subset-inner",
+            "  select size(jets) >= 1",
+            "  reject any(pT(jets) + MET > 50)",
+        ),
+    ];
+    for (name, ra, rb) in cases {
+        let src = format!("object jets\n  take Jet\nregion A\n{ra}\nregion B\n{rb}\n");
+        let r = analyze_source(&src, "condhard.adl", &ext, &opts(SolverChoice::Auto))
+            .unwrap_or_else(|e| panic!("{name} must resolve: {e}"));
+        if r.solver == "none" {
+            continue;
+        }
+        let p = find_pair(&r.pairwise, "A", "B");
+        assert!(
+            !p.subset_a_in_b,
+            "{name}: A ⊄ B must be underivable — {}",
+            p.reason
+        );
+        assert_eq!(
+            r.sampling.as_ref().map(|s| s.refutations),
+            Some(0),
+            "{name}: prevention, not gate reliance"
+        );
+    }
+}
+
+/// …and the precision the fix must NOT cost: a `reject` whose scope is a
+/// bare comparison (or a disjunction of them) over event-level data still
+/// pins the datum present on BOTH projections, so the bound stays on the
+/// And-spine where the interval layer reads it and the pair still proves.
+#[test]
+fn reject_of_a_bare_event_scalar_cut_keeps_its_spine_bound() {
+    let ext = ExtDecls::legacy();
+    let src = "\
+object jets
+  take Jet
+region A
+  reject MET > 100
+region B
+  select MET > 200
+";
+    let r = analyze_source(src, "spine.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        return;
+    }
+    let p = find_pair(&r.pairwise, "A", "B");
+    assert_eq!(p.kind, VerdictKind::ProvenDisjoint, "{}", p.reason);
+}
+
+/// P1/P2 — the two adversarial probes from the landing review, pinned
+/// against the KLEENE layer rather than `smash2 run`.
+///
+/// Both were first checked with `smash2 run`, which reported ERROR for each
+/// — but that is the TWO-VALUED path, and the soundness contract is defined
+/// over `region3` (proof §1). Under `region3` both regions are genuinely
+/// `In` on their event, which is what makes them the exact vacuity shapes
+/// they were designed to probe:
+///
+/// - **P1** (`Or` over an `And` that absorbs the Unknown): the `And` is
+///   decidably FALSE via `size(jets) > 99`, the other disjunct is FALSE, so
+///   the `Or` is FALSE and the `reject` HOLDS — with MET never read.
+/// - **P2** (cancellation): `pT(jets[0])` is a MISSING ELEMENT on the empty
+///   event, a soft non-value, and `eval.rs`'s `Cmp` arm tests `Ok(Err(_))`
+///   before `Err(_)` — so the comparison is a decidable FALSE and the
+///   `reject` HOLDS, again with MET never read. `pt` is cancelled out of the
+///   atom's `terms()`, so only the definedness footprint keeps it visible.
+///
+/// Membership being `In` is exactly what makes `subset A within B` false
+/// (B errors on the same event), so both assertions below are load-bearing:
+/// the region3 pin says the counterexample is real, the subset pin says the
+/// engine does not claim otherwise.
+#[test]
+fn p1_p2_vacuity_probes_are_members_under_kleene_and_derive_no_subset() {
+    use adl_interp::{Interp, parse_event};
+    let ext = ExtDecls::legacy();
+    // (name, RA body, event JSON)
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "P1-or-over-absorbing-and",
+            "  reject ((MET > 1 and size(jets) > 99) or pT(jets[0]) > 5)",
+            r#"{"Jet":[{"pt":1.0,"eta":0.0,"phi":0.0,"m":0.0,"btag":0.0,"ctag":0.0}],"Electron":[]}"#,
+        ),
+        (
+            "P2-cancelled-soft-operand",
+            "  reject (MET + pT(jets[0]) - pT(jets[0]) > 5)",
+            r#"{"Jet":[],"Electron":[]}"#,
+        ),
+    ];
+    for (name, ra, event_json) in cases {
+        let src = format!("object jets\n  take Jet\nregion A\n{ra}\nregion B\n  select MET >= 0\n");
+        let hir = analyze_str(&src, "probe.adl", &ext);
+        let interp = Interp::new(&hir, &ext);
+        let e = parse_event(event_json, &ext).expect("loader-valid");
+
+        // region3: A is In (the datum is never read), B is Unknown.
+        assert_eq!(
+            interp.eval_region_membership("A", &e).ok(),
+            Some(true),
+            "{name}: A must be In under the Kleene layer — that is what makes \
+             it a counterexample"
+        );
+        assert_ne!(
+            interp.eval_region_membership("B", &e).ok(),
+            Some(true),
+            "{name}: B reads MET, which the event lacks, so B is not In"
+        );
+
+        // …so the engine must not claim A ⊆ B.
+        let r = analyze_source(&src, "probe.adl", &ext, &opts(SolverChoice::Auto))
+            .unwrap_or_else(|err| panic!("{name} must resolve: {err}"));
+        if r.solver == "none" {
+            continue;
+        }
+        let p = find_pair(&r.pairwise, "A", "B");
+        assert!(!p.subset_a_in_b, "{name}: {}", p.reason);
+        assert_eq!(
+            r.sampling.as_ref().map(|s| s.refutations),
+            Some(0),
+            "{name}: prevention, not gate reliance"
+        );
+    }
+}
+
+/// K13 (2026-08-01) — the `And`-INTERSECTION case, and the one that showed
+/// the rule had to be set-valued rather than a boolean "does this shape
+/// qualify".
+///
+/// ```text
+/// A: reject (MET > 1 and HT > 2)
+/// B: select HT >= 0 or HT < 0
+/// ```
+///
+/// An `and` is decidably FALSE as soon as ONE member is, so it forces only
+/// the quantities read on EVERY false-route — the INTERSECTION over its
+/// members. Here that is empty: a present `MET = 1` settles the conjunction
+/// without `HT` ever being read. The predecessor rule qualified the whole
+/// `And` because both members were pure-hard atoms, and `negate` then
+/// conjoined the UNION (`p_MET ≥ 1 ∧ p_HT ≥ 1`) onto A's over side —
+/// excluding the very event that witnesses `A ⊄ B` and shipping the subset.
+///
+/// This is K12 with the sides swapped, which is why a shape-based rule kept
+/// missing one of them.
+#[test]
+fn k13_and_forces_only_the_intersection_of_its_members() {
+    use adl_interp::{Interp, parse_event};
+    let ext = ExtDecls::legacy();
+    let src = "\
+object jets
+  take Jet
+region A
+  reject (MET > 1 and HT > 2)
+region B
+  select HT >= 0 or HT < 0
+";
+    // MET present at exactly 1 (so `MET > 1` is decidably FALSE), no HT key.
+    let event_json = r#"{"Jet":[{"pt":50.0,"eta":0.0,"phi":0.0,"m":0.0,"btag":0.0,"ctag":0.0}],"Electron":[],"MET":{"pt":1.0,"phi":0.0}}"#;
+    let hir = analyze_str(src, "k13.adl", &ext);
+    let interp = Interp::new(&hir, &ext);
+    let e = parse_event(event_json, &ext).expect("loader-valid");
+    assert_eq!(
+        interp.eval_region_membership("A", &e).ok(),
+        Some(true),
+        "A is In: `MET > 1` is false, and false absorbs the hard error on `HT > 2`"
+    );
+    assert_ne!(
+        interp.eval_region_membership("B", &e).ok(),
+        Some(true),
+        "B reads HT in both disjuncts, so B is not In"
+    );
+
+    let r = analyze_source(src, "k13.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        return;
+    }
+    let p = find_pair(&r.pairwise, "A", "B");
+    assert!(!p.subset_a_in_b, "A ⊄ B must be underivable: {}", p.reason);
+    assert!(!p.subset_b_in_a, "{}", p.reason);
+    assert_eq!(
+        r.sampling.as_ref().map(|s| s.refutations),
+        Some(0),
+        "prevention, not gate reliance"
+    );
+
+    // The SELECT-side mirror must be the same region: the negation
+    // placement peepholes make `select not X` and `reject X` encode
+    // identically, so a presence split that depended on spelling would be a
+    // bug of its own.
+    let mirrored = src.replace(
+        "  reject (MET > 1 and HT > 2)",
+        "  select not (MET > 1 and HT > 2)",
+    );
+    let rm = analyze_source(&mirrored, "k13.adl", &ext, &opts(SolverChoice::Auto))
+        .expect("resolves");
+    let pm = find_pair(&rm.pairwise, "A", "B");
+    assert_eq!(
+        (pm.kind, pm.subset_a_in_b, pm.subset_b_in_a),
+        (p.kind, p.subset_a_in_b, p.subset_b_in_a),
+        "`select not X` must behave identically to `reject X`"
+    );
+}

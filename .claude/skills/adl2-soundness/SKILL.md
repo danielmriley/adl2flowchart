@@ -195,6 +195,22 @@ construction rather than hedged.
   presence literal **conjoined through** the negation (`Encoder::negate`),
   because `¬Unknown` is Unknown. **Do not "simplify" `negate` into
   `Formula::not`** — that reintroduces the K4/K6 false-subset class.
+- **Where that conjunct may go is a SET, not a shape test**
+  (`forced_by_falsity`). It is a meet-semilattice over "what every route to
+  the scope being decidably FALSE must read": atom → its quantities (or
+  NOTHING if it also mentions a soft-absent one, whose non-value decides the
+  comparison without the rest being read); `Or` → UNION; `And` →
+  INTERSECTION, excluding the encoder's own presence literals as
+  bookkeeping; `Dual`/`Unknown` → nothing. `negate` conjoins that set on
+  both projections and the remaining mentioned hard quantities UNDER-only.
+  **Do not re-approximate this with a boolean** — three tries, three
+  counterexamples: K10 (always-both-sides), `reject_or_band` losing
+  exactness (refuse-every-`And`), K13 (qualify `And`s of pure-hard atoms —
+  `reject (MET > 1 and HT > 2)`, where a present `MET = 1` settles it
+  without `HT` being read). Both failure directions are false PROVEN
+  SUBSETs: an over side demanding a datum the interpreter never read
+  excludes a genuine member, and dropping the conjunct entirely lets the
+  under side admit the `p < 1` disjunct. K10-K13.
 - The presence set comes from `LinExpr.mentioned`, a definedness FOOTPRINT
   that survives cancellation. `MET + HT − HT > 50` still requires HT
   because the interpreter evaluates it. Do not derive presence from the
@@ -208,6 +224,16 @@ construction rather than hedged.
   negation exactness, rewrite invariance, literal shape, the cost pin),
   `adl-interp/tests/presence_parity.rs` (classifier ↔ interpreter),
   `axioms_hold.rs::i6_*` (the fail-closed `requires_present` table).
+
+**Membership is `region3`, not `region`.** "`e` is in `R`" means
+`Interp::eval_region_membership{,_idx}` (the Kleene layer) returns true.
+The two-valued `eval_region_by_name` is STRICTER — it propagates a hard
+evaluation error out of an `or` even when another disjunct is decidably
+TRUE — and it is what `smash2 run` prints. So a `smash2 run` transcript is
+evidence about a CUTFLOW, not about membership: check a suspected false
+PROVEN against the three-valued entry point, or you will "find" violations
+the engine never claimed (2026-08-01: the difftest oracle did exactly that
+once the absence axis gave it events lacking event-level data).
 
 **Known-open analogue (do not assume it is covered):** `size(C)` is
 classified `Never`, but materializing `C` hard-errors when `C`'s filter

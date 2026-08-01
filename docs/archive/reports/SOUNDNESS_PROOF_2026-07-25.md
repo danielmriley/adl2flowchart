@@ -433,6 +433,65 @@ the hardening list (§8).
      event scalars as total; the evidence is that they shipped, and that
      the gates provably cannot see them (the interpreter answers Unknown,
      never `false`, so a subset counterexample search can never fire).
+   - **Self-inflicted regression, found and fixed in the landing review
+     (2026-08-01) — kill cases K10-K12.** The first `Encoder::negate`
+     conjoined the hard-absent presence literal onto BOTH projections of
+     every negation. That is only valid when EVERY route to the negated
+     scope being decidably FALSE evaluates the datum. Three routes do not,
+     and each shipped a false PROVEN SUBSET with `refutations: 0`:
+     a `Dual` (a reducer over an EMPTY collection decides vacuously without
+     reading its body — `reject any(pT(jets) + MET > 50)` is In on the
+     empty-jets/no-MET event); an `And` (one decidably-false conjunct
+     settles it while a sibling stays Unknown); and an atom that also
+     mentions a SOFT-absent quantity (the soft non-value beats the blocking
+     hard error in the same comparison, `eval.rs`'s `Cmp` arm testing
+     `Ok(Err(_))` before `Err(_)`). An over side that demands a datum the
+     interpreter never read EXCLUDES A GENUINE MEMBER, which fabricates a
+     subset rather than losing a proof.
+     Fixed by `forced_by_falsity`, a MEET-SEMILATTICE rather than a
+     shape test: an atom forces the quantities it mentions (nothing, if it
+     also mentions a soft-absent one); an `Or` forces the UNION over its
+     disjuncts (Or-false needs all of them false, so all are read); an `And`
+     forces the INTERSECTION over its members (And-false needs only ONE
+     false), with this encoder's own presence literals excluded from the
+     meet as bookkeeping; a `Dual` and an `Unknown` force nothing. `negate`
+     conjoins presence for exactly that set on BOTH projections and puts the
+     remaining mentioned hard quantities UNDER-only.
+     It took three counterexamples to stop approximating this with a
+     boolean. K10 killed "always both sides". A shape rule that refused
+     every `And` cost `reject_or_band` its exactness (caught by the
+     snapshot-acceptance guard refusing a non-count diff). And **K13**
+     (`reject (MET > 1 and HT > 2)` vs `select HT >= 0 or HT < 0`) killed
+     the refinement that qualified `And`s of pure-hard atoms: a present
+     `MET = 1` settles the conjunction without `HT` ever being read, so the
+     intersection is EMPTY — K12 with the sides swapped, which is why a
+     shape-based rule kept missing one of the two. The element-existence
+     guard needs no special case under the lattice: a `Size` atom forces
+     only `size(C)`, which meets to nothing against the leaf's quantities. Simply dropping the
+     conjunct from both sides — the obvious alternative, and the one first
+     proposed — is NOT sufficient: the under side then admits the `p < 1`
+     disjunct De Morgan produced and claims membership on an event the
+     interpreter answers Unknown on, which is the same class from the other
+     side. Cost: ZERO corpus proofs. The gates were blind to all three
+     because no battery event had an EMPTY collection together with missing
+     event-level data; one now does.
+
+   - **Oracle-membership correction (2026-08-01, worth recording because it
+     nearly read as an engine bug).** The differential oracle asked the
+     TWO-VALUED `eval_region_by_name` whether an event was in a region.
+     That is stricter than §1's definition: it propagates a hard evaluation
+     error out of an `or` even when another disjunct is decidably TRUE, so
+     `(HT > 50) or (size(eles) >= 0)` "failed" on an event with no `HT`
+     while the Kleene layer correctly decides it `True`. Once the absence
+     axis started producing such events, the oracle reported a
+     "PROVEN SUBSET … counterexample" the engine was not responsible for.
+     The oracle now uses `region3` — the same layer witness re-validation
+     uses and the one §1 names — and the case is pinned
+     (`regressions.rs::oracle_membership_is_kleene_not_two_valued`). Note
+     that the two-valued path is what `smash2 run` prints, so a `run`
+     transcript is evidence about a CUTFLOW, not about membership; the kill
+     cases above were re-derived against `region3` for that reason.
+
    - **What is NOT closed by this.** The premises that remain empirical are
      unchanged in character: A1 (§3), the PHYSICAL truth of each axiom
      family's statement, and the structural claim that the encoder emits

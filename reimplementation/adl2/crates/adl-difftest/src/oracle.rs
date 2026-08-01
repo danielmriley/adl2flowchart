@@ -13,9 +13,13 @@
 //!
 //! The event sample = boundary grid + seeded random vocabulary events +
 //! toy-generator events (with `btag` injected for electrons and forced
-//! 0-element collection variants). All samples stay inside the axiom
-//! catalog's physical-event class: collections pT-descending, tags and
-//! triggers ∈ {0, 1}, `pt`/`m`/`HT`/`MET` ≥ 0, `dPhi` computed wrapped.
+//! 0-element collection variants) + the **absence axis** (per property, an
+//! event whose elements all lack it; plus events with no MET vector / HT
+//! scalar). All samples stay inside the axiom catalog's physical-event
+//! class: collections pT-descending, tags and triggers ∈ {0, 1},
+//! `pt`/`m`/`HT`/`MET` ≥ 0, `dPhi` computed wrapped. An event that omits a
+//! key is still in that class — the loader accepts it, so the axioms must
+//! hold on it, which is precisely what the absence axis tests.
 
 use crate::{SplitMix64, toy_jsonl};
 use adl_analysis::{AnalysisOptions, EmptyStatus, Report, VerdictKind, analyze_source};
@@ -496,13 +500,14 @@ pub fn absence_jsonl() -> Vec<String> {
     out
 }
 
-/// The shared deterministic event sample (grid + seeded random + toy).
+/// The shared deterministic event sample (grid + seeded random + toy +
+/// the absence axis).
 ///
-/// [`absence_jsonl`] joins this sample with the encoder chokepoint
-/// (SPEC_PRESENCE_MODEL step 3). Wiring it in earlier would make the oracle
-/// fail immediately — correctly, since the absent-property seam is open
-/// until the encoder models presence; the analysis GATE sees absence from
-/// step 1 (it demotes rather than fails), which is where step 1's value is.
+/// The absence axis joined at SPEC_PRESENCE_MODEL step 3, with the encoder
+/// chokepoint. Wired in earlier it failed the oracle immediately — correctly:
+/// until the encoder models presence, the encoder and the interpreter really
+/// do disagree about a property-less element, and this is the layer whose job
+/// is to say so.
 ///
 /// # Panics
 /// Panics if a generated record fails the interpreter's loader — that
@@ -512,6 +517,7 @@ pub fn sample_events(ext: &ExtDecls) -> Vec<Event> {
     let mut lines = grid_jsonl();
     lines.extend(random_jsonl(0xD1FF_7E57, 64));
     lines.extend(toy_derived_jsonl(7, 24));
+    lines.extend(absence_jsonl());
     lines
         .iter()
         .map(|l| {

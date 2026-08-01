@@ -21,7 +21,9 @@
 //! honest answers.
 
 use adl_formula::{DiagTable, EncodedRegion, Formula, Over, Under, encode_region};
-use adl_sema::{Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, Quantity, QuantityId};
+use adl_sema::{
+    Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, Quantity, QuantityId, QuantityTable,
+};
 use adl_solver::AssertName;
 use adl_syntax::ast::CmpOp;
 use adl_syntax::span::{LineMap, Span};
@@ -238,21 +240,41 @@ fn is_membership(stmt: &HirRegionStmt) -> bool {
 
 /// Walk a formula counting coverage; `Dual` counts once (a hedge, not a
 /// drop) and is not descended into.
-fn coverage(f: &Formula, diags: &DiagTable, out: &mut RegionEnc, map: &LineMap) {
+///
+/// Presence literals (`p_q >= 1`) are BOOKKEEPING, not source leaves: they
+/// say the cut's own quantity has a value. Counting them would inflate the
+/// coverage column of every region by roughly the number of element
+/// references, telling the reader nothing about how much of their ADL the
+/// analyzer understood — the question the column exists to answer.
+fn is_presence_atom(table: &QuantityTable, f: &Formula) -> bool {
+    matches!(f, Formula::Atom(a)
+        if matches!(a.terms(), [(_, q)] if matches!(table.quantity(*q), Quantity::Present(_))))
+}
+
+fn coverage(
+    table: &QuantityTable,
+    f: &Formula,
+    diags: &DiagTable,
+    out: &mut RegionEnc,
+    map: &LineMap,
+) {
     match f {
         Formula::True | Formula::False | Formula::Atom(_) => {
+            if is_presence_atom(table, f) {
+                return;
+            }
             out.leaves_total += 1;
             out.leaves_encoded += 1;
         }
         Formula::And(v) => {
             for p in v {
-                coverage(p, diags, out, map);
+                coverage(table, p, diags, out, map);
             }
         }
         Formula::Or(v) => {
             out.or_clauses += 1;
             for p in v {
-                coverage(p, diags, out, map);
+                coverage(table, p, diags, out, map);
             }
         }
         Formula::Unknown(d) => {
@@ -332,7 +354,7 @@ pub fn encode_unit(hir: &mut Hir, src: &str) -> UnitEnc {
                 } else {
                     map.line_text(src, span.start).trim().to_owned()
                 };
-                coverage(&e.formula, &e.diags, &mut enc, &map);
+                coverage(&hir.table, &e.formula, &e.diags, &mut enc, &map);
                 formula_quantities(&e.formula, &mut enc.quantities);
                 enc.stmts.push(StmtEnc {
                     name: AssertName::new(format!("R{ridx}S{sidx}")),

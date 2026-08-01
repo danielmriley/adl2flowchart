@@ -25,9 +25,9 @@
 use crate::formula::{DiagId, DiagTable, Formula};
 use crate::lin::{LinAtom, Rel};
 use adl_sema::{
-    ArithOp, CombKind, Collection, CollectionId, CompositeBinder, ElemIndex, ElemPred, ElemPredId,
-    Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, NumVal, ParticleRef, Quantity,
-    QuantityArg, QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource, SymbolTable,
+    Absence, ArithOp, CombKind, Collection, CollectionId, CompositeBinder, ElemIndex, ElemPred,
+    ElemPredId, Fragment, HKind, HNode, Hir, HirRegion, HirRegionStmt, NumVal, ParticleRef,
+    Quantity, QuantityArg, QuantityId, QuantityTable, Rat, ReduceKind, ScalarSource, SymbolTable,
 };
 use adl_syntax::ast::{BandKind, CmpOp};
 use adl_syntax::span::Span;
@@ -552,6 +552,17 @@ fn slice_key(slice: Option<(u32, Option<u32>)>) -> String {
 struct LinExpr {
     terms: BTreeMap<QuantityId, Rat>,
     k: Rat,
+    /// Every quantity the SOURCE expression mentions — including ones whose
+    /// coefficient cancelled to zero (`pT(j[0]) - pT(j[0])`) or was
+    /// multiplied out. `terms` is the algebra; this is the DEFINEDNESS
+    /// footprint, and the two differ exactly where the interpreter and a
+    /// cancelling encoder used to disagree: the interpreter's arithmetic is
+    /// soft-non-value ABSORBING, so `pT(j[0]) - pT(j[0]) < 25` is FALSE on a
+    /// pt-less jet while the folded atom `0 < 25` is trivially true. Presence
+    /// literals are emitted from this set, never from `terms`
+    /// (SPEC_PRESENCE_MODEL §3.3 — the spec's chokepoint reads the term map;
+    /// reading the footprint instead subsumes its by-hand fold arms).
+    mentioned: BTreeSet<QuantityId>,
 }
 
 /// Why an expression has no [`LinExpr`] form.
@@ -573,6 +584,7 @@ impl LinExpr {
         Self {
             terms: BTreeMap::new(),
             k,
+            mentioned: BTreeSet::new(),
         }
     }
 
@@ -580,6 +592,7 @@ impl LinExpr {
         Self {
             terms: BTreeMap::from([(q, Rat::one())]),
             k: Rat::zero(),
+            mentioned: BTreeSet::from([q]),
         }
     }
 
@@ -592,6 +605,8 @@ impl LinExpr {
             let entry = out.terms.entry(*q).or_insert_with(Rat::zero);
             *entry = &*entry + &adj(c);
         }
+        // The footprint never cancels: both operands were evaluated.
+        out.mentioned.extend(other.mentioned.iter().copied());
         out
     }
 
@@ -629,112 +644,161 @@ impl Encoder<'_> {
         Formula::Unknown(self.diags.push(span, reason))
     }
 
-    /// Negation with the absent-property fail-closed guard.
-    ///
-    /// The interpreter evaluates a comparison over an ABSENT value as a
-    /// decidable soft `false` (the ROOT/C++ NaN convention), so under a
-    /// `not`/`reject` the statement holds precisely BECAUSE the data is
-    /// missing — while the classical negation `¬(q ⋈ k)` constrains a total
-    /// valuation. That mismatch is anti-monotone: two complementary rejects
-    /// over the same possibly-absent property fabricated a PROVEN DISJOINT
-    /// through the interval path (both regions accept a property-less event).
-    ///
-    /// Sound negation is therefore allowed only over quantities whose
-    /// absence can never yield a soft `false`:
-    /// - collection sizes (total on every loader-valid event), and
-    /// - MET components (a missing MET vector is a HARD evaluation error —
-    ///   the event is decidably in no MET-cutting region).
-    ///
-    /// A negation whose scope mentions any other exact atom degrades to
-    /// `Unknown` — over-side true, under-side false — which can only weaken
-    /// verdicts. Interim until definedness (presence) modeling lands; see
-    /// SOUNDNESS_PROOF_2026-07-25 §8 item 1.
-    fn guarded_not(&mut self, f: Formula, span: Span) -> Formula {
-        if self.negation_safe(&f) {
-            return f.not();
-        }
-        // Polarity-split hedge over the NNF negation `n = ¬f` (Formula::not
-        // pushes negations to the leaves, so every atom in `n` occurs
-        // positively):
-        // - OVER side: `n` with every atom over a soft-false-able quantity
-        //   widened to `true`. An absence event satisfies the negation (the
-        //   inner comparison soft-fails) but no atom can express absence, so
-        //   a superset may constrain ONLY quantities that are total or
-        //   hard-error on loader-valid events; widening the unsafe atoms —
-        //   and nothing else — keeps every size/MET constraint's precision
-        //   (e.g. a comb-existence negation keeps its `size < 1` bound).
-        // - UNDER side: the classical `n`, which IS sound: absence makes the
-        //   negation true regardless of the valuation; a present value
-        //   behaves classically (P2); inner Unknowns stay Kleene. This
-        //   preserves overlap witnesses and subset inners through rejects
-        //   (regression pins CE-1/CE-3).
-        let n = f.not();
-        let plus = Self::widen_unsafe(self, &n);
-        let why = self.diags.push(
-            span,
-            "negation over a possibly-absent quantity: superset side keeps only \
-             total-quantity constraints (a missing value fails the inner \
-             comparison, so the negation would hold); subset side kept classical \
-             (sound under absence). Pending definedness modeling",
-        );
-        Formula::Dual {
-            plus: Box::new(plus),
-            minus: Box::new(n),
-            why,
-        }
-    }
-
-    /// The over-side widening for a guarded negation: `f` is in NNF (no
-    /// negation nodes), so every atom occurs positively and replacing an
-    /// atom by `true` is a monotone weakening. Unsafe-quantity atoms become
-    /// `true`; `And`/`Or` simplify through [`fand`]/[`forr`]; a nested
-    /// `Dual`'s over side is its `plus`, so only that branch is widened.
-    fn widen_unsafe(&self, f: &Formula) -> Formula {
-        match f {
-            Formula::True | Formula::False | Formula::Unknown(_) => f.clone(),
-            Formula::Atom(a) => {
-                let safe = a.terms().iter().all(|(_, q)| {
-                    matches!(
-                        self.table.quantity(*q),
-                        Quantity::Size(_) | Quantity::EventScalar(ScalarSource::MetProp(_))
-                    )
-                });
-                if safe { f.clone() } else { Formula::True }
-            }
-            Formula::And(v) => fand(v.iter().map(|p| self.widen_unsafe(p)).collect()),
-            Formula::Or(v) => forr(v.iter().map(|p| self.widen_unsafe(p)).collect()),
-            Formula::Dual { plus, minus, why } => Formula::Dual {
-                plus: Box::new(self.widen_unsafe(plus)),
-                minus: minus.clone(),
-                why: *why,
-            },
-        }
-    }
-
-    /// May `f` be negated exactly? True iff every exact atom is over a
-    /// quantity that is total-or-hard-error on loader-valid events.
-    /// `Unknown`/`Dual` sub-formulas negate soundly by construction
-    /// (`Unknown` stays `Unknown`; `Dual` swaps branches).
-    fn negation_safe(&self, f: &Formula) -> bool {
-        match f {
-            Formula::True | Formula::False | Formula::Unknown(_) => true,
-            Formula::Atom(a) => a.terms().iter().all(|(_, q)| {
-                matches!(
-                    self.table.quantity(*q),
-                    Quantity::Size(_) | Quantity::EventScalar(ScalarSource::MetProp(_))
-                )
-            }),
-            Formula::And(v) | Formula::Or(v) => v.iter().all(|p| self.negation_safe(p)),
-            Formula::Dual { plus, minus, .. } => {
-                self.negation_safe(plus) && self.negation_safe(minus)
-            }
-        }
-    }
-
     /// Small-constant atom used by the OPEN-1 expansion and triggers;
     /// constants are tiny integers.
     fn simple_atom(&mut self, q: QuantityId, rel: Rel, k: i64) -> Formula {
         Formula::Atom(LinAtom::single(q, rel, Rat::from_i64(k)))
+    }
+
+    // ---- presence (definedness) -------------------------------------------
+
+    /// `p_q ≥ 1` — "the interpreter obtains a value for `q` at this event".
+    ///
+    /// A plain inequality, never an equality: over ℚ the pair
+    /// `p ≥ 1` / `p < 1` partitions the domain, and models with
+    /// `p ∈ (0, 1)` are extra *absent-like* models, which only ever ADD
+    /// models (UNSAT is harder — the sound direction) and realize as
+    /// omission (SPEC_PRESENCE_MODEL §3.2).
+    fn present_atom(&mut self, q: QuantityId) -> Formula {
+        let p = self.table.intern_quantity(Quantity::Present(q));
+        Formula::Atom(LinAtom::single(p, Rel::Ge, Rat::one()))
+    }
+
+    /// THE presence chokepoint: conjoin `p_q ≥ 1` for every possibly-absent
+    /// quantity in `quants` onto an exact leaf.
+    ///
+    /// Both absence kinds are guarded here, and that is sound in BOTH
+    /// projections for a POSITIVE leaf: `In` means the interpreter decided
+    /// the cut true, which it can only do having obtained a value.
+    /// The kinds part company under negation — see [`Self::negate`].
+    ///
+    /// A non-exact leaf passes through untouched: an `Unknown` is already an
+    /// honest refusal and guarding it changes nothing.
+    fn guard_presence<'q>(
+        &mut self,
+        quants: impl IntoIterator<Item = &'q QuantityId>,
+        inner: Formula,
+    ) -> Formula {
+        if !inner.is_exact() {
+            return inner;
+        }
+        let needed: Vec<QuantityId> = quants
+            .into_iter()
+            .copied()
+            .filter(|&q| self.table.may_be_absent(q))
+            .collect();
+        if needed.is_empty() {
+            return inner;
+        }
+        let mut parts: Vec<Formula> = needed
+            .into_iter()
+            .map(|q| self.present_atom(q))
+            .collect();
+        parts.push(inner);
+        fand(parts)
+    }
+
+    /// Presence guard read from a HIR subtree rather than a [`LinExpr`] —
+    /// used where the comparison folded to a constant before any
+    /// linearization (`abs(E) >= -5`) or where the operand never became a
+    /// linear expression at all.
+    fn guard_presence_node(&mut self, node: &HNode, inner: Formula) -> Formula {
+        let mut qs = BTreeSet::new();
+        collect_quantities(node, &mut qs);
+        self.guard_presence(&qs, inner)
+    }
+
+    /// The HARD-absent quantities an encoded formula mentions (event MET /
+    /// scalars / trigger flags). Presence indicators themselves are total,
+    /// so they never appear here.
+    fn hard_quantities(&self, f: &Formula, out: &mut BTreeSet<QuantityId>) {
+        match f {
+            Formula::True | Formula::False | Formula::Unknown(_) => {}
+            Formula::Atom(a) => {
+                for (_, q) in a.terms() {
+                    if self.table.absence(*q) == Absence::Hard {
+                        out.insert(*q);
+                    }
+                }
+            }
+            Formula::And(v) | Formula::Or(v) => {
+                for p in v {
+                    self.hard_quantities(p, out);
+                }
+            }
+            Formula::Dual { plus, minus, .. } => {
+                self.hard_quantities(plus, out);
+                self.hard_quantities(minus, out);
+            }
+        }
+    }
+
+    /// Rewrite `p < 1` to `false` for every `p` in `present`: the caller is
+    /// about to conjoin `p ≥ 1`, so those literals are contradicted. Pure
+    /// simplification (`fand`/`forr` fold the constants away), and the reason
+    /// `reject MET > 100` keeps its clean `MET ≤ 100` bound on the And-spine
+    /// instead of hiding it inside a disjunction the interval layer skips.
+    fn drop_absent(f: &Formula, present: &BTreeSet<QuantityId>) -> Formula {
+        match f {
+            Formula::Atom(a) => {
+                if let [(c, q)] = a.terms()
+                    && present.contains(q)
+                    && a.rel() == Rel::Lt
+                    && c.is_one()
+                    && a.constant().is_one()
+                {
+                    return Formula::False;
+                }
+                f.clone()
+            }
+            Formula::And(v) => fand(v.iter().map(|p| Self::drop_absent(p, present)).collect()),
+            Formula::Or(v) => forr(v.iter().map(|p| Self::drop_absent(p, present)).collect()),
+            Formula::Dual { plus, minus, why } => Formula::Dual {
+                plus: Box::new(Self::drop_absent(plus, present)),
+                minus: Box::new(Self::drop_absent(minus, present)),
+                why: *why,
+            },
+            Formula::True | Formula::False | Formula::Unknown(_) => f.clone(),
+        }
+    }
+
+    /// Presence-faithful negation (`reject c`, `not c`) — replaces the
+    /// Phase-A `guarded_not` hedge.
+    ///
+    /// The two absence kinds diverge here, which is the whole reason
+    /// [`Absence`] distinguishes them:
+    ///
+    /// - **Soft** (element properties, angular separations, opaque
+    ///   externals): an absent value makes the inner comparison a decidable
+    ///   FALSE, so the negation HOLDS. Plain De Morgan over the guarded leaf
+    ///   `p ≥ 1 ∧ φ` gives exactly `p < 1 ∨ ¬φ` — "absent, or present and
+    ///   failing" — which is the interpreter's rule, in both directions. No
+    ///   hedge, no `Dual`, and the negated leaf stays EXACT (this is what
+    ///   restores subset inners and complement emptiness through `reject`).
+    /// - **Hard** (missing MET vector / event scalar / trigger flag): the
+    ///   interpreter raises an evaluation error, so the enclosing statement
+    ///   is Unknown and the event is `In` no such region — in EITHER
+    ///   polarity. `¬Unknown` is Unknown, so `In(¬c)` still REQUIRES the
+    ///   datum: the presence literal is conjoined ON TOP of the negation
+    ///   rather than being flipped by it.
+    fn negate(&mut self, f: Formula) -> Formula {
+        let mut hard = BTreeSet::new();
+        self.hard_quantities(&f, &mut hard);
+        let n = f.not();
+        if hard.is_empty() {
+            return n;
+        }
+        let present: BTreeSet<QuantityId> = hard
+            .iter()
+            .map(|&q| self.table.intern_quantity(Quantity::Present(q)))
+            .collect();
+        let n = Self::drop_absent(&n, &present);
+        let mut parts: Vec<Formula> = present
+            .into_iter()
+            .map(|p| Formula::Atom(LinAtom::single(p, Rel::Ge, Rat::one())))
+            .collect();
+        parts.push(n);
+        fand(parts)
     }
 
     // ---- regions --------------------------------------------------------
@@ -760,20 +824,21 @@ impl Encoder<'_> {
     fn stmt(&mut self, stmt: &HirRegionStmt) -> Option<Formula> {
         match stmt {
             HirRegionStmt::Select(n) | HirRegionStmt::Trigger(n) => Some(self.boolean(n)),
-            // `reject c` is the negation of `c` — exact only where negation
-            // is sound over absent data (see `guarded_not`). A directly-
-            // nested `not` cancels against the reject's implicit negation
-            // BEFORE the guard (`reject not X` ≡ `select X`), mirroring the
-            // double-negation peephole in `boolean`, so `reject c` and
-            // `select not c` encode identically under every negation
-            // placement (metamorphic invariants `reject ≡ select not`,
-            // `not not c ≡ c`).
+            // `reject c` is the presence-faithful negation of `c` (see
+            // `negate`) — EXACT, because absence is now expressible: the
+            // soft-absent leaf `p ≥ 1 ∧ φ` negates by plain De Morgan to
+            // "absent, or present and failing". A directly-nested `not`
+            // still cancels against the reject's implicit negation
+            // (`reject not X` ≡ `select X`), mirroring the double-negation
+            // peephole in `boolean`, so `reject c` and `select not c` encode
+            // identically under every negation placement (metamorphic
+            // invariants `reject ≡ select not`, `not not c ≡ c`).
             HirRegionStmt::Reject(n) => {
                 if let HKind::Not(inner) = &n.kind {
                     Some(self.boolean(inner))
                 } else {
                     let f = self.boolean(n);
-                    Some(self.guarded_not(f, n.span))
+                    Some(self.negate(f))
                 }
             }
             HirRegionStmt::Inherit { region, span } => Some(self.region(*region, *span)),
@@ -808,9 +873,9 @@ impl Encoder<'_> {
                 let parts = v.iter().map(|n| self.boolean(n)).collect();
                 forr(parts)
             }
-            // Double negation is eliminated BEFORE the absent-property guard
-            // so `not not c` and `c` encode identically: the guard's
-            // precision must not depend on syntactic negation placement
+            // Double negation is eliminated BEFORE `negate` so `not not c`
+            // and `c` encode identically: presence handling must not depend
+            // on syntactic negation placement
             // (metamorphic invariant `not not c ≡ c`). Sound in every layer:
             // classical, Kleene (¬¬x = x in K3), and the interpreter's
             // soft-false absorbing semantics (¬¬ is the identity on decided
@@ -821,7 +886,7 @@ impl Encoder<'_> {
             }
             HKind::Not(inner) => {
                 let f = self.boolean(inner);
-                self.guarded_not(f, node.span)
+                self.negate(f)
             }
             HKind::Cmp { .. } | HKind::Band { .. } => self.leaf(node),
             // `g ? a : b` ≡ `(g∧a) ∨ (¬g∧b)`; missing/ALL branch is true
@@ -832,13 +897,19 @@ impl Encoder<'_> {
                 let e = els
                     .as_deref()
                     .map_or(Formula::True, |els| self.boolean(els));
-                let ng = self.guarded_not(g.clone(), guard.span);
+                let ng = self.negate(g.clone());
                 forr(vec![fand(vec![g, t]), fand(vec![ng, e])])
             }
             // `trigger t` ⇒ atom `trig(t) = 1`.
             HKind::Quantity(q) => match self.table.quantity(*q) {
                 Quantity::EventScalar(ScalarSource::Trigger(_)) => {
-                    self.simple_atom(*q, Rel::Eq, 1)
+                    // A trigger flag is HARD-absent: an event with no such
+                    // flag raises an evaluation error, so `trigger t` is
+                    // `p ≥ 1 ∧ trig(t) = 1`, not a bare atom over a junk
+                    // value some axiom could pin (TAG gives `trig ∈ {0,1}`,
+                    // which entails `trig >= 0` — the K1 shape).
+                    let a = self.simple_atom(*q, Rel::Eq, 1);
+                    self.guard_presence(&[*q], a)
                 }
                 _ => self.unknown(node.span, "numeric quantity used as a boolean condition"),
             },
@@ -1702,10 +1773,12 @@ impl Encoder<'_> {
                 // P3: a positive lower bound on a composite tuple count
                 // (`size(K) >= 1`, `size(K->cand) == 1`, …) gains a 2D
                 // per-candidate-cut existence refinement on the OVER side.
-                if let Some(f) = self.try_comb_existence(&d.terms, rel, &k, span) {
-                    return f;
-                }
-                self.atom_of(d.terms, rel, k)
+                let leaf = if let Some(f) = self.try_comb_existence(&d.terms, rel, &k, span) {
+                    f
+                } else {
+                    self.atom_of(d.terms, rel, k)
+                };
+                self.guard_presence(&d.mentioned, leaf)
             }
             (Err(LinErr::NonFinite), _) | (_, Err(LinErr::NonFinite)) => Formula::False,
             (Err(LinErr::BadLiteral), _) | (_, Err(LinErr::BadLiteral)) => {
@@ -1779,9 +1852,16 @@ impl Encoder<'_> {
                     let mut parts: Vec<Formula> = Vec::with_capacity(args.len());
                     let mut opaque: Vec<Formula> = Vec::new();
                     let mut needs: BTreeMap<CollectionId, u32> = BTreeMap::new();
+                    let mut present: BTreeSet<QuantityId> = BTreeSet::new();
                     for a in args {
                         let f = self.cmp_node_const(a, rel, c.clone(), span);
                         if f.is_exact() {
+                            // The fold makes a soft non-value in ANY argument
+                            // absorbing, so every exactly-encoded argument's
+                            // definedness is a necessary condition of the
+                            // WHOLE comparison — hoisted to the And level
+                            // exactly like the existence guards beside it.
+                            collect_quantities(a, &mut present);
                             // Only an exactly-encoded arg's element is a genuine
                             // reference whose absence falsifies the comparison; an
                             // opaque arg's own missing-element behaviour is unknown,
@@ -1811,7 +1891,8 @@ impl Encoder<'_> {
                     let mut conj = self.needs_guards(needs);
                     conj.extend(opaque);
                     conj.push(combined);
-                    fand(conj)
+                    let all = fand(conj);
+                    self.guard_presence(&present, all)
                 } else {
                     // `==`/`!=` have no monotone reading. Interning the whole
                     // min as an opaque free leaf would be sound for the UNSAT
@@ -1832,7 +1913,13 @@ impl Encoder<'_> {
     /// keep it `Unknown`.
     fn opaque_atom(&mut self, side: &HNode, rel: Rel, c: Rat, why: &str, span: Span) -> Formula {
         match self.intern_opaque_scalar(side) {
-            Some(q) => self.atom_of(BTreeMap::from([(q, Rat::one())]), rel, c),
+            Some(q) => {
+                let a = self.atom_of(BTreeMap::from([(q, Rat::one())]), rel, c);
+                // The opaque scalar itself carries the definedness of its
+                // whole body: the interpreter cannot produce a value for it
+                // without producing one for every leaf underneath.
+                self.guard_presence(&[q], a)
+            }
             None => self.unknown(span, format!("comparison is not linear arithmetic: {why}")),
         }
     }
@@ -1848,10 +1935,13 @@ impl Encoder<'_> {
         match self.lin_guarded(node) {
             Ok(l) => {
                 let k = Self::at_edge(mode, &c - &l.k);
-                if let Some(f) = self.try_comb_existence(&l.terms, rel, &k, span) {
-                    return f;
-                }
-                self.atom_of(l.terms, rel, k)
+                let mentioned = l.mentioned.clone();
+                let leaf = if let Some(f) = self.try_comb_existence(&l.terms, rel, &k, span) {
+                    f
+                } else {
+                    self.atom_of(l.terms, rel, k)
+                };
+                self.guard_presence(&mentioned, leaf)
             }
             Err(LinErr::NonFinite) => Formula::False,
             Err(LinErr::BadLiteral) => {
@@ -1895,6 +1985,12 @@ impl Encoder<'_> {
             Ok(v) => v,
             Err(e) => return self.lin_err(e, "ratio denominator is not linear", span),
         };
+        // Both legs are evaluated before the division, so the cut needs
+        // every quantity either side mentions. Hoisted ABOVE the two-branch
+        // disjunction: inside it the presence literals would leave the
+        // And-spine and the interval layer would lose them (spec §3.5).
+        let mut mentioned = l.mentioned.clone();
+        mentioned.extend(d.mentioned.iter().copied());
         if d.terms.is_empty() {
             if d.k.is_zero() {
                 return Formula::False; // §4.4
@@ -1903,7 +1999,8 @@ impl Encoder<'_> {
             let e = l.sub(&cd);
             let rel = if d.k.is_negative() { rel.flipped() } else { rel };
             let k = -&e.k;
-            return self.atom_of(e.terms, rel, k);
+            let a = self.atom_of(e.terms, rel, k);
+            return self.guard_presence(&mentioned, a);
         }
         let cd = d.scale(&c);
         let e = l.sub(&cd);
@@ -1913,7 +2010,8 @@ impl Encoder<'_> {
         let e_pos = self.atom_of(e.terms.clone(), rel, neg_e_k.clone());
         let d_neg = self.atom_of(d.terms, Rel::Lt, neg_d_k);
         let e_neg = self.atom_of(e.terms, rel.flipped(), neg_e_k);
-        forr(vec![fand(vec![d_pos, e_pos]), fand(vec![d_neg, e_neg])])
+        let branches = forr(vec![fand(vec![d_pos, e_pos]), fand(vec![d_neg, e_neg])]);
+        self.guard_presence(&mentioned, branches)
     }
 
     /// Exact absolute-value expansion against a constant:
@@ -1933,11 +2031,20 @@ impl Encoder<'_> {
     ) -> Formula {
         // `|E| >= 0` always — fold against a negative constant before any
         // flatten attempt (inner may be opaque / non-linear).
+        //
+        // The `True` arm is the one place a comparison over a possibly-absent
+        // quantity used to vanish ENTIRELY: `abs(dxy(eles[0])) >= -5` folded
+        // to `true`, so `size(eles) >= 1` was "proven" a subset of it, while
+        // the interpreter rejects a dxy-less electron. `|x| > -1` is NOT
+        // vacuous over a partial valuation — it is exactly the definedness of
+        // `x` (SPEC_PRESENCE_MODEL §3.5's `P(q̄)` rule). The quantities come
+        // from the subtree, since nothing was linearized.
         if c.is_negative() {
-            return match rel {
+            let folded = match rel {
                 Rel::Lt | Rel::Le | Rel::Eq => Formula::False,
                 Rel::Gt | Rel::Ge | Rel::Ne => Formula::True,
             };
+            return self.guard_presence_node(inner, folded);
         }
         let e = match self.lin(inner) {
             Ok(v) => v,
@@ -1959,7 +2066,8 @@ impl Encoder<'_> {
         let lo = &neg_c - &e.k;
         let upper = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, hi.clone());
         let lower = |enc: &mut Self, r: Rel| enc.atom_of(e.terms.clone(), r, lo.clone());
-        match rel {
+        let mentioned = e.mentioned.clone();
+        let expansion = match rel {
             Rel::Lt => {
                 let parts = vec![upper(self, Rel::Lt), lower(self, Rel::Gt)];
                 fand(parts)
@@ -1984,7 +2092,9 @@ impl Encoder<'_> {
                 let parts = vec![upper(self, Rel::Ne), lower(self, Rel::Ne)];
                 fand(parts)
             }
-        }
+        };
+        // Hoisted above the And/Or for the same spine reason as `ratio`.
+        self.guard_presence(&mentioned, expansion)
     }
 
     /// `x [] lo hi ⇔ lo ≤ x ∧ x ≤ hi`; `x ][ lo hi ⇔ x ≤ lo ∨ x ≥ hi`
@@ -2013,15 +2123,17 @@ impl Encoder<'_> {
                 };
                 let lo_bound = self.pattern(expr, lo_rel, lo, &why, span);
                 let hi_bound = self.pattern(expr, hi_rel, hi, &why, span);
-                return match kind {
+                let band = match kind {
                     BandKind::In => fand(vec![lo_bound, hi_bound]),
                     BandKind::Out => forr(vec![lo_bound, hi_bound]),
                 };
+                return self.guard_presence_node(expr, band);
             }
             Err(err) => return self.lin_err(err, "band expression is not linear", span),
         };
         let lo_k = &lo - &e.k;
         let hi_k = &hi - &e.k;
+        let mentioned = e.mentioned.clone();
         let lo_bound = self.atom_of(
             e.terms.clone(),
             if kind == BandKind::In {
@@ -2040,10 +2152,14 @@ impl Encoder<'_> {
             },
             hi_k,
         );
-        match kind {
+        // `In` is already a conjunction, but `Out` is a DISJUNCTION over one
+        // shared term map: hoisting `P` above it keeps the presence bound on
+        // the And-spine, which the interval layer reads (spec §3.5).
+        let band = match kind {
             BandKind::In => fand(vec![lo_bound, hi_bound]),
             BandKind::Out => forr(vec![lo_bound, hi_bound]),
-        }
+        };
+        self.guard_presence(&mentioned, band)
     }
 
     fn lin_err(&mut self, e: LinErr, what: &str, span: Span) -> Formula {

@@ -186,18 +186,21 @@ fn reject_of_and_band_proves_disjoint_de_morgan() {
 }
 
 #[test]
-fn not_tag_complementary_regions_fail_closed_pending_definedness() {
-    // `select BTag==1` vs `select not BTag==1` IS truly disjoint, even over
-    // events with an absent btag (complements of ONE predicate — absence
-    // soft-falses the first and admits the second). But the absent-property
-    // guard (2026-07-25) degrades any negation over a possibly-absent
-    // quantity to Unknown, because the same negation shape ALSO fabricated
-    // a false PROVEN DISJOINT (complementary rejects both admitting a
-    // property-less event). The guard cannot see that this pair negates
-    // the very predicate it selects, so the sound-but-unprovable pin is
-    // the fail-closed POSSIBLY. Definedness (presence) modeling —
-    // SOUNDNESS_PROOF_2026-07-25 §8 item 1 — re-proves this pair exactly;
-    // restore the PROVEN DISJOINT assertion when it lands.
+fn not_tag_complementary_regions_are_disjoint() {
+    // R2 (SPEC_PRESENCE_MODEL §9 step 6). `select BTag==1` vs
+    // `select not BTag==1` IS truly disjoint, INCLUDING over events with an
+    // absent btag: they are complements of ONE predicate, and absence
+    // soft-falses the first while admitting the second.
+    //
+    // Phase A could not prove it. Its `guarded_not` degraded every negation
+    // over a possibly-absent quantity to a Dual hedge, because the same
+    // negation shape ALSO fabricated a false PROVEN DISJOINT (two
+    // COMPLEMENTARY REJECTS, both of which a property-less event satisfies);
+    // the hedge could not tell the two apart, so this pair was pinned
+    // fail-closed at POSSIBLY. The presence model tells them apart at the
+    // leaf: `p ≥ 1 ∧ btag = 1` vs its De Morgan `p < 1 ∨ btag ≠ 1`, whose
+    // conjunction is UNSAT for either value of `p`, while two complementary
+    // rejects share the `p < 1` disjunct and stay satisfiable.
     let r = run("not_tag.adl");
     let p = pair(&r, "SR_btag", "SR_nobtag");
     assert_ne!(
@@ -206,13 +209,47 @@ fn not_tag_complementary_regions_fail_closed_pending_definedness() {
         "complements must never validate an overlap: {}",
         p.reason
     );
-    assert_eq!(
+    assert_eq!(p.kind, VerdictKind::ProvenDisjoint, "{}", p.reason);
+}
+
+/// The other half of the R2 story, and the one that must NEVER become
+/// provable: two COMPLEMENTARY REJECTS over the same possibly-absent
+/// property both accept a property-less event, so they overlap. Phase A's
+/// hedge was introduced because this shipped as PROVEN DISJOINT through the
+/// interval fast path; under the presence model both regions' encodings
+/// contain the `p < 1` disjunct, which is a shared model.
+#[test]
+fn complementary_rejects_over_an_absent_property_are_not_disjoint() {
+    let src = "\
+object jets
+  take Jet
+
+region RA
+  reject BTag(jets[0]) >= 1
+
+region RB
+  reject BTag(jets[0]) < 1
+";
+    let ext = ExtDecls::legacy();
+    let opts = AnalysisOptions {
+        solver: SolverChoice::Auto,
+        timeout: Duration::from_secs(20),
+        fail_on: FailOn::default(),
+        reconcile: false,
+        sample_gate: 64,
+        refute_gate: true,
+        certify: true,
+        combine: false,
+    };
+    let r = analyze_source(src, "complementary_rejects.adl", &ext, &opts).expect("parses");
+    let p = pair(&r, "RA", "RB");
+    assert_ne!(
         p.kind,
-        VerdictKind::PossiblyOverlapping,
-        "expected the fail-closed POSSIBLY while the absent-property guard \
-         is in force (flip back to ProvenDisjoint under presence modeling): {}",
+        VerdictKind::ProvenDisjoint,
+        "a btag-less jet is In BOTH regions: {}",
         p.reason
     );
+    assert_ne!(p.kind, VerdictKind::CandidateDisjoint, "{}", p.reason);
 }
 
 #[test]

@@ -1,17 +1,19 @@
-# GOLDEN RCleaned ROverlapReq POSSIBLY
+# GOLDEN RCleaned ROverlapReq DISJOINT
 # GROUND-TRUTH: the cleaning idiom. reject dR<0.4 fires exactly when select dR<0.4 passes
 #   (min pairwise dR), so the two regions are complementary on that predicate -> TRULY
 #   DISJOINT, even over events with absent eta/phi (a soft-false dR<0.4 excludes
 #   ROverlapReq and admits RCleaned - complements of ONE predicate cannot both hold).
 #   In ROverlapReq: {jet eta0 phi0, ele eta0 phi0.1}=dR0.1. In RCleaned: same jet, ele eta2 (dR2).
 #
-#   The pin is the fail-closed POSSIBLY: the absent-property guard (2026-07-25)
-#   degrades any negation over a possibly-absent quantity to Unknown, because in
-#   general `reject q < k` HOLDS on absence while its classical encoding excludes
-#   it (two complementary rejects fabricated a PROVEN DISJOINT). The guard cannot
-#   see that THIS pair negates the same predicate it selects. Definedness
-#   (presence) modeling - SOUNDNESS_PROOF_2026-07-25 s8 item 1 - re-proves this
-#   pair exactly; flip the pin back to DISJOINT when it lands.
+#   R1, restored 2026-07-31 by the presence model (SPEC_PRESENCE_MODEL). From
+#   2026-07-25 this was pinned fail-closed at POSSIBLY: the interim
+#   absent-property guard hedged EVERY negation over a possibly-absent quantity,
+#   because `reject q < k` HOLDS on absence while its classical encoding excludes
+#   it, and two COMPLEMENTARY REJECTS in that shape fabricated a PROVEN DISJOINT.
+#   The presence model says it at the leaf instead of hedging: RCleaned encodes
+#   `p < 1 or dR >= 0.4`, ROverlapReq `p >= 1 and dR < 0.4`, whose conjunction is
+#   UNSAT either way `p` falls - while two complementary rejects keep the shared
+#   `p < 1` model and stay POSSIBLY, which is correct.
 
 object jets
   take Jet

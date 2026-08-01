@@ -1,0 +1,31 @@
+# GOLDEN RA RB OVERLAPPING
+# GROUND-TRUTH: N1 of SPEC_PRESENCE_MODEL. `reject BTag(jets[0]) >= 1` and
+#   `reject BTag(jets[0]) < 1` are complementary REJECTS over a possibly-absent
+#   property. A jet with no `btag` key soft-falses BOTH inner comparisons, so
+#   BOTH rejects hold and the event is In BOTH regions -> they genuinely
+#   OVERLAP, and for NO other event (no real number is both < 1 and >= 1).
+#
+#   The witness is therefore an ABSENCE event, and the realizer now builds one:
+#   the model reads `defined(jets[0].btag) = 0`, the realizer OMITS the key,
+#   and the interpreter accepts the result into both regions. Before the
+#   presence model the realizer wrote a fixed property set unconditionally, so
+#   this witness was literally unrepresentable.
+#
+#   THIS PIN MUST NEVER BECOME DISJOINT. Until 2026-07-25 it WAS shipped as
+#   PROVEN DISJOINT, solver-less, through the interval fast path, with
+#   `refutations: 0` - the first known shipping false PROVEN since the
+#   merge-path fixes. Under the presence model both regions encode the shared
+#   disjunct `p_btag < 1`, so a common model always exists and no refutation
+#   is derivable. The pt cut is what makes `jets[0]` real for the realizer.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RA
+  select size(jets) >= 1
+  reject BTag(jets[0]) >= 1
+
+region RB
+  select size(jets) >= 1
+  reject BTag(jets[0]) < 1

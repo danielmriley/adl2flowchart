@@ -720,8 +720,13 @@ impl Engine<'_> {
             .intersection(&rb.quantities)
             .copied()
             .collect();
+        // A presence indicator is not a DIMENSION the two regions cut on —
+        // it is the bookkeeping that says the dimension has a value. Listing
+        // `defined(jets[0].pt)` beside `MET.pt` would tell the reader the
+        // regions share a physics variable they do not.
         let shared_dimensions: Vec<String> = shared
             .iter()
+            .filter(|&&q| !matches!(self.hir.table.quantity(q), Quantity::Present(_)))
             .map(|&q| quantity_label(self.hir, q))
             .collect();
         let exact = ra.exact() && rb.exact();
@@ -1095,6 +1100,28 @@ impl Engine<'_> {
                 *e = e.max(need);
             }
         };
+        // Collections an OPAQUE REDUCER iterates (`sum(jets.pT)` interns as
+        // `reduce.sum(jets, …)`). The realizer cannot make an event whose
+        // reduction equals the model's value for such a quantity — it has no
+        // reference interpretation on this side — so validation of a
+        // `sum ⋈ k` cut rests on the realized element set alone. Within the
+        // model's OWN bounds a bigger all-pass collection satisfies strictly
+        // more `size >= n` cuts and makes every non-negative sum larger, so
+        // "as many elements as the realizer will build" is the model most
+        // likely to survive re-validation. Wished, never required: on UNSAT
+        // the layer is dropped and the plain model is used, so this changes
+        // WHICH legal model is realized and nothing about which models are
+        // legal.
+        let mut bulk_hints: BTreeSet<QuantityId> = BTreeSet::new();
+        for &q in mentioned {
+            if let Quantity::ExternalFn { name, args } = self.hir.table.quantity(q)
+                && self.hir.symbols.key(*name).starts_with("reduce.")
+                && let Some(adl_sema::QuantityArg::Collection(c)) = args.first()
+                && let Some(sq) = lookup_size(self.hir, *c)
+            {
+                bulk_hints.insert(sq);
+            }
+        }
         for &q in mentioned {
             match self.hir.table.quantity(q) {
                 Quantity::ElemProp {
@@ -1174,6 +1201,16 @@ impl Engine<'_> {
                 rat(DPHI_WISH_BOUND),
             )));
         }
+        let bulk_atoms: Vec<QFormula> = bulk_hints
+            .iter()
+            .map(|&sq| {
+                QFormula::Atom(adl_formula::LinAtom::single(
+                    sq,
+                    adl_formula::Rel::Ge,
+                    rat(crate::witness::MAX_REALIZED_F),
+                ))
+            })
+            .collect();
         // G7: route each layered check through note_check_result so a
         // spawn/error Unknown here still trips solver_degraded.
         let try_with = |engine: &mut Self, atoms: &[&[QFormula]]| -> Option<Model> {
@@ -1200,7 +1237,9 @@ impl Engine<'_> {
         // overlap may exist only on a boundary), then the existence
         // hints (a model may legitimately need a small size), the
         // realizer caps last, the raw model as the floor.
-        try_with(self, &[&zero_atoms, interior, &lo_atoms, &hi_atoms])
+        try_with(self, &[&zero_atoms, interior, &lo_atoms, &hi_atoms, &bulk_atoms])
+            .or_else(|| try_with(self, &[interior, &lo_atoms, &hi_atoms, &bulk_atoms]))
+            .or_else(|| try_with(self, &[&zero_atoms, interior, &lo_atoms, &hi_atoms]))
             .or_else(|| try_with(self, &[interior, &lo_atoms, &hi_atoms]))
             .or_else(|| try_with(self, &[&lo_atoms, &hi_atoms]))
             .or_else(|| try_with(self, &[&hi_atoms]))

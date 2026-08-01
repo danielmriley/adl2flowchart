@@ -1,0 +1,26 @@
+# GOLDEN RA RB OVERLAPPING
+# GOLDEN-SUBSET RA RB NO
+# GROUND-TRUTH: P1 of SPEC_PRESENCE_MODEL, the absent-property POSITIVE arm.
+#   TAG asserts `btag(jets[0]) in {0,1}` for an existing element, which entails
+#   `btag >= 0`; before the presence model that discharged RB's cut outright and
+#   the engine shipped `subset RA within RB`. It is FALSE: an event with two
+#   btag-less jets is In RA and, because the interpreter reads the missing
+#   property as a decidable soft-false, is NOT in RB.
+#
+#   Verified by running that event through `smash2 run` (RA PASS, RB fail).
+#   Under the presence model RB encodes `p_btag >= 1 and btag >= 0`; no axiom
+#   mentions `p`, so `p < 1` is always available and the subset is
+#   UNDERIVABLE - not merely gate-withdrawn. The `refutations: 0` check in the
+#   harness is what makes that distinction a test rather than a claim.
+#   The pair itself DOES overlap (two jets that DO carry btag are in both), and
+#   that is proven with a validated witness - the subset is the false part.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RA
+  select size(jets) >= 2
+
+region RB
+  select BTag(jets[0]) >= 0

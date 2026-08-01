@@ -1,0 +1,22 @@
+# GOLDEN RA RB POSSIBLY
+# GOLDEN-SUBSET RA RB NO
+# GROUND-TRUTH: the constant-fold twin of presence_02. `abs(E) >= -5` is true
+#   of every real E, so the encoder folded the whole comparison to `true`
+#   BEFORE linearizing - and a region whose encoding is `true` is a superset of
+#   everything. It is FALSE for the same reason: `abs(dxy(eles[0])) >= -5` is a
+#   comparison, and a comparison over an absent property is a decidable FALSE,
+#   so an electron with no `dxy` is In RA and not in RB.
+#
+#   Under the presence model the fold produces the PRESENCE LITERAL rather than
+#   `true`: `|x| > k` for negative k IS exactly the definedness of x. The
+#   quantities come from the subtree, since nothing was linearized.
+
+object eles
+  take Ele
+  select pt > 20
+
+region RA
+  select size(eles) >= 1
+
+region RB
+  select abs(dxy(eles[0])) >= -5

@@ -1,0 +1,30 @@
+# GOLDEN RA RB DISJOINT
+# GOLDEN-NOSOLVER RA RB POSSIBLY
+# GROUND-TRUTH: presence itself carries the disjointness, and it cannot be
+#   wrong: an event either has a value for a quantity or it does not.
+#   RA requires `btag(jets[0])` to have a value (any comparison over it does).
+#   RB's reject HOLDS only when it does not, because a present btag is either
+#   0 or 1 and `>= 0` then fails the reject. So the pair is disjoint on
+#   DEFINEDNESS alone, with the tag values irrelevant.
+#
+#   The solver-less pin records a DEVIATION from SPEC_PRESENCE_MODEL s7(a),
+#   which expected this class on the interval fast path ("one region requires
+#   the quantity present, the other requires it absent" as two bounds on one
+#   presence quantity). That shape is unreachable: ADL has no way to SELECT
+#   absence, so `p < 1` only ever arrives as one disjunct of a negated leaf,
+#   and the interval spine skips disjunctions by construction. RB's encoding
+#   is `p < 1 or btag < 0`, and killing the second disjunct needs TAG - i.e.
+#   the solver. Capping at POSSIBLY without one is the correct fail-closed
+#   behaviour, not a regression.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RA
+  select size(jets) >= 1
+  select BTag(jets[0]) >= 0
+
+region RB
+  select size(jets) >= 1
+  reject BTag(jets[0]) >= 0

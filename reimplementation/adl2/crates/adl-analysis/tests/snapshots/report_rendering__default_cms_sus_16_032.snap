@@ -22,12 +22,12 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   noncompressedHT1  27/27   yes
   noncompressedHT2  27/27   yes
   noncompressedHT3  26/26   yes
-  compressed        23/23   no     1 dual-encoded leaf
-  compressednb1     25/25   no     1 dual-encoded leaf
-  compressednb2     24/24   no     1 dual-encoded leaf
-  compressednc1     25/25   no     1 dual-encoded leaf
-  compressednc2     24/24   no     1 dual-encoded leaf
-  compressednbnc0   24/24   no     1 dual-encoded leaf
+  compressed        24/24   yes
+  compressednb1     26/26   yes
+  compressednb2     25/25   yes
+  compressednc1     26/26   yes
+  compressednc2     25/25   yes
+  compressednbnc0   25/25   yes
 
 == verdict matrix ==
   D disjoint   O overlapping   s subset (overlap)   c candidate (unvalidated)   ? possibly   U unknown   E empty region
@@ -43,7 +43,7 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   10 compressednbnc0   D  D  D  D  ?  D  D  D  D  ·
                        1  2  3  4  5  6  7  8  9
 
-== pairwise (45 pairs, 14 groups) ==
+== pairwise (45 pairs, 15 groups) ==
   3 pairs PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together (witness validated by interpreter); subset: second within first [gate 435/435 · probes 90] (in every pair)
     noncompressed vs noncompressedHT{1,2,3}
   24 pairs PROVEN DISJOINT [certified · gate 435/435 · probes 90] — jets[0].btag: [1, 1] vs [0, 0]
@@ -53,14 +53,14 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
   noncompressedHT2 vs noncompressedHT3: PROVEN DISJOINT [certified · gate 435/435 · probes 90] — core: noncompressedHT2 line 88 ∧ noncompressedHT3 line 93
   4 pairs CANDIDATE OVERLAPPING [witness unvalidated] — a joint model exists but rests on an opaque quantity the interpreter cannot decide, so the witness is a candidate, not a proof (a model exists in the per-event scalar fragment; opaque external-function values and padded out-of-range element variables are free — the witness is a candidate, not a simulated event); the second region depends on an opaque quantity (external function `pt` has no reference interpretation); subset: second within first [gate 435/435 · probes 90] (in every pair)
     compressed vs compressedn{b1,b2,c1,c2}
-  compressed vs compressednbnc0: POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in region compressednbnc0 (stmt 1 fails); event: 2 JET, MET.ptof=250.37500095367432, JET[0].ptof=100.12500095367432, JET[0].btag=0 (summarized; --explain for the full event)); subset: compressednbnc0 within compressed [gate 435/435 · probes 90]
+  compressed vs compressednbnc0: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region compressednbnc0 (stmt 1 fails); event: 2 JET, MET.ptof=250.031250923872, JET[0].ptof=100.031250923872, JET[0].btag=0 (summarized; --explain for the full event)); subset: compressednbnc0 within compressed [gate 435/435 · probes 90]
   2 pairs CANDIDATE OVERLAPPING [witness unvalidated] — a joint model exists but rests on an opaque quantity the interpreter cannot decide, so the witness is a candidate, not a proof (a model exists in the per-event scalar fragment; opaque external-function values and padded out-of-range element variables are free — the witness is a candidate, not a simulated event); the second region depends on an opaque quantity (external function `pt` has no reference interpretation); subset: first within second [gate 435/435 · probes 90] (in every pair)
     compressednb1–compressednb2, compressednc1–compressednc2
-  2 pairs POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in the first region (stmt 1 fails; stmt 2 errors: external function `ht` has no reference interpretation); event: 2 JET, MET.ptof=250.12500095367432, JET[0].ptof=100.12500095367432, JET[0].btag=0 (summarized; --explain for the full event))
+  2 pairs POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in the first region (stmt 1 fails; stmt 2 errors: external function `ht` has no reference interpretation); event: 2 JET, MET.ptof=250.10546960309148, JET[0].ptof=100.10546960309148, JET[0].btag=0 (summarized; --explain for the full event))
     compressednb1 vs compressednc{1,2}
   compressednb1 vs compressednbnc0: PROVEN DISJOINT [certified · gate 435/435 · probes 90] — core: compressednb1 line 111 ∧ compressednbnc0 line 146 (+1 axioms)
-  2 pairs POSSIBLY OVERLAPPING — under-approximations intersect, but no witness could be realized through the interpreter (the region depends on an opaque quantity); capped at POSSIBLY (interpreter rejects the witness event in the first region (stmt 1 fails); event: 2 JET, MET.ptof=250.12500095367432, JET[0].ptof=100.12500095367432, JET[0].btag=0 (summarized; --explain for the full event))
-    compressednb2 vs compressednc{1,2}
+  compressednb2 vs compressednc1: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region compressednb2 (stmt 1 fails); event: 2 JET, MET.ptof=250.10546960309148, JET[0].ptof=100.10546960309148, JET[0].btag=0 (summarized; --explain for the full event))
+  compressednb2 vs compressednc2: POSSIBLY OVERLAPPING — overlap model found, but witness re-validation failed; downgraded to POSSIBLY (interpreter rejects the witness event in region compressednc2 (stmt 1 fails); event: 3 JET, MET.ptof=250.10546960309148, JET[0].ptof=100.10546960309148, JET[0].btag=0 (summarized; --explain for the full event))
   compressednb2 vs compressednbnc0: PROVEN DISJOINT [certified · gate 435/435 · probes 90] — core: compressednb2 line 117 ∧ compressednbnc0 line 146 (+1 axioms)
   compressednc1 vs compressednbnc0: PROVEN DISJOINT [certified · gate 435/435 · probes 90] — core: compressednc1 line 127 ∧ compressednbnc0 line 146 (+1 axioms)
   compressednc2 vs compressednbnc0: PROVEN DISJOINT [certified · gate 435/435 · probes 90] — core: compressednc2 line 133 ∧ compressednbnc0 line 146 (+1 axioms)
@@ -75,5 +75,7 @@ ADL2 analysis report — CMS-SUS-16-032.adl (solver: <backend>)
 
 == axioms used ==
   ORD×12, SZ0×9, SUB×5, UNI×3, NNEG×9, TAG×4, EPRED×4, IDOM×4
+
+note: 3 fail-closed notes (a claim was withheld or capped; no verdict was contradicted) — see --explain or --json
 
 summary: 45 pairs — 30 proven disjoint, 4 proven overlapping, 6 candidate overlapping, 5 possibly overlapping, 0 unknown

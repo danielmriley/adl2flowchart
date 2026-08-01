@@ -6,7 +6,19 @@
 //! ```text
 //! # GOLDEN <RegionA> <RegionB> DISJOINT|OVERLAPPING|POSSIBLY
 //! # GOLDEN-EMPTY <Region>
+//! # GOLDEN-SUBSET <Sub> <Sup> YES|NO
+//! # GOLDEN-NOSOLVER <RegionA> <RegionB> DISJOINT|OVERLAPPING|POSSIBLY
 //! ```
+//!
+//! `GOLDEN-SUBSET ... NO` is how a file pins that a claim must stay
+//! UNDERIVABLE — the shape a false-PROVEN regression would take. It asserts
+//! prevention, not gate reliance: the run has its gates on, so a claim the
+//! gates merely withdrew would still fail the pin's intent, and the
+//! accompanying `refutations` check below states that no gate fired.
+//!
+//! `GOLDEN-NOSOLVER` re-runs the same file with the solver DISABLED, which
+//! pins a verdict to the interval fast path alone (`SolverChoice::None`
+//! caps everything else at POSSIBLY).
 //!
 //! A file may carry several header lines (e.g. a three-region chain). For
 //! each one we run the full analysis (solver required) and assert the
@@ -42,6 +54,8 @@ fn golden_dir() -> PathBuf {
 enum Pin {
     Pair { a: String, b: String, kind: VerdictKind },
     Empty { region: String },
+    Subset { sub: String, sup: String, claimed: bool },
+    NoSolver { a: String, b: String, kind: VerdictKind },
 }
 
 fn expected_kind(tok: &str) -> VerdictKind {
@@ -64,6 +78,28 @@ fn parse_pins(src: &str, file: &str) -> Vec<Pin> {
                 panic!("{file}: malformed GOLDEN-EMPTY line: {line:?}")
             });
             pins.push(Pin::Empty { region: region.to_owned() });
+        } else if let Some(rest) = line.strip_prefix("# GOLDEN-SUBSET ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            assert!(
+                parts.len() == 3 && (parts[2] == "YES" || parts[2] == "NO"),
+                "{file}: GOLDEN-SUBSET needs `<Sub> <Sup> YES|NO`: {line:?}"
+            );
+            pins.push(Pin::Subset {
+                sub: parts[0].to_owned(),
+                sup: parts[1].to_owned(),
+                claimed: parts[2] == "YES",
+            });
+        } else if let Some(rest) = line.strip_prefix("# GOLDEN-NOSOLVER ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            assert!(
+                parts.len() == 3,
+                "{file}: GOLDEN-NOSOLVER needs `<A> <B> <KIND>`: {line:?}"
+            );
+            pins.push(Pin::NoSolver {
+                a: parts[0].to_owned(),
+                b: parts[1].to_owned(),
+                kind: expected_kind(parts[2]),
+            });
         } else if let Some(rest) = line.strip_prefix("# GOLDEN ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
             assert!(
@@ -94,6 +130,8 @@ fn golden_corpus_matches_pinned_verdicts() {
     let ext = ExtDecls::legacy();
     let mut checked_pairs = 0usize;
     let mut checked_empty = 0usize;
+    let mut checked_subset = 0usize;
+    let mut checked_nosolver = 0usize;
     let mut solver_seen = false;
     let mut failures: Vec<String> = Vec::new();
 
@@ -144,7 +182,66 @@ fn golden_corpus_matches_pinned_verdicts() {
                         Some(_) => checked_empty += 1,
                     }
                 }
+                // Prevention, not gate reliance: the claim must be
+                // UNDERIVABLE, and the run's own refutation counters (checked
+                // below) say the gates did not have to withdraw it.
+                Pin::Subset { sub, sup, claimed } => {
+                    let pr = report
+                        .pairwise
+                        .iter()
+                        .find(|p| (p.a == sub && p.b == sup) || (p.a == sup && p.b == sub));
+                    match pr {
+                        None => failures.push(format!(
+                            "{file}: no pairwise report for ({sub}, {sup})"
+                        )),
+                        Some(p) => {
+                            let got = if p.a == sub { p.subset_a_in_b } else { p.subset_b_in_a };
+                            if got == claimed {
+                                checked_subset += 1;
+                            } else {
+                                failures.push(format!(
+                                    "{file}: subset {sub} within {sup} expected {claimed} \
+                                     got {got} — {}",
+                                    p.reason
+                                ));
+                            }
+                        }
+                    }
+                }
+                Pin::NoSolver { a, b, kind } => {
+                    let mut o = opts();
+                    o.solver = SolverChoice::NoSolver;
+                    let r = analyze_source(&src, &file, &ext, &o)
+                        .unwrap_or_else(|e| panic!("{file} must resolve cleanly:\n{e}"));
+                    let pr = r
+                        .pairwise
+                        .iter()
+                        .find(|p| (p.a == a && p.b == b) || (p.a == b && p.b == a));
+                    match pr {
+                        None => failures.push(format!(
+                            "{file}: no solver-less pairwise report for ({a}, {b})"
+                        )),
+                        Some(p) if p.kind != kind => failures.push(format!(
+                            "{file}: solver-less ({a}, {b}) expected {} got {} — {}",
+                            kind.human(),
+                            p.kind.human(),
+                            p.reason
+                        )),
+                        Some(_) => checked_nosolver += 1,
+                    }
+                }
             }
+        }
+        // A golden file must never need a gate: the pins assert what the
+        // DERIVATION does, and a refutation would mean an encoder/axiom fact
+        // is false on a real event.
+        let sampled = report.sampling.map_or(0, |s| s.refutations);
+        let probed = report.refute.map_or(0, |r| r.refutations);
+        if sampled > 0 || probed > 0 {
+            failures.push(format!(
+                "{file}: gates refuted a claim ({sampled} sampling, {probed} adversarial) — \
+                 a golden file must be right by derivation"
+            ));
         }
     }
 
@@ -158,6 +255,12 @@ fn golden_corpus_matches_pinned_verdicts() {
         failures.len(),
         failures.join("\n")
     );
-    eprintln!("golden: {checked_pairs} pair pins + {checked_empty} empty pins matched");
-    assert!(checked_pairs + checked_empty > 0, "golden suite checked nothing");
+    eprintln!(
+        "golden: {checked_pairs} pair + {checked_empty} empty + {checked_subset} subset + \
+         {checked_nosolver} solver-less pins matched"
+    );
+    assert!(
+        checked_pairs + checked_empty + checked_subset + checked_nosolver > 0,
+        "golden suite checked nothing"
+    );
 }

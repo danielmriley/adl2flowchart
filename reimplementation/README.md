@@ -120,7 +120,7 @@ covers, and what stays trusted around it, is spelled out in "Trust
 surface after certification" below). End-to-end validated on the real 20k-event T2tt Delphes sample
 against independent uproot/numpy oracles (see
 [`PIPELINE_REPORT.md`](../docs/archive/adl2/PIPELINE_REPORT.md)) — 894 tests across 80 suites, a
-139-file corpus (68 base + 59 pinned-verdict golden + 12 cross-file golden),
+146-file corpus (68 base + 66 pinned-verdict golden + 12 cross-file golden),
 the full legacy golden battery on both solver backends, a 100k-case
 property oracle against the interpreter, and a verdict-parity comparison
 against the legacy tool with zero legacy-better differences

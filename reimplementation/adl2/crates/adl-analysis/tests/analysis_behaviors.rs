@@ -772,8 +772,8 @@ fn corpus_runs_no_solver_analysis_deterministically() {
     files.sort();
     assert_eq!(
         files.len(),
-        145,
-        "shared corpus has 145 ADL files (68 base + 65 golden + 12 golden-cross)"
+        146,
+        "shared corpus has 146 ADL files (68 base + 66 golden + 12 golden-cross)"
     );
     let ext = ExtDecls::legacy();
     let mut analyzed = 0usize;
@@ -807,7 +807,7 @@ fn corpus_runs_no_solver_analysis_deterministically() {
         }
         analyzed += 1;
     }
-    assert_eq!(analyzed, 145);
+    assert_eq!(analyzed, 146);
 }
 
 fn walk(dir: &PathBuf) -> Vec<PathBuf> {

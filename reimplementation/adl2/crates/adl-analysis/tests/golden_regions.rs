@@ -8,6 +8,7 @@
 //! # GOLDEN-EMPTY <Region>
 //! # GOLDEN-SUBSET <Sub> <Sup> YES|NO
 //! # GOLDEN-NOSOLVER <RegionA> <RegionB> DISJOINT|OVERLAPPING|POSSIBLY
+//! # GOLDEN-COVERAGE <Region> PROVEN|NOT_PROVEN
 //! ```
 //!
 //! `GOLDEN-SUBSET ... NO` is how a file pins that a claim must stay
@@ -27,7 +28,7 @@
 //! here: these examples were hand-verified to be provable.
 
 use adl_analysis::{
-    AnalysisOptions, EmptyStatus, FailOn, SolverChoice, VerdictKind, analyze_source,
+    AnalysisOptions, CoverageStatus, EmptyStatus, FailOn, SolverChoice, VerdictKind, analyze_source,
 };
 use adl_sema::ExtDecls;
 use std::path::PathBuf;
@@ -55,6 +56,7 @@ enum Pin {
     Pair { a: String, b: String, kind: VerdictKind },
     Empty { region: String },
     Subset { sub: String, sup: String, claimed: bool },
+    Coverage { region: String, proven: bool },
     NoSolver { a: String, b: String, kind: VerdictKind },
 }
 
@@ -88,6 +90,16 @@ fn parse_pins(src: &str, file: &str) -> Vec<Pin> {
                 sub: parts[0].to_owned(),
                 sup: parts[1].to_owned(),
                 claimed: parts[2] == "YES",
+            });
+        } else if let Some(rest) = line.strip_prefix("# GOLDEN-COVERAGE ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            assert!(
+                parts.len() == 2 && (parts[1] == "PROVEN" || parts[1] == "NOT_PROVEN"),
+                "{file}: GOLDEN-COVERAGE needs `<Region> PROVEN|NOT_PROVEN`: {line:?}"
+            );
+            pins.push(Pin::Coverage {
+                region: parts[0].to_owned(),
+                proven: parts[1] == "PROVEN",
             });
         } else if let Some(rest) = line.strip_prefix("# GOLDEN-NOSOLVER ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -132,6 +144,7 @@ fn golden_corpus_matches_pinned_verdicts() {
     let mut checked_empty = 0usize;
     let mut checked_subset = 0usize;
     let mut checked_nosolver = 0usize;
+    let mut checked_coverage = 0usize;
     let mut solver_seen = false;
     let mut failures: Vec<String> = Vec::new();
 
@@ -208,6 +221,27 @@ fn golden_corpus_matches_pinned_verdicts() {
                         }
                     }
                 }
+                // Bin coverage is the ONE proven tier with no post-hoc net
+                // (no sampling gate runs on bins), so a pin here is the only
+                // thing standing between a coverage claim and a user.
+                Pin::Coverage { region, proven } => {
+                    let bc = report.bin_checks.iter().find(|b| b.region == region);
+                    match bc {
+                        None => failures.push(format!("{file}: no bin check for {region}")),
+                        Some(b) => {
+                            let got = b.coverage == CoverageStatus::Proven;
+                            if got == proven {
+                                checked_coverage += 1;
+                            } else {
+                                failures.push(format!(
+                                    "{file}: coverage of {region} expected proven={proven} \
+                                     got {:?}",
+                                    b.coverage
+                                ));
+                            }
+                        }
+                    }
+                }
                 Pin::NoSolver { a, b, kind } => {
                     let mut o = opts();
                     o.solver = SolverChoice::NoSolver;
@@ -257,10 +291,10 @@ fn golden_corpus_matches_pinned_verdicts() {
     );
     eprintln!(
         "golden: {checked_pairs} pair + {checked_empty} empty + {checked_subset} subset + \
-         {checked_nosolver} solver-less pins matched"
+         {checked_nosolver} solver-less + {checked_coverage} coverage pins matched"
     );
     assert!(
-        checked_pairs + checked_empty + checked_subset + checked_nosolver > 0,
+        checked_pairs + checked_empty + checked_subset + checked_nosolver + checked_coverage > 0,
         "golden suite checked nothing"
     );
 }

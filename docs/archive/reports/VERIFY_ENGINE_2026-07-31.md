@@ -187,11 +187,15 @@ does not vouch for.
 The **absent-property seam is closed** (Phase B, 2026-08-01): presence
 indicators make definedness a conjunct of the formula instead of a premise
 about the event, the guarded-negation hedge is deleted, and the withdrawn
-complement-of-one-predicate proofs returned. Five live false claims died
+complement-of-one-predicate proofs returned. Six live false claims died
 with it, each verified through `smash2 run` on its counterexample event
 before and after — the TAG-subset and `abs ⋈ negative` folds the previous
-edition of this section named, plus three found while validating the fix
-(`select HT >= 0`, `select MET >= 0`, and a cancelled `MET + HT − HT`).
+edition of this section named, plus four found while validating the fix
+(`select HT >= 0`, `select MET >= 0`, a cancelled `MET + HT − HT`, and a
+**bin-coverage** claim over `bins BTag(jets[0])`). The last is the one that
+mattered: bin coverage is the only proven tier with no post-hoc net, so
+nothing else stood between it and a user, and the gap witness now NAMES the
+definedness it was missing.
 
 Validating it turned up a NEW seam of the SAME false-claim shape, still
 OPEN, one layer over: `size(C)` is treated as total, but materializing `C`

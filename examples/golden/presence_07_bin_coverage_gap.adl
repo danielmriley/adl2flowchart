@@ -1,0 +1,29 @@
+# GOLDEN-COVERAGE RA NOT_PROVEN
+# GROUND-TRUTH: kill case K9, and the most dangerous of the set — BIN
+#   COVERAGE is the one proven tier with NO post-hoc net (the sampling gate
+#   does not run on bins; SOUNDNESS_PROOF s8 item 3), so nothing else stood
+#   between this claim and a user.
+#
+#   `bins BTag(jets[0]) 0 1 2` gives bins [0,1) [1,2) [2,inf), with everything
+#   below 0 falling OUTSIDE every bin. Coverage asks whether every event In RA
+#   lands in SOME bin. Until 2026-08-01 the answer was "proven": TAG said
+#   btag in {0,1}, which entails btag >= 0, which fills the underflow.
+#
+#   It is FALSE. An event with one btag-less jet is In RA (`size(jets) >= 1`)
+#   and lands in NO bin -- `smash2 run` reports `bin=underflow` for it.
+#   Under the presence model the coverage query keeps the `defined` variable
+#   free and the gap witness NAMES it:
+#     coverage: not proven (gap witness: defined(jets[0].btag) = 0,
+#                           jets[0].btag = -1, size(jets) = 1)
+#   which is not just prevention but a readable explanation.
+#
+#   This pin must stay NOT_PROVEN. If it ever flips to PROVEN, a fact
+#   somewhere is claiming an absent property has a value.
+
+object jets
+  take Jet
+  select pt > 30
+
+region RA
+  select size(jets) >= 1
+  bins BTag(jets[0]) 0 1 2

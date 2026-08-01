@@ -420,8 +420,16 @@ the hardening list (§8).
      | K4 | `size(jets) >= 1` vs `select HT >= 0` | `subset` shipped (NNEG on an event scalar) |
      | K6 | `size(jets) >= 1` vs `select MET >= 0` | `subset` shipped (NNEG on MET) |
      | K7 | `features-num_09.adl`: `MET > 60` vs `MET + HT - HT > 50` | `subset` shipped (HT cancelled out of the atom) |
-     All five are now UNDERIVABLE with `refutations: 0` — prevention, not
-     gate reliance. K4/K6/K7 are a DEVIATION from the spec, which listed
+     | K9 | `select size(jets) >= 1` + `bins BTag(jets[0]) 0 1 2` | **`coverage proven`** shipped (TAG entails `btag >= 0`, filling the underflow) |
+     All are now UNDERIVABLE with `refutations: 0` — prevention, not gate
+     reliance. **K9 is the one that mattered most**: bin coverage is the
+     only proven tier with NO post-hoc net (§8 item 3 — the sampling gate
+     does not run on bins), so nothing else stood between that claim and a
+     user. An event with one btag-less jet is In the region and lands in NO
+     bin (`smash2 run` reports `bin=underflow`); the coverage query now
+     leaves the indicator free and the gap witness NAMES it
+     (`defined(jets[0].btag) = 0`), which is an explanation rather than
+     just a refusal. Pinned as `examples/golden/presence_07_*.adl`. K4/K6/K7 are a DEVIATION from the spec, which listed
      event scalars as total; the evidence is that they shipped, and that
      the gates provably cannot see them (the interpreter answers Unknown,
      never `false`, so a subset counterexample search can never fire).

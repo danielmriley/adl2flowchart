@@ -1,0 +1,30 @@
+# GOLDEN RA RB OVERLAPPING
+# GOLDEN-SUBSET RA RB NO
+# GROUND-TRUTH: the EPRES fail-closed recogniser, demonstrated rather than
+#   asserted. EPRES turns "this element is in the filtered collection" into
+#   "this property is PRESENT", which is a fact asserted into UNSAT proofs.
+#   It is sound only when a MISSING property makes the filter FALSE.
+#
+#   Here it does not. `not (dxy > 100)` HOLDS on an electron with no dxy —
+#   absence makes the inner comparison a decidable false, so the negation is
+#   true — and picky therefore KEEPS dxy-less electrons. If EPRES fired, the
+#   frame would carry `size(picky) > 0 => defined(picky[0].dxy)`, EPRED would
+#   add `dxy > 2`, and `subset RA within RB` would be PROVEN. It is FALSE:
+#   verified with `smash2 run` on an event with one dxy-less electron —
+#   RA PASS, RB fail.
+#
+#   `requires_present` refuses `Not` outright, so no EPRES instance is
+#   emitted and no subset is derivable. The companion pin
+#   presence_06 is the same file with the `not` removed, where EPRES DOES
+#   fire and the subset IS true — so this pair also proves the refusal is
+#   the only thing standing between the two.
+
+object picky
+  take Ele
+  select dxy > 2 or not (dxy > 100)
+
+region RA
+  select size(picky) >= 1
+
+region RB
+  select dxy(picky[0]) >= -1000

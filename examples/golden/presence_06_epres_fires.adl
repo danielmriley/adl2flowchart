@@ -1,0 +1,22 @@
+# GOLDEN RA RB OVERLAPPING
+# GOLDEN-SUBSET RA RB YES
+# GROUND-TRUTH: the companion of presence_05. With a filter that a missing
+#   dxy makes FALSE, membership in `picky` PROVES dxy present, so EPRES fires
+#   and `RA within RB` is derivable — and TRUE: every event with a picky
+#   electron has one whose dxy passed `> 2`, hence `>= -1000`. An electron
+#   with no dxy is In NEITHER region (it does not pass the filter), verified
+#   with `smash2 run`.
+#
+#   This is the precision half of the EPRES story: the guards Phase B put on
+#   ORD/IDOM/NNEG/TAG are discharged exactly here, by unit propagation, which
+#   is why guarding cost zero corpus proofs.
+
+object picky
+  take Ele
+  select dxy > 2
+
+region RA
+  select size(picky) >= 1
+
+region RB
+  select dxy(picky[0]) >= -1000

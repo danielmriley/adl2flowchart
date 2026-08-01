@@ -1256,6 +1256,14 @@ impl Engine<'_> {
     /// carry no rounding error, and fractional tightening would *change*
     /// their meaning (`size ≤ 1` ⇒ `size ≤ 0`), wrongly starving the
     /// interior layer.
+    ///
+    /// **Presence indicators are exempt for the same reason, and it is not
+    /// cosmetic**: an indicator is 0 or 1, PRES asserts `p ≤ 1`, so
+    /// tightening `p ≥ 1` to `p ≥ 1 + ε` makes the whole interior wish
+    /// UNSAT — the layered `refined_model` then falls back past its best
+    /// layer and returns a model the realizer cannot turn into a validating
+    /// event. (Measured: three CMS-SUS-16-033 overlaps lost exactly this way
+    /// when PRES landed.)
     fn tightened(&self, f: &QFormula) -> QFormula {
         match f {
             QFormula::True => QFormula::True,
@@ -1264,11 +1272,13 @@ impl Engine<'_> {
             QFormula::Or(v) => QFormula::Or(v.iter().map(|p| self.tightened(p)).collect()),
             QFormula::Atom(a) => {
                 use adl_formula::Rel;
-                let all_int = a
-                    .terms()
-                    .iter()
-                    .all(|&(_, q)| matches!(self.hir.table.quantity(q), Quantity::Size(_)));
-                if all_int {
+                let exact_grid = a.terms().iter().all(|&(_, q)| {
+                    matches!(
+                        self.hir.table.quantity(q),
+                        Quantity::Size(_) | Quantity::Present(_)
+                    )
+                });
+                if exact_grid {
                     return QFormula::Atom(a.clone());
                 }
                 let eps = rat(WITNESS_EPS);

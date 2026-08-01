@@ -24,6 +24,6 @@ ADL2 analysis report — reject_or_band.adl (solver: <backend>)
   SR_band vs SR_mid: PROVEN OVERLAPPING [witness validated] — cut sets satisfiable together (witness validated by interpreter); subset: SR_mid within SR_band [gate 150/150 · probes 90]
 
 == axioms used ==
-  NNEG×1
+  NNEG×1, PRES×1
 
 summary: 1 pair — 0 proven disjoint, 1 proven overlapping, 0 possibly overlapping, 0 unknown

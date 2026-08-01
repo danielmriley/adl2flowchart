@@ -160,8 +160,17 @@ fn quantity_values(
     for (q, node) in nodes {
         let v = match interp.eval_num(node, event) {
             Ok(NumOutcome::Value(v)) => v,
-            // Canonical pad-with-0 extension (missing elements/properties).
+            // JUNK, not a pad: since every element fact is presence-guarded
+            // (SPEC_PRESENCE_MODEL §4.1), the value of an absent quantity is
+            // unconstrained by every asserted formula — Lemma E — and the
+            // choice of 0 here is arbitrary. Before presence guarding this
+            // was a load-bearing PREMISE ("the canonical pad-with-0 extension
+            // satisfies the fact"), and it was false for ORD on an event
+            // whose leading element lacks `pt`.
             Ok(NumOutcome::NonValue(_)) => 0.0,
+            // Same for a missing event-level datum: the indicator is 0 and
+            // the fact is vacuous, so any value does.
+            Err(e) if e.is_missing_event_data() => 0.0,
             Err(e) => panic!("quantity {q:?} must evaluate or pad: {e}"),
         };
         vals.insert(*q, v);
@@ -214,8 +223,16 @@ fn every_axiom_holds_on_generated_physical_events() {
         assert!(used.contains(&id), "vocabulary must emit at least one {id}");
     }
 
-    let events = adl_difftest::toy_events(0xAD1_0001, 300, &ext).expect("generator events load");
+    let mut events =
+        adl_difftest::toy_events(0xAD1_0001, 300, &ext).expect("generator events load");
+    // I-5: the ABSENCE family (property-less elements, MET-less / HT-less /
+    // trigger-less events) is loader-valid, so it is inside the axioms'
+    // domain and every emitted instance — including the new PRES and PDEF
+    // families — must hold on it. This is the battery that would have caught
+    // the unguarded ORD instance on `[no-pt, pt=100]`.
+    events.extend(adl_interp::sample::battery(&ext, 96));
     check_all_hold(&hir, &ext, &axioms, &events);
+    assert!(events.len() > 380, "absence battery must be included");
 }
 
 #[test]
@@ -486,8 +503,10 @@ region SR
         .filter(|i| i.id == AxiomId::Nneg)
         .map(|i| i.description.as_str())
         .collect();
+    // The instance now carries its presence guard, so match on the FACT
+    // rather than the start of the description.
     assert!(
-        nneg.iter().any(|d| d.starts_with("pT(...)")),
+        nneg.iter().any(|d| d.contains("pT(...) >= 0")),
         "opaque pt-named external must get an NNEG instance: {nneg:?}"
     );
     assert!(

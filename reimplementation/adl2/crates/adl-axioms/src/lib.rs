@@ -71,6 +71,10 @@ pub enum AxiomId {
     /// directions proven — the two filtered collections select the same
     /// elements of a shared base).
     Xeq,
+    /// Domain of a presence indicator: `0 <= p <= 1`.
+    Pres,
+    /// Presence implies element existence: `p_{C[i].x} >= 1 => size(C) > i`.
+    Pdef,
 }
 
 impl AxiomId {
@@ -93,11 +97,13 @@ impl AxiomId {
             AxiomId::Trig => "TRIG",
             AxiomId::Xsub => "XSUB",
             AxiomId::Xeq => "XEQ",
+            AxiomId::Pres => "PRES",
+            AxiomId::Pdef => "PDEF",
         }
     }
 
     /// All catalog ids, in catalog order.
-    pub const ALL: [AxiomId; 16] = [
+    pub const ALL: [AxiomId; 18] = [
         AxiomId::Ord,
         AxiomId::Sz0,
         AxiomId::Sub,
@@ -114,6 +120,8 @@ impl AxiomId {
         AxiomId::Trig,
         AxiomId::Xsub,
         AxiomId::Xeq,
+        AxiomId::Pres,
+        AxiomId::Pdef,
     ];
 }
 
@@ -292,6 +300,32 @@ pub fn catalog() -> &'static [CatalogEntry] {
                             run each way; each is individually sound (see XSUB), so their \
                             conjunction size(A) <= size(B) <= size(A) holds in every event",
             assumption: "same base name = same base input (documented cross-file residual)",
+        },
+        CatalogEntry {
+            id: AxiomId::Pres,
+            statement: "0 <= defined(q) <= 1 for every presence indicator",
+            justification: "true of every physical event because a presence indicator is 1 \
+                            where the interpreter obtains a value for q and 0 where it does \
+                            not — there is no third case. Not load-bearing: the cut shapes use \
+                            only the inequalities `defined(q) >= 1` and `defined(q) < 1`, which \
+                            partition the reals on their own. It removes the models that are \
+                            neither present nor absent, which keeps witness models readable and \
+                            lets the realizer read the indicator directly",
+            assumption: "none",
+        },
+        CatalogEntry {
+            id: AxiomId::Pdef,
+            statement: "defined(C[i].x) >= 1 => size(C) > i (front index i; back index -k \
+                        gives size(C) >= k)",
+            justification: "true of every physical event because a property of a NON-EXISTENT \
+                            element is a missing-element soft non-value, so the interpreter \
+                            obtains no value for it and the indicator is 0. The converse is \
+                            deliberately NOT asserted: an element can exist and still lack the \
+                            property, which is the whole reason presence is modelled \
+                            separately from existence. Reads the same element floors as the \
+                            encoder's leaf guards (QuantityTable::existence_floor), so the two \
+                            can never disagree",
+            assumption: "none",
         },
     ]
 }
@@ -544,6 +578,8 @@ fn emit_round(hir: &mut Hir, ext: &ExtDecls, qs: &[QuantityId]) -> Vec<AxiomInst
     em.szslice(qs);
     em.szperm(qs);
     em.comb_size(qs);
+    em.pres(qs);
+    em.pdef(qs);
     em.out
 }
 
@@ -578,12 +614,24 @@ impl Emit<'_> {
     /// Returns the guarded formula and the `size(C) > n ∧ … ⇒ ` description
     /// prefix (empty when no term is element-dependent).
     fn guarded(&mut self, terms: &[(f64, QuantityId)], rel: Rel, k: f64) -> (QFormula, String) {
-        let mut floors: BTreeMap<CollectionId, u32> = BTreeMap::new();
-        for &(_, q) in terms {
-            self.hir.table.existence_floor(q, &mut floors);
-        }
+        let qs: Vec<QuantityId> = terms.iter().map(|&(_, q)| q).collect();
         let fact = Self::atom(terms, rel, k);
-        if floors.is_empty() {
+        self.guarded_fact(&qs, fact)
+    }
+
+    /// [`Self::guarded`] for a fact that is not a single atom (DPHI's and
+    /// TRIG's two-sided bounds, TAG's `{0,1}` disjunction, TWIN's
+    /// `x = ±y`).
+    fn guarded_fact(&mut self, qs: &[QuantityId], fact: QFormula) -> (QFormula, String) {
+        let mut floors: BTreeMap<CollectionId, u32> = BTreeMap::new();
+        let mut absent_capable: Vec<QuantityId> = Vec::new();
+        for &q in qs {
+            self.hir.table.existence_floor(q, &mut floors);
+            if self.hir.table.may_be_absent(q) && !absent_capable.contains(&q) {
+                absent_capable.push(q);
+            }
+        }
+        if floors.is_empty() && absent_capable.is_empty() {
             return (fact, String::new());
         }
         let mut parts: Vec<QFormula> = Vec::new();
@@ -595,6 +643,28 @@ impl Emit<'_> {
                 "size({}) > {floor} ∧ ",
                 collection_label(self.hir, coll)
             ));
+        }
+        // Presence guards (SPEC_PRESENCE_MODEL §4.1). This is the step that
+        // DELETES the "pad-with-0 satisfies the fact" premise: a guarded
+        // instance is vacuously true wherever the interpreter obtains no
+        // value, so the junk value is genuinely unconstrained (Lemma E) and
+        // no axiom family retains a definedness obligation. It closes the
+        // latent ORD hole the loader admits — `[no-pt, pt=100]` is
+        // loader-valid (validate_pt_descending SKIPS pt-less elements
+        // without resetting the chain), and pad-0 violates
+        // `pt(C[0]) >= pt(C[1])` there.
+        //
+        // Precision cost is near zero by construction: every CUT over a
+        // possibly-absent quantity asserts `defined(q) >= 1`, which kills the
+        // matching disjunct by unit propagation in the very frame where the
+        // fact is needed. What is lost is exactly the case where a fact
+        // relates a pinned quantity to an UNpinned one — and that loss is the
+        // correction, not a regression.
+        for q in absent_capable {
+            let label = self.label(q);
+            let p = self.hir.table.intern_quantity(Quantity::Present(q));
+            parts.push(Self::atom(&[(1.0, p)], Rel::Lt, 1.0));
+            prefix.push_str(&format!("defined({label}) ∧ "));
         }
         // The trailing "∧ " becomes the implication arrow.
         prefix.truncate(prefix.len() - "∧ ".len());
@@ -732,6 +802,65 @@ impl Emit<'_> {
         }
     }
 
+    // PRES: 0 <= defined(q) <= 1. Not load-bearing (the cut shapes use only
+    // the two inequalities), but it removes the neither-present-nor-absent
+    // models, which keeps witness models readable and lets the realizer read
+    // the indicator directly.
+    fn pres(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            if !matches!(self.hir.table.quantity(q), Quantity::Present(_)) {
+                continue;
+            }
+            let f = QFormula::And(vec![
+                Self::atom(&[(1.0, q)], Rel::Ge, 0.0),
+                Self::atom(&[(1.0, q)], Rel::Le, 1.0),
+            ]);
+            let d = format!("0 <= {} <= 1", self.label(q));
+            self.push(AxiomId::Pres, f, d);
+        }
+    }
+
+    // PDEF: defined(C[i].x) >= 1 => size(C) > i. Presence implies EXISTENCE
+    // (not the converse — an element can exist and lack the property, which
+    // is exactly why the two are modelled separately). The floors come from
+    // the same single source the encoder's leaf guards read.
+    fn pdef(&mut self, qs: &[QuantityId]) {
+        for &q in qs {
+            let Quantity::Present(inner) = self.hir.table.quantity(q) else {
+                continue;
+            };
+            let inner = *inner;
+            let mut floors: BTreeMap<CollectionId, u32> = BTreeMap::new();
+            self.hir.table.existence_floor(inner, &mut floors);
+            if floors.is_empty() {
+                continue;
+            }
+            // `p < 1  OR  (every element the quantity reads exists)` — the
+            // existence conjuncts are ANDed inside the second disjunct, not
+            // flattened beside the presence literal: an angular separation
+            // reads TWO elements and needs BOTH.
+            let mut exists: Vec<QFormula> = Vec::new();
+            let mut suffix = String::new();
+            for (coll, floor) in floors {
+                let sq = self.hir.table.intern_quantity(Quantity::Size(coll));
+                exists.push(Self::atom(&[(1.0, sq)], Rel::Gt, f64::from(floor)));
+                suffix.push_str(&format!(
+                    "size({}) > {floor} ∧ ",
+                    collection_label(self.hir, coll)
+                ));
+            }
+            suffix.truncate(suffix.len() - "∧ ".len());
+            let all = if exists.len() == 1 {
+                exists.remove(0)
+            } else {
+                QFormula::And(exists)
+            };
+            let f = QFormula::Or(vec![Self::atom(&[(1.0, q)], Rel::Lt, 1.0), all]);
+            let d = format!("defined({}) ⇒ {suffix}", self.label(inner));
+            self.push(AxiomId::Pdef, f, d);
+        }
+    }
+
     // SZ0: size(C) >= 0.
     fn sz0(&mut self, qs: &[QuantityId]) {
         for &q in qs {
@@ -831,8 +960,8 @@ impl Emit<'_> {
                 _ => false,
             };
             if nonneg {
-                let f = Self::atom(&[(1.0, q)], Rel::Ge, 0.0);
-                let d = format!("{} >= 0", self.label(q));
+                let (f, g) = self.guarded(&[(1.0, q)], Rel::Ge, 0.0);
+                let d = format!("{g}{} >= 0", self.label(q));
                 self.push(AxiomId::Nneg, f, d);
             }
         }
@@ -849,11 +978,12 @@ impl Emit<'_> {
             };
             let key = self.hir.symbols.key(*name);
             if key == "cos" || key == "sin" {
-                let f = QFormula::And(vec![
+                let fact = QFormula::And(vec![
                     Self::atom(&[(1.0, q)], Rel::Le, 1.0),
                     Self::atom(&[(1.0, q)], Rel::Ge, -1.0),
                 ]);
-                let d = format!("-1 <= {} <= 1", self.label(q));
+                let (f, g) = self.guarded_fact(&[q], fact);
+                let d = format!("{g}-1 <= {} <= 1", self.label(q));
                 self.push(AxiomId::Trig, f, d);
             }
         }
@@ -869,11 +999,12 @@ impl Emit<'_> {
                     ..
                 }
             ) {
-                let f = QFormula::And(vec![
+                let fact = QFormula::And(vec![
                     Self::atom(&[(1.0, q)], Rel::Le, PI_UPPER),
                     Self::atom(&[(1.0, q)], Rel::Ge, -PI_UPPER),
                 ]);
-                let d = format!("-pi <= {} <= pi", self.label(q));
+                let (f, g) = self.guarded_fact(&[q], fact);
+                let d = format!("{g}-pi <= {} <= pi", self.label(q));
                 self.push(AxiomId::Dphi, f, d);
             }
         }
@@ -890,11 +1021,17 @@ impl Emit<'_> {
                 _ => false,
             };
             if is_tag {
-                let f = QFormula::Or(vec![
+                // THE running example of the absent-property positive arm:
+                // unguarded, `btag in {0,1}` entails `btag >= 0`, which
+                // discharged `select BTag(jets[-1]) >= 0` and made a
+                // `size(jets) >= 2` region a "subset" of it — while the
+                // interpreter rejects a btag-less jet from the latter.
+                let fact = QFormula::Or(vec![
                     Self::atom(&[(1.0, q)], Rel::Eq, 0.0),
                     Self::atom(&[(1.0, q)], Rel::Eq, 1.0),
                 ]);
-                let d = format!("{} in {{0, 1}}", self.label(q));
+                let (f, g) = self.guarded_fact(&[q], fact);
+                let d = format!("{g}{} in {{0, 1}}", self.label(q));
                 self.push(AxiomId::Tag, f, d);
             }
         }
@@ -904,11 +1041,12 @@ impl Emit<'_> {
     fn twin(&mut self, qs: &[QuantityId]) {
         let set: BTreeSet<QuantityId> = qs.iter().copied().collect();
         for (q1, q2) in twin_pairs(&self.hir.table, &set) {
-            let f = QFormula::Or(vec![
+            let fact = QFormula::Or(vec![
                 Self::atom(&[(1.0, q1), (-1.0, q2)], Rel::Eq, 0.0),
                 Self::atom(&[(1.0, q1), (1.0, q2)], Rel::Eq, 0.0),
             ]);
-            let d = format!("{} = +/- {}", self.label(q1), self.label(q2));
+            let (f, g) = self.guarded_fact(&[q1, q2], fact);
+            let d = format!("{g}{} = +/- {}", self.label(q1), self.label(q2));
             self.push(AxiomId::Twin, f, d);
         }
     }
@@ -1737,6 +1875,15 @@ mod tests {
                 && matches!(hir.table.quantity(a.terms()[0].1), Quantity::Size(_)))
     }
 
+    /// `defined(q) < 1` — the arm that makes an element fact VACUOUS at an
+    /// event where the interpreter obtains no value for `q`.
+    fn is_presence_guard(hir: &Hir, f: &QFormula) -> bool {
+        matches!(f, QFormula::Atom(a)
+            if a.rel() == Rel::Lt
+                && a.terms().len() == 1
+                && matches!(hir.table.quantity(a.terms()[0].1), Quantity::Present(_)))
+    }
+
     // Front indices 0,1 and back indices 1,2 over a pT-ordered filtered
     // collection: exercises all three ORD families in one emission.
     const ORD_SRC: &str = "\
@@ -1769,11 +1916,19 @@ region SR
                 inst.formula
             );
         };
-        assert_eq!(arms.len(), 2, "{:?}", inst.formula);
+        // Size guard first, then one presence guard per possibly-absent leg
+        // (SPEC_PRESENCE_MODEL §4.1), then the fact.
+        assert_eq!(arms.len(), 4, "{:?}", inst.formula);
         assert!(
             is_size_guard(&hir, &arms[0]),
             "first arm must be the `size(jets) <= i` guard: {:?}",
             arms[0]
+        );
+        assert_eq!(
+            arms[1..3].iter().filter(|a| is_presence_guard(&hir, a)).count(),
+            2,
+            "both pt legs must carry a `defined(...) < 1` guard: {:?}",
+            inst.formula
         );
     }
 
@@ -1792,11 +1947,17 @@ region SR
         let QFormula::Or(arms) = &inst.formula else {
             panic!("back-back ORD must be guarded (Or): {:?}", inst.formula);
         };
-        assert_eq!(arms.len(), 2, "{:?}", inst.formula);
+        assert_eq!(arms.len(), 4, "{:?}", inst.formula);
         assert!(
             is_size_guard(&hir, &arms[0]),
             "first arm must be the `size(jets) <= k2-1` guard: {:?}",
             arms[0]
+        );
+        assert_eq!(
+            arms[1..3].iter().filter(|a| is_presence_guard(&hir, a)).count(),
+            2,
+            "both pt legs must carry a `defined(...) < 1` guard: {:?}",
+            inst.formula
         );
     }
 

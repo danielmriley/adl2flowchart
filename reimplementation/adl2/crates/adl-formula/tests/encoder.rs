@@ -20,10 +20,50 @@ fn build_hir(src: &str) -> Hir {
     hir
 }
 
+/// Encode one region and return it with its **presence bookkeeping
+/// stripped** ([`Formula::without_presence`]).
+///
+/// Every test below pins the PHYSICS shape of one SPEC_ANALYSIS §1 row.
+/// Since the presence model, each of those shapes also carries
+/// `defined(q) >= 1` conjuncts; repeating them in thirty expectations would
+/// document nothing and would hide the row each test exists to pin. The
+/// presence shapes are pinned — far more thoroughly, and over the whole
+/// corpus rather than these fixtures — by `tests/presence_invariants.rs`,
+/// and one test HERE (`presence_literals_ride_along_unstripped`) asserts
+/// that the stripping is hiding something real.
 fn encode(src: &str, region: usize) -> (EncodedRegion, Hir) {
     let mut hir = build_hir(src);
-    let enc = encode_region(&mut hir, region);
+    let mut enc = encode_region(&mut hir, region);
+    enc.formula = enc.formula.without_presence(&hir.table);
     (enc, hir)
+}
+
+/// Encode every region, presence stripped (see [`encode`]).
+fn encode_all(hir: &mut Hir) -> Vec<EncodedRegion> {
+    let mut encs = encode_regions(hir);
+    for e in &mut encs {
+        e.formula = e.formula.without_presence(&hir.table);
+    }
+    encs
+}
+
+/// The stripping above must be hiding something REAL, or every expectation
+/// in this file would be vacuous. One raw encoding, asserted un-stripped.
+#[test]
+fn presence_literals_ride_along_unstripped() {
+    let mut hir = build_hir("object jets
+  take Jet
+  select pt > 30
+                             region R
+  select BTag(jets[0]) >= 1
+");
+    let raw = encode_region(&mut hir, 0).formula;
+    let stripped = raw.without_presence(&hir.table);
+    assert_ne!(raw, stripped, "the raw encoding must carry presence literals");
+    let has_presence = format!("{raw:?}") != format!("{stripped:?}");
+    assert!(has_presence);
+    // …and stripping is idempotent.
+    assert_eq!(stripped, stripped.without_presence(&hir.table));
 }
 
 /// Find the unique quantity matching `pred`.
@@ -116,31 +156,56 @@ fn constant_comparisons_fold() {
 // ---- row: `reject c` = exact negation -----------------------------------
 
 #[test]
-fn reject_is_guarded_negation_of_select() {
-    // `HT` is an event-record lookup (EventVar): on an event lacking the
-    // key, `HT > 200` soft-fails, so `reject (MET>100 or HT>200)` HOLDS —
-    // the classical AND of negations would wrongly exclude that event from
-    // the superset (the fabricated-DISJOINT class, 2026-07-25). The
-    // absent-property guard therefore hedges: the OVER side keeps only the
-    // total-quantity constraint (MET is safe — a missing MET vector is a
-    // hard evaluation error, so no In-event lacks it), the UNDER side keeps
-    // the full classical negation (sound: absence satisfies the reject
-    // regardless; present values are classical). The legacy regression
-    // class — reject of an OR must not become a strengthened/weakened
-    // guess — is preserved on BOTH sides: each is exactly De Morgan, the
-    // over side merely dropping the un-expressible HT conjunct.
+fn reject_is_the_exact_negation_of_select() {
+    // Pre-Phase-B this pinned the `guarded_not` hedge: `HT` is an
+    // event-record lookup, so `reject (MET>100 or HT>200)` was encoded as a
+    // `Dual` whose OVER kept only the MET conjunct. That hedge existed
+    // because absence could not be SAID, and it cost every subset inner and
+    // every complement emptiness that ran through a `reject`.
+    //
+    // Under the presence model the negation is EXACT again. `HT` is
+    // HARD-absent (a missing event scalar is an evaluation error, so the
+    // event is `In` no region reading it in EITHER polarity), which is why
+    // `Encoder::negate` conjoins `defined(HT) >= 1` ON TOP of the negation
+    // rather than letting De Morgan turn it into a `defined(HT) < 1`
+    // disjunct — and then unit-propagates that disjunct away, so the
+    // `HT <= 200` bound stays on the And-spine where the interval layer
+    // reads it. Stripped of the bookkeeping (see `encode`), what is left is
+    // exactly De Morgan.
     let (_sel, hir) = encode("region A\n  select MET > 100 or HT > 200\n", 0);
     let (rej, _) = encode("region B\n  reject MET > 100 or HT > 200\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
-    let Formula::Dual { plus, minus, .. } = &rej.formula else {
-        panic!("expected guarded Dual, got {:?}", rej.formula);
-    };
-    assert_eq!(**plus, atom1(met, Rel::Le, 100.0), "over: MET constraint kept, HT widened");
     assert_eq!(
-        **minus,
+        rej.formula,
         Formula::And(vec![atom1(met, Rel::Le, 100.0), atom1(ht, Rel::Le, 200.0)]),
-        "under: full classical De Morgan"
+        "reject of an OR is De Morgan, exactly, on both projections"
     );
+    assert!(rej.is_exact(), "the Dual hedge is gone from the negation path");
+}
+
+/// The presence literals the test above strips are really there, and they
+/// are CONJOINED (not flipped into a `p < 1` disjunct) because `HT`/`MET`
+/// are hard-absent. Getting this wrong is the K4/K6 false-subset class.
+#[test]
+fn a_hard_absent_negation_conjoins_presence_rather_than_flipping_it() {
+    let mut hir = build_hir("region B\n  reject MET > 100 or HT > 200\n");
+    let raw = encode_region(&mut hir, 0).formula;
+    let Formula::And(parts) = &raw else {
+        panic!("expected a conjunction, got {raw:?}");
+    };
+    let presence: Vec<&Formula> = parts
+        .iter()
+        .filter(|p| {
+            matches!(p, Formula::Atom(a)
+                if matches!(a.terms(), [(_, q)]
+                    if matches!(hir.table.quantity(*q), Quantity::Present(_))))
+        })
+        .collect();
+    assert_eq!(presence.len(), 2, "both MET and HT must be pinned present: {raw:?}");
+    for p in presence {
+        let Formula::Atom(a) = p else { unreachable!() };
+        assert_eq!(a.rel(), Rel::Ge, "hard presence is CONJOINED, never flipped");
+    }
 }
 
 // ---- row: region inheritance (inline; cycle => Unknown) ------------------
@@ -452,7 +517,7 @@ fn identical_nonlinear_scalars_share_one_quantity_across_regions() {
     // a collision-free second interning would make it find two.
     let mut hir =
         build_hir("region HI\n  select MET * MET > 9\nregion LO\n  select MET * MET < 1\n");
-    let encs = encode_regions(&mut hir);
+    let encs = encode_all(&mut hir);
     let q = opaque_q(&hir); // panics if the two regions did not share one id
     assert_eq!(encs[0].formula, atom(&[(1.0, q)], Rel::Gt, 9.0));
     assert_eq!(encs[1].formula, atom(&[(1.0, q)], Rel::Lt, 1.0));
@@ -465,16 +530,17 @@ fn ternary_expands_to_guarded_disjunction() {
     let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100 : MET > 200\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
     let g = atom1(ht, Rel::Gt, 500.0);
-    // The else-branch guard `¬(HT > 500)` goes through the absent-property
-    // hedge (HT is an event-record lookup): over side widens to `true`,
-    // under side keeps the classical `HT <= 500`.
+    // `(g ∧ a) ∨ (¬g ∧ b)`, with `¬g` now a plain atom: the presence model
+    // made the negation exact, so the else-branch guard no longer hedges.
+    // The ternary is deliberately NOT presence-hoisted — a missing else is
+    // TRUE, so the guard's own absence genuinely selects the else arm.
     let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
     assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
-    let Formula::And(e) = &v[1] else { panic!("{:?}", v[1]) };
-    let Formula::Dual { plus, minus, .. } = &e[0] else { panic!("{:?}", e[0]) };
-    assert_eq!(**plus, Formula::True);
-    assert_eq!(**minus, atom1(ht, Rel::Le, 500.0));
-    assert_eq!(e[1], atom1(met, Rel::Gt, 200.0));
+    assert_eq!(
+        v[1],
+        Formula::And(vec![atom1(ht, Rel::Le, 500.0), atom1(met, Rel::Gt, 200.0)])
+    );
+    assert!(enc.is_exact());
 }
 
 #[test]
@@ -482,13 +548,11 @@ fn ternary_missing_else_is_true() {
     let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100\n", 0);
     let (met, ht) = (met_q(&hir), ht_q(&hir));
     let g = atom1(ht, Rel::Gt, 500.0);
-    // Missing-else ⇒ `true` branch guarded by `¬g`, which goes through the
-    // absent-property hedge (HT is an event-record lookup).
+    // Missing-else ⇒ the `true` branch, guarded by `¬g` — a plain atom now.
     let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
     assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
-    let Formula::Dual { plus, minus, .. } = &v[1] else { panic!("{:?}", v[1]) };
-    assert_eq!(**plus, Formula::True);
-    assert_eq!(**minus, atom1(ht, Rel::Le, 500.0));
+    assert_eq!(v[1], atom1(ht, Rel::Le, 500.0));
+    assert!(enc.is_exact());
 }
 
 // ---- row: [] / ][ bands ----------------------------------------------------
@@ -733,7 +797,19 @@ fn abs_of_approx_additive_inner_is_opaque() {
 // exclusion — both wrong, letting through false PROVEN verdicts. The exact,
 // relation-uniform answer is True/False with no atoms over MET at all.
 #[test]
-fn abs_versus_negative_constant_is_exactly_constant() {
+fn abs_versus_negative_constant_is_the_definedness_of_the_inner() {
+    // `|E| < -5` is FALSE for every E, and that is still exactly False.
+    //
+    // `|E| > -5` is NOT `true` over a PARTIAL valuation, and pretending it
+    // was is how `select abs(dxy(eles[0])) >= -5` became a region that
+    // `size(eles) >= 1` was "proven" inside — while the interpreter rejects
+    // a dxy-less electron from it (SPEC_PRESENCE_MODEL §3.5's `P(q̄)` rule;
+    // kill case K2). The honest fold is the DEFINEDNESS of the inner
+    // expression: `|E| > -5` holds exactly when E has a value.
+    //
+    // `MET` is hard-absent, so the fold yields `defined(MET) >= 1`; stripped
+    // of the bookkeeping it is the old `True`, which is what the loop below
+    // asserts, and the un-stripped assertion after it is the actual fix.
     for (op, expect) in [
         ("<", Formula::False),
         ("<=", Formula::False),
@@ -743,7 +819,32 @@ fn abs_versus_negative_constant_is_exactly_constant() {
         ("!=", Formula::True),
     ] {
         let (enc, _hir) = encode(&format!("region SR\n  select abs(MET) {op} -5\n"), 0);
-        assert_eq!(enc.formula, expect, "abs(...) {op} -5 must fold to {expect:?}");
+        assert_eq!(
+            enc.formula, expect,
+            "abs(...) {op} -5 must fold to {expect:?} once definedness is stripped"
+        );
+    }
+    // The fix itself: the positive arms are NOT vacuous.
+    for op in [">", ">=", "!="] {
+        let mut hir = build_hir(&format!("region SR\n  select abs(MET) {op} -5\n"));
+        let raw = encode_region(&mut hir, 0).formula;
+        let Formula::Atom(a) = &raw else {
+            panic!("expected a presence literal, got {raw:?}");
+        };
+        let [(_, q)] = a.terms() else {
+            panic!("expected one term, got {raw:?}")
+        };
+        assert!(
+            matches!(hir.table.quantity(*q), Quantity::Present(_)),
+            "abs(...) {op} -5 must fold to the DEFINEDNESS of its inner, got {raw:?}"
+        );
+        assert_eq!(a.rel(), Rel::Ge);
+    }
+    // …and the negative arms stay constant-false, with no presence attached:
+    // `|E| < -5` is false whether or not E has a value.
+    for op in ["<", "<=", "=="] {
+        let mut hir = build_hir(&format!("region SR\n  select abs(MET) {op} -5\n"));
+        assert_eq!(encode_region(&mut hir, 0).formula, Formula::False);
     }
 }
 
@@ -785,30 +886,31 @@ fn region_with_no_membership_statements_is_true() {
 // ---- polarity safety through reject (Dual branch swap) ---------------------
 
 #[test]
-fn reject_of_unindexed_cut_is_guarded_swap() {
-    // Pre-guard this asserted the pure Dual branch swap
-    // (¬plus ⊆ ¬R ⊆ ¬minus). The swap alone is the absent-property seam in
-    // Dual form: the swapped OVER (`¬minus`) constrains element-property
-    // quantities, so two complementary unindexed rejects over an
-    // absence event would fabricate a DISJOINT. The guard wraps the swap:
-    // the reject's UNDER is still exactly the swapped classical negation
-    // (projection-equal to ¬plus — sound under absence), while its OVER
-    // widens every property-quantity atom to `true`.
+fn reject_of_unindexed_cut_swaps_the_dual_and_stays_faithful() {
+    // Pre-guard this asserted the pure `Dual` branch swap
+    // (¬plus ⊆ ¬R ⊆ ¬minus); Phase A then wrapped the swap in a hedge whose
+    // OVER side widened every element-property atom to `true`, because a
+    // swapped OVER that constrains `pt(Jet[0])` would fabricate a DISJOINT
+    // between two complementary unindexed rejects over an absence event.
+    //
+    // The presence model makes the swap faithful WITHOUT widening: the
+    // OVER side may now constrain element properties, because every such
+    // atom rides with `defined(q) >= 1` and the complementary reject rides
+    // with `defined(q) < 1` — the shared model that keeps the two
+    // satisfiable together is expressible, so it is found instead of being
+    // encoded away.
     let (sel, _) = encode("region A\n  select Jet.pt > 30\n", 0);
-    let (rej, _) = encode("region B\n  reject Jet.pt > 30\n", 0);
+    let (rej, hir) = encode("region B\n  reject Jet.pt > 30\n", 0);
     let exact = sel.formula.clone().not();
-    // Under side: projection-identical to the exact swapped negation.
     assert_eq!(
-        rej.formula.under(),
-        exact.under(),
-        "reject under must stay the classical swap"
+        rej.formula, exact,
+        "reject of an unindexed cut is the exact Dual swap on BOTH sides"
     );
-    // Over side: the widen is per-atom, so the sound SIZE skeleton of the
-    // swapped negation survives (sizes are total on loader-valid events)
-    // while every per-element pt atom — the possibly-absent part — is
-    // widened away. Assert exactly that: the superset constrains size
-    // quantities only.
-    let (_, hir) = encode("region A\n  select Jet.pt > 30\n", 0);
+    assert!(matches!(rej.formula, Formula::Dual { .. }), "OPEN-1 keeps its Dual");
+    // The over side DOES constrain the element property now — the change
+    // this test exists to record — and the property is presence-guarded.
+    let mut raw_hir = build_hir("region B\n  reject Jet.pt > 30\n");
+    let raw = encode_region(&mut raw_hir, 0).formula;
     fn quantities(f: &QFormula, out: &mut Vec<adl_sema::QuantityId>) {
         match f {
             QFormula::Atom(a) => out.extend(a.terms().iter().map(|(_, q)| *q)),
@@ -817,16 +919,18 @@ fn reject_of_unindexed_cut_is_guarded_swap() {
         }
     }
     let mut qs = Vec::new();
-    quantities(rej.formula.over().qformula(), &mut qs);
-    assert!(!qs.is_empty(), "size skeleton must survive the widen");
-    for q in qs {
-        assert!(
-            matches!(hir.table.quantity(q), adl_sema::Quantity::Size(_)),
-            "over side may constrain only total quantities, found {:?}",
-            hir.table.quantity(q)
-        );
-    }
-    assert!(matches!(rej.formula, Formula::Dual { .. }));
+    quantities(raw.over().qformula(), &mut qs);
+    assert!(
+        qs.iter()
+            .any(|q| matches!(raw_hir.table.quantity(*q), Quantity::ElemProp { .. })),
+        "the over side must keep the element constraint (it is faithful now)"
+    );
+    assert!(
+        qs.iter()
+            .any(|q| matches!(raw_hir.table.quantity(*q), Quantity::Present(_))),
+        "…and it must ride with a presence literal"
+    );
+    let _ = hir;
 }
 
 #[test]

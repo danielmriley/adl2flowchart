@@ -296,3 +296,61 @@ fn presence_indicator_cost_on_the_largest_corpus_file() {
          ({base} + {present})"
     );
 }
+
+/// **Cancellation must not lose definedness.** `MET + HT − HT > 50` folds
+/// to an atom over MET alone — the HT coefficient cancels to zero and
+/// `LinAtom::new` drops zero-coefficient terms — but the INTERPRETER still
+/// evaluates HT, and a missing HT scalar makes the whole comparison a
+/// non-value. This shipped as a false `subset` in the golden corpus
+/// (`features-num_09.adl`) until the presence guard started reading the
+/// pre-construction footprint.
+#[test]
+fn cancelled_operands_keep_their_definedness() {
+    let ext = ExtDecls::legacy();
+    let src = "region R\n  select MET + HT - HT > 50\n";
+    let mut hir = analyze_str(src, "cancel.adl", &ext);
+    let regions = encode_regions(&mut hir);
+
+    // The ATOM lost HT …
+    let mut atom_qs = BTreeSet::new();
+    fn atoms(f: &Formula, out: &mut BTreeSet<QuantityId>, table: &QuantityTable) {
+        match f {
+            Formula::Atom(a) => {
+                if presence_literal(table, f).is_none() {
+                    out.extend(a.terms().iter().map(|&(_, q)| q));
+                }
+            }
+            Formula::And(v) | Formula::Or(v) => v.iter().for_each(|p| atoms(p, out, table)),
+            Formula::Dual { plus, minus, .. } => {
+                atoms(plus, out, table);
+                atoms(minus, out, table);
+            }
+            Formula::True | Formula::False | Formula::Unknown(_) => {}
+        }
+    }
+    atoms(&regions[0].formula, &mut atom_qs, &hir.table);
+    assert_eq!(atom_qs.len(), 1, "the atom should mention MET alone: {atom_qs:?}");
+
+    // … but the formula still REQUIRES both operands defined.
+    let mut guarded = BTreeSet::new();
+    fn presences(f: &Formula, out: &mut BTreeSet<QuantityId>, table: &QuantityTable) {
+        if let Some((q, true)) = presence_literal(table, f) {
+            out.insert(q);
+        }
+        match f {
+            Formula::And(v) | Formula::Or(v) => v.iter().for_each(|p| presences(p, out, table)),
+            Formula::Dual { plus, minus, .. } => {
+                presences(plus, out, table);
+                presences(minus, out, table);
+            }
+            _ => {}
+        }
+    }
+    presences(&regions[0].formula, &mut guarded, &hir.table);
+    assert_eq!(
+        guarded.len(),
+        2,
+        "both MET and the CANCELLED HT must be required present: {guarded:?}"
+    );
+    assert!(guarded.is_superset(&atom_qs));
+}

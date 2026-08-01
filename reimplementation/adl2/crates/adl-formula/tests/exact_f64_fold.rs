@@ -36,7 +36,10 @@ fn build_hir(src: &str) -> Hir {
 
 fn encode(src: &str, region: usize) -> (EncodedRegion, Hir) {
     let mut hir = build_hir(src);
-    let enc = encode_region(&mut hir, region);
+    let mut enc = encode_region(&mut hir, region);
+    // Presence bookkeeping stripped: this file pins the FOLD boundary of each
+    // shape, not its definedness guards (see `tests/presence_invariants.rs`).
+    enc.formula = enc.formula.without_presence(&hir.table);
     (enc, hir)
 }
 
@@ -239,7 +242,10 @@ fn the_c1_to_c6_pairs_are_now_honest_complements() {
     ];
     for (src, label) in pairs {
         let mut hir = build_hir(src);
-        let encs = encode_regions(&mut hir);
+        let mut encs = encode_regions(&mut hir);
+        for e in &mut encs {
+            e.formula = e.formula.without_presence(&hir.table);
+        }
         let (x, y) = (only_atom(&encs[0].formula), only_atom(&encs[1].formula));
         assert_eq!(x.terms(), y.terms(), "{label}: same flattened terms");
         assert_eq!(x.constant(), y.constant(), "{label}: same boundary");
@@ -473,7 +479,10 @@ fn same_shape_approximate_cuts_share_one_opaque() {
          region b\n  select dR(jets[0], jets[1]) + 0.5 > 1\n"
     );
     let mut hir = build_hir(&src);
-    let encs = encode_regions(&mut hir);
+    let mut encs = encode_regions(&mut hir);
+    for e in &mut encs {
+        e.formula = e.formula.without_presence(&hir.table);
+    }
     let q = find_q(&hir, |q| {
         matches!(q, Quantity::ExternalFn { name, .. }
             if hir.symbols.display(*name) == "opaque.scalar")

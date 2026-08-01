@@ -552,16 +552,22 @@ fn slice_key(slice: Option<(u32, Option<u32>)>) -> String {
 struct LinExpr {
     terms: BTreeMap<QuantityId, Rat>,
     k: Rat,
-    /// Every quantity the SOURCE expression mentions — including ones whose
-    /// coefficient cancelled to zero (`pT(j[0]) - pT(j[0])`) or was
-    /// multiplied out. `terms` is the algebra; this is the DEFINEDNESS
-    /// footprint, and the two differ exactly where the interpreter and a
-    /// cancelling encoder used to disagree: the interpreter's arithmetic is
-    /// soft-non-value ABSORBING, so `pT(j[0]) - pT(j[0]) < 25` is FALSE on a
-    /// pt-less jet while the folded atom `0 < 25` is trivially true. Presence
-    /// literals are emitted from this set, never from `terms`
-    /// (SPEC_PRESENCE_MODEL §3.3 — the spec's chokepoint reads the term map;
-    /// reading the footprint instead subsumes its by-hand fold arms).
+    /// The DEFINEDNESS footprint: every quantity the source expression
+    /// mentions, including ones whose coefficient cancelled to zero
+    /// (`pT(j[0]) - pT(j[0])`) or was multiplied out. Presence literals are
+    /// emitted from this set.
+    ///
+    /// It matters because the interpreter's arithmetic is soft-non-value
+    /// ABSORBING: `MET + HT - HT > 50` is a NON-VALUE on an event with no
+    /// `HT` scalar, while the folded atom `MET > 50` is happily true. That
+    /// gap shipped a false `subset` in the golden corpus.
+    ///
+    /// It happens to equal `terms.keys()` today, because `combine` keeps
+    /// zero-coefficient entries while `LinAtom::new` drops them — so the
+    /// distinction lives entirely between this struct and the constructed
+    /// atom. The field exists so that equality is a FACT rather than the
+    /// thing the guard silently depends on: pruning zeros in `combine` is an
+    /// obvious optimisation, and it would take the footprint with it.
     mentioned: BTreeSet<QuantityId>,
 }
 
@@ -1784,11 +1790,19 @@ impl Encoder<'_> {
             (Err(LinErr::BadLiteral), _) | (_, Err(LinErr::BadLiteral)) => {
                 self.unknown(span, "non-finite numeric literal cannot construct an atom")
             }
+            // One side is non-linear and the other folded to a CONSTANT.
+            // `pattern` guards the non-linear side itself, but the constant
+            // side's definedness footprint would otherwise be dropped:
+            // `Rsq > pT(j[0]) - pT(j[0]) + 5` folds the right side to `5`
+            // while the interpreter still evaluates `pT(j[0])` and
+            // soft-non-values the whole comparison if it is absent.
             (Err(LinErr::NonLinear(why)), Ok(c)) if c.terms.is_empty() => {
-                self.pattern(lhs, rel, c.k, &why, span)
+                let f = self.pattern(lhs, rel, c.k, &why, span);
+                self.guard_presence(&c.mentioned, f)
             }
             (Ok(c), Err(LinErr::NonLinear(why))) if c.terms.is_empty() => {
-                self.pattern(rhs, rel.flipped(), c.k, &why, span)
+                let f = self.pattern(rhs, rel.flipped(), c.k, &why, span);
+                self.guard_presence(&c.mentioned, f)
             }
             (Err(LinErr::NonLinear(why)), _) | (_, Err(LinErr::NonLinear(why))) => {
                 self.unknown(span, format!("comparison is not linear arithmetic: {why}"))

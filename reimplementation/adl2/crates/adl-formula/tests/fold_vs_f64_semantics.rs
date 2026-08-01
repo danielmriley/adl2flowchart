@@ -70,7 +70,9 @@ fn assert_agrees_on_met(cut: &str, probes: &[f64]) {
     let ext = ExtDecls::legacy();
     let src = format!("region SR\n  select {cut}\n");
     let mut hir = build_hir(&src);
-    let enc = encode_region(&mut hir, 0);
+    let mut enc = encode_region(&mut hir, 0);
+    // Presence bookkeeping stripped (see `tests/presence_invariants.rs`).
+    enc.formula = enc.formula.without_presence(&hir.table);
     let met = met_q(&hir);
 
     let mut atoms = Vec::new();
@@ -160,8 +162,10 @@ fn the_kill_case_pair_agrees_event_by_event() {
     let src = "region A\n  select MET > 0.1 + 0.2\n\
                region B\n  select MET [] 0.30000000000000004 0.30000000000000004\n";
     let mut hir = build_hir(src);
-    let a = encode_region(&mut hir, 0);
-    let b = encode_region(&mut hir, 1);
+    let mut a = encode_region(&mut hir, 0);
+    let mut b = encode_region(&mut hir, 1);
+    a.formula = a.formula.without_presence(&hir.table);
+    b.formula = b.formula.without_presence(&hir.table);
     let met = met_q(&hir);
     let interp = Interp::new(&hir, &ext);
 

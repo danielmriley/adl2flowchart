@@ -40,13 +40,24 @@ with a unit-propagation peephole that drops the contradicted `p < 1`
 disjuncts so `reject MET > 100` keeps its `MET <= 100` bound on the
 And-spine (the spec's §7b concern, answered without losing the bound).
 
-**D3 — presence comes from a definedness FOOTPRINT, not the term map
-(§3.3).** `LinExpr.mentioned` never cancels. This subsumes the spec's
-by-hand fold arms (the `abs ⋈ negative` arm is still handled explicitly,
-since nothing is linearized there) and closed one more live false claim:
-`features-num_09.adl` shipped `subset R_plain_met within R_cancel_met`
-because `MET + HT − HT > 50` cancels HT out of the ATOM while the
-interpreter still evaluates it.
+**D3 — presence comes from a definedness FOOTPRINT, and the guard sits at
+the COMPARISON, not at `atom_of` (§3.3).** `LinExpr.mentioned` never
+cancels, and it is read before `LinAtom::new` drops zero-coefficient terms.
+This closed one more live false claim: `features-num_09.adl` shipped
+`subset R_plain_met within R_cancel_met` because `MET + HT − HT > 50`
+cancels HT out of the ATOM while the interpreter still evaluates it and
+hard-errors when the event has no HT scalar.
+
+Honest scoping of that claim: the footprint currently EQUALS
+`terms.keys()`, because `LinExpr::combine` keeps zero-coefficient entries —
+so the spec's own chokepoint would have caught this case too, provided it
+read `atom_of`'s INPUT map rather than the constructed atom's terms. The
+field is kept because that equality is an accident of `combine` not pruning
+zeros, which is an obvious optimisation away from being false. What the
+comparison-level placement buys that `atom_of` does not is the constant-fold
+arms: `abs ⋈ negative` (nothing is linearized there at all) and the
+`Or`/`And` hoists that keep a presence bound on the interval layer's
+And-spine.
 
 **D4 — I-2 does not apply (§11).** `Formula::Atom` is not constructed at a
 single site, because the guard is applied at the COMPARISON level where the

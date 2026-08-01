@@ -163,6 +163,69 @@ impl Formula {
     }
 }
 
+impl Formula {
+    /// The formula with its **presence bookkeeping removed** — every
+    /// `defined(q) >= 1` conjunct and `defined(q) < 1` disjunct dropped.
+    ///
+    /// This is a READING aid, never part of a proof: the stripped formula is
+    /// the classical encoding of the same cuts, which is *weaker* on the
+    /// positive side and *stronger* on the negative one, so feeding it to a
+    /// solver would reintroduce exactly the absent-property class the
+    /// literals exist to close. Its use is pinning the PHYSICS shape of an
+    /// encoding in tests (one expectation per SPEC_ANALYSIS §1 row) without
+    /// repeating `defined(...)` in every one of them, where it would
+    /// document nothing — the presence shapes have their own, far more
+    /// thorough invariants in `tests/presence_invariants.rs`.
+    #[must_use]
+    pub fn without_presence(&self, table: &adl_sema::QuantityTable) -> Formula {
+        fn is_presence(table: &adl_sema::QuantityTable, f: &Formula) -> bool {
+            let Formula::Atom(a) = f else { return false };
+            let [(_, q)] = a.terms() else { return false };
+            matches!(table.quantity(*q), adl_sema::Quantity::Present(_))
+        }
+        fn strip(table: &adl_sema::QuantityTable, f: &Formula) -> Formula {
+            match f {
+                Formula::And(v) | Formula::Or(v) => {
+                    let is_and = matches!(f, Formula::And(_));
+                    let kept: Vec<Formula> = v
+                        .iter()
+                        .filter(|p| !is_presence(table, p))
+                        .map(|p| strip(table, p))
+                        .collect();
+                    match kept.len() {
+                        0 => {
+                            if is_and {
+                                Formula::True
+                            } else {
+                                Formula::False
+                            }
+                        }
+                        1 => kept.into_iter().next().expect("len checked"),
+                        _ => {
+                            if is_and {
+                                Formula::And(kept)
+                            } else {
+                                Formula::Or(kept)
+                            }
+                        }
+                    }
+                }
+                Formula::Dual { plus, minus, why } => Formula::Dual {
+                    plus: Box::new(strip(table, plus)),
+                    minus: Box::new(strip(table, minus)),
+                    why: *why,
+                },
+                // A BARE presence literal is a whole leaf that says nothing
+                // but "this has a value" — the `abs(E) > -5` fold. Stripped,
+                // it is the vacuous `true` that fold used to produce.
+                Formula::Atom(_) if is_presence(table, f) => Formula::True,
+                other => other.clone(),
+            }
+        }
+        strip(table, self)
+    }
+}
+
 impl std::ops::Not for Formula {
     type Output = Formula;
 

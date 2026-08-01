@@ -235,16 +235,18 @@ fn ce7_inherit_vs_paste_certification_tier_wobble() {
     assert_eq!(r1.passes, r2.passes, "interpreter membership must not move");
     let s1 = summary(&r1.report).unwrap();
     let s2 = summary(&r2.report).unwrap();
-    // RA is TRULY empty (¬d0 ∧ d0 — complements of one predicate, which
-    // holds even over absence events), but d0 negates property cuts, so the
-    // absent-property guard (2026-07-25) widens each side's superset and the
-    // emptiness is no longer derivable — the fail-closed NotProven, same
-    // family as the not_tag / features-angular_06 re-pins. Definedness
-    // modeling (SOUNDNESS_PROOF_2026-07-25 §8 item 1) restores it; then
-    // re-assert `empty_ra == Proven` and the disjoint-tier kind here.
-    // CE-7's actual regression content — inherit vs paste consistency and
-    // the soundness oracle — is asserted below regardless.
-    assert_eq!(s1.empty_ra, EmptyStatus::NotProven, "{s1:?}");
+    // R3 (SPEC_PRESENCE_MODEL §9 step 6), restored 2026-08-01. RA is TRULY
+    // empty — `¬d0 ∧ d0`, complements of ONE predicate, which holds even
+    // over absence events (absence soft-falses d0's inner comparisons, so
+    // `not d0` holds and `d0` fails). From 2026-07-25 this was pinned
+    // fail-closed at NotProven: `guarded_not` widened the superset of every
+    // negation over a possibly-absent quantity, and d0 negates property
+    // cuts. With presence in the leaves the two sides are exact complements
+    // again and the emptiness is derivable — as is the disjoint tier the
+    // suspended comment named.
+    assert_eq!(s1.empty_ra, EmptyStatus::Proven, "{s1:?}");
+    assert_eq!(s1.empty_rb, EmptyStatus::Proven, "RB inherits RA: {s1:?}");
+    assert_eq!(s1.kind, VerdictKind::ProvenDisjoint, "{s1:?}");
     // Since CE-17 canonicalized the encoding, inheritance no longer changes
     // the core the certifier sees, so the two renderings agree EXACTLY here —
     // stronger than the `consistent` class equality the battery still needs

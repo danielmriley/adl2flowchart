@@ -83,12 +83,34 @@ faithful, not lossy) are the one deliberate exception, and they are exactly
 what cross-file identity is *for*.
 
 **P2 — Leaf faithfulness.** For every *exact*-tagged atom in a region's
-encoding and every `e` where `I` decides the source cut, the quantities the
-atom mentions are defined under `v(e)` and the atom's truth value under
-`v(e)` equals the interpreter's evaluation of that cut. (Includes the
-exact-rational literal semantics: `0.3` is `3/10` on both sides; the
-f64-faithfulness guard interns non-faithful additive shapes as opaque
-scalars rather than shared atoms.)
+encoding and every `e` where `I` decides the source cut, the atom's truth
+value under `v̂(e)` equals the interpreter's evaluation of that cut.
+(Includes the exact-rational literal semantics: `0.3` is `3/10` on both
+sides; the f64-faithfulness guard interns non-faithful additive shapes as
+opaque scalars rather than shared atoms.)
+
+> **UPDATE 2026-08-01 (Phase B, presence model): the definedness half of
+> P2 is now DISCHARGED BY CONSTRUCTION, not assumed.**
+> P2 used to also require "the quantities the atom mentions are *defined*
+> under `v(e)`" — an assumption about the event that was **provably false**
+> for a property-less element, and the root of the shipping false-claim
+> class below. It is no longer a side-condition: every atom over a
+> possibly-absent quantity is emitted inside `p_q ≥ 1 ∧ …`, so definedness
+> is a CONJUNCT of the leaf. Valuations are now the total
+> `v̂ : (QuantityId ∪ PresenceId) → ℚ` with `p̂_q(e) = 1` iff
+> `Interp::eval_quantity(q, e)` yields a value, and junk elsewhere.
+> What remains of P2 is the residual numeric claim — "when `p_q = 1`, the
+> atom's truth equals the interpreter's" — which the exact-rational `Rat`
+> core already discharges. The structural side (that the encoder really
+> emits those shapes) is machine-checked by invariant **E-i** over every
+> corpus region (`adl-formula/tests/presence_invariants.rs`, 447 regions),
+> not argued.
+>
+> The definedness footprint is the SOURCE's, not the folded atom's:
+> `pT(j[0]) − pT(j[0]) < 25` folds to `0 < 25` but the interpreter's
+> arithmetic is soft-non-value ABSORBING, so it is FALSE on a pt-less jet.
+> `LinExpr.mentioned` never cancels, and that is what closed a live false
+> `subset` in the shipping golden corpus (`features-num_09.adl`).
 
 **P3 — Axiom truth.** Every catalog instance asserted into a solver frame
 holds of `v(e)` for every `e ∈ E` (each family carries a written physical
@@ -112,7 +134,28 @@ because the loader *rejects* non-pT-descending events).
 > verification rounds) or an explicit input-completeness assumption on `E`
 > plus axiom instantiation guarded by property presence. §8 item 1.
 >
-> **Escalation (same day, follow-up verification).** The seam is not
+> **RESOLVED 2026-08-01 by the presence model (Phase B).** P3 is now
+> stated over `v̂` and discharged: every element-touching family (ORD,
+> IDOM, EPRED, NNEG, TAG, DPHI, TWIN, TRIG) is emitted through
+> `Emit::guarded`, which adds a `defined(q) < 1` disjunct per
+> possibly-absent term, so a guarded instance is VACUOUSLY TRUE wherever
+> the interpreter obtains no value. The "canonical pad-with-0 extension
+> satisfies the fact" premise is **deleted**, not weakened — which also
+> closes its known counterexample: the loader admits `[no-pt, pt=100]`
+> (`validate_pt_descending` deliberately skips pt-less elements without
+> resetting the chain) and pad-0 violates `pt(C[0]) ≥ pt(C[1])` there.
+> Two new families carry their own justifications: **PRES**
+> (`0 ≤ defined(q) ≤ 1`) and **PDEF** (`defined(C[i].x) ⇒ size(C) > i`), and
+> **EPRES** derives presence from membership in a filtered collection
+> through a fail-closed syntactic recogniser. `axioms_hold` now evaluates
+> every instance over the absence battery as well.
+>
+> Measured cost of the guarding: ZERO corpus proofs — the spec's own
+> precision argument (every cut over a possibly-absent quantity asserts its
+> presence, discharging the guard by unit propagation in the very frame
+> where the fact is needed) confirmed on 1898 pairs.
+>
+> **Escalation (2026-07-25, follow-up verification) — now CLOSED.** The seam is not
 > limited to axiom instantiation, and it is not always gate-held. The
 > absorbing-false is **anti-monotone under negation**: a `reject`/`not`
 > over an absent property evaluates *true* (inner comparison false →
@@ -171,6 +214,44 @@ The lower direction is used **only** for subset/coverage inner sides; where
 any statement of the inner region is non-exact, its under contains `false`
 and the implication is vacuous — the proof then simply cannot be produced
 (fail-closed), which is the intended behavior, not a soundness cost.
+
+> **L1′ (2026-08-01, presence model).** L1 is restated over the total
+> presence-extended valuation `v̂`, and the LEAF CASE now holds in **both**
+> directions with no definedness side-condition:
+>
+> - *positive leaf* `p_q ≥ 1 ∧ (q ⋈ k)` — (⇒) if `I` decides the cut true it
+>   obtained a value, so `p̂_q(e) = 1` and the atom holds by P2; (⇐) the
+>   conjunction forces `p̂_q(e) = 1`, so `q` is defined and the atom's truth
+>   IS the interpreter's.
+> - *negated leaf over a SOFT-absent quantity* `p_q < 1 ∨ ¬(q ⋈ k)`, which
+>   is literally `Formula::not` of the above — (⇒) `I` decides the
+>   `reject`/`not` true either because `q` was absent (`p̂_q(e) = 0 < 1`) or
+>   because it was present and failed; (⇐) symmetric, because
+>   `p̂_q(e) < 1` at a REAL event means `p̂_q(e) = 0`, i.e. absent, i.e. the
+>   inner comparison soft-falses, i.e. the negation holds. Multi-quantity
+>   leaves conjoin one literal per possibly-absent quantity and De Morgan
+>   gives the disjunction — exact, because the interpreter's absorbing rule
+>   fires on ANY absent operand.
+> - *negated leaf over a HARD-absent quantity* (event MET / scalars /
+>   trigger flags) is `p_q ≥ 1 ∧ ¬(q ⋈ k)`, NOT the De Morgan form: a
+>   missing event datum raises an evaluation error, `¬Unknown` is Unknown,
+>   and the event is `In` no such region in EITHER polarity. `Encoder::negate`
+>   re-conjoins the presence literal on top of the negation for exactly this
+>   reason, and a unit-propagation peephole then drops the contradicted
+>   `p < 1` disjuncts (which is also what keeps `reject MET > 100`'s bound
+>   on the And-spine for the interval layer).
+>
+> **Consequence: the negated leaf is `is_exact()`.** `Formula::Dual`
+> vanishes from the negation path, so `reject` no longer poisons the
+> `Under` projection — measured as 47 corpus regions regaining exactness,
+> +28 subset claims, and the return of all 18 disjointness proofs withdrawn
+> on 2026-07-25.
+>
+> **L5 is unchanged and strengthened**: presence literals are additional
+> necessary conditions on the And-spine, and `IntervalMap::disjoint_with`
+> now REFUSES a refutation over a possibly-absent quantity unless both
+> regions pin it present — turning E-i into a runtime check on the one
+> path with no certificate and no axiom behind it.
 
 **L2 (Certificate validity).** If nonnegative rational multipliers λ over a
 leaf's constraints cancel every variable and yield a contradictory combined
@@ -278,8 +359,8 @@ the hardening list (§8).
 |---|---|---|
 | P1 (single-unit) | interning is structural by construction; census forces classification | construction |
 | P1m (merge) | `ElemPredInterner` single discipline; opaque-arg AND opaque-sort-key namespacing; **merge-identity invariant suite** (20 tests, structural, solver-free, mutation-validated); **cross-file differential oracle**; goldens `opaque-cut-collision` + the sort-key verdict pin; strengthened S1 pin (asserts solver-less) | construction + test |
-| P2 | `adl-difftest` encoder-vs-interpreter property oracle (100k deep gate); exact-rational core by construction; f64-faithfulness guard | empirical, audited |
-| P3 | per-axiom justifications + `axioms_hold` event tests + prohibited list + sampling gate | empirical, audited |
+| P2 | **definedness half: by construction since Phase B** (presence literals in the leaf; invariant E-i machine-checked over 447 corpus regions); numeric half: `adl-difftest` encoder-vs-interpreter property oracle (100k deep gate, now with an ABSENCE AXIS) + exact-rational core by construction + f64-faithfulness guard | construction + empirical |
+| P3 | **instantiation guarding: by construction since Phase B** (every element-touching family emits a `defined(q) < 1` disjunct, so the pad-with-0 premise is deleted); the STATEMENTS remain physics: per-axiom justifications + `axioms_hold` event tests (absence battery included) + prohibited list + sampling gate | construction + empirical |
 | P4 | certifier replay (L2, proven; kernel adversarially fuzzed) for pairwise disjoint; **bare solver trust for empty/subset/bins** (§8) | proven / partial |
 | P5 | the interpreter itself; difftest witness checks | construction |
 | L1–L5 | this document; `projections_resolve_unknown_and_dual`; 3 compile-fail doctests (executed, still failing for the right reasons); interval unit tests; `Over`-typed `add_over` | proof + types |
@@ -293,7 +374,11 @@ the hardening list (§8).
 2. **A1** for any cross-file verdict whose core uses XSUB/XEQ.
 3. The **interpreter** is the semantics; a bug there moves the target
    itself (mitigated by the uproot/numpy pipeline oracles and the legacy
-   golden battery).
+   golden battery). Since Phase B this includes its DEFINEDNESS behaviour:
+   `QuantityTable::absence` must agree with `Interp::eval_quantity` about
+   which quantities can fail to produce a value, pinned by invariant I-3
+   (`adl-interp/tests/presence_parity.rs`) over a battery that reaches both
+   absence kinds.
 4. `rustc`, `BigRational`, and the kernel's ~1.1k lines (fuzzed).
 5. Verdicts *not* backed by a certificate trust z3's UNSAT (70% of corpus
    PROVEN DISJOINT arrive via the certificate-free interval path — though
@@ -302,52 +387,77 @@ the hardening list (§8).
 
 ## 8. Known gaps this proof does NOT close (hardening list, in order)
 
-1. **The absent-property seam** (P3 box above). Owner decision taken
-   2026-07-25: keep the interpreter's NaN semantics; model definedness on
-   the prover side.
-   - **Phase A — LANDED same day**: `guarded_not` in the encoder replaces
-     any negation whose scope mentions a quantity that can soft-false on
-     absence (everything except collection sizes and MET components, whose
-     absence is a hard error) with the polarity-split hedge
-     `Dual{plus: true, minus: classical ¬}`: the superset side is widened
-     to `true` (an absence event satisfies the negation, and no atom can
-     say "absent"), while the subset side keeps the classical negation,
-     which remains sound (absence makes the negation true regardless; a
-     present value behaves classically; inner Unknowns stay Kleene). This
-     killed the shipping complementary-reject false DISJOINT class at the
-     derivation level (verified: no verdict, no gate reliance) while
-     preserving overlap witnesses and subset inners through rejects
-     (regression pins CE-1/CE-3). Negation placement is canonicalized
-     BEFORE the guard (`not not c → c`; `reject not X → select X`) so
-     logically-equivalent spellings encode identically — pinned
-     mechanically (`guarded_negation_is_rewrite_invariant`) after the
-     metamorphic battery caught the first, blunt version flipping verdicts
-     across rewrites. Cost, measured: 18 of 834 corpus PROVEN DISJOINT
-     (−2.2%) moved to POSSIBLY, each leaning on a negated
-     possibly-absent-property atom; three truly-disjoint/-empty
-     complement-of-one-predicate pins (`features-angular_06`, legacy
-     `not_tag`, CE-7's `¬d0 ∧ d0` emptiness) re-pinned fail-closed with
-     restore markers. No overlap or candidate verdict moved.
-   - **Still open in the positive arm — demonstrated same day**: PROVEN
-     SUBSET / bin coverage consume L1-lower, where an axiom can discharge
-     the inner side over an absent property with no negation involved:
-     `A: size(jets) ≥ 2` vs `B: select BTag(jets[-1]) ≥ 0` ships
-     `subset A-in-B: true` (TAG supplies the atom; battery jets carry
-     btag, so the gate is blind), while the interpreter rejects a legal
-     btag-less-jet event from B. Interim: widen the gate battery with
-     absence-pattern events so every enumerated pattern is gate-held;
-     closed for real by Phase B (TAG cannot discharge `p_q = 1 ∧ atom`
-     without proving presence). PROVEN DISJOINT and PROVEN OVERLAPPING
-     are unaffected: disjointness consumes only L1-upper (positive atoms
-     imply presence; negations are guarded), overlap is
-     interpreter-validated by construction.
-   - **Phase B — OPEN, the real fix**: presence-indicator encoding
-     (`p_q ∈ {0,1}` twin per possibly-absent quantity; cuts encode
-     `p_q = 1 ∧ atom`, so negation is faithful automatically). Restores
-     the complement pins and the 18, makes P2 provable, extends to the
-     positive-cut/axiom residual (the TAG-subset instance, still
-     gate-held). Requires: spec, sampler absence patterns in the oracles,
-     corpus A/B, the full opaque-masking battery.
+1. **The absent-property seam** (P3 box above) — **CLOSED 2026-08-01.**
+   Owner decision taken 2026-07-25: keep the interpreter's NaN semantics;
+   model definedness on the prover side.
+   - **Phase A — landed 2026-07-25, now DELETED.** `guarded_not` /
+     `widen_unsafe` / `negation_safe` replaced any negation over a
+     possibly-absent quantity with the polarity-split hedge
+     `Dual{plus: widen(¬f), minus: ¬f}`. It killed the shipping
+     complementary-reject false DISJOINT at the derivation level, at a cost
+     of 18 of 834 corpus PROVEN DISJOINT and three re-pinned
+     complement-of-one-predicate results. Superseded: the hedge could not
+     tell "two complementary rejects, which really do overlap on an absence
+     event" from "a complement of ONE predicate, which really is disjoint",
+     because neither could be SAID. The presence model says both.
+   - **Phase B — LANDED 2026-08-01** (`SPEC_PRESENCE_MODEL.md`).
+     `Quantity::Present(QuantityId)` is a first-class IR variant, so
+     interning gives `p_q ≡ p_q′ iff q ≡ q′` and P1/P1m carry over
+     untouched. Every cut over a possibly-absent quantity encodes
+     `p_q ≥ 1 ∧ atom`; the presence set comes from a definedness FOOTPRINT
+     that survives algebraic cancellation. `QuantityTable::absence`
+     classifies each quantity `Never | Soft | Hard` and is the single source
+     for both the encoder chokepoint and the axiom guards, with an
+     `ir_census` arm forcing every future variant to answer.
+     Discharged: P2's definedness half, P3's pad-with-0 premise, L1's
+     side-condition (→ L1′), and the 2026-07-25 escalation in both arms.
+     Live false claims killed, each verified through `smash2 run` on the
+     counterexample event before and after:
+     | | shape | was |
+     |---|---|---|
+     | K1 | `size(jets) >= 2` vs `select BTag(jets[-1]) >= 0` | `subset` shipped (TAG entails `btag >= 0`) |
+     | K2 | `size(eles) >= 1` vs `select abs(D0(eles[0])) >= -5` | `subset` shipped (`abs ⋈ negative` folded to `true`) |
+     | K4 | `size(jets) >= 1` vs `select HT >= 0` | `subset` shipped (NNEG on an event scalar) |
+     | K6 | `size(jets) >= 1` vs `select MET >= 0` | `subset` shipped (NNEG on MET) |
+     | K7 | `features-num_09.adl`: `MET > 60` vs `MET + HT - HT > 50` | `subset` shipped (HT cancelled out of the atom) |
+     All five are now UNDERIVABLE with `refutations: 0` — prevention, not
+     gate reliance. K4/K6/K7 are a DEVIATION from the spec, which listed
+     event scalars as total; the evidence is that they shipped, and that
+     the gates provably cannot see them (the interpreter answers Unknown,
+     never `false`, so a subset counterexample search can never fire).
+   - **What is NOT closed by this.** The premises that remain empirical are
+     unchanged in character: A1 (§3), the PHYSICAL truth of each axiom
+     family's statement, and the structural claim that the encoder emits
+     the shapes L1′ assumes — the last of which is now machine-checked
+     (E-i) rather than reviewed.
+
+1b. **The out-of-fragment analogue (NEW, OPEN — found 2026-08-01 while
+   validating Phase B).** `Quantity::Size(C)` is classified total, but
+   materializing `C` can raise a HARD evaluation error when `C`'s filter
+   predicate is out of fragment, so the interpreter decides NOTHING for any
+   region reading it. Repro (ships today, `refutations: 0`, both regions
+   reported `exact`):
+
+   ```adl
+   object jets   take Jet
+   object weird  take Jet
+     select bdt > 0.5          # `bdt` is not a declared external
+   region A  select size(jets) >= 1
+   region B  select size(weird) >= 0
+   ```
+
+   `subset A within B` is claimed; `smash2 run` gives `A -> PASS`,
+   `B -> ERROR: unresolved identifier 'bdt'`, so B is `In` for NO event and
+   the claim is false. This is the SAME false-claim SHAPE as K4/K6 (a fact
+   discharging a cut over a quantity the interpreter cannot value) but a
+   DIFFERENT seam: out-of-fragment construct, not absent data. The fix has
+   the same shape too — `absence(Size(c))` must return `Hard` when `c`'s
+   filter chain contains an `Unsupported` predicate — but `QuantityTable`
+   does not currently carry fragment tags, so it needs the unsupported
+   `ElemPredId` set plumbed into the table, and its own corpus A/B and
+   adversarial pass. Deliberately NOT folded into Phase B: mixing it in
+   would have made the presence-model diff unverifiable.
+
 2. **Certify the other UNSAT shapes** (empty, subset, bins, and the XSUB
    derivation frames): mechanical extensions of `certify_disjoint`'s
    pattern (audit F3), removing bare-solver trust everywhere.
@@ -370,3 +480,26 @@ dischargeable by construction or mathematics are so discharged (P1, P1m,
 P4-pairwise, P5, L1–L5); the empirical premises (P2, P3) are exactly the
 ones the always-on batteries audit; and as of today the one layer that had
 no randomized audit — cross-file identity — has two.*
+
+---
+
+*Addendum, 2026-08-01 (Phase B).* The document's own §8 item 1 is closed.
+Definedness is no longer a premise about the event but a conjunct of the
+formula: P2 loses its definedness side-condition, P3 loses its pad-with-0
+premise, and L1 becomes L1′ with an exact leaf case in both directions.
+Five live false claims died with it (K1, K2, K4, K6, K7 — each verified
+through `smash2 run` on the counterexample event), and the 18 disjointness
+proofs Phase A had to withdraw came back, all certified.
+
+Two things are honest to say alongside that. **First**, closing a seam is
+not the same as proving the encoder: what E-i checks is that the SHAPES
+L1′ assumes are the shapes the encoder emits, over every corpus region —
+which converts a code-review property into a machine-checked one, and
+converts P2 from "audited" to "audited on a strictly smaller surface".
+**Second**, validating Phase B turned up a NEW open false-claim class of
+the same shape through a different seam (§8 item 1b: out-of-fragment filter
+predicates make `size(C)` a hard error, while the analyzer treats it as
+total). "No known false-claim class" was true of the absent-property seam
+for about as long as it took to look one seam over. The honest claim is the
+narrower one: the absent-property seam is closed, by construction, with the
+machinery to close its analogue already built.*

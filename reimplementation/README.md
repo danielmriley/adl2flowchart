@@ -76,6 +76,13 @@ and a reference interpreter as the test oracle — all from commit one.
   assumptions, and each has a test.
 - **The interpreter is the meaning.** If the verifier and the interpreter
   ever disagree on a satisfying event, that is a release-blocking bug.
+- **A quantity may have no value, and the encoding must be able to say
+  so.** The interpreter's valuation is partial — a missing object property
+  makes a comparison a decidable FALSE, a missing event-level datum makes
+  it Unknown — while a prover reasons over total valuations. Every cut over
+  a possibly-absent quantity therefore encodes `defined(q) ≥ 1 ∧ atom`, so
+  absence is expressible instead of being modelled as some junk value two
+  regions then silently share.
 
 ---
 
@@ -780,10 +787,22 @@ each piece:
 |---|---|---|
 | encoder (HIR → formula) | that the formula *means* the regions | differential oracle, fold-vs-f64 unit nets, sampling + refute gates |
 | polarity / over-approximation | that R⁺ really is a superset | type-enforced construction + sampling/refute gates |
-| axiom catalog | the background physics handed to the solver | per-axiom event tests, metamorphic battery, sampling/refute gates |
+| axiom catalog | the background physics handed to the solver | per-axiom event tests (including an ABSENCE battery), metamorphic battery, sampling/refute gates. The *instantiation* is no longer trusted: every element-touching family is emitted through one guard chokepoint that makes the instance vacuous wherever the interpreter obtains no value |
 | the *meaning* of a reconciliation fact — that element-wise nesting orders the sizes | how a certified subset becomes `size(A) ≤ size(B)` | XSUB/XEQ catalog justification + gates. The fact's own *derivation* is no longer trusted: it is certified before the fact is asserted, and travels inside the `--combine` bundle |
 | `adl_sema::Rat` + the certify replay kernel | that certificate checking is itself correct | property tests (sat-by-construction never certifies, tamper suite), z3 agreement |
 | reference interpreter | the meaning of every region (overlap witnesses, sampling) | uproot/numpy pipeline oracles, legacy golden battery |
+
+**Definedness is no longer in this table.** Until 2026-08-01 the encoder
+row silently also carried "every quantity the atom mentions has a value at
+this event" — an assumption that is false for a property-less element, and
+that shipped false `subset` claims (a `size(jets) >= 2` region "inside"
+`select BTag(jets[-1]) >= 0`; the same over `HT`, `MET`, and an
+`abs(x) >= -5` that folded to `true`). Presence indicators moved it out of
+the trusted column and into the formula, and the shape the argument needs
+— no atom over a possibly-absent quantity outside a presence-guarded
+context — is machine-checked over every corpus region rather than reviewed.
+The known analogue that is still open is `size(C)` for a `C` whose filter
+predicate is out of fragment (SOUNDNESS_PROOF §8 item 1b).
 
 **PROVEN OVERLAPPING** is interpreter-validated event evidence — the SAT
 side's product claim. **PROVEN DISJOINT** is certified unsat of the

@@ -1543,13 +1543,21 @@ pub fn encode_elem_pred_generic(
 /// Reconciliation must fail closed. Opaque externals are NOT peers: they
 /// intern to a free quantity (no guarded axiom), so they stay live as Unknown.
 fn references_concrete_peer(table: &QuantityTable, node: &HNode) -> bool {
-    if let HKind::Quantity(q) = &node.kind {
-        match table.quantity(*q) {
-            Quantity::ElemProp { .. } | Quantity::AngularSep { .. } | Quantity::Size(_) => {
-                return true;
-            }
-            _ => {}
+    fn concrete(table: &QuantityTable, q: QuantityId) -> bool {
+        match table.quantity(q) {
+            Quantity::ElemProp { .. } | Quantity::AngularSep { .. } | Quantity::Size(_) => true,
+            // `defined(pT(Jet[1]))` is exactly as much of a leak as
+            // `pT(Jet[1])`: the subject's id carries guarded base-frame
+            // axioms the subset frame never replays (SPEC_PRESENCE_MODEL
+            // §8.4).
+            Quantity::Present(inner) => concrete(table, *inner),
+            Quantity::EventScalar(_) | Quantity::ExternalFn { .. } => false,
         }
+    }
+    if let HKind::Quantity(q) = &node.kind
+        && concrete(table, *q)
+    {
+        return true;
     }
     node.children()
         .iter()

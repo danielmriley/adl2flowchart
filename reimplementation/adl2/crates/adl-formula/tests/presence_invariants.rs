@@ -265,3 +265,34 @@ fn presence_literals_are_plain_inequalities_at_one() {
     walk(&hir.table, &regions[0].formula, &mut seen);
     assert!(seen >= 2, "expected presence literals, found {seen}");
 }
+
+/// **Cost pin.** SPEC_PRESENCE_MODEL §10 R-c estimated "roughly a 1.8x
+/// growth in declared variables" for the largest realistic corpus file.
+/// This measures it, and pins an upper bound so a future encoder change
+/// that starts interning presence indicators indiscriminately is visible in
+/// the diff rather than only in the solver's wall clock.
+#[test]
+fn presence_indicator_cost_on_the_largest_corpus_file() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../examples/CMS/CMS-SUS-16-033_Delphes.adl");
+    let (hir, regions) = encode_file(&path);
+    assert!(regions.len() >= 13, "expected the 13-region file");
+    let total = hir.table.quantities().len();
+    let present = hir
+        .table
+        .quantities()
+        .iter()
+        .filter(|q| matches!(q, Quantity::Present(_)))
+        .count();
+    let base = total - present;
+    let ratio = total as f64 / base as f64;
+    eprintln!(
+        "CMS-SUS-16-033: {base} quantities + {present} presence indicators = {total} ({ratio:.2}x)"
+    );
+    assert!(present > 0, "the file must intern presence indicators");
+    assert!(
+        ratio < 2.0,
+        "presence indicators must not more than double the declared set: {ratio:.2}x \
+         ({base} + {present})"
+    );
+}

@@ -202,6 +202,21 @@ pub struct IntervalDisjoint {
     pub parts: Vec<RefutingPart>,
 }
 
+/// What the caller knows about a quantity's definedness, for
+/// [`IntervalMap::disjoint_with`]'s belt-and-braces check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// Defined at every loader-valid event — no indicator exists or is
+    /// needed, so an interval refutation over it stands on its own.
+    Total,
+    /// Possibly absent; `defined(q)` is this id, and BOTH regions must pin
+    /// it present for the refutation to be about a value that exists.
+    Indicator(QuantityId),
+    /// Possibly absent and no indicator was ever interned — so nothing can
+    /// have pinned it present. Fail closed.
+    Unpinned,
+}
+
 /// Per-region interval summary from the And-spine of the
 /// over-projections of its statements.
 #[derive(Debug, Clone, Default)]
@@ -293,20 +308,68 @@ impl IntervalMap {
             .map(|(q, iv)| SelfEmpty::EmptyInterval(*q, Box::new(iv.clone())))
     }
 
-    /// First quantity on which the two regions' spines cannot intersect.
+    /// Does this map pin `q` PRESENT — i.e. does the spine carry
+    /// `defined(q) >= 1`?
     #[must_use]
-    pub fn disjoint_with(&self, other: &IntervalMap) -> Option<IntervalDisjoint> {
+    fn pins_present(&self, present_id: QuantityId) -> bool {
+        self.by_quantity
+            .get(&present_id)
+            .and_then(|iv| iv.lo.as_ref())
+            .is_some_and(|b| b.value >= Rat::one())
+    }
+
+    /// First quantity on which the two regions' spines cannot intersect.
+    ///
+    /// # The presence check (belt and braces)
+    ///
+    /// This path has the NARROWEST premise set in the engine — no axiom, no
+    /// solver, no certificate beyond the two bounds themselves — and it is
+    /// where the complementary-reject false PROVEN DISJOINT shipped: two
+    /// regions that both accept a property-less event, each recording a
+    /// bound on the SAME junk value, "refuting" each other.
+    ///
+    /// Invariant E-i says that can no longer happen — a `q`-bound reaches the
+    /// spine only conjoined with `defined(q) >= 1`, and a region that does
+    /// not commit to presence contributes no `q`-bound at all (a negated leaf
+    /// is a disjunction, which the spine skips). This turns E-i from a
+    /// code-review property into a RUNTIME check on exactly that path: if a
+    /// possibly-absent quantity's bounds refute but either side fails to pin
+    /// it present, refuse the shortcut and let the solver decide.
+    ///
+    /// It costs nothing in precision — by the argument above the failing side
+    /// has no bound to refute with — and everything it refuses is still
+    /// reachable through the solver.
+    #[must_use]
+    pub fn disjoint_with(
+        &self,
+        other: &IntervalMap,
+        presence: &dyn Fn(QuantityId) -> Presence,
+    ) -> Option<IntervalDisjoint> {
         for (q, a) in &self.by_quantity {
-            if let Some(b) = other.by_quantity.get(q)
-                && let Some((lo, hi)) = a.refutation(b)
-            {
-                return Some(IntervalDisjoint {
-                    q: *q,
-                    a: a.clone(),
-                    b: b.clone(),
-                    parts: vec![part(lo), part(hi)],
-                });
+            let Some(b) = other.by_quantity.get(q) else {
+                continue;
+            };
+            let Some((lo, hi)) = a.refutation(b) else {
+                continue;
+            };
+            match presence(*q) {
+                Presence::Total => {}
+                Presence::Indicator(p) => {
+                    if !(self.pins_present(p) && other.pins_present(p)) {
+                        continue;
+                    }
+                }
+                // Possibly absent with NO interned indicator: nothing in
+                // either region can have pinned it present, so E-i is
+                // violated somewhere. Refuse — fail closed.
+                Presence::Unpinned => continue,
             }
+            return Some(IntervalDisjoint {
+                q: *q,
+                a: a.clone(),
+                b: b.clone(),
+                parts: vec![part(lo), part(hi)],
+            });
         }
         None
     }
@@ -349,14 +412,14 @@ mod tests {
             Formula::And(vec![atom(0, Rel::Gt, 100.0), atom(0, Rel::Lt, 200.0)]),
         );
         let b = map("B", atom(0, Rel::Gt, 300.0));
-        assert!(a.disjoint_with(&b).is_some());
+        assert!(a.disjoint_with(&b, &|_| Presence::Total).is_some());
         assert!(a.self_empty().is_none());
 
         // Touching closed bounds intersect; strict ones do not.
         let c = map("C", atom(0, Rel::Ge, 200.0));
-        assert!(a.disjoint_with(&c).is_some(), "a is strict at 200");
+        assert!(a.disjoint_with(&c, &|_| Presence::Total).is_some(), "a is strict at 200");
         let d = map("D", atom(0, Rel::Le, 100.0));
-        assert!(a.disjoint_with(&d).is_some(), "a is strict at 100");
+        assert!(a.disjoint_with(&d, &|_| Presence::Total).is_some(), "a is strict at 100");
     }
 
     #[test]
@@ -366,7 +429,7 @@ mod tests {
             Formula::And(vec![atom(0, Rel::Gt, 100.0), atom(0, Rel::Lt, 200.0)]),
         );
         let b = map("B", atom(0, Rel::Gt, 300.0));
-        let d = a.disjoint_with(&b).expect("disjoint");
+        let d = a.disjoint_with(&b, &|_| Presence::Total).expect("disjoint");
         assert_eq!(d.parts.len(), 2);
         // Lower bound comes from B (300 beats 100), upper bound from A (200).
         assert_eq!(d.parts[0].src(), &name("B"));
@@ -411,5 +474,59 @@ mod tests {
         let e = f.self_empty().expect("false spine");
         assert_eq!(e.parts(), vec![RefutingPart::Whole(name("F"))]);
         assert_eq!(e.human(), "a cut is constant-false");
+    }
+}
+
+#[cfg(test)]
+mod presence_guard_tests {
+    use super::*;
+    use adl_formula::Formula;
+
+    fn atom(q: u32, rel: Rel, k: i64) -> Formula {
+        Formula::Atom(LinAtom::single(QuantityId(q), rel, Rat::from_i64(k)))
+    }
+
+    fn map(src: &str, f: Formula) -> IntervalMap {
+        let mut m = IntervalMap::default();
+        m.add_over(&AssertName::new(src.to_owned()), &f.over());
+        m
+    }
+
+    /// Q0 is a possibly-absent property with indicator Q9. Two bounds that
+    /// refute on Q0 are accepted only when BOTH regions pin Q9 present —
+    /// the runtime form of invariant E-i on the one path with no
+    /// certificate and no axiom behind it.
+    #[test]
+    fn refutation_over_a_possibly_absent_quantity_needs_both_sides_present() {
+        let p = |q: QuantityId| {
+            if q == QuantityId(0) {
+                Presence::Indicator(QuantityId(9))
+            } else {
+                Presence::Total
+            }
+        };
+        // Both pin presence: accepted.
+        let a = map("A", Formula::And(vec![atom(9, Rel::Ge, 1), atom(0, Rel::Gt, 10)]));
+        let b = map("B", Formula::And(vec![atom(9, Rel::Ge, 1), atom(0, Rel::Lt, 5)]));
+        assert!(a.disjoint_with(&b, &p).is_some());
+
+        // One side does not commit to presence: refused, even though the
+        // numeric bounds still fail to intersect.
+        let c = map("C", atom(0, Rel::Lt, 5));
+        assert!(
+            a.disjoint_with(&c, &p).is_none(),
+            "a bound on a quantity nobody proved present must not refute"
+        );
+
+        // No indicator interned at all: fail closed.
+        assert!(
+            a.disjoint_with(&b, &|_| Presence::Unpinned).is_none(),
+            "an unpinnable possibly-absent quantity must refuse the shortcut"
+        );
+
+        // A total quantity is unaffected.
+        let d = map("D", atom(1, Rel::Gt, 10));
+        let e = map("E", atom(1, Rel::Lt, 5));
+        assert!(d.disjoint_with(&e, &p).is_some());
     }
 }

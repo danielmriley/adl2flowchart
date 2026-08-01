@@ -1,6 +1,7 @@
 # ADL2 presence (definedness) model — Phase B
 
-Status: DESIGN v1.0, 2026-07-30. Closes `SOUNDNESS_PROOF_2026-07-25.md`
+Status: **LANDED 2026-08-01** (design v1.0, 2026-07-30). Closes
+`SOUNDNESS_PROOF_2026-07-25.md`
 §8 item 1 ("the absent-property seam") in both arms and **deletes** its
 Phase-A interim hedge. Written for the post-M3 world (`Rat` events,
 `NumVal{Exact,Approx}` interpreter — see the `adl2-rational-numeric`
@@ -9,6 +10,85 @@ skill). Paths are relative to `reimplementation/adl2/` unless absolute.
 Reading order: `SPEC_ANALYSIS.md` §1–§4 (what the verifier claims),
 `SOUNDNESS_PROOF_2026-07-25.md` §3–§5 (the premises this spec discharges),
 then this file.
+
+---
+
+## Implementation record (2026-08-01) — where the build DIVERGED
+
+The design landed in five commits (`gate:`, `ir:`, `soundness:`, `axioms:`
+×2). Everything below is a deliberate departure from this document; the
+reasons are in the code and the commit messages, and each is testable.
+
+**D1 — event scalars are possibly-absent (§3.4).** The spec lists
+`MetProp`, `EventVar` and `Trigger` as total, on the argument that a hard
+`EvalError` makes the event "`In` no region at all". That is false ACROSS
+regions, and it was not academic: `A: select size(jets) >= 1` vs
+`B: select HT >= 0` (and the same with `MET`) shipped `subset A-in-B` with
+`refutations: 0`, while an event with a jet and no `HT` scalar is In A and
+In no region reading HT. NNEG supplies the `>= 0` exactly as TAG supplies
+the spec's own running example P1. The gates provably cannot hold this
+class — the interpreter answers Unknown, never `false`, so a subset
+counterexample search never fires.
+
+**D2 — two absence KINDS, and negation is not uniform.** D1 forces the
+distinction the spec did not need: absent property ⇒ comparison FALSE (so
+`reject` HOLDS, De Morgan is exactly right); absent event datum ⇒ Unknown
+(so the event is In no such region in EITHER polarity, and the presence
+literal must be CONJOINED THROUGH the negation, not flipped by it).
+`Absence::{Never, Soft, Hard}` records it; `Encoder::negate` implements it,
+with a unit-propagation peephole that drops the contradicted `p < 1`
+disjuncts so `reject MET > 100` keeps its `MET <= 100` bound on the
+And-spine (the spec's §7b concern, answered without losing the bound).
+
+**D3 — presence comes from a definedness FOOTPRINT, not the term map
+(§3.3).** `LinExpr.mentioned` never cancels. This subsumes the spec's
+by-hand fold arms (the `abs ⋈ negative` arm is still handled explicitly,
+since nothing is linearized there) and closed one more live false claim:
+`features-num_09.adl` shipped `subset R_plain_met within R_cancel_met`
+because `MET + HT − HT > 50` cancels HT out of the ATOM while the
+interpreter still evaluates it.
+
+**D4 — I-2 does not apply (§11).** `Formula::Atom` is not constructed at a
+single site, because the guard is applied at the COMPARISON level where the
+source nodes are still in hand. The checked invariant is I-1, a semantic
+walker over every corpus region (447 of them), which is strictly stronger
+than the grep.
+
+**D5 — §7(a) is unreachable.** "One region requires the quantity present,
+the other requires it absent" cannot be decided on the interval fast path:
+ADL has no way to SELECT absence, so `p < 1` only ever arrives as one
+disjunct of a negated leaf, and the spine skips disjunctions by
+construction. Pinned as such (`examples/golden/presence_04_*.adl` carries a
+`GOLDEN-NOSOLVER … POSSIBLY` line). The §7 belt-and-braces guard IS
+implemented, and costs zero corpus precision as predicted.
+
+**D6 — step 5 recovers nothing, because step 4 lost nothing.** The spec
+expected a precision dip from axiom guarding, recovered by EPRES. The
+measured dip was ZERO — the spec's own unit-propagation argument, confirmed
+on 1898 pairs — so EPRES is insurance rather than recovery. It is
+implemented anyway (with the fail-closed `requires_present` and its
+18-shape table test) because it keeps ORD/IDOM discharging in files that
+index a pT cut.
+
+**D7 — steps 3 and 6a merged.** `guarded_not` is dead the moment the
+chokepoint exists; carrying a dead hedge through three commits would have
+made the diff unreadable. The restore pins (R1/R2/R3) and the recovery
+measurement are in their own place.
+
+**Measured against §9's acceptance criteria.** PROVEN DISJOINT 794 → 813
+(+18 = exactly the withdrawn set, +1 new golden file), `certified` 100% at
+every step, sampling and refute refutations 0 corpus-wide, PROVEN
+OVERLAPPING unchanged, subset 219 → 247 (recovered inners through now-exact
+rejects; one WITHDRAWN, which was false). Cost: corpus sweep 70 s → 105 s
+(1.5×), 3-file `--cross` 3.2 s → 8.4 s (2.6×) with identical verdicts,
+declared quantities +60% on the largest corpus file (the spec estimated
+1.8×). Certificate branch budget was never the binding constraint, so the
+spec's §5 mitigation was not needed.
+
+**Found while validating, NOT fixed here.** `size(C)` is classified total,
+but materializing `C` hard-errors when its filter predicate is out of
+fragment — the same false-claim shape through a different seam. Recorded as
+SOUNDNESS_PROOF §8 item 1b with a repro.
 
 ---
 

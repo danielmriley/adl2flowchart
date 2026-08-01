@@ -91,6 +91,24 @@ expression: stdout(&out)
       "statement": "pt(F[i]) <= pt(P[i]) for filtered F of P",
       "assumption": "ORD + SUB",
       "instances": 1
+    },
+    {
+      "id": "PRES",
+      "statement": "0 <= defined(q) <= 1 for every presence indicator",
+      "assumption": "none",
+      "instances": 2
+    },
+    {
+      "id": "PDEF",
+      "statement": "defined(C[i].x) >= 1 => size(C) > i (front index i; back index -k gives size(C) >= k)",
+      "assumption": "none",
+      "instances": 2
+    },
+    {
+      "id": "EPRES",
+      "statement": "size(F) > i => defined(F[i].x) >= 1, for a filtered F whose filter predicate is FALSE on every element lacking x",
+      "assumption": "take = filter",
+      "instances": 1
     }
   ],
   "internal_diagnostics": []

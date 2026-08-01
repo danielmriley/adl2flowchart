@@ -58,7 +58,9 @@ literals, event values, sizes, `+ − × ÷`, neg/abs/min/max stay `Exact`;
 irrationals (`sqrt`, `dR/dPhi/dEta`, LV kinematics, `^`) are `Approx`;
 a mixed comparison converts Exact→f64 at the comparison edge. Comparisons
 over an ABSENT property are a decidable soft `false` (the ROOT/C++ NaN
-convention) — the one remaining semantic seam, closed by Phase B.
+convention); a missing event-level datum (MET vector, event scalar, trigger
+flag) is a HARD error, so the event is `In` no region that reads it. The
+prover models both — see §3.
 
 ## 3. Encoding: HIR → three-valued formulas → Over/Under
 
@@ -79,14 +81,28 @@ Key encoding disciplines, each earned by a counterexample:
   bit-for-bit. Approximate trees keep the conservative old gate
   (pow2 scaling only, `fl(k)` thresholds) or intern as structure-keyed
   opaque scalars.
-- **Guarded negation** (interim until Phase B): a `not`/`reject` whose
-  scope mentions a soft-false-able quantity becomes
-  `Dual{plus: widen(¬f), minus: ¬f}` — the superset keeps only
-  total-quantity constraints (absence satisfies the negation; sizes and
-  MET survive the widen), the subset keeps the full classical negation
-  (sound under absence). Negation placement is canonicalized first
-  (`not not c → c`, `reject not X → select X`) so equivalent spellings
-  encode identically — pinned at the formula level.
+- **Presence (definedness) modelling (Phase B, 2026-08-01)**: the prover
+  reasons over TOTAL rational valuations while the interpreter's is
+  PARTIAL, so the encoding gained a way to say "this quantity has a value".
+  Every cut over a possibly-absent quantity encodes `p_q ≥ 1 ∧ atom`, where
+  `p_q` is a first-class interned quantity (`Quantity::Present`) whose
+  meaning is fixed against the interpreter: 1 iff `eval_quantity` yields a
+  value. `QuantityTable::absence` classifies each quantity
+  `Never | Soft | Hard` and is the single source for the encoder chokepoint
+  AND the axiom guards.
+  Negation follows: a SOFT-absent leaf negates by plain De Morgan to
+  `p < 1 ∨ ¬atom` — "absent, or present and failing", which is exactly the
+  interpreter's rule, so `reject` is EXACT and no longer poisons the
+  `Under` projection. A HARD-absent leaf keeps its presence literal
+  CONJOINED through the negation, because `¬Unknown` is Unknown. The
+  Phase-A `Dual` hedge is deleted; the placement canonicalizations
+  (`not not c → c`, `reject not X → select X`) stay and the
+  rewrite-invariance pin is now over presence shapes.
+  The definedness footprint survives algebraic cancellation
+  (`LinExpr.mentioned`): `MET + HT − HT > 50` still requires HT, because
+  the interpreter evaluates it.
+  Invariant **E-i** — no atom over a possibly-absent quantity outside a
+  presence-guarded shape — is machine-checked over every corpus region.
 
 ## 4. The engine: three proof paths, one demotion direction
 
@@ -96,7 +112,9 @@ Per pair (canonical query order, so swap(A,B) cannot change results):
    `IntervalMap` (single-quantity bounds with **provenance** — which named
    assert produced each bound). Two disjoint intervals on the SAME
    quantity, or an empty self-interval, decide DISJOINT/EMPTY without the
-   solver — and since W2a emit a **closed-form Farkas certificate**
+   solver — and since Phase B a refutation over a possibly-absent quantity
+   is accepted only if BOTH regions also pin it PRESENT, which makes E-i a
+   runtime check on the one path with no certificate behind it — and since W2a emit a **closed-form Farkas certificate**
    (`certify_bounds`: the two bounds, multipliers `1/|a|`, Motzkin
    strictness), accepted only if the trusted replay kernel agrees.
 2. **Solver path.** The persistent z3 child (one per solver instance;
@@ -121,10 +139,19 @@ domain-clamped) can only weaken verdicts. No code path promotes.
 
 ## 5. Axioms and cross-file reconciliation
 
-Sixteen axiom families (ORD, SZ0, SUB, UNI, NNEG, EPRED, IDOM, TAG, …),
+Nineteen axiom families (ORD, SZ0, SUB, UNI, NNEG, EPRED, IDOM, TAG, PRES,
+PDEF, EPRES, …),
 each with a written physical justification, an assumption tag surfaced in
-reports, and an events test; a prohibited list documents the plausible
-axioms that testing killed. Under `--cross`, reconciliation lowers
+reports, and an events test (now including an ABSENCE battery — property-less
+elements and events with no MET/HT/trigger block); a prohibited list
+documents the plausible axioms that testing killed. Every element-touching
+family is emitted through one guard chokepoint that makes the instance
+VACUOUS wherever the interpreter obtains no value, which is what deletes the
+old "canonical pad-with-0 extension satisfies the fact" premise. Three of
+the families are presence bookkeeping: PRES (`0 ≤ defined(q) ≤ 1`), PDEF
+(presence ⇒ element existence) and EPRES (membership in a filtered
+collection PROVES the filtered-on property present, via a fail-closed
+syntactic recogniser). Under `--cross`, reconciliation lowers
 same-base filtered collections onto one generic element and proves
 refinement (XSUB) or equivalence (XEQ) **before** any size fact is
 asserted — and since W2a each derived fact carries its own certified
@@ -157,23 +184,40 @@ does not vouch for.
 
 ## 7. What still stands between here and "no known false-claim class"
 
-Exactly one seam: the **absent-property positive arm** — an axiom (TAG)
-or a constant fold (`abs(x) ≥ negative`) can discharge a subset/coverage
-inner side over a property the event may lack; the interpreter's
-soft-false then disagrees. Held today by the gates where the battery's
-absence patterns reach; closed for real by the presence model
-(SPEC_PRESENCE_MODEL.md): per-quantity presence indicators make every
-cut encode as `p_q ≥ 1 ∧ atom`, negation becomes faithful automatically,
-the guarded-negation machinery is deleted, and the withdrawn
-complement-of-one-predicate proofs return.
+The **absent-property seam is closed** (Phase B, 2026-08-01): presence
+indicators make definedness a conjunct of the formula instead of a premise
+about the event, the guarded-negation hedge is deleted, and the withdrawn
+complement-of-one-predicate proofs returned. Five live false claims died
+with it, each verified through `smash2 run` on its counterexample event
+before and after — the TAG-subset and `abs ⋈ negative` folds the previous
+edition of this section named, plus three found while validating the fix
+(`select HT >= 0`, `select MET >= 0`, and a cancelled `MET + HT − HT`).
+
+Validating it turned up a NEW seam of the SAME false-claim shape, still
+OPEN, one layer over: `size(C)` is treated as total, but materializing `C`
+raises a HARD evaluation error when `C`'s filter predicate is out of
+fragment, so `select size(weird) >= 0` is `In` for no event while SZ0
+discharges the cut and a `subset` ships. It is not the absent-property
+class — it is out-of-fragment data-independent refusal — and it needs the
+unsupported-predicate set plumbed into `QuantityTable` before `absence` can
+classify it. Recorded as SOUNDNESS_PROOF §8 item 1b with the repro.
+
+The honest statement is therefore the narrow one: **the absent-property
+seam is closed by construction**, and the machinery to close its analogue
+is built and waiting.
+
+Cost, measured: presence roughly halves again the headroom, not the
+verdicts. Corpus sweep 70 s → 105 s (1.5×); the 3-file `--cross` 3.2 s →
+8.4 s (2.6×), with identical verdicts; declared quantities on the largest
+corpus file +60%. Every proven tier stayed 100% certified.
 
 ## 8. The premise ledger (proof §3, post-campaign status)
 
 | Premise | Status |
 |---|---|
 | P1/P1m — quantity identity | by construction (interner + namespacing), oracle-audited |
-| P2 — leaf faithfulness (arithmetic) | **by construction since M3/M4** (shared `num`); definedness residual → Phase B |
-| P3 — axiom truth | domain enforced by the loader; families tested; instantiation guarding → Phase B |
+| P2 — leaf faithfulness | arithmetic **by construction since M3/M4** (shared `num`); definedness **by construction since Phase B** (presence literals in the leaf; E-i machine-checked over 447 corpus regions) |
+| P3 — axiom truth | domain enforced by the loader; families tested (absence battery included); instantiation **guarded by construction since Phase B** — the pad-with-0 premise is deleted |
 | P4 — refutation validity | certificate-replayed on every proven tier |
 | P5 — witness validity | definitional (interpreter accepts) |
 | A1 — base-name identity | declared, per-claim surfaced, only in XSUB/XEQ |

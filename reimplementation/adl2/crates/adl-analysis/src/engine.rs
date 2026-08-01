@@ -751,7 +751,20 @@ impl Engine<'_> {
         //    here, but the refutation is still a two-atom Farkas proof, so it
         //    is certified and bundled like any other (M2: no proven tier
         //    without a receipt).
-        if let Some(d) = ca.intervals.disjoint_with(&cb.intervals) {
+        // The presence lookup the interval layer needs: for a possibly-absent
+        // quantity, the id of its indicator (already interned by the encoder,
+        // so a miss means nothing constrains it and the check refuses).
+        let presence_of = |q: QuantityId| -> crate::interval::Presence {
+            use crate::interval::Presence;
+            if !self.hir.table.may_be_absent(q) {
+                return Presence::Total;
+            }
+            self.hir
+                .table
+                .quantity_id(&Quantity::Present(q))
+                .map_or(Presence::Unpinned, Presence::Indicator)
+        };
+        if let Some(d) = ca.intervals.disjoint_with(&cb.intervals, &presence_of) {
             report.kind = VerdictKind::ProvenDisjoint;
             report.reason = format!(
                 "intervals cannot intersect on {}: {} requires {}, {} requires {}",
@@ -2154,7 +2167,7 @@ impl Engine<'_> {
             .self_empty()
             .map(|e| e.parts())
             .or_else(|| b.self_empty().map(|e| e.parts()))
-            .or_else(|| a.disjoint_with(&b).map(|d| d.parts));
+            .or_else(|| a.disjoint_with(&b, &|_| crate::interval::Presence::Total).map(|d| d.parts));
         let Some(parts) = parts else {
             return false;
         };

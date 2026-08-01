@@ -126,6 +126,12 @@ Consequences for anyone touching this core:
 
 4. **Opaque-quantity masking in witness validation** — see next section.
 
+4b. **Modelling a quantity the interpreter cannot value.** An atom over a
+   quantity that has no value at an event constrains a junk variable the
+   two sides of a proof then silently share. Structurally prevented for
+   absent properties and absent event data (presence model, below); still
+   live for `size(C)` over an out-of-fragment filter.
+
 5. **Encoder/interpreter divergence** — guarded by `adl-difftest`'s
    property oracle. If the encoder accepts an event the interpreter rejects (or
    vice versa) the SAT-side net is breached.
@@ -163,6 +169,52 @@ Invariants that layer must keep — verify after any edit to `eval.rs`:
   "fix" it by adding distribution unless you re-run the full adversarial battery;
   the risk is reintroducing a masking path.
 
+## The presence (definedness) model — read this before touching negation
+
+The interpreter's valuation is **partial**; a prover's is **total**. That
+gap was the source of the last false-PROVEN class, and it is now closed by
+construction rather than hedged.
+
+- `QuantityTable::absence(q) -> Absence {Never, Soft, Hard}`
+  (`adl-sema/src/quantity.rs`) is **THE single source** for "can this
+  quantity fail to have a value?", used by the encoder chokepoint AND the
+  axiom guards. `ir_census` forces every future `Quantity` variant to
+  answer. Do not add a second copy of this judgement anywhere.
+  - **Soft** (element properties, angular separations, opaque externals):
+    absent ⇒ the enclosing comparison is a decidable **FALSE**, so a
+    `reject` over it **HOLDS**.
+  - **Hard** (MET vector, event scalars, trigger flags): absent ⇒ hard
+    evaluation error ⇒ the statement is Unknown ⇒ the event is `In` no such
+    region **in either polarity**.
+  - **Never**: collection sizes and the indicators themselves.
+- Cuts encode `p_q >= 1 ∧ atom`, where `p_q` is `Quantity::Present(q)`.
+  Presence literals are **plain inequalities at 1** — never `Eq`, never
+  `Ne`, no integrality dependence (Farkas- and interval-friendly).
+- Negation: a SOFT leaf negates by plain De Morgan (`p < 1 ∨ ¬atom` — the
+  interpreter's rule, exactly), so `reject` is EXACT. A HARD leaf keeps its
+  presence literal **conjoined through** the negation (`Encoder::negate`),
+  because `¬Unknown` is Unknown. **Do not "simplify" `negate` into
+  `Formula::not`** — that reintroduces the K4/K6 false-subset class.
+- The presence set comes from `LinExpr.mentioned`, a definedness FOOTPRINT
+  that survives cancellation. `MET + HT − HT > 50` still requires HT
+  because the interpreter evaluates it. Do not derive presence from the
+  post-fold term map.
+- Axioms: every element-touching family goes through `Emit::guarded` /
+  `guarded_fact`, which adds a `defined(q) < 1` disjunct per possibly-absent
+  term. The old "canonical pad-with-0 extension satisfies the fact" premise
+  is **deleted** — do not appeal to it when adding a family.
+- Invariants to keep green when touching any of this:
+  `adl-formula/tests/presence_invariants.rs` (E-i over the whole corpus,
+  negation exactness, rewrite invariance, literal shape, the cost pin),
+  `adl-interp/tests/presence_parity.rs` (classifier ↔ interpreter),
+  `axioms_hold.rs::i6_*` (the fail-closed `requires_present` table).
+
+**Known-open analogue (do not assume it is covered):** `size(C)` is
+classified `Never`, but materializing `C` hard-errors when `C`'s filter
+predicate is out of fragment — so `select size(weird) >= 0` is `In` for no
+event while SZ0 discharges the cut and a `subset` ships. SOUNDNESS_PROOF
+§8 item 1b has the repro.
+
 ## pt-ordering: a counterexample is only real if the interpreter accepts it
 
 The ORD/IDOM pt-ordering axioms (`adl-axioms/src/lib.rs`) are sound **only
@@ -178,6 +230,16 @@ event was run through the interpreter. Always do this check before escalating.
 (Note: `validate_pt_descending` skips elements with no `pt` *without* resetting
 `prev` — a missing-pt element does not reset the descending chain. Do not
 "fix" this into a reset; it would weaken the ordering the axioms rely on.)
+
+## Phase B: the presence model (landed 2026-08-01)
+
+`guarded_not` / `widen_unsafe` / `negation_safe` are **GONE**. Any advice
+that mentions them is stale. What replaced them is above; the short version
+is that absence is now expressible, so negation is faithful without a hedge,
+`reject` is exact again, and the 18 disjointness proofs Phase A withdrew
+came back. Five live false `subset` claims died with it (K1/K2/K4/K6/K7 in
+SOUNDNESS_PROOF §8 item 1) — all now UNDERIVABLE with `refutations: 0`,
+which is the standard: prevention, not gate reliance.
 
 ## Phase 6 / M3: rational event model + Exact eval (landed M3a/M3b)
 
@@ -195,8 +257,11 @@ approximate comparison cuts at `fl(k)`, not `k`). See CE-15.
 
 ## Key regression invariant
 
-Across the **68-file corpus** (`examples/`,
-68 `*.adl`), the **PROVEN DISJOINT count must not change unless you intend it.**
+Across the **143-file corpus** (`examples/`, including `golden/`), the
+**PROVEN DISJOINT count must not change unless you intend it.** The current
+baseline is 1898 pairs → 813 proven disjoint (100% certified), 74 proven
+overlapping, 45 candidate, 966 possibly, 247 subset, 13 empty, 0
+refutations.
 Removing or weakening an axiom can only **reduce** disjoint proofs. An
 **increase** is a red flag for a newly-introduced unsound fact — investigate
 before committing. (See the **adl2-corpus-sweep** skill for running the sweep and

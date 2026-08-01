@@ -578,3 +578,67 @@ region SR
         "same-source disjoint must get the size<2 zero fact: {combsize:?}"
     );
 }
+
+/// **I-6 — `requires_present` is fail-closed** (SPEC_PRESENCE_MODEL §11).
+///
+/// EPRES turns "this element is in the filtered collection" into "this
+/// property is present", which is a fact asserted into UNSAT proofs. It is
+/// sound only for filter shapes that a MISSING property makes FALSE. This
+/// table drives one object block per shape and asserts, per shape, whether
+/// an EPRES instance appears. Every row that must NOT produce one is a
+/// shape where a property-less element legitimately survives the filter —
+/// so a future `HKind` cannot silently become "requires present".
+#[test]
+fn i6_requires_present_is_fail_closed_per_shape() {
+    // (cut source, EPRES expected for `dxy`)
+    let cases: &[(&str, bool)] = &[
+        // Recognised: comparisons and bands over absorbing arithmetic.
+        ("select dxy > 2", true),
+        ("select dxy < 2", true),
+        ("select dxy == 2", true),
+        ("select dxy != 2", true),
+        ("select abs(dxy) < 2", true),
+        ("select -dxy > 2", true),
+        ("select dxy + 1 > 2", true),
+        ("select dxy * 0 > 2", true),
+        ("select dxy / 2 > 2", true),
+        ("select dxy [] 0 2", true),
+        ("select dxy ][ 0 2", true),
+        ("select pt > 30\n  select dxy > 2", true), // And: ANY conjunct
+        ("select dxy > 2 or dxy < -2", true),       // Or: EVERY disjunct
+        // REFUSED. Absence makes a negation HOLD, so a `not` keeps
+        // property-less elements.
+        ("select not (dxy > 2)", false),
+        // A missing ternary branch is TRUE, so the guard's own decision
+        // does not force the property.
+        ("select pt > 30 ? dxy > 2", false),
+        // Or with one disjunct that does NOT require it: an element lacking
+        // dxy can pass through the other side.
+        ("select dxy > 2 or pt > 30", false),
+        // Shapes whose absence behaviour is not ours to assume.
+        ("select min(dxy, 1) > 2", false),
+        ("select bdt(dxy) > 2", false),
+    ];
+    for (cut, want) in cases {
+        let src = format!(
+            "object picky\n  take Ele\n  {cut}\n\nregion R\n  select dxy(picky[0]) > 0\n"
+        );
+        let (mut hir, ext) = analyzed(&src);
+        let qs = all_quantities(&hir);
+        let axioms = emit_axioms(&mut hir, &ext, &qs);
+        let got = axioms
+            .instances
+            .iter()
+            .any(|i| i.id == AxiomId::Epres && i.description.contains("dxy"));
+        assert_eq!(
+            got, *want,
+            "`{cut}`: expected EPRES for dxy = {want}, got {got}\ninstances: {:?}",
+            axioms
+                .instances
+                .iter()
+                .filter(|i| i.id == AxiomId::Epres)
+                .map(|i| &i.description)
+                .collect::<Vec<_>>()
+        );
+    }
+}

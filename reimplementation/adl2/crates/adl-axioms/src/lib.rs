@@ -34,8 +34,9 @@
 
 use adl_formula::{DiagTable, Formula, LinAtom, QFormula, Rel};
 use adl_sema::{
-    AngKind, Collection, CollectionId, CombAxis, CombKind, ElemIndex, ExtDecls, Fragment, HKind,
-    HNode, Hir, ParticleRef, Quantity, QuantityArg, QuantityId, QuantityTable, Rat, ScalarSource,
+    AngKind, ArithOp, Collection, CollectionId, CombAxis, CombKind, ElemIndex, ExtDecls, Fragment,
+    HKind, HNode, Hir, ParticleRef, PropId, Quantity, QuantityArg, QuantityId, QuantityTable, Rat,
+    ScalarSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -75,6 +76,9 @@ pub enum AxiomId {
     Pres,
     /// Presence implies element existence: `p_{C[i].x} >= 1 => size(C) > i`.
     Pdef,
+    /// Derived presence: membership in a filtered collection PROVES the
+    /// property its filter decides is present.
+    Epres,
 }
 
 impl AxiomId {
@@ -99,11 +103,12 @@ impl AxiomId {
             AxiomId::Xeq => "XEQ",
             AxiomId::Pres => "PRES",
             AxiomId::Pdef => "PDEF",
+            AxiomId::Epres => "EPRES",
         }
     }
 
     /// All catalog ids, in catalog order.
-    pub const ALL: [AxiomId; 18] = [
+    pub const ALL: [AxiomId; 19] = [
         AxiomId::Ord,
         AxiomId::Sz0,
         AxiomId::Sub,
@@ -122,6 +127,7 @@ impl AxiomId {
         AxiomId::Xeq,
         AxiomId::Pres,
         AxiomId::Pdef,
+        AxiomId::Epres,
     ];
 }
 
@@ -326,6 +332,24 @@ pub fn catalog() -> &'static [CatalogEntry] {
                             encoder's leaf guards (QuantityTable::existence_floor), so the two \
                             can never disagree",
             assumption: "none",
+        },
+        CatalogEntry {
+            id: AxiomId::Epres,
+            statement: "size(F) > i => defined(F[i].x) >= 1, for a filtered F whose filter \
+                        predicate is FALSE on every element lacking x",
+            justification: "true of every physical event because every element of a filtered \
+                            collection passed the filter, and the filter cannot pass an element \
+                            lacking x: on the recognised grammar (comparisons and bands over \
+                            arithmetic in the element's own properties) the interpreter's \
+                            evaluation is soft-non-value ABSORBING, so an absent x makes the \
+                            comparison a decidable FALSE. The recogniser is FAIL-CLOSED - `not` \
+                            and a ternary are refused outright (absence makes a negation HOLD, \
+                            and a missing ternary branch is true), as is any reducer, region \
+                            predicate, collection property, scalar min/max or opaque external. \
+                            This is the fact that lets ORD/IDOM and downstream cuts over \
+                            pT(jets[i]) discharge their presence guards on a `select pT > 30` \
+                            collection",
+            assumption: "take = filter",
         },
     ]
 }
@@ -574,6 +598,7 @@ fn emit_round(hir: &mut Hir, ext: &ExtDecls, qs: &[QuantityId]) -> Vec<AxiomInst
     em.tag(qs);
     em.twin(qs);
     em.epred(qs);
+    em.epres(qs);
     em.idom(qs);
     em.szslice(qs);
     em.szperm(qs);
@@ -1090,6 +1115,62 @@ impl Emit<'_> {
         }
     }
 
+    // EPRES: size(F) > i  =>  defined(F[i].x)  for every property x the
+    // filter predicate DECIDES (SPEC_PRESENCE_MODEL §4.2). Emitted beside
+    // each EPRED instance, under the same FromFront restriction, and never
+    // for the reconciliation generic element (which receives no axioms at
+    // all — `emit_axioms` runs before `Engine::reconcile`).
+    //
+    // This is the precision lever that keeps guarded ORD/IDOM firing where
+    // they used to: a `select pT > 30` object block PROVES `pt` present on
+    // every element it keeps, so the guards discharge by unit propagation.
+    fn epres(&mut self, qs: &[QuantityId]) {
+        let mut targets: BTreeSet<(CollectionId, u32)> = BTreeSet::new();
+        for &q in qs {
+            if let Quantity::ElemProp {
+                coll,
+                index: ElemIndex::FromFront(i),
+                ..
+            } = self.hir.table.quantity(q)
+                && matches!(
+                    self.hir.table.collection(*coll),
+                    Collection::Filtered { .. }
+                )
+            {
+                targets.insert((*coll, *i));
+            }
+        }
+        for (coll, i) in targets {
+            let Collection::Filtered { pred, .. } = self.hir.table.collection(coll) else {
+                continue;
+            };
+            let pred_node = self.hir.elem_preds[pred.0 as usize].node.clone();
+            let mut props: BTreeSet<PropId> = BTreeSet::new();
+            collect_self_props(&pred_node, &mut props);
+            let size_q = self.hir.table.intern_quantity(Quantity::Size(coll));
+            for prop in props {
+                if !requires_present(&pred_node, prop) {
+                    continue;
+                }
+                let q = self.hir.table.intern_quantity(Quantity::ElemProp {
+                    coll,
+                    index: ElemIndex::FromFront(i),
+                    prop,
+                });
+                let p = self.hir.table.intern_quantity(Quantity::Present(q));
+                #[allow(clippy::cast_lossless)]
+                let guard = Self::atom(&[(1.0, size_q)], Rel::Le, i as f64);
+                let f = QFormula::Or(vec![guard, Self::atom(&[(1.0, p)], Rel::Ge, 1.0)]);
+                let d = format!(
+                    "size({}) > {i} => defined({})",
+                    collection_label(self.hir, coll),
+                    self.label(q)
+                );
+                self.push(AxiomId::Epres, f, d);
+            }
+        }
+    }
+
     // IDOM: pt(F[i]) <= pt(P[i]) for filtered F of P.
     fn idom(&mut self, qs: &[QuantityId]) {
         let by_coll = self.elem_pt_quantities(qs);
@@ -1303,6 +1384,90 @@ impl Emit<'_> {
 /// This is deliberately conservative: anything outside plain linear
 /// comparisons/bands/boolean structure over the implicit element's
 /// properties (and event quantities) is dropped.
+/// Every property of the IMPLICIT ELEMENT a filter predicate mentions.
+fn collect_self_props(node: &HNode, out: &mut BTreeSet<PropId>) {
+    if let HKind::ElemSelfProp(p) = &node.kind {
+        out.insert(*p);
+    }
+    for c in pred_children(node) {
+        collect_self_props(c, out);
+    }
+}
+
+fn pred_children(node: &HNode) -> Vec<&HNode> {
+    match &node.kind {
+        HKind::Neg(a) | HKind::Not(a) | HKind::Abs(a) => vec![a],
+        HKind::Binary { lhs, rhs, .. } | HKind::Cmp { lhs, rhs, .. } => vec![lhs, rhs],
+        HKind::And(v) | HKind::Or(v) => v.iter().collect(),
+        HKind::Band { expr, .. } => vec![expr],
+        HKind::ScalarMinMax { args, .. } => args.iter().collect(),
+        HKind::Ternary { guard, then, els } => {
+            let mut v = vec![guard.as_ref(), then.as_ref()];
+            if let Some(e) = els {
+                v.push(e);
+            }
+            v
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Does the filter keep ONLY elements that HAVE `prop`? Equivalently: is
+/// `pred` false on every element lacking it?
+///
+/// **Fail-closed by construction** — anything outside the recognised shape
+/// answers `false`, which costs a derived presence fact and nothing else.
+/// The two refusals that matter are deliberate, not oversights:
+///
+/// - `Not(_)`: an absent property makes a comparison a decidable FALSE, so
+///   it makes the NEGATION hold — `select not (dxy > 2)` KEEPS dxy-less
+///   elements.
+/// - `Ternary{..}`: a missing else-branch is TRUE (SPEC_LANGUAGE §4.4), so a
+///   ternary keeps the elements its guard skips.
+///
+/// The arithmetic grammar is the other half: on
+/// `Num | Bool | ElemSelfProp | Neg | Abs | + - * /` the interpreter's
+/// evaluation is soft-non-value ABSORBING, so an absent operand propagates
+/// out and falsifies the enclosing comparison. A `Reduce`, `RegionPred`,
+/// `CollProp`, `ScalarMinMax`, interned `Quantity` or opaque external breaks
+/// that argument — their absence behaviour is not ours to assume — so the
+/// grammar check refuses them.
+fn requires_present(pred: &HNode, prop: PropId) -> bool {
+    match &pred.kind {
+        HKind::And(v) => v.iter().any(|p| requires_present(p, prop)),
+        HKind::Or(v) => !v.is_empty() && v.iter().all(|p| requires_present(p, prop)),
+        HKind::Cmp { lhs, rhs, .. } => {
+            let mentions = mentions_prop(lhs, prop) || mentions_prop(rhs, prop);
+            mentions && absorbing_arith(lhs) && absorbing_arith(rhs)
+        }
+        HKind::Band { expr, .. } => mentions_prop(expr, prop) && absorbing_arith(expr),
+        _ => false,
+    }
+}
+
+/// Does the expression mention the implicit element's `prop`?
+fn mentions_prop(node: &HNode, prop: PropId) -> bool {
+    if matches!(&node.kind, HKind::ElemSelfProp(p) if *p == prop) {
+        return true;
+    }
+    pred_children(node).into_iter().any(|c| mentions_prop(c, prop))
+}
+
+/// Is the expression built only from shapes whose evaluation propagates a
+/// soft non-value outward?
+fn absorbing_arith(node: &HNode) -> bool {
+    match &node.kind {
+        HKind::Num(_) | HKind::Bool(_) | HKind::ElemSelfProp(_) => true,
+        HKind::Neg(a) | HKind::Abs(a) => absorbing_arith(a),
+        HKind::Binary { op, lhs, rhs } => {
+            matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul | ArithOp::Div)
+                && absorbing_arith(lhs)
+                && absorbing_arith(rhs)
+        }
+        _ => false,
+    }
+}
+
 fn encode_elem_pred(
     table: &mut QuantityTable,
     node: &HNode,

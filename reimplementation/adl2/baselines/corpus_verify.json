@@ -1,12 +1,12 @@
 {
   "schema": "smash2-corpus-verify/1",
-  "source": "remeasured after M3 (rational event model + NumVal interpreter) and M4 (encoder fold realignment). PROVEN DISJOINT is unchanged at 794 across HEAD 9a5650c, pre-M4 and post-M4 — the M4 relaxation recovered precision only on the overlap side: 19 pairs POSSIBLY -> PROVEN OVERLAPPING (each with an interpreter-validated witness) and 1 POSSIBLY -> CANDIDATE, in the three copies of CMS-SUS-16-032 plus small_samples/cms.adl (HT01 = jets[0]+jets[1] flattens to a linear atom over exact element pT, so the witness realizes), golden features-num_10 (the reassociated HT terms cancel exactly now) and tutorials/ex04. files/pairs are +1 for the new golden features-num_11 (the CE-15 kill case).",
-  "files": 139,
-  "files_exit_0": 139,
-  "pairs": 1894,
-  "proven_disjoint": 794,
-  "proven_overlapping": 72,
+  "source": "remeasured after the PRESENCE MODEL (Phase B, SPEC_PRESENCE_MODEL.md), which closes the absent-property seam: every cut over a possibly-absent quantity encodes `defined(q) >= 1 AND atom`, negation becomes faithful without a hedge, the Phase-A `guarded_not` machinery is deleted, and every element-touching axiom family is emitted through a presence guard. PROVEN DISJOINT 794 -> 813. The +19 is fully accounted for: +18 is EXACTLY the set withdrawn on 2026-07-25 when the Phase-A hedge landed (all in the CMS-SUS-16-041 variants, all certified), and +1 is the new golden presence_04, whose regions are disjoint on definedness alone. files/pairs are +6 for the six new golden/presence_*.adl pins. PROVEN OVERLAPPING 72 -> 76 (+4 from new goldens; the corpus set is unchanged). Subset claims 219 -> 248: +29 recovered inners, because a `reject` no longer poisons a region's under-projection (47 corpus regions regained `exact`), and -1 WITHDRAWN, which was a false claim (golden features-num_09 shipped `subset R_plain_met within R_cancel_met` while `MET + HT - HT > 50` hard-errors on an event with no HT scalar; verified with `smash2 run`). Sampling and refute refutations are 0 corpus-wide and every proven-disjoint pair is certified (813/813).",
+  "files": 145,
+  "files_exit_0": 145,
+  "pairs": 1900,
+  "proven_disjoint": 813,
+  "proven_overlapping": 76,
   "candidate_overlapping": 45,
-  "possibly": 983,
+  "possibly": 966,
   "unknown": 0
 }

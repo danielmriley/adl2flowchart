@@ -235,6 +235,17 @@ PROVEN against the three-valued entry point, or you will "find" violations
 the engine never claimed (2026-08-01: the difftest oracle did exactly that
 once the absence axis gave it events lacking event-level data).
 
+**OPEN REGRESSION — the presence model currently ships a false PROVEN
+SUBSET.** `prop_encoder_vs_interp` fails ~2 runs in 3 at
+`PROPTEST_CASES=3000`. A negated SOFT-absent leaf is satisfiable in the
+UNDER projection via `p < 1` at events the interpreter does not put `In`.
+The unindexed whole-collection `dR` is the trigger: its ∀/∃ vacuity is
+OPERATOR-SCOPED (`dR > 0` is ∀, `dR < 1` is ∃ over the same pairs, `!=` has
+no monotone reading), so one presence indicator cannot express "absent" for
+all three. Repro and the counterexample event are in SOUNDNESS_PROOF §8
+item 1c. Do not add proofs that rest on negated whole-collection angular
+cuts until this is closed.
+
 **Known-open analogue (do not assume it is covered):** `size(C)` is
 classified `Never`, but materializing `C` hard-errors when `C`'s filter
 predicate is out of fragment — so `select size(weird) >= 0` is `In` for no

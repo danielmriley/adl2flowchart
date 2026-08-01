@@ -498,6 +498,57 @@ the hardening list (§8).
      the shapes L1′ assumes — the last of which is now machine-checked
      (E-i) rather than reviewed.
 
+1c. **OPEN REGRESSION introduced by Phase B — a false PROVEN SUBSET
+   (2026-08-01).** The presence model's `p < 1` escape makes a negated
+   soft-absent leaf satisfiable in the UNDER projection at events where the
+   interpreter does NOT put the region `In`, and the difftest oracle finds
+   it at ~2 runs in 3 at `PROPTEST_CASES=3000`. Standalone repro:
+
+   ```adl
+   object jets   take Jet
+   object eles   take Ele
+   define d0 = (not (dR(jets, eles) > 0) and not (dR(jets, eles) < 1))
+   region RA
+     select (not ((d0 and (pT(jets[0]) != 0 and pT(jets[-1]) > 0)))
+             or not ((dR(jets, eles) != 0 or dR(jets, eles) > 0)))
+   region RB
+     select ((MET > 0 or MET > 0)
+             or (MET > 0 and (pT(jets[0]) > 25 and pT(jets[-1]) > 100)))
+   ```
+
+   with the event (two jets carrying NO `eta`, so every `dR` pair is a soft
+   non-value):
+
+   ```json
+   {"Jet":[{"pt":200.0,"phi":0.5,"m":1.0,"btag":1.0},
+           {"pt":50.0,"phi":-1.5,"m":1.0,"btag":0.0}],
+    "Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0,"btag":0.0}],
+    "MET":{"pt":150.0,"phi":0.5}}
+   ```
+
+   ships `subset: RB within RA`, while `region3` gives `RA = false`,
+   `RB = true`. **It is a regression, not a pre-existing hole**: the
+   pre-presence binary (HEAD at step 2) does not claim the subset on the
+   same input, because `¬(dR ≠ 0)` was then the equality constraint
+   `dR = 0` rather than the trivially-satisfiable `p < 1 ∨ dR = 0`.
+
+   The mechanism is understood in outline — RA's under-projection is
+   satisfied by choosing `p_dR < 1` on the negated `dR` leaves, and the
+   whole-collection `dR` has OPERATOR-SCOPED ∀/∃ vacuity (OPEN-1) that a
+   single presence indicator cannot express: `dR > 0` is ∀ and `dR < 1` is
+   ∃ over the same pair set, so "absent" is not one truth value for both.
+   The `!=` spelling has no monotone reading at all and falls through to a
+   different path again. The exact interpreter trace that makes `RA = false`
+   on this event was NOT finished, and the fix is therefore NOT designed —
+   do not treat the outline as one.
+
+   Scope: this needs `Quantity::AngularSep` over `Whole(_)` legs treated as
+   something other than an ordinary soft-absent quantity — most likely
+   encoding the operator-scoped readings explicitly, or refusing (`Unknown`)
+   the shapes whose vacuity the single indicator cannot carry. Until then
+   the Phase B acceptance criterion "the cross-oracle and metamorphic
+   batteries green" is **NOT MET**.
+
 1b. **The out-of-fragment analogue (NEW, OPEN — found 2026-08-01 while
    validating Phase B).** `Quantity::Size(C)` is classified total, but
    materializing `C` can raise a HARD evaluation error when `C`'s filter

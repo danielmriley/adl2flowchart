@@ -1,0 +1,362 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1080" width="1440" height="1080" role="img" aria-labelledby="title desc">
+  <title id="title">smash2 architecture - capabilities and internals</title>
+  <desc id="desc">Visual overview of the smash2 ADL toolchain: CLI capabilities, compilation pipeline, crate layout, and soundness guarantees.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="45%" stop-color="#101a2e"/>
+      <stop offset="100%" stop-color="#0e1f28"/>
+    </linearGradient>
+    <radialGradient id="glowTL" cx="12%" cy="8%" r="45%">
+      <stop offset="0%" stop-color="#2dd4bf" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowBR" cx="88%" cy="92%" r="40%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="heroBar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="55%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="cardCap" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1a2740"/>
+      <stop offset="100%" stop-color="#132033"/>
+    </linearGradient>
+    <linearGradient id="pipeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </linearGradient>
+    <linearGradient id="verifyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#134e4a"/>
+      <stop offset="100%" stop-color="#164e63"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="tinyShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#2dd4bf"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24"/>
+    </marker>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1e293b" stroke-width="0.6" opacity="0.55"/>
+    </pattern>
+  </defs>
+
+  <rect width="1440" height="1080" fill="url(#bg)"/>
+  <rect width="1440" height="1080" fill="url(#grid)"/>
+  <rect width="1440" height="1080" fill="url(#glowTL)"/>
+  <rect width="1440" height="1080" fill="url(#glowBR)"/>
+
+  <!-- HEADER -->
+  <g transform="translate(48, 36)">
+    <text x="0" y="28" font-family="ui-monospace, 'Cascadia Code', 'Segoe UI Mono', monospace" font-size="13" letter-spacing="4" fill="#5eead4">ADL2  /  REIMPLEMENTATION</text>
+    <text x="0" y="78" font-family="Georgia, 'Times New Roman', serif" font-size="56" font-weight="700" fill="#f8fafc">smash2</text>
+    <text x="250" y="78" font-family="Georgia, 'Times New Roman', serif" font-size="28" font-weight="400" fill="#94a3b8">architecture</text>
+    <text x="0" y="112" font-family="'Segoe UI', system-ui, sans-serif" font-size="17" fill="#cbd5e1">Parse, interpret, prove, certify, visualize - Analysis Description Language for HEP selections</text>
+    <rect x="0" y="128" width="320" height="4" rx="2" fill="url(#heroBar)"/>
+  </g>
+
+  <g transform="translate(980, 48)" filter="url(#tinyShadow)">
+    <rect width="412" height="96" rx="12" fill="#121c2e" stroke="#243247" stroke-width="1"/>
+    <text x="20" y="28" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" letter-spacing="2" fill="#64748b">AT A GLANCE</text>
+    <text x="20" y="54" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" fill="#e2e8f0">13 crates  |  exact-rational core  |  Z3-backed proofs</text>
+    <text x="20" y="78" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" fill="#94a3b8">Farkas closes solver search  |  half the old TCB</text>
+  </g>
+
+  <!-- SECTION 1: CAPABILITIES -->
+  <g transform="translate(48, 180)">
+    <text x="0" y="0" font-family="ui-monospace, monospace" font-size="12" letter-spacing="3" fill="#fbbf24">01  -  WHAT YOU CAN DO</text>
+
+    <g transform="translate(0, 20)" filter="url(#softShadow)">
+      <rect width="216" height="118" rx="14" fill="url(#cardCap)" stroke="#334155" stroke-width="1"/>
+      <rect width="216" height="6" rx="3" fill="#38bdf8"/>
+      <text x="16" y="36" font-family="ui-monospace, monospace" font-size="16" font-weight="700" fill="#7dd3fc">check</text>
+      <text x="16" y="60" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Parse + resolve</text>
+      <text x="16" y="80" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Spanned diagnostics,</text>
+      <text x="16" y="96" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">AST dump, JSON for CI</text>
+    </g>
+
+    <g transform="translate(232, 20)" filter="url(#softShadow)">
+      <rect width="216" height="118" rx="14" fill="url(#cardCap)" stroke="#334155" stroke-width="1"/>
+      <rect width="216" height="6" rx="3" fill="#2dd4bf"/>
+      <text x="16" y="36" font-family="ui-monospace, monospace" font-size="16" font-weight="700" fill="#5eead4">verify</text>
+      <text x="16" y="60" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Prove region relations</text>
+      <text x="16" y="80" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Disjoint / overlap / subset,</text>
+      <text x="16" y="96" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">bins, cross-file, --combine</text>
+    </g>
+
+    <g transform="translate(464, 20)" filter="url(#softShadow)">
+      <rect width="216" height="118" rx="14" fill="url(#cardCap)" stroke="#334155" stroke-width="1"/>
+      <rect width="216" height="6" rx="3" fill="#a78bfa"/>
+      <text x="16" y="36" font-family="ui-monospace, monospace" font-size="16" font-weight="700" fill="#c4b5fd">run</text>
+      <text x="16" y="60" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Interpret over events</text>
+      <text x="16" y="80" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Pass/fail, cutflows,</text>
+      <text x="16" y="96" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">histos to ROOT / JSON</text>
+    </g>
+
+    <g transform="translate(696, 20)" filter="url(#softShadow)">
+      <rect width="216" height="118" rx="14" fill="url(#cardCap)" stroke="#334155" stroke-width="1"/>
+      <rect width="216" height="6" rx="3" fill="#fb923c"/>
+      <text x="16" y="36" font-family="ui-monospace, monospace" font-size="16" font-weight="700" fill="#fdba74">dot</text>
+      <text x="16" y="60" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Graphviz diagrams</text>
+      <text x="16" y="80" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Flowchart or AST from</text>
+      <text x="16" y="96" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">resolved HIR (not raw AST)</text>
+    </g>
+
+    <g transform="translate(928, 20)" filter="url(#softShadow)">
+      <rect width="216" height="118" rx="14" fill="url(#cardCap)" stroke="#334155" stroke-width="1"/>
+      <rect width="216" height="6" rx="3" fill="#fbbf24"/>
+      <text x="16" y="32" font-family="ui-monospace, monospace" font-size="14" font-weight="700" fill="#fcd34d">objects</text>
+      <text x="16" y="50" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Collection cuts and size facts</text>
+      <line x1="16" y1="62" x2="200" y2="62" stroke="#334155" stroke-width="1"/>
+      <text x="16" y="84" font-family="ui-monospace, monospace" font-size="14" font-weight="700" fill="#fcd34d">ingest</text>
+      <text x="16" y="102" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Delphes / NanoAOD to JSONL</text>
+    </g>
+
+    <g transform="translate(1160, 20)" filter="url(#softShadow)">
+      <rect width="232" height="118" rx="14" fill="#0f1a2a" stroke="#1e3a4a" stroke-width="1"/>
+      <text x="16" y="28" font-family="ui-monospace, monospace" font-size="11" letter-spacing="2" fill="#64748b">OUTPUTS</text>
+      <text x="16" y="52" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Human | JSON | DOT | histos</text>
+      <text x="16" y="74" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">--combine bundles (portable)</text>
+      <text x="16" y="96" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#94a3b8">smash2-recheck: no solver</text>
+    </g>
+  </g>
+
+  <!-- SECTION 2: PIPELINE -->
+  <g transform="translate(48, 360)">
+    <text x="0" y="0" font-family="ui-monospace, monospace" font-size="12" letter-spacing="3" fill="#38bdf8">02  -  COMPILER PIPELINE</text>
+
+    <rect x="0" y="18" width="1344" height="168" rx="16" fill="#0c1524" stroke="#1e293b" stroke-width="1"/>
+
+    <g transform="translate(24, 48)">
+      <rect width="100" height="100" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+      <text x="50" y="44" text-anchor="middle" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#f8fafc">.adl</text>
+      <text x="50" y="66" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#94a3b8">source</text>
+    </g>
+
+    <line x1="132" y1="98" x2="168" y2="98" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(176, 48)">
+      <rect width="130" height="100" rx="12" fill="url(#pipeGrad)" filter="url(#tinyShadow)"/>
+      <text x="65" y="36" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#ecfeff">adl-syntax</text>
+      <text x="65" y="58" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#ccfbf1">lex / parse</text>
+      <text x="65" y="78" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#99f6e4">AST + spans</text>
+    </g>
+
+    <line x1="314" y1="98" x2="350" y2="98" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(358, 48)">
+      <rect width="150" height="100" rx="12" fill="#0e7490" filter="url(#tinyShadow)"/>
+      <text x="75" y="32" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#ecfeff">adl-sema</text>
+      <text x="75" y="54" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#cffafe">resolve / Quantity</text>
+      <text x="75" y="74" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a5f3fc">HIR + fragment tags</text>
+    </g>
+
+    <line x1="516" y1="98" x2="560" y2="98" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#arrowTeal)"/>
+    <circle cx="574" cy="98" r="8" fill="#2dd4bf"/>
+    <text x="574" y="128" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" fill="#5eead4">HIR</text>
+
+    <path d="M582 98 C620 98, 620 42, 660 42" fill="none" stroke="#fb923c" stroke-width="2" marker-end="url(#arrowAmber)"/>
+    <g transform="translate(668, 18)">
+      <rect width="200" height="48" rx="10" fill="#431407" stroke="#ea580c" stroke-width="1.2"/>
+      <text x="14" y="20" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#fdba74">adl-viz</text>
+      <text x="14" y="38" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#fed7aa">DOT flowchart / AST</text>
+    </g>
+
+    <line x1="582" y1="98" x2="652" y2="98" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#arrowTeal)"/>
+    <g transform="translate(660, 70)">
+      <rect width="420" height="56" rx="10" fill="url(#verifyGrad)" stroke="#14b8a6" stroke-width="1.5" filter="url(#tinyShadow)"/>
+      <text x="14" y="22" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#5eead4">adl-analysis</text>
+      <text x="140" y="22" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#99f6e4">formula -&gt; axioms -&gt; solver -&gt; verdicts</text>
+      <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#ccfbf1">+ adl-formula  |  adl-axioms  |  adl-solver  |  adl-certify</text>
+    </g>
+
+    <path d="M582 98 C620 98, 620 154, 660 154" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow)"/>
+    <g transform="translate(668, 130)">
+      <rect width="280" height="48" rx="10" fill="#2e1065" stroke="#8b5cf6" stroke-width="1.2"/>
+      <text x="14" y="20" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#c4b5fd">adl-interp</text>
+      <text x="14" y="38" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#ddd6fe">reference semantics | oracle | run</text>
+    </g>
+
+    <g transform="translate(1100, 48)">
+      <rect width="220" height="100" rx="12" fill="#1c1917" stroke="#78716c" stroke-width="1.2"/>
+      <text x="14" y="28" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#d6d3d1">adl-ingest</text>
+      <text x="14" y="50" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#a8a29e">ROOT -&gt; Event model</text>
+      <text x="14" y="70" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#78716c">profiles: delphes | nanoaod</text>
+      <text x="14" y="88" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#78716c">feeds adl-interp / run</text>
+    </g>
+    <path d="M1100 120 C1020 120, 1000 154, 948 154" fill="none" stroke="#78716c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- SECTION 3: INTERNALS -->
+  <g transform="translate(48, 568)">
+    <text x="0" y="0" font-family="ui-monospace, monospace" font-size="12" letter-spacing="3" fill="#a78bfa">03  -  INTERNAL PARTS  (crate map)</text>
+
+    <g transform="translate(0, 20)">
+      <rect width="320" height="250" rx="14" fill="#0f172a" stroke="#312e81" stroke-width="1.2"/>
+      <rect x="0" y="0" width="320" height="36" rx="14" fill="#1e1b4b"/>
+      <rect x="0" y="20" width="320" height="16" fill="#1e1b4b"/>
+      <text x="16" y="24" font-family="ui-monospace, monospace" font-size="12" letter-spacing="2" fill="#a5b4fc">FRONT END</text>
+
+      <g transform="translate(16, 52)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#c4b5fd">adl-syntax</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Lexer, recursive-descent parser, spanned AST</text>
+      </g>
+      <g transform="translate(16, 96)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#c4b5fd">adl-sema</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Typed Quantity identity, HIR, fragment check</text>
+        <text x="0" y="36" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#64748b">Names are labels - identity is structural</text>
+      </g>
+      <g transform="translate(16, 156)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#c4b5fd">adl-cli</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">The smash2 binary - wires every command</text>
+      </g>
+      <g transform="translate(16, 200)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#c4b5fd">adl-viz | rootfile</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">DOT from HIR | pure-Rust TH1 ROOT writer</text>
+      </g>
+    </g>
+
+    <g transform="translate(340, 20)">
+      <rect width="400" height="250" rx="14" fill="#0f172a" stroke="#115e59" stroke-width="1.2"/>
+      <rect x="0" y="0" width="400" height="36" rx="14" fill="#134e4a"/>
+      <rect x="0" y="20" width="400" height="16" fill="#134e4a"/>
+      <text x="16" y="24" font-family="ui-monospace, monospace" font-size="12" letter-spacing="2" fill="#5eead4">VERIFIER CORE</text>
+
+      <g transform="translate(16, 52)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#5eead4">adl-formula</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Polarity-typed IR - Over / Under / Unknown / Dual</text>
+      </g>
+      <g transform="translate(16, 96)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#5eead4">adl-axioms</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Audited catalog: pT order, sizes, physical ranges</text>
+      </g>
+      <g transform="translate(16, 140)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#5eead4">adl-solver</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Z3 native or SMT-LIB subprocess (same verdicts)</text>
+      </g>
+      <g transform="translate(16, 184)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#5eead4">adl-analysis | adl-certify</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Pairwise proofs + Farkas formula receipts</text>
+        <text x="0" y="36" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#64748b">Certifies formula-UNSAT; encoding stays trusted</text>
+      </g>
+    </g>
+
+    <g transform="translate(760, 20)">
+      <rect width="320" height="250" rx="14" fill="#0f172a" stroke="#713f12" stroke-width="1.2"/>
+      <rect x="0" y="0" width="320" height="36" rx="14" fill="#422006"/>
+      <rect x="0" y="20" width="320" height="16" fill="#422006"/>
+      <text x="16" y="24" font-family="ui-monospace, monospace" font-size="12" letter-spacing="2" fill="#fcd34d">RUNTIME &amp; ORACLE</text>
+
+      <g transform="translate(16, 52)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#fcd34d">adl-interp</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Executable meaning of regions over events</text>
+      </g>
+      <g transform="translate(16, 96)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#fcd34d">adl-ingest</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Delphes / NanoAOD profiles -&gt; Event</text>
+      </g>
+      <g transform="translate(16, 140)">
+        <text x="0" y="0" font-family="ui-monospace, monospace" font-size="13" font-weight="700" fill="#fcd34d">adl-difftest</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Property oracle, metamorphic, legacy parity</text>
+      </g>
+      <g transform="translate(16, 184)">
+        <text x="0" y="0" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">Oracle + metamorphic + sampling gate</text>
+        <text x="0" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#94a3b8">audit encoder/axioms (testing, not proof)</text>
+      </g>
+    </g>
+
+    <g transform="translate(1100, 20)">
+      <rect width="292" height="250" rx="14" fill="#0c1524" stroke="#1e293b" stroke-width="1.2"/>
+      <text x="16" y="28" font-family="ui-monospace, monospace" font-size="11" letter-spacing="2" fill="#64748b">BY CONSTRUCTION</text>
+
+      <g transform="translate(16, 52)">
+        <circle cx="6" cy="-4" r="4" fill="#2dd4bf"/>
+        <text x="20" y="0" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Soundness is a type</text>
+        <text x="20" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#64748b">Wrong polarity will not compile</text>
+      </g>
+      <g transform="translate(16, 100)">
+        <circle cx="6" cy="-4" r="4" fill="#38bdf8"/>
+        <text x="20" y="0" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Identity is proven</text>
+        <text x="20" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#64748b">Never assumed from names</text>
+      </g>
+      <g transform="translate(16, 148)">
+        <circle cx="6" cy="-4" r="4" fill="#fbbf24"/>
+        <text x="20" y="0" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">"I don't know" is first-class</text>
+        <text x="20" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#64748b">Unknown weakens, never flips</text>
+      </g>
+      <g transform="translate(16, 196)">
+        <circle cx="6" cy="-4" r="4" fill="#a78bfa"/>
+        <text x="20" y="0" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">Interpreter is the meaning</text>
+        <text x="20" y="18" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#64748b">Disagree = release blocker</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- SECTION 4: VERDICTS -->
+  <g transform="translate(48, 860)">
+    <text x="0" y="0" font-family="ui-monospace, monospace" font-size="12" letter-spacing="3" fill="#2dd4bf">04  -  VERDICT LANGUAGE</text>
+
+    <g transform="translate(0, 18)">
+      <g>
+        <rect width="188" height="56" rx="10" fill="#064e3b" stroke="#10b981" stroke-width="1.2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#34d399">D</text>
+        <text x="40" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#ecfdf5">PROVEN DISJOINT</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#6ee7b7">formula receipt (+ --combine)</text>
+      </g>
+      <g transform="translate(200, 0)">
+        <rect width="188" height="56" rx="10" fill="#14532d" stroke="#4ade80" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#86efac">d</text>
+        <text x="40" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#dcfce7">CANDIDATE DISJOINT</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#86efac">solver only - not certified</text>
+      </g>
+      <g transform="translate(400, 0)">
+        <rect width="188" height="56" rx="10" fill="#7c2d12" stroke="#f97316" stroke-width="1.2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#fb923c">O</text>
+        <text x="40" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#ffedd5">PROVEN OVERLAP</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#fdba74">interp-validated witness</text>
+      </g>
+      <g transform="translate(600, 0)">
+        <rect width="168" height="56" rx="10" fill="#1e3a5f" stroke="#38bdf8" stroke-width="1.2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#7dd3fc">s</text>
+        <text x="40" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e0f2fe">PROVEN SUBSET</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#7dd3fc">A subseteq B via UNSAT</text>
+      </g>
+      <g transform="translate(780, 0)">
+        <rect width="148" height="56" rx="10" fill="#3f1d2e" stroke="#f43f5e" stroke-width="1.2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#fb7185">E</text>
+        <text x="40" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#ffe4e6">EMPTY</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#fda4af">vacuous region</text>
+      </g>
+      <g transform="translate(940, 0)">
+        <rect width="200" height="56" rx="10" fill="#1e293b" stroke="#64748b" stroke-width="1.2"/>
+        <text x="14" y="24" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#94a3b8">? / U</text>
+        <text x="70" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="13" fill="#e2e8f0">POSSIBLY / UNKNOWN</text>
+        <text x="14" y="44" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#94a3b8">no claim - honest default</text>
+      </g>
+      <g transform="translate(1152, 0)">
+        <rect width="240" height="56" rx="10" fill="#0f172a" stroke="#2dd4bf" stroke-width="1.2"/>
+        <text x="14" y="22" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#5eead4">Nets: certify | sample | oracle</text>
+        <text x="14" y="42" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#94a3b8">formula check + encoder audits</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(48, 1040)">
+    <line x1="0" y1="0" x2="1344" y2="0" stroke="#1e293b" stroke-width="1"/>
+    <text x="0" y="24" font-family="'Segoe UI', system-ui, sans-serif" font-size="12" fill="#475569">reimplementation/adl2  |  see README.md for build and run  |  legacy smash lives in legacy_parser/</text>
+    <text x="1344" y="24" text-anchor="end" font-family="ui-monospace, monospace" font-size="11" fill="#334155">smash2-architecture.svg</text>
+  </g>
+</svg>

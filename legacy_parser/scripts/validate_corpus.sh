@@ -9,7 +9,9 @@ if [[ ! -x "$SMASH" ]]; then make; fi
 
 # Golden files exercising ADL2-only grammar the legacy parser never had.
 SKIP=(
-  "golden/features-sort_01.adl"   # region-level sort statement
+  "golden/features-sort_01.adl"                  # region-level sort statement
+  "golden/presence_05_epres_conservatism.adl"    # dxy() property getter
+  "golden/presence_07_bin_coverage_gap.adl"      # bins over an indexed getter
 )
 skip() { local f; for f in "${SKIP[@]}"; do [[ "$1" == *"$f" ]] && return 0; done; return 1; }
 

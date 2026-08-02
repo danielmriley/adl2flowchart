@@ -857,6 +857,21 @@ impl Emit<'_> {
             let inner = *inner;
             let mut floors: BTreeMap<CollectionId, u32> = BTreeMap::new();
             self.hir.table.existence_floor(inner, &mut floors);
+            // An UNINDEXED separation names no element, so it has no element
+            // floor — but its value is the MINIMUM over the pair product, and
+            // `Ev::whole_angular_min` iterates `0..|A| × 0..|B|`, so it yields
+            // one only when BOTH collections are non-empty. That is the same
+            // "presence implies the elements exist" fact at floor 0, and it is
+            // what lets a `∀` cut's empty-product escape be discharged when
+            // some other region requires the separation present. Deliberately
+            // NOT folded into `existence_floor`: the encoder reads that for
+            // `guard_existence`, where a `size > 0` conjunct on a `dR != c`
+            // leaf would exclude the empty product — which SATISFIES `!=`.
+            if let Some((_, a, b)) = self.hir.table.whole_pair_legs(inner) {
+                for coll in [a, b] {
+                    floors.entry(coll).or_insert(0);
+                }
+            }
             if floors.is_empty() {
                 continue;
             }
@@ -1066,6 +1081,15 @@ impl Emit<'_> {
     fn twin(&mut self, qs: &[QuantityId]) {
         let set: BTreeSet<QuantityId> = qs.iter().copied().collect();
         for (q1, q2) in twin_pairs(&self.hir.table, &set) {
+            // NOT true of an UNINDEXED pair. Those quantities are the MINIMUM
+            // over the product, and reversing the arguments negates each pair,
+            // so `dPhi(B,A)` is `-max dPhi(A,B)`, not `±min dPhi(A,B)`: on
+            // A={a1,a2}, B={b1} with dPhi 0.5 and 1.0, x = 0.5 and y = -1.0.
+            // `twin_pairs` itself still reports the pair — it also caps the
+            // SAT direction at POSSIBLY (OPEN-2), which stays.
+            if self.hir.table.has_unindexed_leg(q1) || self.hir.table.has_unindexed_leg(q2) {
+                continue;
+            }
             let fact = QFormula::Or(vec![
                 Self::atom(&[(1.0, q1), (-1.0, q2)], Rel::Eq, 0.0),
                 Self::atom(&[(1.0, q1), (1.0, q2)], Rel::Eq, 0.0),

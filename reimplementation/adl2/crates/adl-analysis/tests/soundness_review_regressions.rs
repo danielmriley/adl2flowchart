@@ -778,3 +778,195 @@ region B
         "`select not X` must behave identically to `reject X`"
     );
 }
+
+// ---- K14: the min-pair separation is not an ordinary quantity ------------
+
+/// Four events spanning every shape the OPEN-1 pair fold can be in, on the
+/// same two collections. `min` is the minimum `dR` over the pairs that HAVE a
+/// value; the fold reads `+∞` when there is none.
+///
+/// | name | product | valued pairs | `min` |
+/// |---|---|---|---|
+/// | `ALL_VALID` | 2×1 | both | 1.0 |
+/// | `NONE_VALID` | 2×1 | none (jets carry no `eta`) | `+∞` |
+/// | `EMPTY_PROD` | 0×1 | none (no jets at all) | `+∞` |
+/// | `SOME_VALID` | 2×1 | one (`jets[1]` carries no `eta`) | 1.0 |
+///
+/// `NONE_VALID` and `EMPTY_PROD` differ in exactly one place — the `∀`
+/// relations are vacuously TRUE on an empty product and FALSE when a pair
+/// exists but has no value — and that difference is what no single presence
+/// indicator can carry.
+const MIN_PAIR_EVENTS: &[(&str, &str)] = &[
+    (
+        "ALL_VALID",
+        r#"{"Jet":[{"pt":200.0,"eta":0.0,"phi":0.5,"m":1.0},{"pt":50.0,"eta":0.0,"phi":-1.5,"m":1.0}],"Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0}],"MET":{"pt":150.0,"phi":0.5}}"#,
+    ),
+    (
+        "NONE_VALID",
+        r#"{"Jet":[{"pt":200.0,"phi":0.5,"m":1.0},{"pt":50.0,"phi":-1.5,"m":1.0}],"Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0}],"MET":{"pt":150.0,"phi":0.5}}"#,
+    ),
+    (
+        "EMPTY_PROD",
+        r#"{"Jet":[],"Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0}],"MET":{"pt":150.0,"phi":0.5}}"#,
+    ),
+    (
+        "SOME_VALID",
+        r#"{"Jet":[{"pt":200.0,"eta":0.0,"phi":0.5,"m":1.0},{"pt":50.0,"phi":-1.5,"m":1.0}],"Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0}],"MET":{"pt":150.0,"phi":0.5}}"#,
+    ),
+];
+
+/// K14 (2026-08-01) — the false PROVEN SUBSET the presence model introduced
+/// (SOUNDNESS_PROOF §8 item 1c), pinned on its original repro.
+///
+/// `dR(jets, eles)` over two UNINDEXED collections is the one quantity
+/// `Interp::quantity` has no value for at all (`Ev::angles` refuses a
+/// `ParticleRef::Whole`), so its presence indicator read 0 on EVERY event and
+/// `p < 1` became a free escape: `not ((dR != 0) or (dR > 0))` De Morgans to
+/// `(p < 1 ∨ dR = 0) ∧ (p < 1 ∨ dR ≤ 0)`, true at every event, which made
+/// `RA`'s UNDER admit an event `region3` puts Out — and shipped
+/// `subset RB within RA`.
+///
+/// The event carries two jets with NO `eta`, so no pair has a value. `region3`
+/// then reads `dR != 0` TRUE (the fold's `+∞`) and `dR > 0` FALSE (a valueless
+/// pair fails a `∀`), hence `RA = false` — while `RB` is In on `MET = 150`.
+#[test]
+fn k14_min_pair_negation_must_not_admit_a_non_member() {
+    use adl_interp::{Interp, parse_event};
+    let ext = ExtDecls::legacy();
+    let src = "\
+object jets   take Jet
+object eles   take Ele
+define d0 = (not (dR(jets, eles) > 0) and not (dR(jets, eles) < 1))
+region RA
+  select (not ((d0 and (pT(jets[0]) != 0 and pT(jets[-1]) > 0)))
+          or not ((dR(jets, eles) != 0 or dR(jets, eles) > 0)))
+region RB
+  select ((MET > 0 or MET > 0)
+          or (MET > 0 and (pT(jets[0]) > 25 and pT(jets[-1]) > 100)))
+";
+    let event_json = r#"{"Jet":[{"pt":200.0,"phi":0.5,"m":1.0,"btag":1.0},{"pt":50.0,"phi":-1.5,"m":1.0,"btag":0.0}],"Electron":[{"pt":80.0,"eta":0.0,"phi":1.5,"m":1.0,"btag":0.0}],"MET":{"pt":150.0,"phi":0.5}}"#;
+
+    let hir = analyze_str(src, "k14.adl", &ext);
+    let interp = Interp::new(&hir, &ext);
+    let e = parse_event(event_json, &ext).expect("loader-valid");
+    assert_eq!(
+        interp.eval_region_membership("RA", &e).ok(),
+        Some(false),
+        "`dR != 0` is TRUE on a product with no valued pair, so RA's second \
+         disjunct is false — and so is the first"
+    );
+    assert_eq!(
+        interp.eval_region_membership("RB", &e).ok(),
+        Some(true),
+        "RB is In on MET alone"
+    );
+
+    let r = analyze_source(src, "k14.adl", &ext, &opts(SolverChoice::Auto)).expect("resolves");
+    if r.solver == "none" {
+        return;
+    }
+    let p = find_pair(&r.pairwise, "RA", "RB");
+    assert!(
+        !claims_within(p, "RB", "RA"),
+        "RB ⊆ RA is refuted by the event above: {}",
+        p.reason
+    );
+    assert!(!claims_within(p, "RA", "RB"), "{}", p.reason);
+    assert_eq!(
+        r.sampling.as_ref().map(|s| s.refutations),
+        Some(0),
+        "prevention, not gate reliance"
+    );
+}
+
+/// The K14 kill-case sweep: every relation the pair fold reads, under every
+/// negation site, against `region3` on all four product shapes.
+///
+/// `REVERY` is In at every event, so it is the strongest partner available:
+/// `subset REVERY within R` claims "R holds everywhere", which one Out event
+/// refutes outright. That is the projection K14 broke — an UNDER admitting a
+/// non-member — and it is the direction with no post-hoc net.
+///
+/// The `∀` relations (`>`, `>=`) are the inexact ones by design: "every pair
+/// has a value" is not expressible over the min-pair quantity, so their UNDER
+/// keeps only the empty-product case. Every other relation stays exact.
+#[test]
+fn k14_min_pair_operator_negation_matrix() {
+    use adl_interp::{Interp, parse_event};
+    let ext = ExtDecls::legacy();
+    let sites: &[(&str, &str)] = &[
+        ("select", "  select CUT\n"),
+        ("reject", "  reject CUT\n"),
+        ("not", "  select not (CUT)\n"),
+        ("notnot", "  select not (not (CUT))\n"),
+    ];
+    for rel in [">", ">=", "<", "<=", "==", "!="] {
+        let cut = format!("dR(jets, eles) {rel} 1");
+        let mut src = String::from("object jets   take Jet\nobject eles   take Ele\n");
+        for (name, body) in sites {
+            src.push_str(&format!("region R{name}\n{}", body.replace("CUT", &cut)));
+        }
+        src.push_str("region REVERY\n  select size(jets) >= 0\n");
+
+        let hir = analyze_str(&src, "k14matrix.adl", &ext);
+        let interp = Interp::new(&hir, &ext);
+        // Per region: is some event Out (⇒ `REVERY ⊆ R` is false), is some In
+        // (⇒ the region is inhabited, so it may not be proven disjoint from
+        // `REVERY`).
+        let mut some_out = vec![false; sites.len()];
+        let mut some_in = vec![false; sites.len()];
+        for (ev_name, json) in MIN_PAIR_EVENTS {
+            let e = parse_event(json, &ext).expect("loader-valid");
+            assert_eq!(
+                interp.eval_region_membership("REVERY", &e).ok(),
+                Some(true),
+                "{ev_name}: the partner region must be In everywhere"
+            );
+            for (i, (name, _)) in sites.iter().enumerate() {
+                match interp.eval_region_membership(&format!("R{name}"), &e) {
+                    Ok(true) => some_in[i] = true,
+                    Ok(false) => some_out[i] = true,
+                    Err(err) => panic!("dR {rel} 1 / {name} / {ev_name}: {err}"),
+                }
+            }
+            // `select` and `notnot` agree, `reject` and `not` agree, and the
+            // two groups are complementary. A drift here means the negation
+            // peepholes and the fold disagree about the same cut.
+            let m = |n: &str| interp.eval_region_membership(&format!("R{n}"), &e).ok();
+            assert_eq!(m("select"), m("notnot"), "dR {rel} 1 / {ev_name}");
+            assert_eq!(m("reject"), m("not"), "dR {rel} 1 / {ev_name}");
+            assert_ne!(m("select"), m("reject"), "dR {rel} 1 / {ev_name}");
+        }
+
+        let r = analyze_source(&src, "k14matrix.adl", &ext, &opts(SolverChoice::Auto))
+            .expect("resolves");
+        if r.solver == "none" {
+            return;
+        }
+        for (i, (name, _)) in sites.iter().enumerate() {
+            let p = find_pair(&r.pairwise, &format!("R{name}"), "REVERY");
+            if some_out[i] {
+                assert!(
+                    !claims_within(p, "REVERY", &format!("R{name}")),
+                    "dR {rel} 1 / {name}: an event is In REVERY and Out of the region, \
+                     so the UNDER must not swallow it: {}",
+                    p.reason
+                );
+            }
+            if some_in[i] {
+                assert_ne!(
+                    p.kind,
+                    VerdictKind::ProvenDisjoint,
+                    "dR {rel} 1 / {name}: an event is In both, so the OVERs must \
+                     intersect: {}",
+                    p.reason
+                );
+            }
+        }
+        assert_eq!(
+            r.sampling.as_ref().map(|s| s.refutations),
+            Some(0),
+            "dR {rel} 1: prevention, not gate reliance"
+        );
+    }
+}

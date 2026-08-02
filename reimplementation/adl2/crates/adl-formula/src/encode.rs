@@ -51,6 +51,33 @@ pub const MAX_STATIC_SLICE_REDUCE: u32 = 1024;
 /// covers the dominant `size == 1` / `size >= 1` pattern.
 pub const COMB2D_BOUND: u32 = 2;
 
+/// Refusal reason for an unindexed angular separation used anywhere the
+/// interpreter cannot fold the pair product.
+const MIN_PAIR_SHAPE: &str = "angular separation over an unindexed collection outside \
+     `dR(A, B) <rel> <value>`: with ONE unindexed leg the interpreter has no \
+     value for it at all, and with two it reads the plain min-pair value here \
+     rather than the operator-scoped pair fold a leaf would mean";
+
+/// Refusal reason for `>`/`>=`/`!=` on an unindexed separation whose
+/// threshold is not a constant.
+const MIN_PAIR_THRESHOLD: &str = "`>`/`>=`/`!=` against an unindexed angular separation needs a \
+     CONSTANT threshold: the pair fold reads the other operand first and \
+     soft-falses the whole cut when it has no value, which the vacuous \
+     empty-product / `+inf` readings cannot see";
+
+/// How the interpreter reads a comparison mentioning an angular separation
+/// over an unindexed collection (see [`Encoder::min_pair_cmp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MinPair {
+    /// No unindexed leg anywhere — the ordinary linear path.
+    No,
+    /// `dR(A, B) ⋈ v` with the separation bare on one side; the [`CmpOp`] is
+    /// folded so the separation reads on the LEFT.
+    Fold(QuantityId, CmpOp),
+    /// An unindexed leg somewhere the pair fold does not reach.
+    OutOfShape,
+}
+
 /// Which quantifier the bounded expansion encodes. `Open1` is the
 /// region-level unindexed-collection cut whose ∀/∃ reading is *unresolved*
 /// (the over-approx unions both readings, the under-approx intersects
@@ -1157,6 +1184,11 @@ impl Encoder<'_> {
     fn leaf_inner(&mut self, node: &HNode) -> Formula {
         match &node.kind {
             HKind::Cmp { op, lhs, rhs } => self.cmp(*op, lhs, rhs, node.span),
+            // A band is not a comparison against a value, so the pair fold
+            // never runs and the interpreter hard-errors on the separation.
+            HKind::Band { expr, .. } if self.mentions_unindexed(expr) => {
+                self.unknown(node.span, MIN_PAIR_SHAPE)
+            }
             HKind::Band { kind, expr, lo, hi } => self.band(*kind, expr, lo, hi, node.span),
             _ => self.unknown(node.span, "expression is not a comparison"),
         }
@@ -1874,6 +1906,154 @@ impl Encoder<'_> {
     // ---- comparisons --------------------------------------------------------
 
     fn cmp(&mut self, op: CmpOp, lhs: &HNode, rhs: &HNode, span: Span) -> Formula {
+        match self.min_pair_shape(op, lhs, rhs) {
+            MinPair::No => self.cmp_linear(op, lhs, rhs, span),
+            MinPair::OutOfShape => self.unknown(span, MIN_PAIR_SHAPE),
+            MinPair::Fold(q, folded) => self.min_pair_cmp(q, folded, op, lhs, rhs, span),
+        }
+    }
+
+    /// `dR(A, B) ⋈ v` as the interpreter reads it
+    /// (`adl-interp/src/eval.rs::angular_whole_cmp`). Write `m` for the
+    /// MINIMUM over the pairs of `A × B` that have a value, `+∞` when none
+    /// does, and `p_m` for the indicator that says which. On top of that the
+    /// operator picks its own quantifier, and `folded` is the relation with
+    /// the separation moved to the left:
+    ///
+    /// | `⋈` | interpreter | encoding |
+    /// |---|---|---|
+    /// | `<` `<=` `==` | ∃ a pair below / the minimum equals | `p_m ∧ m ⋈ v` — what the ordinary leaf already builds |
+    /// | `!=` | `+∞ != v`, so a product with NO valued pair SATISFIES it | `¬(p_m ∧ m == v)` |
+    /// | `>` `>=` | ∀ pairs, and a pair with no value FAILS the whole cut | over `(p_m ∧ m ⋈ v) ∨ empty`, under `empty` |
+    ///
+    /// The ∀ reading is the only inexact one, and for one reason: "every pair
+    /// has a value" is a fact about the product that the single min quantity
+    /// cannot carry. The OVER drops that conjunct (weakening, which is its
+    /// sound direction) and the UNDER keeps only the case where ∀ is decided
+    /// without it — an EMPTY product, where the interpreter answers vacuously
+    /// true. Both `∨ empty` and `under = empty` matter: `size(A) == 0` is
+    /// `In` a `dR(A,B) > c` region and `Out` of every `<` one.
+    ///
+    /// **Both special rows need `v` to be a CONSTANT** and refuse otherwise.
+    /// The fold reads the threshold FIRST and soft-falses the whole cut when
+    /// it has no value, which happens before the product is looked at — so
+    /// `dR(A,B) > pT(A[0])` is FALSE on an event with no `A`, exactly where
+    /// the vacuous empty-product disjunct would have claimed it. A constant
+    /// is the one threshold that can never be a non-value. The `∃`/`==` rows
+    /// need no such condition: they already carry the threshold's presence
+    /// from the ordinary leaf, and absence falsifies them on both sides.
+    fn min_pair_cmp(
+        &mut self,
+        q: QuantityId,
+        folded: CmpOp,
+        op: CmpOp,
+        lhs: &HNode,
+        rhs: &HNode,
+        span: Span,
+    ) -> Formula {
+        let other = if self.bare_min_pair(lhs).is_some() {
+            rhs
+        } else {
+            lhs
+        };
+        let special = matches!(folded, CmpOp::Ne | CmpOp::ApproxEq | CmpOp::Gt | CmpOp::Ge);
+        if special && !self.is_constant(other) {
+            return self.unknown(span, MIN_PAIR_THRESHOLD);
+        }
+        match folded {
+            // `!=` is the complement of `==`, INCLUDING the `+∞` case that
+            // the presence-guarded positive leaf would otherwise exclude.
+            CmpOp::Ne | CmpOp::ApproxEq => {
+                let eq = self.cmp_linear(CmpOp::Eq, lhs, rhs, span);
+                eq.not()
+            }
+            CmpOp::Gt | CmpOp::Ge => {
+                let plain = self.cmp_linear(op, lhs, rhs, span);
+                let empty = self.empty_product(q);
+                let plus = forr(vec![plain, empty.clone()]);
+                let why = self.diags.push(
+                    span,
+                    "separation cut over two unindexed collections is a ∀ over the pair \
+                     product, and a pair with no value fails it: the superset drops \
+                     \"every pair has a value\" (unstatable over the min-pair quantity), \
+                     the subset keeps only the vacuous empty-product case",
+                );
+                Formula::Dual {
+                    plus: Box::new(plus),
+                    minus: Box::new(empty),
+                    why,
+                }
+            }
+            _ => self.cmp_linear(op, lhs, rhs, span),
+        }
+    }
+
+    /// Does `node` fold to a numeric constant, reading nothing from the
+    /// event? Uses the definedness FOOTPRINT, not the folded term map, so a
+    /// cancelling expression (`HT - HT + 5`) is correctly NOT constant — the
+    /// interpreter still evaluates `HT` and still soft-falses without it.
+    fn is_constant(&mut self, node: &HNode) -> bool {
+        matches!(self.lin_guarded(node), Ok(l) if l.terms.is_empty() && l.mentioned.is_empty())
+    }
+
+    /// `size(A) <= 0 ∨ size(B) <= 0` — the pair product of `dR(A, B)` is
+    /// empty, the one case where the ∀ reading is decided without knowing
+    /// whether every pair has a value.
+    fn empty_product(&mut self, q: QuantityId) -> Formula {
+        let Some((_, a, b)) = self.table.whole_pair_legs(q) else {
+            return Formula::False;
+        };
+        let mut parts = Vec::new();
+        for coll in BTreeSet::from([a, b]) {
+            let sq = self.table.intern_quantity(Quantity::Size(coll));
+            parts.push(self.simple_atom(sq, Rel::Le, 0));
+        }
+        forr(parts)
+    }
+
+    /// How the interpreter will read a comparison that mentions an angular
+    /// separation over an unindexed collection.
+    fn min_pair_shape(&self, op: CmpOp, lhs: &HNode, rhs: &HNode) -> MinPair {
+        let (lm, rm) = (self.mentions_unindexed(lhs), self.mentions_unindexed(rhs));
+        if !lm && !rm {
+            return MinPair::No;
+        }
+        // `angular_whole_cmp` fires only when ONE side is the bare separation
+        // and the other evaluates to a number. Anything else — arithmetic
+        // around it, both sides separations, a single unindexed leg — leaves
+        // `Interp::quantity` to hard-error on it, so the interpreter decides
+        // nothing and neither may we.
+        if lm
+            && !rm
+            && let Some(q) = self.bare_min_pair(lhs)
+        {
+            return MinPair::Fold(q, op);
+        }
+        if rm
+            && !lm
+            && let Some(q) = self.bare_min_pair(rhs)
+        {
+            return MinPair::Fold(q, op.flipped());
+        }
+        MinPair::OutOfShape
+    }
+
+    /// `node` is a BARE min-pair separation (`dR(A, B)`, both legs unindexed).
+    fn bare_min_pair(&self, node: &HNode) -> Option<QuantityId> {
+        match &node.kind {
+            HKind::Quantity(q) if self.table.whole_pair_legs(*q).is_some() => Some(*q),
+            _ => None,
+        }
+    }
+
+    /// Does `node`'s subtree read an angular separation with an unindexed leg?
+    fn mentions_unindexed(&self, node: &HNode) -> bool {
+        let mut qs = BTreeSet::new();
+        collect_quantities(node, &mut qs);
+        qs.iter().any(|&q| self.table.has_unindexed_leg(q))
+    }
+
+    fn cmp_linear(&mut self, op: CmpOp, lhs: &HNode, rhs: &HNode, span: Span) -> Formula {
         let rel = rel_of(op);
         let l = self.lin_guarded(lhs);
         let r = self.lin_guarded(rhs);

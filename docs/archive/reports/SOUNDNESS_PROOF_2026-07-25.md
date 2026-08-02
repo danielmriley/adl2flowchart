@@ -498,11 +498,12 @@ the hardening list (§8).
      the shapes L1′ assumes — the last of which is now machine-checked
      (E-i) rather than reviewed.
 
-1c. **OPEN REGRESSION introduced by Phase B — a false PROVEN SUBSET
-   (2026-08-01).** The presence model's `p < 1` escape makes a negated
-   soft-absent leaf satisfiable in the UNDER projection at events where the
-   interpreter does NOT put the region `In`, and the difftest oracle finds
-   it at ~2 runs in 3 at `PROPTEST_CASES=3000`. Standalone repro:
+1c. **K14 — the false PROVEN SUBSET Phase B introduced. CLOSED 2026-08-01.**
+   The presence model's `p < 1` escape made a negated leaf over an
+   UNINDEXED angular separation satisfiable in the UNDER projection at
+   events where the interpreter does NOT put the region `In`, and the
+   difftest oracle found it at ~2 runs in 3 at `PROPTEST_CASES=3000`.
+   Standalone repro:
 
    ```adl
    object jets   take Jet
@@ -526,28 +527,110 @@ the hardening list (§8).
     "MET":{"pt":150.0,"phi":0.5}}
    ```
 
-   ships `subset: RB within RA`, while `region3` gives `RA = false`,
-   `RB = true`. **It is a regression, not a pre-existing hole**: the
+   shipped `subset: RB within RA`, while `region3` gives `RA = false`,
+   `RB = true`. **It was a regression, not a pre-existing hole**: the
    pre-presence binary (HEAD at step 2) does not claim the subset on the
    same input, because `¬(dR ≠ 0)` was then the equality constraint
    `dR = 0` rather than the trivially-satisfiable `p < 1 ∨ dR = 0`.
 
-   The mechanism is understood in outline — RA's under-projection is
-   satisfied by choosing `p_dR < 1` on the negated `dR` leaves, and the
-   whole-collection `dR` has OPERATOR-SCOPED ∀/∃ vacuity (OPEN-1) that a
-   single presence indicator cannot express: `dR > 0` is ∀ and `dR < 1` is
-   ∃ over the same pair set, so "absent" is not one truth value for both.
-   The `!=` spelling has no monotone reading at all and falls through to a
-   different path again. The exact interpreter trace that makes `RA = false`
-   on this event was NOT finished, and the fix is therefore NOT designed —
-   do not treat the outline as one.
+   **The finished trace.** `RA`'s encoding is a flat `Or` (printed with a
+   throwaway `encode_regions` harness) whose last disjunct is the De Morgan
+   of `not ((dR != 0) or (dR > 0))`:
 
-   Scope: this needs `Quantity::AngularSep` over `Whole(_)` legs treated as
-   something other than an ordinary soft-absent quantity — most likely
-   encoding the operator-scoped readings explicitly, or refusing (`Unknown`)
-   the shapes whose vacuity the single indicator cannot carry. Until then
-   the Phase B acceptance criterion "the cross-oracle and metamorphic
-   batteries green" is **NOT MET**.
+   ```text
+   And[ Or[ defined(dR(jets[*],eles[*])) < 1, dR(jets[*],eles[*]) == 0 ],
+        Or[ defined(dR(jets[*],eles[*])) < 1, dR(jets[*],eles[*]) <= 0 ] ]
+   ```
+
+   Both `Or`s are satisfied by `defined(dR) < 1` ALONE, so the disjunct —
+   and with it `RA⁻` — is TRUE at the event's valuation while `region3`
+   says `RA = false`. (This is where the naive per-leaf hand-encoding
+   misleads: apply De Morgan to `not (d0 and …)`, RA's FIRST disjunct, and
+   every branch does end up demanding `p ≥ 1`. The offending disjunct is
+   the second one, an `Or` of two leaves over the SAME quantity, whose De
+   Morgan hands the same `p < 1` to both conjuncts.) The negation site is a
+   source-level `not` (`HKind::Not` → `Encoder::negate`), which for a
+   purely SOFT-absent formula is plain `Formula::not` (`encode.rs:790-795`);
+   the `p ≥ 1` conjuncts it flips come from `Encoder::cmp`'s
+   `guard_presence(&d.mentioned, leaf)` (`encode.rs:1899`).
+
+   `region3`'s side of the trace, on the same event (two jets with no
+   `eta`, one electron with `eta` — so the pair product is NON-EMPTY and
+   NO pair has a value): `Ev::angular_whole_cmp` (`eval.rs:1793`) gives
+   `dR != 0` **TRUE** (its `==`/`!=` arm folds the MINIMUM over the valued
+   pairs, which is `+∞` here, and `∞ ≠ 0`) and `dR > 0` **FALSE** (its
+   `∀` arm returns on the first pair with no value). So `RA`'s second
+   disjunct is `not(TRUE or FALSE)` = false; the first is false because
+   `d0`, `pT(jets[0]) != 0` and `pT(jets[-1]) > 0` all hold. `RA = false`.
+
+   **The root cause was one fact, and it was not the `p < 1` escape
+   itself.** `Interp::quantity` had NO value for an unindexed separation at
+   all — `Ev::angles` refuses a `ParticleRef::Whole` (`eval.rs:1931`) — so
+   `Present(dR(A,B))` evaluated to **0 at every event, valued pairs or
+   not**. A presence indicator that is identically false makes `p ≥ 1 ∧ φ`
+   identically false (an OVER that excludes every member) and
+   `p < 1 ∨ ¬φ` identically true (an UNDER that admits every non-member).
+   Both projections were broken, in opposite directions, for every relation
+   at once: a solver-free projection sweep over
+   relation × threshold × negation-site × product-shape found **36 of 96
+   cells** violating the L1′ sandwich before the fix.
+
+   **The fix** (three parts, all in the "make the model say what the
+   interpreter does" direction):
+
+   1. *`Interp::quantity` gives the unindexed separation its value* — the
+      min over the valued pairs, `NonValue::EmptyReduction` when there is
+      none. This completes the OPEN-1 min-pair resolution instead of
+      leaving the quantity meaningless, and it makes `Present` fall out of
+      the generic rule with no special case. `angular_whole_cmp` is
+      unchanged and still layers the operator-scoped reading on top.
+   2. *The encoder matches the fold per relation* (`Encoder::min_pair_cmp`).
+      `<` `<=` `==` were already exact once `p` meant something. `!=` is
+      the complement of `==` — `¬(p ∧ m = v)`, so the `+∞` case satisfies
+      it. `>` `>=` are a `∀` whose failure on any valueless pair is not
+      expressible over a single min quantity, so they become a `Dual`:
+      over `(p ∧ m ⋈ v) ∨ empty-product`, under `empty-product`. Both
+      special rows require a CONSTANT threshold and refuse otherwise —
+      the fold reads the other operand FIRST and soft-falses the whole cut
+      before it looks at the product, which is what makes
+      `dR(A,B) > pT(A[0])` FALSE (not vacuously true) on an event with no
+      `A`. Removing that condition puts 8 cells back.
+   3. *Everything outside `dR(A,B) ⋈ <const>` is `Unknown`* — arithmetic
+      around the separation, a band on it, two separations compared, a
+      single unindexed leg. The interpreter reads those as the plain min
+      with no operator scoping, which is a THIRD thing; an honest refusal
+      weakens to POSSIBLY, an atom that means the wrong fold is this bug
+      again.
+
+   PDEF gained one clause to pay for part 2: presence of an unindexed
+   separation implies BOTH collections are non-empty (the fold iterates
+   `0..|A| × 0..|B|`). Without it the new `∨ empty-product` disjunct is not
+   refutable and `features-angular_01` loses its PROVEN DISJOINT. It is
+   deliberately NOT folded into `existence_floor`, which the encoder also
+   reads for `guard_existence`: a `size > 0` conjunct on a `dR != c` leaf
+   would exclude the empty product, which SATISFIES `!=`.
+
+   Pinned by `adl-difftest/tests/min_pair_projections.rs` (288 cells, both
+   directions, no solver — 36 of 96 fail before the fix on the constant
+   axis alone) and
+   `adl-analysis/tests/soundness_review_regressions.rs::k14_*` (the repro
+   above at the verdict level, plus its `region3` memberships).
+
+1d. **TWIN over unindexed legs — an unsound AXIOM found while fixing K14.
+   CLOSED 2026-08-01.** `Emit::twin` asserted `x = ±y` for every oriented
+   reversed-argument pair, `twin_pairs` matching on the `ParticleRef`s
+   alone. For UNINDEXED legs those quantities are the MINIMUM over the
+   product, and reversing the arguments negates each pair, so
+   `dPhi(B,A) = −max dPhi(A,B)`, not `±min dPhi(A,B)`: on `A = {a1,a2}`,
+   `B = {b1}` with `dPhi` 0.5 and 1.0, `x = 0.5` and `y = −1.0` — neither
+   `x = y` nor `x = −y`. Since P3 quantifies over EVERY physical event, one
+   such event voids the family wherever it is asserted, and it is asserted
+   into UNSAT proofs. The emitter now skips a pair with any unindexed leg.
+   `twin_pairs` itself is unchanged: it also drives the OPEN-2 cap on the
+   SAT direction (`engine.rs:873`), and that cap must stay. Reachability
+   was never demonstrated on the corpus (it needs a file writing both
+   `dPhi(A,B)` and `dPhi(B,A)` unindexed, which no corpus file does), so
+   this is a latent-fact fix, not a killed shipping claim.
 
 1b. **The out-of-fragment analogue (NEW, OPEN — found 2026-08-01 while
    validating Phase B).** `Quantity::Size(C)` is classified total, but
@@ -575,6 +658,24 @@ the hardening list (§8).
    `ElemPredId` set plumbed into the table, and its own corpus A/B and
    adversarial pass. Deliberately NOT folded into Phase B: mixing it in
    would have made the presence-model diff unverifiable.
+
+   **The general rule K14 makes visible (2026-08-01), which this item is now
+   the open representative of.** A quantity whose reference interpretation is
+   a HARD error has `Present(q) = 0` at EVERY event, and an indicator that is
+   identically false breaks BOTH projections at once: `p ≥ 1 ∧ atom` excludes
+   every member (fabricating DISJOINT / a subset OUTER) and `p < 1 ∨ ¬atom`
+   admits every non-member (fabricating a subset INNER). So the presence model
+   needs `absence` to agree with the interpreter not just about *soft* absence
+   but about *decidability*: whenever `Interp::quantity(q)` can only ever
+   `Err`, `q` must not carry a presence-guarded atom at all. Three instances
+   are known. The angular one is CLOSED (§8 1c: both-legs-unindexed got a
+   value, one-leg-unindexed is refused). This one — `Size` over an
+   out-of-fragment filter — is OPEN. The third is an opaque reducer or
+   external whose BODY hard-errors (`sum(bdt(jets))` with `bdt` undeclared):
+   `Present(reduce.sum(…))` is then identically 0 by the same argument, and
+   `collect_quantities` does not descend into reducer bodies, so the encoder's
+   shape gates cannot see it. All three want the same fix — fragment tags
+   reaching `QuantityTable::absence` — and should land together.
 
 2. **Certify the other UNSAT shapes** (empty, subset, bins, and the XSUB
    derivation frames): mechanical extensions of `certify_disjoint`'s

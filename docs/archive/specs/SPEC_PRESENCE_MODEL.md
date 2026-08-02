@@ -96,6 +96,31 @@ declared quantities +60% on the largest corpus file (the spec estimated
 1.8×). Certificate branch budget was never the binding constraint, so the
 spec's §5 mitigation was not needed.
 
+**D8 — the unindexed angular separation is NOT an ordinary soft-absent
+quantity (2026-08-01, K14).** §3.5's row "unindexed angular
+(`dR(jets, eles)`, OPEN-1 min-pair) → `p ≥ 1 ∧ atom`. This is what restores
+N3" is WRONG, and it shipped a false PROVEN SUBSET. Two things the spec did
+not check:
+
+- `Interp::quantity` had no value for such a separation at all — `Ev::angles`
+  refuses a `ParticleRef::Whole` — so §2.1's definition pinned its indicator
+  at **0 on every event**. `p ≥ 1 ∧ atom` is then identically false (an OVER
+  that excludes every member) and `p < 1 ∨ ¬atom` identically true (an UNDER
+  that admits every non-member).
+- Even with a value, the relation is not read as `m ⋈ v`: the interpreter
+  folds the pair product with an OPERATOR-SCOPED quantifier. `<`/`<=`/`==`
+  are the minimum, `!=` is the minimum with `+∞` for "no valued pair" (so
+  absence SATISFIES it, the opposite of the §2.2 negated-leaf rule), and
+  `>`/`>=` are a `∀` that FAILS on any valueless pair — a fact about the
+  product that no single quantity carries.
+
+The fix gives the quantity its min-pair value in the interpreter (so
+`Present` needs no special case), matches the encoder to the fold per
+relation, requires a CONSTANT threshold for the two special relations, and
+refuses (`Unknown`) every position the fold does not reach. N3 is still
+restored: `reject dR < 0.4` vs `select dR < 0.4` uses `<` only, which stays
+exact. Full trace and per-part justification in SOUNDNESS_PROOF §8 item 1c.
+
 **Found while validating, NOT fixed here.** `size(C)` is classified total,
 but materializing `C` hard-errors when its filter predicate is out of
 fragment — the same false-claim shape through a different seam. Recorded as

@@ -1597,6 +1597,24 @@ impl<'h, 'e> Ev<'h, 'e> {
         span: Span,
         elem: Option<&EventObject>,
     ) -> EvalResult<NumRes> {
+        // OPEN-1: a separation between two UNINDEXED collections IS the
+        // MINIMUM over the pair product. `angles` cannot give a
+        // `ParticleRef::Whole` a value, and the min-pair fold is the reading
+        // the comparison layer already uses — so this is where the quantity
+        // gets the value its presence indicator claims, instead of a hard
+        // error that pinned the indicator at 0 on every event
+        // (SOUNDNESS_PROOF §8 item 1c). No valued pair means no extremum: a
+        // SOFT non-value, like any other empty reduction.
+        // `angular_whole_cmp` layers the operator-scoped ∀/∃ reading on top
+        // of this for a direct comparison.
+        if let Some((kind, a, b)) = self.it.hir.table.whole_pair_legs(q) {
+            return Ok(match self.whole_angular_min(kind, a, b, span, elem)? {
+                Some(m) => approx(m),
+                None => Err(NonValue::EmptyReduction {
+                    kind: "min pairwise separation",
+                }),
+            });
+        }
         match self.it.hir.table.quantity(q) {
             Quantity::EventScalar(src) => self.event_scalar(src, span),
             Quantity::Size(coll) => {
@@ -1771,13 +1789,13 @@ impl<'h, 'e> Ev<'h, 'e> {
     }
 
     /// OPEN-1 (operator-scoped ∀/∃): if `lhs ⋈ rhs` is an unindexed angular
-    /// separation over two WHOLE collections compared to a constant, evaluate
-    /// it by folding the FULL Cartesian product A×B — `∀` pairs for `>`/`≥`,
-    /// `∃` a pair for `<`/`≤`. A missing-element or non-finite pair counts as
-    /// false; an empty product is vacuously ∀-true / ∃-false. Returns `None`
-    /// for any other shape (caller falls through to the normal comparison) and
-    /// for `==`/`!=` (no monotone reading — matches the encoder's opaque
-    /// fall-through).
+    /// separation over two WHOLE collections compared to a value, evaluate it
+    /// by folding the FULL Cartesian product A×B — `∀` pairs for `>`/`≥`,
+    /// `∃` a pair for `<`/`≤`, the MINIMUM (`+∞` when no pair has a value) for
+    /// `==`/`!=`. A missing-element or non-finite pair counts as false; an
+    /// empty product is vacuously ∀-true / ∃-false. Returns `None` for any
+    /// other shape, and the caller then falls through to the ordinary
+    /// comparison — which, for a `Whole` leg, is a hard error.
     fn angular_whole_cmp(
         &mut self,
         op: CmpOp,
@@ -1793,14 +1811,8 @@ impl<'h, 'e> Ev<'h, 'e> {
         } else {
             return Ok(None);
         };
-        let (kind, a, b) = match self.it.hir.table.quantity(q) {
-            Quantity::AngularSep {
-                kind,
-                a: ParticleRef::Whole(a),
-                b: ParticleRef::Whole(b),
-                ..
-            } => (*kind, *a, *b),
-            _ => return Ok(None),
+        let Some((kind, a, b)) = self.it.hir.table.whole_pair_legs(q) else {
+            return Ok(None);
         };
         // A non-value threshold makes the comparison false (§4.4).
         let c = match self.num(other, elem)? {
@@ -1846,38 +1858,58 @@ impl<'h, 'e> Ev<'h, 'e> {
             // compare that. A non-finite pair is not a real separation (skip);
             // an empty / all-missing product leaves min = +∞.
             CmpOp::Eq | CmpOp::Ne | CmpOp::ApproxEq => {
-                let mut min = f64::INFINITY;
-                for i in 0..na {
-                    for j in 0..nb {
-                        if let Ok(d) = pair(self, i, j)? {
-                            min = min.min(d.to_f64());
-                        }
-                    }
-                }
-                Ok(Some(compare_num(
-                    op,
-                    &NumVal::Approx(min),
-                    &c,
-                )))
+                let min = self
+                    .whole_angular_min(kind, a, b, span, elem)?
+                    .unwrap_or(f64::INFINITY);
+                Ok(Some(compare_num(op, &NumVal::Approx(min), &c)))
             }
         }
     }
 
+    /// The MIN-PAIR fold of an unindexed angular separation: the minimum over
+    /// every pair of the product `a × b` that yields a value, or `None` when
+    /// none does (`angular_whole_cmp`'s `+∞`).
+    ///
+    /// This is the only reference interpretation such a separation has —
+    /// [`Self::angles`] refuses a `ParticleRef::Whole` outright — so it is
+    /// also what its presence indicator measures (see the `Quantity::Present`
+    /// arm of [`Self::quantity`]).
+    fn whole_angular_min(
+        &mut self,
+        kind: AngKind,
+        a: CollectionId,
+        b: CollectionId,
+        span: Span,
+        elem: Option<&EventObject>,
+    ) -> EvalResult<Option<f64>> {
+        let na = self.materialize(a)?.len();
+        let nb = self.materialize(b)?.len();
+        let mut min: Option<f64> = None;
+        for i in 0..na {
+            for j in 0..nb {
+                let pa = ParticleRef::Elem {
+                    coll: a,
+                    index: ElemIndex::FromFront(i as u32),
+                };
+                let pb = ParticleRef::Elem {
+                    coll: b,
+                    index: ElemIndex::FromFront(j as u32),
+                };
+                if let Ok(d) = self.angular(kind, &pa, &pb, span, elem)? {
+                    let d = d.to_f64();
+                    min = Some(min.map_or(d, |m: f64| m.min(d)));
+                }
+            }
+        }
+        Ok(min)
+    }
+
     /// The `AngularSep { Whole, Whole }` quantity of `node`, if it is one.
     fn whole_angular(&self, node: &HNode) -> Option<QuantityId> {
-        if let HKind::Quantity(q) = &node.kind
-            && matches!(
-                self.it.hir.table.quantity(*q),
-                Quantity::AngularSep {
-                    a: ParticleRef::Whole(_),
-                    b: ParticleRef::Whole(_),
-                    ..
-                }
-            )
-        {
-            return Some(*q);
+        match &node.kind {
+            HKind::Quantity(q) if self.it.hir.table.whole_pair_legs(*q).is_some() => Some(*q),
+            _ => None,
         }
-        None
     }
 
     fn angles(

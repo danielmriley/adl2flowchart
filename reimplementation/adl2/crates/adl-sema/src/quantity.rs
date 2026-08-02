@@ -543,6 +543,44 @@ impl QuantityTable {
         self.absence(q).possible()
     }
 
+    /// The `(kind, A, B)` of an angular separation between two WHOLE
+    /// (unindexed) collections — the OPEN-1 min-pair shape.
+    ///
+    /// THE single recogniser for the one quantity whose value is a FOLD:
+    /// `Ev::angles` refuses a `ParticleRef::Whole`, so this separation has no
+    /// per-pair value at all, and `Interp::quantity` gives it the MINIMUM
+    /// over the valued pairs instead. Both sides read this — the interpreter
+    /// to fold, the encoder to match the fold's operator-scoped truth and to
+    /// refuse the positions it does not reach (SOUNDNESS_PROOF §8 item 1c).
+    #[must_use]
+    pub fn whole_pair_legs(&self, q: QuantityId) -> Option<(AngKind, CollectionId, CollectionId)> {
+        match self.quantity(q) {
+            Quantity::AngularSep {
+                kind,
+                a: ParticleRef::Whole(a),
+                b: ParticleRef::Whole(b),
+                ..
+            } => Some((*kind, *a, *b)),
+            _ => None,
+        }
+    }
+
+    /// Does `q` read an angular separation with an UNINDEXED leg?
+    ///
+    /// With BOTH legs unindexed the min-pair fold gives it a value
+    /// ([`Self::whole_pair_legs`]); with only ONE, `Interp::quantity`
+    /// hard-errors and nothing decides it. Either way it is not an ordinary
+    /// per-pair separation, which is what the encoder's shape gate and the
+    /// TWIN axiom guard both need to know.
+    #[must_use]
+    pub fn has_unindexed_leg(&self, q: QuantityId) -> bool {
+        matches!(
+            self.quantity(q),
+            Quantity::AngularSep { a, b, .. }
+                if matches!(a, ParticleRef::Whole(_)) || matches!(b, ParticleRef::Whole(_))
+        )
+    }
+
     pub fn existence_floor(&self, q: QuantityId, out: &mut BTreeMap<CollectionId, u32>) {
         let mut need = |coll: CollectionId, i: u32| {
             let e = out.entry(coll).or_insert(i);

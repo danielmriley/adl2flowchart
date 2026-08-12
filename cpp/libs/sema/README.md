@@ -49,7 +49,9 @@ Logic lives here; cli only wires the flags.
 - ctest `adl2_sema_identity` — port of `adl-sema/tests/identity.rs`
 - `cpp/scripts/dump_hir_corpus_gate.sh` — live dump-diff vs smash2 over
   the fail-closed allowlist in `cpp/tests/hir_gate_files.txt`
-  (tutorials + key goldens). Remaining `examples/` HIR dumps are P2b.
+  (tutorials + key goldens; **38 files pinned**). Remaining `examples/`
+  HIR dumps are P2b. Bare `smash2_cpp check` is parse-only (not a sema
+  check); use `--dump-hir` / `--dump-quantities`.
 
 ## CMake
 

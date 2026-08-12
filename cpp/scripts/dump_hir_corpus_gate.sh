@@ -7,14 +7,25 @@
 # Both dump commands must exit 0 and emit a dump starting with `unit:`.
 # A crash, usage error, empty dump, or mismatch fails the gate.
 #
+# The claimed set size is pinned (EXPECTED_FILES). Shrinking or growing
+# hir_gate_files.txt without updating that pin fails CI — same idea as
+# dump-ast's expected=146.
+#
 # Usage (from repo root):
 #   cpp/scripts/dump_hir_corpus_gate.sh
+#   COUNT_ONLY=1 cpp/scripts/dump_hir_corpus_gate.sh   # count pin only
 #
 # Env:
 #   SMASH2_CPP   path to C++ binary (default: cpp/build/smash2_cpp)
 #   SMASH2_RUST  path to Rust smash2 (default: reimplementation/adl2/target/release/smash2)
 #   SKIP_BUILD=1 skip cmake/cargo build steps
+#   COUNT_ONLY=1 only assert the allowlist length (no binaries / no diffs)
 set -euo pipefail
+
+# Pinned claimed-set size. Bump this only when intentionally expanding
+# (or shrinking) the HIR dump-diff allowlist, in the same commit as the
+# list change. 14 tutorials + 24 goldens.
+EXPECTED_FILES=38
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -22,6 +33,20 @@ cd "$ROOT"
 LIST="$ROOT/cpp/tests/hir_gate_files.txt"
 SMASH2_CPP="${SMASH2_CPP:-$ROOT/cpp/build/smash2_cpp}"
 SMASH2_RUST="${SMASH2_RUST:-$ROOT/reimplementation/adl2/target/release/smash2}"
+
+test -f "$LIST" || { echo "missing allowlist $LIST" >&2; exit 2; }
+
+mapfile -t FILES < <(grep -v '^#' "$LIST" | grep -v '^[[:space:]]*$' | sed 's/[[:space:]]*$//')
+if [[ "${#FILES[@]}" -ne "$EXPECTED_FILES" ]]; then
+  echo "error: expected $EXPECTED_FILES allowlist files, found ${#FILES[@]}" >&2
+  echo "update EXPECTED_FILES in $0 if the claimed set intentionally changed" >&2
+  exit 1
+fi
+
+if [[ "${COUNT_ONLY:-0}" == "1" ]]; then
+  echo "hir allowlist count: ${#FILES[@]} (pinned $EXPECTED_FILES)"
+  exit 0
+fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   # Some images default CXX to clang without libstdc++; prefer g++ when unset.
@@ -41,13 +66,6 @@ fi
 
 test -x "$SMASH2_CPP" || { echo "missing smash2_cpp at $SMASH2_CPP" >&2; exit 2; }
 test -x "$SMASH2_RUST" || { echo "missing smash2 at $SMASH2_RUST" >&2; exit 2; }
-test -f "$LIST" || { echo "missing allowlist $LIST" >&2; exit 2; }
-
-mapfile -t FILES < <(grep -v '^#' "$LIST" | grep -v '^[[:space:]]*$' | sed 's/[[:space:]]*$//')
-if [[ "${#FILES[@]}" -lt 1 ]]; then
-  echo "error: allowlist is empty" >&2
-  exit 1
-fi
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -118,10 +136,15 @@ for rel in "${FILES[@]}"; do
 done
 
 total=$((ok + fail))
+expected_dumps=$((EXPECTED_FILES * 2))
 echo "dump-hir corpus gate: OK=$ok FAIL=$fail TOTAL=$total (allowlist ${#FILES[@]} files × 2)"
 if [[ "$fail" -ne 0 ]]; then
   echo "failed files:" >&2
   printf '  %s\n' "${failures[@]}" >&2
+  exit 1
+fi
+if [[ "$ok" -ne "$expected_dumps" ]]; then
+  echo "error: expected $expected_dumps passing dumps, got ok=$ok" >&2
   exit 1
 fi
 echo "dump-hir corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"

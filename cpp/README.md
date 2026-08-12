@@ -40,6 +40,7 @@ quantity dumps + a fail-closed dump-diff gate against Rust smash2.
 | Modular CMake targets (crate map) | Yes |
 | Hand-written RD (`grammar.ebnf` → `parse_X`) in `adl2_syntax` | Yes |
 | Canonical AST dump (`adl_syntax::dump_ast` format) | Yes — byte-for-byte |
+| CLI `smash2_cpp check` (no dump flag) | **Parse-only** (documented; not Rust-equivalent) |
 | CLI `smash2_cpp check --dump-ast` | Yes (parse-only; P1 gate unchanged) |
 | Corpus dump-ast vs `smash2 check --dump-ast` | **146 / 146** green |
 | Interned Quantity/Collection identity (no string keys) | Yes |
@@ -107,10 +108,18 @@ Both dump commands must **exit 0**; dumps must start with `File`; then
 byte-for-byte match.
 
 HIR gate: fail-closed allowlist in [`tests/hir_gate_files.txt`](tests/hir_gate_files.txt)
-(14 tutorials + 24 goldens). Both `--dump-hir` and `--dump-quantities` must
-exit 0; dumps must start with `unit:`; then byte-for-byte match. Files not
-on the list are **not claimed** (P2b: remaining examples corpus;
-`bad_syntax.adl` exits 1). Do not weaken `smash2` / `oracle-rust` CI.
+(14 tutorials + 24 goldens = **38 files**, pinned as `EXPECTED_FILES=38`
+in the gate script and ctest `hir_gate_allowlist_count`). Shrinking or
+growing the list without bumping the pin fails CI. Both `--dump-hir` and
+`--dump-quantities` must exit 0; dumps must start with `unit:`; then
+byte-for-byte match. Files not on the list are **not claimed** (P2b:
+remaining examples corpus; `bad_syntax.adl` exits 1). Do not weaken
+`smash2` / `oracle-rust` CI.
+
+Bare `smash2_cpp check` (no dump flag) is **parse-only** until a later
+phase. It is not Rust `smash2 check` (which always resolves). Help text
+and a stderr note state this; do not treat a green bare `check` as sema
+parity.
 
 ## What’s in / out of P2
 

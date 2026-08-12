@@ -17,6 +17,11 @@ void print_help(const char* argv0) {
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities] <file.adl>\n"
       << "\n"
+      << "Bare `check` (no dump flag) is parse-only in P2 — it does not run\n"
+      << "name resolution. Rust `smash2 check` always resolves. This is an\n"
+      << "intentional contract, not dump parity. Use --dump-hir or\n"
+      << "--dump-quantities to run sema.\n"
+      << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires adl2_syntax + adl2_sema;\n"
       << "no core logic in the executable. Rust smash2 is the forever oracle.\n";
 }
@@ -64,6 +69,9 @@ int cmd_check(const std::string& path, DumpKind dump) {
     return adl2::sema::has_errors(hir.diags) ? 1 : 0;
   }
 
+  std::cerr
+      << "note: smash2_cpp check is parse-only (P2); it does not resolve. "
+      << "Rust smash2 check always runs sema. Use --dump-hir to resolve.\n";
   auto result = adl2::syntax::parse_source(src);
   std::cout << "check: " << path << "\n";
   std::cout << "sections: " << result.file.sections.size() << "\n";

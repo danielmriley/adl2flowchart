@@ -23,6 +23,15 @@ add_test(NAME smash2_cpp_check_tiny
 add_test(NAME smash2_cpp_check_bins_and_path
   COMMAND ${SMASH2_CPP} check ${FIXTURE_BINS})
 
+add_test(NAME smash2_cpp_bare_check_parse_only_note
+  COMMAND ${SMASH2_CPP} check ${FIXTURE_TINY})
+
+add_test(NAME hir_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_hir_corpus_gate.sh)
+set_property(TEST hir_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
 add_test(NAME smash2_cpp_dump_ast_tiny
   COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_TINY} ${GOLDEN_TINY})
 
@@ -40,10 +49,16 @@ add_test(NAME layering_analysis_cannot_include_syntax
     -P ${CMAKE_CURRENT_SOURCE_DIR}/layering/expect_compile_fail.cmake)
 
 set_tests_properties(smash2_cpp_help PROPERTIES
-  PASS_REGULAR_EXPRESSION "check")
+  PASS_REGULAR_EXPRESSION "parse-only")
 
 set_tests_properties(smash2_cpp_check_tiny PROPERTIES
   PASS_REGULAR_EXPRESSION "check: ok")
 
 set_tests_properties(smash2_cpp_check_bins_and_path PROPERTIES
   PASS_REGULAR_EXPRESSION "check: ok")
+
+set_tests_properties(smash2_cpp_bare_check_parse_only_note PROPERTIES
+  PASS_REGULAR_EXPRESSION "parse-only")
+
+set_tests_properties(adl2_sema_identity PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=128 FAIL=0")

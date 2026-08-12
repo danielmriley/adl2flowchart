@@ -1,5 +1,8 @@
 # P2 HIR/quantity dump-diff allowlist vs Rust smash2 (fail-closed).
 # Paths are relative to the repo root. Do not silently skip a listed file.
+# Claimed set size is pinned at 38 (EXPECTED_FILES in
+# cpp/scripts/dump_hir_corpus_gate.sh and ctest hir_gate_allowlist_count).
+# Shrinking or growing this list without bumping the pin fails CI.
 # Exclusions (not ready / not claimed):
 #   - legacy_parser/tests/golden/bad_syntax.adl  (parse errors; dump still
 #     useful in identity tests, but check exits 1)

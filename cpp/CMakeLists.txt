@@ -1,7 +1,8 @@
 # ADL2 C++ port — modular libs mirroring the Rust crate map (ADR-010).
-# 3.20+: ctest --test-dir (used by CI and local smoke).
+# There is NO monolithic libadl2_cpp: each Rust crate is its own CMake
+# target under libs/ (see MODULES.md). 3.20+: ctest --test-dir.
 cmake_minimum_required(VERSION 3.20)
-project(adl2_cpp LANGUAGES CXX)
+project(adl2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

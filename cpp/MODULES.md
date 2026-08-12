@@ -17,8 +17,11 @@ tree under `include/adl2/<module>/`.
 | `adl2_analysis` | `adl-analysis` | stub | `adl2_solver`, `adl2_interp` |
 | `adl2_certify` | `adl-certify` | stub | `adl2_analysis` |
 | `adl2_viz` | `adl-viz` | stub | `adl2_sema` |
-| `smash2_cpp` (`adl2_cli`) | `adl-cli` | wiring only | `adl2_syntax` (P1) |
+| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | **`adl2_syntax` only** (P1) |
 | `adl2_util` | _(optional)_ | stub | — |
+
+There is **no** `libadl2_cpp` / monolithic static blob. The CMake `project()`
+name is `adl2`; libraries are the `adl2_*` targets above.
 
 ## Dependency spine
 

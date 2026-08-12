@@ -43,7 +43,6 @@ const char* tok_kind_name(TokKind k) {
     case TokKind::KwAlgo: return "algo";
     case TokKind::KwHistoList: return "histoList";
     case TokKind::KwBin: return "bin";
-    case TokKind::KwBins: return "bins";
     case TokKind::KwHisto: return "histo";
     case TokKind::KwWeight: return "weight";
     case TokKind::KwTable: return "table";
@@ -141,7 +140,7 @@ TokKind Lexer::keyword_or_ident(const std::string& text) const {
       {"histolist", TokKind::KwHistoList},
       {"bin", TokKind::KwBin},
       // `bins` is CONTEXTUAL (grammar.ebnf): bare line → region-ref;
-      // followed by a bin-body → same as `bin`. Lexed as Ident, not KwBins.
+      // followed by a bin-body → same as `bin`. Lexed as Ident.
       {"histo", TokKind::KwHisto},
       {"weight", TokKind::KwWeight},
       {"table", TokKind::KwTable},

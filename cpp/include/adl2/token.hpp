@@ -34,7 +34,6 @@ enum class TokKind {
   KwAlgo,
   KwHistoList,
   KwBin,
-  KwBins,
   KwHisto,
   KwWeight,
   KwTable,

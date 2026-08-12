@@ -34,7 +34,7 @@ P0 is **harness + grammar packaging + ADR**, not smash2 parity.
 
 ## Build
 
-Requires stock Ubuntu toolchain: `cmake` ≥ 3.16, `g++` or `clang++`
+Requires stock Ubuntu toolchain: `cmake` ≥ 3.20, `g++` or `clang++`
 with C++17. **No** bison, flex, z3, or other external libs for P0.
 
 ```bash

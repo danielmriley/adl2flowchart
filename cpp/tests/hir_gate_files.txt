@@ -1,0 +1,47 @@
+# P2 HIR/quantity dump-diff allowlist vs Rust smash2 (fail-closed).
+# Paths are relative to the repo root. Do not silently skip a listed file.
+# Claimed set size is pinned at 38 (EXPECTED_FILES in
+# cpp/scripts/dump_hir_corpus_gate.sh and ctest hir_gate_allowlist_count).
+# Shrinking or growing this list without bumping the pin fails CI.
+# Exclusions (not ready / not claimed):
+#   - legacy_parser/tests/golden/bad_syntax.adl  (parse errors; dump still
+#     useful in identity tests, but check exits 1)
+#   - remaining examples/ corpus beyond tutorials (P2b: full 146-file HIR gate)
+examples/tutorials/ex00_helloworld.adl
+examples/tutorials/ex00_info.adl
+examples/tutorials/ex01_selection.adl
+examples/tutorials/ex02_histograms.adl
+examples/tutorials/ex03_objreco.adl
+examples/tutorials/ex04_syntaxes.adl
+examples/tutorials/ex05_functions.adl
+examples/tutorials/ex06_bins.adl
+examples/tutorials/ex07_chi2optimize.adl
+examples/tutorials/ex08_objloopsreducers.adl
+examples/tutorials/ex09_sort.adl
+examples/tutorials/ex10_tableweight.adl
+examples/tutorials/ex11_printsave.adl
+examples/tutorials/ex12_counts.adl
+legacy_parser/tests/golden/angular_order.adl
+legacy_parser/tests/golden/bins_partition.adl
+legacy_parser/tests/golden/btag_discriminant.adl
+legacy_parser/tests/golden/btag_threshold.adl
+legacy_parser/tests/golden/collection_quant.adl
+legacy_parser/tests/golden/define_arith.adl
+legacy_parser/tests/golden/define_under_or.adl
+legacy_parser/tests/golden/disjoint_jet_index.adl
+legacy_parser/tests/golden/disjoint_pt.adl
+legacy_parser/tests/golden/independent_jet_index.adl
+legacy_parser/tests/golden/inf_constant.adl
+legacy_parser/tests/golden/ite_conditional_dphi.adl
+legacy_parser/tests/golden/not_tag.adl
+legacy_parser/tests/golden/or_met.adl
+legacy_parser/tests/golden/or_unencodable_branch.adl
+legacy_parser/tests/golden/overlap_met.adl
+legacy_parser/tests/golden/quant_empty_forall.adl
+legacy_parser/tests/golden/ratio_met.adl
+legacy_parser/tests/golden/reject_and_band.adl
+legacy_parser/tests/golden/reject_or_band.adl
+legacy_parser/tests/golden/size_bjets.adl
+legacy_parser/tests/golden/tag_index.adl
+legacy_parser/tests/golden/union_size.adl
+legacy_parser/tests/golden/vacuous_dphi.adl

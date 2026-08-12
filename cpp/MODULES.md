@@ -6,10 +6,10 @@ tree under `libs/<module>/include/adl2/<module>/`.
 
 ## Targets
 
-| CMake target | Rust crate | P1 status | Depends on |
+| CMake target | Rust crate | Status | Depends on |
 |---|---|---|---|
-| `adl2_syntax` | `adl-syntax` | **filled** | — |
-| `adl2_sema` | `adl-sema` | stub | `adl2_syntax` (**PRIVATE** — parser headers do not leak) |
+| `adl2_syntax` | `adl-syntax` | **filled** (P1) | — |
+| `adl2_sema` | `adl-sema` | **filled** (P2) | `adl2_syntax` (**PRIVATE** includes; `LINK_ONLY` at link) |
 | `adl2_formula` | `adl-formula` | stub | `adl2_sema` (PUBLIC) |
 | `adl2_interp` | `adl-interp` | stub | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | stub | `adl2_formula` (PUBLIC) |
@@ -17,7 +17,7 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_analysis` | `adl-analysis` | stub | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | stub | `adl2_analysis` (PUBLIC, tiny) |
 | `adl2_viz` | `adl-viz` | stub | `adl2_sema` (PUBLIC; HIR only) |
-| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | **`adl2_syntax` only** (P1) |
+| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | `adl2_syntax` + `adl2_sema` (P2 dumps) |
 | `adl2_util` | _(optional)_ | stub | — |
 
 There is **no** `libadl2_cpp` / monolithic static blob. The CMake `project()`
@@ -38,7 +38,8 @@ viz reads HIR only; cli wires modules.
 4. **certify stays a small trusted kernel** — no parser/analysis sprawl.
 5. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
 6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
-   P1 stays inside **syntax** (+ dump/CLI glue only).
+   P2 stays inside **sema** (+ dump/CLI glue + a small lexer-note parity fix
+   in syntax). Formula / interp / analysis remain later phases.
 
 ## Include policy
 
@@ -54,7 +55,9 @@ workspace-wide `cpp/include/` dump on every target.
 
 - `adl2_sema` links `adl2_syntax` **PRIVATE**, so formula / analysis / viz /
   certify cannot see parser/AST headers unless they link `adl2_syntax`
-  themselves (cli does; analysis must not).
+  themselves (cli does; analysis must not). The syntax *archive* is
+  re-exported with `$<LINK_ONLY:adl2_syntax>` so static-lib consumers can
+  link without inheriting parser includes.
 - ctest `layering_analysis_cannot_include_syntax` compiles a probe against
   `adl2_analysis`’s interface includes and **expects failure**.
 

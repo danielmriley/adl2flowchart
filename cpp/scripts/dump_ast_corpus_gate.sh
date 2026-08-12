@@ -25,6 +25,10 @@ SMASH2_CPP="${SMASH2_CPP:-$ROOT/cpp/build/smash2_cpp}"
 SMASH2_RUST="${SMASH2_RUST:-$ROOT/reimplementation/adl2/target/release/smash2}"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  # Some images default CXX to clang without libstdc++; prefer g++ when unset.
+  if [[ -z "${CXX:-}" ]] && command -v g++ >/dev/null 2>&1; then
+    export CXX=g++
+  fi
   echo "==> building smash2_cpp"
   cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
   cmake --build cpp/build -j"$(nproc)"

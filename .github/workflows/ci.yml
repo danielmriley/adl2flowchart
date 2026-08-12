@@ -45,11 +45,11 @@ jobs:
       - name: Golden suite + corpus sweep + z3 spike
         run: make -C legacy_parser test
 
-  # P1 C++ syntax + AST dumps (ADR-010). Stock cmake + g++; no bison/flex.
-  # Dump-diff gate builds Rust smash2 as forever oracle (--no-default-features
-  # so the job does not need libz3; dump-ast is syntax-only).
+  # P2 C++ syntax + sema HIR dumps (ADR-010). Stock cmake + g++; no bison/flex.
+  # Dump-diff gates build Rust smash2 as forever oracle (--no-default-features
+  # so the job does not need libz3; dump-ast is syntax-only, dump-hir is sema).
   adl2-cpp:
-    name: adl2-cpp (P1 dump-ast gate)
+    name: adl2-cpp (P2 dump-ast + dump-hir gates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +69,8 @@ jobs:
         run: ctest --test-dir cpp/build --output-on-failure
       - name: Dump-ast corpus gate (vs Rust smash2)
         run: cpp/scripts/dump_ast_corpus_gate.sh
+      - name: Dump-hir/quantities oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/dump_hir_corpus_gate.sh
 
   # Rust smash2 is the forever oracle for the C++ port (ADR-010).
   # Keep this green alongside adl2-cpp; do not remove or weaken it.

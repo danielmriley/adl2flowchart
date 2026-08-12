@@ -1,0 +1,100 @@
+(* ADL2 frozen EBNF — collaborator source of truth for the C++ RD parser.
+ *
+ * Provenance: extracted/adapted from
+ *   docs/archive/specs/SPEC_LANGUAGE.md §3 Grammar (EBNF)
+ * Decision record: docs/archive/specs/DECISIONS.md ADR-002 + ADR-010
+ *
+ * Contract: one hand-written parse_<nonterminal> function per production
+ * below (see include/adl2/parser.hpp and BISON_MAP.md). Bison/Flex are NOT
+ * the implementation — this file is the readable grammar collaborators
+ * audit the C++ against.
+ *
+ * Status: frozen for the C++ port packaging surface. Semantic [DECIDE]
+ * items in SPEC_LANGUAGE remain as noted there; do not “fix” them in
+ * the parser without updating the spec + ADR trail.
+ *
+ * P0 notes:
+ *  - path-token: lexer emits TokKind::PathLike for bare weight-file runs;
+ *    parse_path_token() accepts them in arg position (deprecation warning).
+ *  - `bins` is contextual (see note on bin-stmt): Ident, not a hard keyword.
+ *)
+
+file            = { section } EOF ;
+section         = info-block | table-block | countsformat-block
+                | define | object-block | region-block ;
+
+info-block      = "info" ident { info-line } ;
+define          = ("define"|"def") ident ("="|":") condition ;
+
+object-block    = ("object"|"obj"|"composite"|"trigger") ident
+                  { take-stmt | cut-stmt | object-define } ;
+object-define   = define ;   (* INDENTED only — see layout rule in SPEC_LANGUAGE *)
+take-stmt       = ("take"|"using"|":") take-source ;
+take-source     = ident
+                | ident "(" arg-list ")"
+                | "union" "(" ident { "," ident } ")" ;
+
+region-block    = ("region"|"algo"|"histoList") ident { region-stmt } ;
+region-stmt     = cut-stmt | reject-stmt | bin-stmt | weight-stmt
+                | trigger-stmt | histo-stmt | save-stmt | counts-stmt
+                | print-stmt | sort-stmt
+                | region-ref ;
+cut-stmt        = ("select"|"cut"|"cmd"|"command") condition ;
+reject-stmt     = "reject" condition ;
+region-ref      = ident ;                     (* names a prior region *)
+bin-stmt        = ("bin" | "bins") [ string ] bin-body ;
+bin-body        = postfix boundary-list       (* boundary-list binning *)
+                | condition ;                 (* boolean bin *)
+boundary-list   = signed-num signed-num { signed-num } ;
+(* `bins` (learn-adl multi-edge splitter) is CONTEXTUAL, not a keyword: a
+   bare `bins` alone on its line is a region reference; followed by a
+   bin-body it is the same construct as `bin`. *)
+trigger-stmt    = "trigger" condition ;
+histo-stmt      = "histo" ident "," string { "," histo-arg } ;
+
+condition       = ternary ;
+ternary         = or-expr [ "?" ternary [ ":" ternary ] ] ;
+or-expr         = and-expr { ("or"|"||") and-expr } ;
+and-expr         = not-expr { ("and"|"&&") not-expr } ;
+not-expr        = ("not"|"!") not-expr | comparison ;
+comparison      = additive [ cmp-op additive
+                           | "[]" signed-num signed-num
+                           | "][" signed-num signed-num ] ;
+cmp-op          = ">" | "<" | ">=" | "<=" | "==" | "!=" | "~=" ;
+additive        = multiplicative { ("+"|"-") multiplicative } ;
+multiplicative  = unary { ("*"|"/"|"^") unary } ;
+unary           = "-" unary | postfix ;
+postfix         = primary { "." ident
+                          | "[" index [ ":" index ] "]"
+                          | "_" index [ ":" index ] } ;
+primary         = number | ident | func-call
+                | "(" condition ")"
+                | "|" additive "|"                  (* abs *)
+                | "{" arg-list "}" ident ;          (* braced property *)
+func-call       = ident "(" [ arg-list ] ")" ;
+arg-list        = arg { "," arg } ;
+arg             = particle-list | condition | string | path-token ;
+particle-list   = postfix postfix { postfix } ;   (* >=2 adjacent object
+                     refs form one ParticleList node: pT(jets[0] jets[1]),
+                     comb(...) args — SPEC_LANGUAGE divergence 7 *)
+path-token      = (* bare weight-file token containing "-"/"."/"/";
+                     only valid as an arg; deprecation warning *) ;
+index           = [ "-" ] integer ;               (* negative pending OPEN-3 *)
+signed-num      = [ "-" ] number ;
+
+info-line       = ident { ident | string | signed-num } ;
+table-block     = "table" ident "tabletype" ident "nvars" integer
+                  "errors" ("true"|"false") { signed-num } ;
+countsformat-block = "countsformat" ident
+                  { "process" ident "," string { "," ident } } ;
+weight-stmt     = "weight" ( ident | "trigger" )
+                  ( signed-num | ident | func-call ) ;
+histo-arg       = signed-num | condition
+                | "[" signed-num { signed-num } "]" ;
+print-stmt      = "print" arg-list ;
+save-stmt       = "save" ident ident arg-list ;
+counts-stmt     = "counts" ident { signed-num | ident | "+" | "-" | "+-" } ;
+sort-stmt       = "sort" (* consumed to end of statement *) ;
+
+(* Region-level sort semantics: see SPEC_LANGUAGE.md §3 (proof-system v2
+   Phase 5). Unrecognized sort shapes leave the checked fragment. *)

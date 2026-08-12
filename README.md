@@ -10,8 +10,9 @@ analyses**, with independently certified proofs.
 
 | Directory | Contents | Canonical doc |
 |---|---|---|
-| [`reimplementation/`](reimplementation/) | **ADL2 / `smash2`** — the from-scratch Rust toolchain: interpreter, certified prover, cross-analysis engine, ROOT-file pipeline, visualizer. This is the active tool. | [`reimplementation/README.md`](reimplementation/README.md) |
-| [`legacy_parser/`](legacy_parser/) | the original flex/bison C++ tool (`smash`), retained as the reference oracle | [`legacy_parser/README.md`](legacy_parser/README.md) |
+| [`reimplementation/`](reimplementation/) | **ADL2 / `smash2`** — the from-scratch Rust toolchain: interpreter, certified prover, cross-analysis engine, ROOT-file pipeline, visualizer. This is the active tool **and the forever CI oracle**. | [`reimplementation/README.md`](reimplementation/README.md) |
+| [`cpp/`](cpp/) | **ADL2 C++ port (P0 harness)** — hand-written recursive-descent skeleton under ADR-010; not a rewrite of `legacy_parser/` | [`cpp/README.md`](cpp/README.md) |
+| [`legacy_parser/`](legacy_parser/) | the original flex/bison C++ tool (`smash`), retained as a transitional secondary oracle | [`legacy_parser/README.md`](legacy_parser/README.md) |
 | [`examples/`](examples/) | the shared ADL corpus (tutorials, real CMS/ATLAS analyses, pinned-verdict golden files) | — |
 | [`docs/archive/`](docs/archive/) | design specs, plans, audits, and reports (historical record; the READMEs above are the entry points) | — |
 

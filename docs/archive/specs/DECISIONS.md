@@ -111,3 +111,60 @@ until the Phase-7 parity gate, and nightly for one release after.
 **Motivated by.** The legacy tree now embodies ~50 hard-won golden
 checks and two audits; throwing that signal away while ADL2 stabilizes
 would repeat the original project's mistake of having no oracle.
+
+## ADR-010: Full C++ reimplementation under `cpp/` (Rust forever-oracle)
+
+**Decision.** Implement a second, from-scratch C++ toolchain that
+reproduces the **smash2 architecture and behavior** under repo-root
+[`cpp/`](../../../cpp/) (working binary name `smash2_cpp` / library
+`adl2_cpp`). This is **not** an in-place rewrite of
+[`legacy_parser/`](../../../legacy_parser/). Parser technology is the
+ADR-002 contract: frozen EBNF (`cpp/grammar.ebnf`), one hand-written
+recursive-descent `parse_X` per nonterminal, a collaborator
+`BISON_MAP.md` (“if you know bison”), and grammar-shaped diagnostics —
+**not** Bison/Flex as the implementation. Rust `smash2`
+(`reimplementation/adl2`) remains the **forever oracle** in CI; future
+parity gates diff C++ outputs against it. Legacy `smash` stays a
+transitional secondary oracle (ADR-009) and is not the port target.
+
+**Soundness non-negotiables (imported).** The C++ port inherits the
+contracts already paid for in ADR-003–008 and the certify / viz /
+numeric stack — it does not get to re-discover them:
+
+| Import | Source | C++ obligation |
+|---|---|---|
+| Typed Quantity/Collection identity | ADR-003 | No string-key identity; structural/proven unification only |
+| Polarity types (`Over` / `Under` / Unknown·Dual) | ADR-004 | Proof APIs accept only the correct polarity; SAT witnesses re-validated |
+| Reference interpreter as executable spec | ADR-005 | Interpreter oracle; verifier/interpreter disagreement is release-blocking |
+| Declared checked fragment + honest Unknown | ADR-007 | Outside fragment → `Unsupported` / Unknown with a visible reason; never silent guess |
+| Audited axiom catalog | ADR-008 | One table, one emitter, justification + assumption tag + test; prohibited list permanent |
+| Independent certification | `adl-certify` | Proofs carry certificates; uncertified is not “proven” |
+| HIR-derived visualization | `adl-viz` | Flowchart/AST from semantic IR, not ad-hoc string graphs |
+| Exact rationals | rational-numeric / `Rat` | Exact `ℚ` core for checked numeric claims; no float-as-truth |
+
+**Motivated by.** HEP collaborators live in C++ toolchains; a faithful
+port lets them read, extend, and integrate the prover without abandoning
+the soundness architecture that the Rust campaign established. Porting
+*in place* under `legacy_parser/` would re-attach the load-bearing
+string heuristics and LALR conflict surface that ADR-001–003 rejected.
+Dropping the Rust oracle would repeat the original project's “no ground
+truth” failure mode the moment the two trees diverge.
+
+**Trade-offs.** Two implementations to keep aligned — mitigated by
+treating Rust smash2 as the forever CI oracle and landing C++ behind
+explicit parity gates. More upfront grammar packaging (`grammar.ebnf` +
+`parse_X` + `BISON_MAP.md`) than a generator — that packaging *is* the
+collaborator onboarding surface (ADR-002).
+
+**Rejected.**
+
+- **Bison/Flex as the C++ implementation** — contradicts ADR-002; LALR
+  hid the legacy conflict / NOT-token / hyphen-ident classes.
+- **Rewrite-in-place of `legacy_parser/`** — keeps Expr\*/string
+  identity and the accreted grammar as the substrate.
+- **FFI-only wrapping of Rust smash2** — useful later for embedding, but
+  not a C++ reimplementation collaborators can own and extend.
+- **Dropping the Rust smash2 oracle** — removes the only executable
+  ground truth the soundness campaign depends on.
+- **Accreting onto legacy `Expr*` / string identity** — reopens ADR-003
+  and ADR-004 bug families by construction.

@@ -1,0 +1,16 @@
+# Minimal P0 fixture for the C++ RD harness.
+# Intentionally tiny — not a corpus file (do not copy into examples/).
+
+info analysis
+  title "cpp P0 tiny fixture"
+
+define nEle = size(Ele)
+
+object goodEles
+  take Ele
+  select pT(Ele) > 20
+  select abs(eta(Ele)) < 2.1
+
+region SR
+  select nEle >= 1
+  select nEle >= 2 or MET.pt > 50

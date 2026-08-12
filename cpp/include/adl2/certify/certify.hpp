@@ -6,8 +6,8 @@
 /// Headers live under `include/adl2/certify/` so seams stay obvious.
 ///
 /// Dependency spine (do not invert):
-///   syntax → sema → {interp ∥ formula} → axioms → solver → analysis → certify
-///   viz → sema
+///   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+///   viz reads HIR only; cli wires modules.
 
 namespace adl2::certify {
 

@@ -14,9 +14,8 @@ From-scratch C++ reimplementation of the **smash2 architecture**
 See [`MODULES.md`](MODULES.md) for the full spine and layering rules.
 
 ```
-syntax → sema → {interp ∥ formula} → axioms → solver → analysis → certify
-              ↘ viz (HIR only)
-cli wires libs; does not own core logic
+syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+viz reads HIR only; cli wires modules.
 ```
 
 | Target | P1 | Headers |

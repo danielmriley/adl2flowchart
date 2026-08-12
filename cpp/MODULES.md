@@ -26,19 +26,19 @@ name is `adl2`; libraries are the `adl2_*` targets above.
 ## Dependency spine
 
 ```
-syntax → sema → formula → axioms → solver → analysis → certify
-              ↘ interp ─────────────────────↗
-              ↘ viz
-cli wires the libs; does not own core logic.
+syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+viz reads HIR only; cli wires modules.
 ```
 
 ### Non-negotiable layering
 
 1. **analysis must not parse** — no `adl2_syntax` parser calls inside analysis.
-2. **viz reads HIR** — depends on `adl2_sema`, not AST-only paths for flowchart meaning.
-3. **certify stays a small trusted kernel** — no parser/analysis sprawl.
-4. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
-5. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
+2. **viz reads HIR only** — depends on `adl2_sema`, not AST-only paths for flowchart meaning.
+3. **cli wires modules** — no core logic in the executable.
+4. **certify stays a small trusted kernel** — no parser/analysis sprawl.
+5. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
+6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
+   P1 stays inside **syntax** (+ dump/CLI glue only).
 
 ## Layout
 

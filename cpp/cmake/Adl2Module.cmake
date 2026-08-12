@@ -1,9 +1,8 @@
 # Helpers for adl2_* CMake targets (mirror Rust crate map).
 #
 # Spine (dependency direction only this way):
-#   syntax → sema → {interp ∥ formula} → axioms → solver → analysis → certify
-#   viz → sema
-#   cli wires libs; does not own core logic.
+#   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+#   viz reads HIR only; cli wires modules.
 
 function(adl2_add_library name)
   cmake_parse_arguments(ARG "STUB" "" "SOURCES;PUBLIC_DEPS;PRIVATE_DEPS" ${ARGN})

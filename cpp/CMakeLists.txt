@@ -12,8 +12,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Adl2Module)
 
 # --- module targets (spine order) ---
-# syntax → sema → {interp ∥ formula} → axioms → solver → analysis → certify
-# viz → sema ; cli wires libs
+# syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+# viz reads HIR only; cli wires modules.
 add_subdirectory(libs/util)
 add_subdirectory(libs/syntax)
 add_subdirectory(libs/sema)

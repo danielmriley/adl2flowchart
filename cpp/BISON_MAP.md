@@ -7,19 +7,19 @@ recursive-descent parser under `cpp/`.
 **Bison/Flex are not the implementation.** The readable grammar is
 [`grammar.ebnf`](grammar.ebnf) (from `SPEC_LANGUAGE.md` §3). Every
 nonterminal there maps 1:1 to a `parse_<name>` function in
-`include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
+`libs/syntax/include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
 (CMake target **`adl2_syntax`** — see [`MODULES.md`](MODULES.md)).
 
 ## Token layer (`%token` → lexer)
 
 | Bison-ish idea | Here |
 |---|---|
-| `%token SELECT REJECT DEFINE …` | `adl2::syntax::TokKind` keywords in `include/adl2/syntax/token.hpp`; matched case-insensitively by `Lexer` |
+| `%token SELECT REJECT DEFINE …` | `adl2::syntax::TokKind` keywords in `libs/syntax/include/adl2/syntax/token.hpp`; matched case-insensitively by `Lexer` |
 | `%token IDENT NUMBER STRING` | `TokKind::Ident`, `Int`/`Real`, `String` |
 | Bare weight-file path token | **Not** a lexer token (P1). Recognized only in arg position by `parse_path_token()` (Rust `try_path_token`); deprecation warning. `TokKind::PathLike` remains for API compat but is unused by the lexer. |
 | Operators as character tokens | Explicit `TokKind` values (`Gt`, `AndAnd`, `OrOr`, `BandIncl` for `[]`, `Arrow` for `->`, `PlusMinus` for `+-`, …) |
 | `yytext` / `yylval` | `Token { kind, text, span }` — no global lexer state shared with the parser |
-| Flex patterns for ids/numbers | Hand-written scans in `src/syntax/lexer.cpp` following SPEC_LANGUAGE §2 (no hyphen-eating ids; no signed-literal lexing) |
+| Flex patterns for ids/numbers | Hand-written scans in `libs/syntax/src/lexer.cpp` following SPEC_LANGUAGE §2 (no hyphen-eating ids; no signed-literal lexing) |
 | Contextual `bins` | **Not** a hard keyword — lexed as `Ident`; `parse_region_stmt` treats bare-line `bins` as `region-ref`, otherwise as `bin-stmt` |
 
 ## Rules → `parse_X()`
@@ -69,7 +69,7 @@ statement grammar is `parse_condition()` (alias of the ternary ladder).
 
 ## Dump format (P1)
 
-`adl2::dump_ast` matches Rust `adl_syntax::dump_ast` byte-for-byte:
+`adl2::syntax::dump_ast` matches Rust `adl_syntax::dump_ast` byte-for-byte:
 
 - 2-space indent; root `File`
 - Spans as `@line:col` (1-based) on section/stmt headers

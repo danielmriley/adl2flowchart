@@ -1,4 +1,4 @@
-# P1 smoke tests — no external test framework required.
+# P1 tests — no external test framework required.
 # Requires CMake ≥ 3.20 (ctest --test-dir in CI).
 # Full corpus dump-diff vs Rust smash2 lives in
 # cpp/scripts/dump_ast_corpus_gate.sh (CI job adl2-cpp).
@@ -6,6 +6,9 @@
 set(SMASH2_CPP $<TARGET_FILE:smash2_cpp>)
 set(FIXTURE_TINY "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tiny.adl")
 set(FIXTURE_BINS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/bins_and_path.adl")
+set(GOLDEN_TINY "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tiny.adl.dump")
+set(GOLDEN_BINS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/bins_and_path.adl.dump")
+set(DUMP_PARITY "${CMAKE_CURRENT_SOURCE_DIR}/dump_parity.sh")
 
 add_test(NAME smash2_cpp_help
   COMMAND ${SMASH2_CPP} --help)
@@ -16,8 +19,20 @@ add_test(NAME smash2_cpp_check_tiny
 add_test(NAME smash2_cpp_check_bins_and_path
   COMMAND ${SMASH2_CPP} check ${FIXTURE_BINS})
 
+# Byte-for-byte dump vs committed goldens (same contract as the corpus gate).
 add_test(NAME smash2_cpp_dump_ast_tiny
-  COMMAND ${SMASH2_CPP} check --dump-ast ${FIXTURE_TINY})
+  COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_TINY} ${GOLDEN_TINY})
+
+add_test(NAME smash2_cpp_dump_ast_bins_and_path
+  COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_BINS} ${GOLDEN_BINS})
+
+# analysis must not see syntax headers (no workspace-wide include dump).
+add_test(NAME layering_analysis_cannot_include_syntax
+  COMMAND ${CMAKE_COMMAND}
+    -DCOMPILER=${CMAKE_CXX_COMPILER}
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/layering/cannot_include_syntax.cpp
+    "-DINCLUDES=$<TARGET_PROPERTY:adl2_analysis,INTERFACE_INCLUDE_DIRECTORIES>"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/layering/expect_compile_fail.cmake)
 
 set_tests_properties(smash2_cpp_help PROPERTIES
   PASS_REGULAR_EXPRESSION "check")
@@ -28,6 +43,3 @@ set_tests_properties(smash2_cpp_check_tiny PROPERTIES
 # warnings (path-token deprecation) are fine; errors are not.
 set_tests_properties(smash2_cpp_check_bins_and_path PROPERTIES
   PASS_REGULAR_EXPRESSION "check: ok")
-
-set_tests_properties(smash2_cpp_dump_ast_tiny PROPERTIES
-  PASS_REGULAR_EXPRESSION "File")

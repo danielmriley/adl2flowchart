@@ -20,8 +20,8 @@ viz reads HIR only; cli wires modules.
 
 | Target | P1 | Headers |
 |---|---|---|
-| **`adl2_syntax`** | **filled** (RD + AST dump) | `include/adl2/syntax/` |
-| `adl2_sema` … `adl2_viz`, `adl2_util` | stubs | `include/adl2/<module>/` |
+| **`adl2_syntax`** | **filled** (RD + AST dump) | `libs/syntax/include/adl2/syntax/` |
+| `adl2_sema` … `adl2_viz`, `adl2_util` | stubs | `libs/<module>/include/adl2/<module>/` |
 | `smash2_cpp` (`libs/cli`) | dump wiring only | — |
 
 Sources live under `libs/<module>/`. Prefer one reviewable PR per module
@@ -53,8 +53,8 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`MODULES.md`](MODULES.md) | Crate/CMake map + dependency spine |
 | [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF for `adl2_syntax` |
 | [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison” → `parse_X` |
-| `include/adl2/syntax/parser.hpp` | One `parse_<nonterminal>` per major EBNF name |
-| `include/adl2/syntax/{ast,dump}.hpp` | Dump-shaped AST + `dump_ast` |
+| `libs/syntax/include/adl2/syntax/parser.hpp` | One `parse_<nonterminal>` per major EBNF name |
+| `libs/syntax/include/adl2/syntax/{ast,dump}.hpp` | Dump-shaped AST + `dump_ast` |
 | `libs/syntax/` | Lexer + RD parser + dump implementation |
 | [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | Build both tools; fail on dump mismatch |
 
@@ -92,7 +92,8 @@ SKIP_BUILD=1 cpp/scripts/dump_ast_corpus_gate.sh
 ```
 
 Same 146-file `examples/` corpus as `adl-syntax/tests/corpus_gate.rs`.
-Byte-for-byte match required. Do not weaken `smash2` / `oracle-rust` CI.
+Both dump commands must **exit 0**; dumps must start with `File`; then
+byte-for-byte match. Do not weaken `smash2` / `oracle-rust` CI.
 
 ## What’s in / out of P1
 

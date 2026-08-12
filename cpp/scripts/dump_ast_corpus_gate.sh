@@ -3,6 +3,10 @@
 #   smash2_cpp check --dump-ast  vs  smash2 check --dump-ast
 # over the same 146-file examples/ corpus as Rust adl-syntax corpus_gate.
 #
+# Both dump commands must exit 0 and emit a dump starting with `File`.
+# A crash, usage error, empty dump, or mismatch fails the gate.
+# (Do not swallow dump-command failures with `|| true`.)
+#
 # Usage (from repo root):
 #   cpp/scripts/dump_ast_corpus_gate.sh
 #
@@ -51,25 +55,58 @@ ok=0
 fail=0
 failures=()
 
+dump_ok() {
+  local dump=$1
+  [[ -s "$dump" ]] || return 1
+  [[ "$(head -n 1 "$dump")" == "File" ]] || return 1
+}
+
 echo "==> dump-diff ${#FILES[@]} files (Rust oracle vs smash2_cpp)"
 for f in "${FILES[@]}"; do
   rel="${f#"$CORPUS_ROOT"/}"
-  "$SMASH2_RUST" check --dump-ast "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err" || true
-  "$SMASH2_CPP" check --dump-ast "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err" || true
-  if diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
+  set +e
+  "$SMASH2_RUST" check --dump-ast "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
+  rc_rust=$?
+  "$SMASH2_CPP" check --dump-ast "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
+  rc_cpp=$?
+  set -e
+
+  reason=""
+  if [[ "$rc_rust" -ne 0 ]]; then
+    reason="rust smash2 exited $rc_rust"
+  elif [[ "$rc_cpp" -ne 0 ]]; then
+    reason="smash2_cpp exited $rc_cpp"
+  elif ! dump_ok "$tmpdir/rust.dump"; then
+    reason="rust dump missing or does not start with File"
+  elif ! dump_ok "$tmpdir/cpp.dump"; then
+    reason="cpp dump missing or does not start with File"
+  elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
+    reason="dump mismatch"
+  fi
+
+  if [[ -z "$reason" ]]; then
     ok=$((ok + 1))
   else
     fail=$((fail + 1))
-    failures+=("$rel")
-    echo "DIFF $rel" >&2
-    diff -u "$tmpdir/rust.dump" "$tmpdir/cpp.dump" | head -40 >&2 || true
+    failures+=("$rel ($reason)")
+    echo "FAIL $rel: $reason" >&2
+    if [[ "$reason" == "dump mismatch" ]]; then
+      # Display-only: head may SIGPIPE diff; do not treat that as a dump-command success.
+      diff -u "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >"$tmpdir/udiff" || true
+      head -40 "$tmpdir/udiff" >&2 || true
+    else
+      echo "  rust stderr:" >&2
+      head -20 "$tmpdir/rust.err" >&2 || true
+      echo "  cpp stderr:" >&2
+      head -20 "$tmpdir/cpp.err" >&2 || true
+    fi
   fi
 done
 
 echo "dump-ast corpus gate: OK=$ok FAIL=$fail TOTAL=${#FILES[@]}"
 if [[ "$fail" -ne 0 ]]; then
-  echo "mismatched files:" >&2
+  echo "failed files:" >&2
   printf '  %s\n' "${failures[@]}" >&2
   exit 1
 fi
-echo "dump-ast corpus gate: PASS (byte-for-byte vs Rust smash2)"
+echo "dump-ast corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"

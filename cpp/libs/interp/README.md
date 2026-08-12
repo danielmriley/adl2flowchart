@@ -5,4 +5,4 @@ Cutflow / membership interpreter (Rust adl-interp). Parallel to formula after se
 **P1:** empty/stub library so the Rust crate map exists as CMake targets.
 Do not land core logic here until this module's phase.
 
-Headers: `include/adl2/interp/`
+Headers: `libs/interp/include/adl2/interp/`

@@ -2,8 +2,8 @@
 # Binary name remains smash2_cpp (oracle-facing). Links syntax only for P1.
 add_executable(smash2_cpp src/main.cpp)
 add_executable(adl2_cli ALIAS smash2_cpp)
-target_include_directories(smash2_cpp PRIVATE ${PROJECT_SOURCE_DIR}/include)
-# Layering: cli must NOT link analysis/parser stacks wholesale — P1 needs syntax.
+# Include dirs come from linked libs (adl2_syntax PUBLIC include) — no
+# workspace-wide include/ dump on the executable.
 target_link_libraries(smash2_cpp PRIVATE adl2_syntax)
 target_compile_options(smash2_cpp PRIVATE -Wall -Wextra -Wpedantic)
 # Keep the binary at the build root for scripts/docs (`cpp/build/smash2_cpp`).

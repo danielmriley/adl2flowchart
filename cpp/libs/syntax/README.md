@@ -3,7 +3,7 @@
 Lexer, hand-written recursive-descent parser, dump-shaped AST, and
 canonical `dump_ast` matching Rust `adl-syntax` / `smash2 check --dump-ast`.
 
-- Headers: `include/adl2/syntax/`
+- Headers: `libs/syntax/include/adl2/syntax/`
 - Collaborator grammar: `../../grammar.ebnf`, `../../BISON_MAP.md`
 - No dependency on sema / analysis / solver.
 

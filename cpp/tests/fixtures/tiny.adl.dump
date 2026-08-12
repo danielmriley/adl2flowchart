@@ -1,0 +1,33 @@
+File
+  Info name=analysis @4:1
+    Line key=title value="\"cpp P0 tiny fixture\""
+  Define kw=define name=nEle @7:1
+    Call name=size
+      Ident Ele
+  Object kw=object name=goodEles @9:1
+    Take kw=take src=Ele @10:3
+    Cut kw=select @11:3
+      Cmp op=>
+        Call name=pT
+          Ident Ele
+        Num 20
+    Cut kw=select @12:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident Ele
+        Num 2.1
+  Region kw=region name=SR @14:1
+    Cut kw=select @15:3
+      Cmp op=>=
+        Ident nEle
+        Num 1
+    Cut kw=select @16:3
+      Binary op=or
+        Cmp op=>=
+          Ident nEle
+          Num 2
+        Cmp op=>
+          Dot field=pt
+            Ident MET
+          Num 50

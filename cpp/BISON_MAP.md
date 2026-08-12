@@ -15,9 +15,11 @@ nonterminal there maps 1:1 to a `parse_<name>` function in
 |---|---|
 | `%token SELECT REJECT DEFINE …` | `adl2::TokKind` keywords in `include/adl2/token.hpp`; matched case-insensitively by `Lexer` |
 | `%token IDENT NUMBER STRING` | `TokKind::Ident`, `Int`/`Real`, `String` |
+| Bare weight-file path token | `TokKind::PathLike` (lexer) + `parse_path_token()` (arg position only; deprecation warning) |
 | Operators as character tokens | Explicit `TokKind` values (`Gt`, `AndAnd`, `OrOr`, `BandIncl` for `[]`, …) |
 | `yytext` / `yylval` | `Token { kind, text, span }` — no global lexer state shared with the parser |
 | Flex patterns for ids/numbers | Hand-written scans in `src/syntax/lexer.cpp` following SPEC_LANGUAGE §2 (no hyphen-eating ids; no signed-literal lexing) |
+| Contextual `bins` | **Not** a hard keyword — lexed as `Ident`; `parse_region_stmt` treats bare-line `bins` as `region-ref`, otherwise as `bin-stmt` |
 
 ## Rules → `parse_X()`
 
@@ -55,7 +57,7 @@ with layered functions — not `%left`/`%right` declarations:
 | not | `parse_not_expr` | `not` / `!` (recursive) |
 | and | `parse_and_expr` | `and` / `&&` |
 | or | `parse_or_expr` | `or` / `\|\|` |
-| ternary | `parse_ternary` | `? :` (right-assoc via recursion) |
+| ternary | `parse_ternary` | `?` with optional `: else` (EBNF: `[ "?" ternary [ ":" ternary ] ]`) |
 | condition | `parse_condition` | = `ternary` |
 
 Entry point for every boolean/numeric expression production in the

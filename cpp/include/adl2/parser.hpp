@@ -65,6 +65,7 @@ class Parser {
   std::unique_ptr<Expr> parse_func_call();
   bool parse_arg_list();
   bool parse_arg();
+  bool parse_path_token();
   bool parse_particle_list();
   bool parse_index();
   bool parse_signed_num();
@@ -80,8 +81,12 @@ class Parser {
   void skip_newlines();
   bool at_section_start() const;
   bool at_stmt_keyword() const;
+  bool next_is_line_end() const;
+  bool is_ident_text(const char* word) const;
+  bool looks_like_postfix_boundary_list() const;
+  bool at_postfix_start() const;
   void synchronize_statement();
-  void not_implemented(const char* production);
+  void not_implemented(const char* production, Span span);
   std::unique_ptr<Expr> make_unsupported(Span span, std::string reason);
   std::unique_ptr<Expr> make_leaf(ExprKind kind, Token tok);
 

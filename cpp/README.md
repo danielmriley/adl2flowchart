@@ -59,15 +59,12 @@ diagnostics. Exit code is nonzero when errors were recorded.
 
 ## Relation to Rust smash2 (forever oracle)
 
-CI job `oracle-rust` builds Rust smash2 and runs
-
-```bash
-smash2 check --dump-ast examples/tutorials/ex01_selection.adl
-```
-
-so the oracle path stays green alongside this skeleton. **Future parity
-gates will diff C++ AST / verify outputs against smash2** — do not weaken
-or remove the existing `smash2` CI job when extending this tree.
+CI job `oracle-rust` is a **smoke** that the forever-oracle binary still
+builds and can `smash2 check --dump-ast` a tutorial file. It does **not**
+assert C++↔Rust parity yet. The full `smash2` workspace test job remains
+the primary CI gate. **Future parity gates will diff C++ outputs against
+smash2** — do not weaken or remove the existing `smash2` job when
+extending this tree.
 
 ## What’s in / out of P0
 

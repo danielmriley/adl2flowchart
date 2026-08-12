@@ -140,7 +140,8 @@ TokKind Lexer::keyword_or_ident(const std::string& text) const {
       {"algo", TokKind::KwAlgo},
       {"histolist", TokKind::KwHistoList},
       {"bin", TokKind::KwBin},
-      {"bins", TokKind::KwBins},
+      // `bins` is CONTEXTUAL (grammar.ebnf): bare line → region-ref;
+      // followed by a bin-body → same as `bin`. Lexed as Ident, not KwBins.
       {"histo", TokKind::KwHisto},
       {"weight", TokKind::KwWeight},
       {"table", TokKind::KwTable},
@@ -272,9 +273,42 @@ Token Lexer::next() {
     return make(TokKind::Int, begin, line, column, text);
   }
 
-  // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }
-  // An '_' followed by a digit is the underscore-indexing operator.
+  // Identifiers / path-tokens. Path-like bare weight-file tokens
+  // (SPEC_LANGUAGE §2): start with a letter, then [A-Za-z0-9_./-]+, and
+  // contain '.' plus ('-' or '/'). Emitted as PathLike so parse_path_token
+  // can accept them in arg position (with a deprecation warning).
   if (std::isalpha(static_cast<unsigned char>(c))) {
+    std::size_t j = i_;
+    while (j < src_.size()) {
+      unsigned char u = static_cast<unsigned char>(src_[j]);
+      if (std::isalnum(u) || u == '_' || u == '.' || u == '-' || u == '/') {
+        ++j;
+      } else {
+        break;
+      }
+    }
+    std::string_view run = src_.substr(i_, j - i_);
+    const bool path_like =
+        run.find('.') != std::string_view::npos &&
+        (run.find('-') != std::string_view::npos ||
+         run.find('/') != std::string_view::npos);
+    if (path_like) {
+      std::string text(run);
+      for (char ch : text) {
+        ++i_;
+        if (ch == '\n') {
+          // paths are single-line; shouldn't appear
+          ++line_;
+          col_ = 1;
+        } else {
+          ++col_;
+        }
+      }
+      return make(TokKind::PathLike, begin, line, column, text);
+    }
+
+    // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }
+    // An '_' followed by a digit is the underscore-indexing operator.
     std::string text;
     auto take_seg = [&]() {
       while (i_ < src_.size()) {

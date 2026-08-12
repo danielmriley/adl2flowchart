@@ -1,0 +1,9 @@
+# P0 fixture: contextual bare `bins` as region-ref + path-token arg.
+
+define w = bdt(TMVA_BDT.weights-2016.xml)
+
+region bins
+
+region SR
+  bins
+  bin pT 20 50 100

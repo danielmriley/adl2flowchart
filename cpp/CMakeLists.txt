@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
+# 3.20+: ctest --test-dir (used by CI and local smoke).
+cmake_minimum_required(VERSION 3.20)
 project(adl2_cpp LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)

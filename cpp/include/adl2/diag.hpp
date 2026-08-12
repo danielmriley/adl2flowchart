@@ -23,6 +23,9 @@ class DiagSink {
   void error(Span span, std::string message, std::string help = {}) {
     emit(DiagLevel::Error, span, std::move(message), std::move(help));
   }
+  void warning(Span span, std::string message, std::string help = {}) {
+    emit(DiagLevel::Warning, span, std::move(message), std::move(help));
+  }
   void note(Span span, std::string message, std::string help = {}) {
     emit(DiagLevel::Note, span, std::move(message), std::move(help));
   }

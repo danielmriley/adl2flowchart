@@ -1,3 +1,4 @@
+#include "adl2/dump.hpp"
 #include "adl2/parser.hpp"
 
 #include <fstream>
@@ -9,18 +10,18 @@ namespace {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P0 harness)\n"
+      << "smash2_cpp — ADL2 C++ port (P1 syntax + AST dumps)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
-      << "  " << argv0 << " check <file.adl>\n"
+      << "  " << argv0 << " check [--dump-ast] <file.adl>\n"
       << "\n"
-      << "P0 status: lexes and runs the recursive-descent harness aligned to\n"
-      << "cpp/grammar.ebnf. Full smash2 parity is NOT claimed — see\n"
-      << "cpp/README.md and docs/archive/specs/DECISIONS.md ADR-010.\n"
+      << "P1 status: recursive-descent parser builds a dump-compatible AST;\n"
+      << "`check --dump-ast` prints the canonical dump (Rust smash2 oracle\n"
+      << "format). See cpp/README.md.\n"
       << "\n"
-      << "Rust smash2 remains the forever oracle; future parity gates will\n"
-      << "diff against it.\n";
+      << "Rust smash2 remains the forever oracle; corpus dump-diff gates\n"
+      << "compare against `smash2 check --dump-ast`.\n";
 }
 
 std::string read_file(const std::string& path) {
@@ -33,42 +34,32 @@ std::string read_file(const std::string& path) {
   return ss.str();
 }
 
-const char* section_kind_name(adl2::SectionKind k) {
-  switch (k) {
-    case adl2::SectionKind::Info: return "info";
-    case adl2::SectionKind::Define: return "define";
-    case adl2::SectionKind::Object: return "object";
-    case adl2::SectionKind::Region: return "region";
-    case adl2::SectionKind::Table: return "table";
-    case adl2::SectionKind::CountsFormat: return "countsformat";
-    case adl2::SectionKind::Unsupported: return "unsupported";
-  }
-  return "?";
-}
-
-int cmd_check(const std::string& path) {
+int cmd_check(const std::string& path, bool dump_ast) {
   std::string src = read_file(path);
   if (src.empty() && !std::ifstream(path).good()) {
     std::cerr << "error: cannot read file: " << path << "\n";
     return 2;
   }
   auto result = adl2::parse_source(src);
-  std::cout << "check: " << path << "\n";
-  std::cout << "sections: " << result.file.sections.size() << "\n";
-  for (const auto& s : result.file.sections) {
-    std::cout << "  - " << section_kind_name(s.kind);
-    if (!s.name.empty()) std::cout << " " << s.name;
-    if (!s.detail.empty()) std::cout << " (" << s.detail << ")";
-    std::cout << "\n";
+  if (dump_ast) {
+    // stdout = dump only (match Rust smash2 check --dump-ast)
+    std::cout << adl2::dump_ast(src, result.file);
+  } else {
+    std::cout << "check: " << path << "\n";
+    std::cout << "sections: " << result.file.sections.size() << "\n";
   }
   if (!result.diags.diagnostics().empty()) {
     std::cerr << result.diags.format_all();
   }
   if (result.diags.has_errors()) {
-    std::cerr << "check: completed with errors (P0 harness; not full ADL)\n";
+    if (!dump_ast) {
+      std::cerr << "check: completed with errors\n";
+    }
     return 1;
   }
-  std::cout << "check: ok (P0 harness)\n";
+  if (!dump_ast) {
+    std::cout << "check: ok\n";
+  }
   return 0;
 }
 
@@ -85,12 +76,25 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (cmd == "check") {
-    if (argc < 3) {
+    bool dump = false;
+    std::string path;
+    for (int i = 2; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--dump-ast") {
+        dump = true;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
       std::cerr << "error: check requires a file path\n";
       print_help(argv[0]);
       return 2;
     }
-    return cmd_check(argv[2]);
+    return cmd_check(path, dump);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

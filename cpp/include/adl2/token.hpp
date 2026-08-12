@@ -86,6 +86,8 @@ enum class TokKind {
   OrOr,     // ||
   BandIncl, // []
   BandExcl, // ][
+  Arrow,    // ->
+  PlusMinus, // +-
 };
 
 struct Token {

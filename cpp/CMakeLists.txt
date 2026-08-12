@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(adl2_cpp STATIC
   src/syntax/diag.cpp
+  src/syntax/dump.cpp
   src/syntax/lexer.cpp
   src/syntax/parser.cpp
 )

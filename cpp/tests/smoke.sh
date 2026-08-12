@@ -8,4 +8,5 @@ FIX="${ROOT}/cpp/tests/fixtures/tiny.adl"
 test -x "$BIN"
 "$BIN" --help | grep -q check
 "$BIN" check "$FIX" | grep -q "check: ok"
+"$BIN" check --dump-ast "$FIX" | grep -q '^File$'
 echo "smoke: ok"

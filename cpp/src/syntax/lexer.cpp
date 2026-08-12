@@ -93,6 +93,8 @@ const char* tok_kind_name(TokKind k) {
     case TokKind::OrOr: return "||";
     case TokKind::BandIncl: return "[]";
     case TokKind::BandExcl: return "][";
+    case TokKind::Arrow: return "->";
+    case TokKind::PlusMinus: return "+-";
   }
   return "?";
 }
@@ -216,7 +218,8 @@ Token Lexer::next() {
     return make(TokKind::Newline, begin, line, column, "\n");
   }
 
-  // Strings
+  // Strings — token text is the body (no quotes); span covers the full
+  // lexeme including both quotes so info-line raw slices match Rust.
   if (c == '"') {
     ++i_;
     ++col_;
@@ -234,7 +237,14 @@ Token Lexer::next() {
       ++i_;
       ++col_;
     }
-    return make(TokKind::String, begin, line, column, body);
+    Token t;
+    t.kind = TokKind::String;
+    t.text = std::move(body);
+    t.span.start = begin;
+    t.span.end = i_;
+    t.span.line = line;
+    t.span.column = column;
+    return t;
   }
 
   // Numbers (unsigned only — negation is grammatical unary minus)
@@ -272,42 +282,14 @@ Token Lexer::next() {
     return make(TokKind::Int, begin, line, column, text);
   }
 
-  // Identifiers / path-tokens. Path-like bare weight-file tokens
-  // (SPEC_LANGUAGE §2): start with a letter, then [A-Za-z0-9_./-]+, and
-  // contain '.' plus ('-' or '/'). Emitted as PathLike so parse_path_token
-  // can accept them in arg position (with a deprecation warning).
+  // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }
+  // An '_' followed by a digit is the underscore-indexing operator.
+  //
+  // Bare weight-file path tokens (SPEC_LANGUAGE §2) are NOT lexed here —
+  // matching Rust smash2, they are recognized only in argument position by
+  // Parser::parse_path_token (try_path_token). Lexing them greedily would
+  // swallow expression forms like `photons.pt/j.pt`.
   if (std::isalpha(static_cast<unsigned char>(c))) {
-    std::size_t j = i_;
-    while (j < src_.size()) {
-      unsigned char u = static_cast<unsigned char>(src_[j]);
-      if (std::isalnum(u) || u == '_' || u == '.' || u == '-' || u == '/') {
-        ++j;
-      } else {
-        break;
-      }
-    }
-    std::string_view run = src_.substr(i_, j - i_);
-    const bool path_like =
-        run.find('.') != std::string_view::npos &&
-        (run.find('-') != std::string_view::npos ||
-         run.find('/') != std::string_view::npos);
-    if (path_like) {
-      std::string text(run);
-      for (char ch : text) {
-        ++i_;
-        if (ch == '\n') {
-          // paths are single-line; shouldn't appear
-          ++line_;
-          col_ = 1;
-        } else {
-          ++col_;
-        }
-      }
-      return make(TokKind::PathLike, begin, line, column, text);
-    }
-
-    // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }
-    // An '_' followed by a digit is the underscore-indexing operator.
     std::string text;
     auto take_seg = [&]() {
       while (i_ < src_.size()) {
@@ -382,6 +364,16 @@ Token Lexer::next() {
     i_ += 2;
     col_ += 2;
     return make(TokKind::BandExcl, begin, line, column, "][");
+  }
+  if (two('-', '>')) {
+    i_ += 2;
+    col_ += 2;
+    return make(TokKind::Arrow, begin, line, column, "->");
+  }
+  if (two('+', '-')) {
+    i_ += 2;
+    col_ += 2;
+    return make(TokKind::PlusMinus, begin, line, column, "+-");
   }
 
   // Single-char

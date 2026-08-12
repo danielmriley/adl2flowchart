@@ -26,6 +26,13 @@ struct Span {
   std::string loc() const {
     return std::to_string(line) + ":" + std::to_string(column);
   }
+
+  /// Span from this start through `other`'s end (line/col stay this start).
+  Span to(const Span& other) const {
+    Span s = *this;
+    s.end = other.end;
+    return s;
+  }
 };
 
 }  // namespace adl2

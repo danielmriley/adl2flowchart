@@ -3,6 +3,7 @@
 #include "adl2/lexer.hpp"
 
 #include <cctype>
+#include <cstdlib>
 #include <utility>
 
 namespace adl2 {
@@ -22,26 +23,47 @@ bool iequals(const std::string& a, const char* b) {
 
 }  // namespace
 
-Parser::Parser(std::vector<Token> tokens, DiagSink& diags)
-    : tokens_(std::move(tokens)), diags_(diags) {
+Parser::Parser(std::string_view src, std::vector<Token> tokens, DiagSink& diags)
+    : src_(src), tokens_(std::move(tokens)), diags_(diags) {
   if (tokens_.empty()) {
     Token eof;
     eof.kind = TokKind::Eof;
     tokens_.push_back(eof);
   }
+  last_span_ = tokens_.front().span;
 }
 
-const Token& Parser::peek() const { return tokens_[pos_]; }
+std::size_t Parser::sig_index() const {
+  std::size_t i = pos_;
+  while (i < tokens_.size() && tokens_[i].kind == TokKind::Newline) ++i;
+  if (i >= tokens_.size()) return tokens_.size() - 1;
+  return i;
+}
+
+const Token& Parser::raw_peek() const {
+  if (pos_ >= tokens_.size()) return tokens_.back();
+  return tokens_[pos_];
+}
+
+const Token& Parser::peek() const { return tokens_[sig_index()]; }
 
 const Token& Parser::peek_n(std::size_t n) const {
-  std::size_t i = pos_ + n;
+  std::size_t i = sig_index();
+  for (std::size_t k = 0; k < n; ++k) {
+    ++i;
+    while (i < tokens_.size() && tokens_[i].kind == TokKind::Newline) ++i;
+  }
   if (i >= tokens_.size()) return tokens_.back();
   return tokens_[i];
 }
 
 Token Parser::advance() {
+  while (pos_ < tokens_.size() && tokens_[pos_].kind == TokKind::Newline) {
+    ++pos_;
+  }
   Token t = peek();
-  if (pos_ + 1 < tokens_.size()) ++pos_;
+  if (t.kind != TokKind::Eof && pos_ < tokens_.size()) ++pos_;
+  last_span_ = t.span;
   return t;
 }
 
@@ -73,9 +95,9 @@ bool Parser::expect(TokKind k, const char* what) {
   return false;
 }
 
-void Parser::skip_newlines() {
-  while (match(TokKind::Newline)) {
-  }
+bool Parser::nl_before() const {
+  const TokKind k = raw_peek().kind;
+  return k == TokKind::Newline || k == TokKind::Eof;
 }
 
 bool Parser::at_section_start() const {
@@ -124,15 +146,15 @@ bool Parser::at_stmt_keyword() const {
 }
 
 void Parser::synchronize_statement() {
-  while (!check(TokKind::Eof) && !check(TokKind::Newline) &&
-         !at_section_start() && !at_stmt_keyword()) {
+  while (!check(TokKind::Eof) && !nl_before() && !at_section_start() &&
+         !at_stmt_keyword()) {
     advance();
   }
-  skip_newlines();
+  while (raw_peek().kind == TokKind::Newline) ++pos_;
 }
 
 bool Parser::next_is_line_end() const {
-  const TokKind k = peek_n(1).kind;
+  const TokKind k = tokens_[sig_index() + 1].kind;
   return k == TokKind::Newline || k == TokKind::Eof;
 }
 
@@ -141,125 +163,115 @@ bool Parser::is_ident_text(const char* word) const {
 }
 
 bool Parser::at_postfix_start() const {
-  switch (peek().kind) {
-    case TokKind::Ident:
-    case TokKind::Int:
-    case TokKind::Real:
-    case TokKind::LParen:
-    case TokKind::Pipe:
-    case TokKind::LBrace:
-    case TokKind::KwTrue:
-    case TokKind::KwFalse:
-      return true;
-    default:
-      return false;
-  }
+  return check(TokKind::Ident) || check(TokKind::LBrace);
 }
 
-bool Parser::looks_like_postfix_boundary_list() const {
-  // Probe without consuming: postfix, then ≥2 signed-nums, then NL/EOF
-  // (no comparison ops — those mean the boolean-bin / condition branch).
+bool Parser::at_signed_num() const {
+  return check(TokKind::Int) || check(TokKind::Real) ||
+         (check(TokKind::Minus) &&
+          (peek_n(1).kind == TokKind::Int || peek_n(1).kind == TokKind::Real));
+}
+
+bool Parser::at_index_val() const {
+  return check(TokKind::Int) ||
+         (check(TokKind::Minus) && peek_n(1).kind == TokKind::Int);
+}
+
+bool Parser::at_column_one() const {
+  const std::size_t start = peek().span.start;
+  return start == 0 || (start > 0 && src_[start - 1] == '\n');
+}
+
+bool Parser::rest_of_line_is_boundary_list() const {
   std::size_t i = pos_;
-  auto kind = [&](std::size_t j) -> TokKind {
-    return j < tokens_.size() ? tokens_[j].kind : TokKind::Eof;
-  };
-
-  if (kind(i) == TokKind::Ident) {
-    ++i;
-    if (kind(i) == TokKind::LParen) {
-      int depth = 1;
+  std::size_t count = 0;
+  for (;;) {
+    if (i >= tokens_.size()) break;
+    const TokKind k = tokens_[i].kind;
+    if (k == TokKind::Newline || k == TokKind::Eof) break;
+    if (k == TokKind::Int || k == TokKind::Real) {
+      ++count;
       ++i;
-      while (i < tokens_.size() && depth > 0) {
-        if (kind(i) == TokKind::LParen) ++depth;
-        else if (kind(i) == TokKind::RParen) --depth;
-        else if (kind(i) == TokKind::Newline || kind(i) == TokKind::Eof)
-          return false;
-        ++i;
-      }
+    } else if (k == TokKind::Minus && i + 1 < tokens_.size() &&
+               (tokens_[i + 1].kind == TokKind::Int ||
+                tokens_[i + 1].kind == TokKind::Real)) {
+      ++count;
+      i += 2;
+    } else {
+      return false;
     }
-    for (;;) {
-      if (kind(i) == TokKind::Dot) {
-        ++i;
-        if (kind(i) != TokKind::Ident) return false;
-        ++i;
-        continue;
-      }
-      if (kind(i) == TokKind::LBracket) {
-        ++i;
-        if (kind(i) == TokKind::Minus) ++i;
-        if (kind(i) != TokKind::Int) return false;
-        ++i;
-        if (kind(i) == TokKind::Colon) {
-          ++i;
-          if (kind(i) == TokKind::Minus) ++i;
-          if (kind(i) != TokKind::Int) return false;
-          ++i;
-        }
-        if (kind(i) != TokKind::RBracket) return false;
-        ++i;
-        continue;
-      }
-      if (kind(i) == TokKind::Underscore) {
-        ++i;
-        if (kind(i) == TokKind::Minus) ++i;
-        if (kind(i) != TokKind::Int) return false;
-        ++i;
-        if (kind(i) == TokKind::Colon) {
-          ++i;
-          if (kind(i) == TokKind::Minus) ++i;
-          if (kind(i) != TokKind::Int) return false;
-          ++i;
-        }
-        continue;
-      }
-      break;
-    }
-  } else {
-    return false;  // P0: only Ident-led postfix for the boundary-list form
   }
-
-  auto take_signed = [&]() -> bool {
-    if (kind(i) == TokKind::Minus) ++i;
-    if (kind(i) == TokKind::Int || kind(i) == TokKind::Real) {
-      ++i;
-      return true;
-    }
-    return false;
-  };
-  if (!take_signed() || !take_signed()) return false;
-  while (kind(i) != TokKind::Newline && kind(i) != TokKind::Eof) {
-    if (!take_signed()) return false;
-  }
-  return true;
+  return count >= 2;
 }
 
-void Parser::not_implemented(const char* production, Span span) {
-  diags_.error(span,
-               std::string("not implemented: parse_") + production,
-               "P0 harness stub — production exists in grammar.ebnf; "
-               "implement the matching parse_X (ADR-010)");
-  synchronize_statement();
+bool Parser::derived_candidate_ahead() const {
+  // keyword at peek; then Ident; then Assign
+  if (peek_n(1).kind != TokKind::Ident) return false;
+  std::size_t i = sig_index();
+  ++i;  // skip keyword
+  while (i < tokens_.size() && tokens_[i].kind == TokKind::Newline) ++i;
+  if (i >= tokens_.size() || tokens_[i].kind != TokKind::Ident) return false;
+  ++i;
+  while (i < tokens_.size() && tokens_[i].kind == TokKind::Newline) ++i;
+  return i < tokens_.size() && tokens_[i].kind == TokKind::Assign;
 }
 
-std::unique_ptr<Expr> Parser::make_unsupported(Span span, std::string reason) {
+Ident Parser::make_ident(Token tok) {
+  Ident id;
+  id.name = std::move(tok.text);
+  id.span = tok.span;
+  return id;
+}
+
+Ident Parser::expect_ident(const char* what) {
+  if (check(TokKind::Ident)) return make_ident(advance());
+  // Some keywords are accepted as section/object names in Rust via
+  // parse_section_name; for ordinary expect_ident, error.
+  diags_.error(peek().span, std::string("expected ") + what,
+               "ident production");
+  Ident id;
+  id.span = peek().span;
+  return id;
+}
+
+StrLit Parser::expect_string(const char* what) {
+  if (check(TokKind::String)) {
+    Token t = advance();
+    StrLit s;
+    s.value = std::move(t.text);
+    s.span = t.span;
+    return s;
+  }
+  diags_.error(peek().span, std::string("expected ") + what, "string literal");
+  StrLit s;
+  s.span = peek().span;
+  return s;
+}
+
+std::optional<CmpOp> Parser::peek_cmp_op() const {
+  switch (peek().kind) {
+    case TokKind::Gt: return CmpOp::Gt;
+    case TokKind::Lt: return CmpOp::Lt;
+    case TokKind::Ge: return CmpOp::Ge;
+    case TokKind::Le: return CmpOp::Le;
+    case TokKind::EqEq: return CmpOp::Eq;
+    case TokKind::Ne: return CmpOp::Ne;
+    case TokKind::TildeEq: return CmpOp::ApproxEq;
+    default: return std::nullopt;
+  }
+}
+
+std::unique_ptr<Expr> Parser::make_error(Span span) {
   auto e = std::make_unique<Expr>();
-  e->kind = ExprKind::Unsupported;
+  e->kind = ExprKind::Error;
   e->span = span;
-  e->reason = std::move(reason);
   return e;
 }
 
-std::unique_ptr<Expr> Parser::make_leaf(ExprKind kind, Token tok) {
-  auto e = std::make_unique<Expr>();
-  e->kind = kind;
-  e->span = tok.span;
-  e->text = std::move(tok.text);
-  return e;
-}
+// --- file / sections ---
 
 FileAst Parser::parse_file() {
   FileAst file;
-  skip_newlines();
   while (!check(TokKind::Eof)) {
     Section sec;
     if (!parse_section(sec)) {
@@ -274,29 +286,23 @@ FileAst Parser::parse_file() {
       continue;
     }
     file.sections.push_back(std::move(sec));
-    skip_newlines();
   }
   return file;
 }
 
 bool Parser::parse_section(Section& out) {
-  skip_newlines();
   switch (peek().kind) {
     case TokKind::KwInfo:
       out = parse_info_block();
       return true;
     case TokKind::KwDefine:
     case TokKind::KwDef:
-      out = parse_define();
+      out = parse_define_section();
       return true;
     case TokKind::KwObject:
     case TokKind::KwObj:
     case TokKind::KwComposite:
-      out = parse_object_block();
-      return true;
     case TokKind::KwTrigger:
-      // Ambiguous at section start vs region trigger-stmt; SPEC treats
-      // top-level `trigger Ident …` as object-block.
       out = parse_object_block();
       return true;
     case TokKind::KwRegion:
@@ -318,208 +324,327 @@ bool Parser::parse_section(Section& out) {
 Section Parser::parse_info_block() {
   Section s;
   s.kind = SectionKind::Info;
-  s.span = peek().span;
-  expect(TokKind::KwInfo, "info");
-  if (check(TokKind::Ident) || peek().kind == TokKind::KwTrue ||
-      peek().kind == TokKind::KwFalse) {
-    // Allow keyword-looking names only as Ident; info name is ident.
+  Token start = advance();  // info
+  Ident name = expect_ident("an analysis name after `info`");
+  InfoBlock block;
+  block.name = std::move(name);
+  while (check(TokKind::Ident)) {
+    block.lines.push_back(parse_info_line());
   }
-  if (!check(TokKind::Ident)) {
-    diags_.error(peek().span, "expected ident after info",
-                 "info-block = \"info\" ident { info-line }");
-  } else {
-    s.name = advance().text;
-  }
-  skip_newlines();
-  while (!check(TokKind::Eof) && !at_section_start()) {
-    if (!parse_info_line()) break;
-    skip_newlines();
-  }
-  s.detail = "info-block";
+  block.span = start.span.to(last_span_);
+  s.info = std::move(block);
   return s;
 }
 
-bool Parser::parse_info_line() {
-  if (!check(TokKind::Ident)) return false;
-  advance();  // key
-  while (!check(TokKind::Eof) && !check(TokKind::Newline) &&
-         !at_section_start()) {
-    if (check(TokKind::Ident) || check(TokKind::String) ||
-        check(TokKind::Int) || check(TokKind::Real) ||
-        check(TokKind::Minus)) {
-      if (check(TokKind::Minus)) {
-        if (!parse_signed_num()) break;
-      } else {
-        advance();
-      }
-    } else {
-      break;
-    }
+InfoLine Parser::parse_info_line() {
+  Ident key = expect_ident("an info key");
+  Span start = key.span;
+  std::optional<Span> value_lo;
+  Span value_hi = last_span_;
+  while (raw_peek().kind != TokKind::Newline && raw_peek().kind != TokKind::Eof) {
+    Span sp = tokens_[pos_].span;
+    if (!value_lo) value_lo = sp;
+    value_hi = sp;
+    ++pos_;
+    last_span_ = sp;
   }
-  match(TokKind::Newline);
-  return true;
+  InfoLine line;
+  line.key = std::move(key);
+  if (value_lo) {
+    line.value_span = value_lo->to(value_hi);
+    std::size_t lo = line.value_span.start;
+    std::size_t hi = line.value_span.end;
+    if (hi > src_.size()) hi = src_.size();
+    if (lo > hi) lo = hi;
+    std::string_view raw = src_.substr(lo, hi - lo);
+    while (!raw.empty() &&
+           (raw.front() == ' ' || raw.front() == '\t'))
+      raw.remove_prefix(1);
+    while (!raw.empty() &&
+           (raw.back() == ' ' || raw.back() == '\t'))
+      raw.remove_suffix(1);
+    line.value = std::string(raw);
+  } else {
+    line.value_span = start.to(start);
+  }
+  line.span = start.to(last_span_);
+  return line;
 }
 
-Section Parser::parse_define() {
+Section Parser::parse_define_section() {
   Section s;
   s.kind = SectionKind::Define;
-  s.span = peek().span;
-  if (!match_any({TokKind::KwDefine, TokKind::KwDef})) {
-    diags_.error(peek().span, "expected define|def");
-    return s;
-  }
-  if (!check(TokKind::Ident)) {
-    diags_.error(peek().span, "expected ident in define",
-                 "define = (\"define\"|\"def\") ident (\"=\"|\":\") condition");
-  } else {
-    s.name = advance().text;
-  }
+  Token kw_tok = advance();
+  Define def;
+  def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
+  def.name = expect_ident("a name after `define`");
   if (!match_any({TokKind::Assign, TokKind::Colon})) {
-    diags_.error(peek().span, "expected '=' or ':' after define name");
+    diags_.error(peek().span, "expected `=` or `:` after the define name");
   }
-  auto cond = parse_condition();
-  if (cond) {
-    s.detail = "define " + s.name;
+  def.body = extend_particle_list(parse_condition());
+  def.span = kw_tok.span.to(last_span_);
+  s.define = std::move(def);
+  return s;
+}
+
+Section Parser::parse_table_block() {
+  Section s;
+  s.kind = SectionKind::Table;
+  Token start = advance();  // table
+  TableBlock t;
+  t.name = expect_ident("a table name after `table`");
+  if (expect(TokKind::KwTabletype, "`tabletype`")) {
+    t.table_type = expect_ident("a table type");
   }
-  skip_newlines();
+  if (expect(TokKind::KwNvars, "`nvars`")) {
+    if (check(TokKind::Int)) {
+      t.nvars = static_cast<std::uint64_t>(std::strtoull(peek().text.c_str(), nullptr, 10));
+      advance();
+    } else {
+      diags_.error(peek().span, "expected an integer after `nvars`");
+    }
+  }
+  if (expect(TokKind::KwErrors, "`errors`")) {
+    if (check(TokKind::KwTrue)) {
+      t.errors = true;
+      advance();
+    } else if (check(TokKind::KwFalse)) {
+      advance();
+    } else {
+      diags_.error(peek().span, "expected `true` or `false` after `errors`");
+    }
+  }
+  while (at_signed_num()) {
+    t.values.push_back(parse_signed_num());
+  }
+  t.span = start.span.to(last_span_);
+  s.table = std::move(t);
+  return s;
+}
+
+Section Parser::parse_countsformat_block() {
+  Section s;
+  s.kind = SectionKind::CountsFormat;
+  Token start = advance();
+  CountsFormatBlock cf;
+  cf.name = expect_ident("a format name after `countsformat`");
+  while (check(TokKind::KwProcess)) {
+    Token pstart = advance();
+    ProcessDecl p;
+    p.name = expect_ident("a process name");
+    expect(TokKind::Comma, "`,` after the process name");
+    p.title = expect_string("a quoted process title");
+    while (match(TokKind::Comma)) {
+      p.columns.push_back(expect_ident("a column name"));
+    }
+    p.span = pstart.span.to(last_span_);
+    cf.processes.push_back(std::move(p));
+  }
+  cf.span = start.span.to(last_span_);
+  s.counts_format = std::move(cf);
   return s;
 }
 
 Section Parser::parse_object_block() {
   Section s;
   s.kind = SectionKind::Object;
-  s.span = peek().span;
-  if (!match_any({TokKind::KwObject, TokKind::KwObj, TokKind::KwComposite,
-                  TokKind::KwTrigger})) {
-    diags_.error(peek().span, "expected object|obj|composite|trigger");
-    return s;
+  Token kw_tok = advance();
+  ObjectKw keyword = ObjectKw::Object;
+  switch (kw_tok.kind) {
+    case TokKind::KwObj: keyword = ObjectKw::Obj; break;
+    case TokKind::KwComposite: keyword = ObjectKw::Composite; break;
+    case TokKind::KwTrigger: keyword = ObjectKw::Trigger; break;
+    default: break;
   }
-  if (!check(TokKind::Ident)) {
-    diags_.error(peek().span, "expected ident after object keyword");
-  } else {
-    s.name = advance().text;
-  }
-  skip_newlines();
-  while (!check(TokKind::Eof) && !at_section_start()) {
+  Ident name = expect_ident("a name after object keyword");
+  ObjectBlock block;
+  block.keyword = keyword;
+  block.name = std::move(name);
+
+  for (;;) {
     if (check(TokKind::KwTake) || check(TokKind::KwUsing) ||
         check(TokKind::Colon)) {
-      (void)parse_take_stmt();
-      skip_newlines();
+      block.stmts.push_back(parse_take_stmt());
       continue;
     }
     if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
         check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-      (void)parse_cut_stmt();
-      skip_newlines();
+      Token cut_kw = advance();
+      std::string kw = "select";
+      if (cut_kw.kind == TokKind::KwCut) kw = "cut";
+      else if (cut_kw.kind == TokKind::KwCmd) kw = "cmd";
+      else if (cut_kw.kind == TokKind::KwCommand) kw = "command";
+      ObjectStmt st;
+      st.kind = ObjectStmt::Kind::Cut;
+      st.keyword = kw;
+      st.cond = parse_condition();
+      st.span = cut_kw.span.to(last_span_);
+      block.stmts.push_back(std::move(st));
       continue;
     }
-    if (check(TokKind::KwDefine) || check(TokKind::KwDef)) {
-      (void)parse_object_define();
+    if (check(TokKind::KwReject)) {
+      Token start = advance();
+      ObjectStmt st;
+      st.kind = ObjectStmt::Kind::Reject;
+      st.cond = parse_condition();
+      st.span = start.span.to(last_span_);
+      block.stmts.push_back(std::move(st));
       continue;
     }
-    if (check(TokKind::Newline)) {
-      skip_newlines();
+    if (keyword == ObjectKw::Composite &&
+        (check(TokKind::KwObject) || check(TokKind::KwObj) ||
+         is_ident_text("candidate")) &&
+        derived_candidate_ahead()) {
+      block.stmts.push_back(parse_derived_candidate());
       continue;
     }
-    diags_.error(peek().span,
-                 std::string("expected take-stmt | cut-stmt | object-define "
-                             "(got ") +
-                     tok_kind_name(peek().kind) + ")",
-                 "object-block body; see grammar.ebnf");
-    synchronize_statement();
+    if ((check(TokKind::KwDefine) || check(TokKind::KwDef)) &&
+        !at_column_one()) {
+      block.stmts.push_back(parse_object_define());
+      continue;
+    }
+    break;
   }
-  s.detail = "object-block";
+  block.span = kw_tok.span.to(last_span_);
+  s.object = std::move(block);
   return s;
 }
 
-bool Parser::parse_take_stmt() {
-  if (!match_any({TokKind::KwTake, TokKind::KwUsing, TokKind::Colon})) {
-    return false;
+ObjectStmt Parser::parse_object_define() {
+  Token kw_tok = advance();
+  Define def;
+  def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
+  def.name = expect_ident("a name after `define`");
+  if (!match_any({TokKind::Assign, TokKind::Colon})) {
+    diags_.error(peek().span, "expected `=` or `:` after the define name");
   }
-  return parse_take_source();
+  def.body = extend_particle_list(parse_condition());
+  def.span = kw_tok.span.to(last_span_);
+  ObjectStmt st;
+  st.kind = ObjectStmt::Kind::Define;
+  st.define = std::move(def);
+  st.span = st.define.span;
+  return st;
 }
 
-bool Parser::parse_take_source() {
-  if (match(TokKind::KwUnion)) {
-    expect(TokKind::LParen, "'(' after union");
-    if (!check(TokKind::Ident)) {
-      diags_.error(peek().span, "expected ident in union(...)");
+ObjectStmt Parser::parse_derived_candidate() {
+  Token kw_tok = advance();
+  std::string keyword = "candidate";
+  if (kw_tok.kind == TokKind::KwObj) keyword = "obj";
+  else if (kw_tok.kind == TokKind::KwObject) keyword = "object";
+  Ident name = expect_ident("a derived candidate name");
+  if (!match(TokKind::Assign)) {
+    diags_.error(peek().span, "expected `=` after the candidate name");
+  }
+  ObjectStmt st;
+  st.kind = ObjectStmt::Kind::Derived;
+  st.keyword = keyword;
+  st.name = std::move(name);
+  st.body = extend_particle_list(parse_condition());
+  st.span = kw_tok.span.to(last_span_);
+  return st;
+}
+
+ObjectStmt Parser::parse_take_stmt() {
+  Token kw_tok = advance();
+  std::string keyword = "take";
+  if (kw_tok.kind == TokKind::KwUsing) keyword = "using";
+  else if (kw_tok.kind == TokKind::Colon) keyword = ":";
+  ObjectStmt st;
+  st.kind = ObjectStmt::Kind::Take;
+  st.keyword = keyword;
+  st.take_source = parse_take_source();
+  while (!nl_before()) {
+    if (check(TokKind::Ident) && iequals(peek().text, "alias") &&
+        peek_n(1).kind == TokKind::Ident) {
+      advance();
+      st.alias = expect_ident("an alias name");
+    } else if (check(TokKind::Ident)) {
+      st.binders.push_back(expect_ident("a binder name"));
+      if (!nl_before() && check(TokKind::Comma)) advance();
     } else {
-      advance();
+      break;
     }
-    while (match(TokKind::Comma)) {
-      if (!check(TokKind::Ident)) {
-        diags_.error(peek().span, "expected ident after ',' in union");
-        break;
-      }
-      advance();
-    }
-    expect(TokKind::RParen, "')' after union");
-    return true;
   }
-  if (!check(TokKind::Ident)) {
-    diags_.error(peek().span, "expected take-source",
-                 "take-source = ident | ident '(' arg-list ')' | union (...)");
-    return false;
-  }
-  advance();
-  if (match(TokKind::LParen)) {
-    if (!check(TokKind::RParen)) {
-      parse_arg_list();
-    }
-    expect(TokKind::RParen, "')' after take-source args");
-  }
-  return true;
+  st.span = kw_tok.span.to(last_span_);
+  return st;
 }
 
-bool Parser::parse_object_define() {
-  if (!(check(TokKind::KwDefine) || check(TokKind::KwDef))) return false;
-  (void)parse_define();
-  return true;
+TakeSource Parser::parse_take_source() {
+  TakeSource src;
+  if (check(TokKind::KwUnion)) {
+    Token start = advance();
+    src.kind = TakeSourceKind::Union;
+    if (expect(TokKind::LParen, "`(` after `union`")) {
+      src.members.push_back(expect_ident("a collection name"));
+      while (match(TokKind::Comma)) {
+        src.members.push_back(expect_ident("a collection name"));
+      }
+      expect(TokKind::RParen, "`)` to close `union(...)`");
+    }
+    src.span = start.span.to(last_span_);
+    return src;
+  }
+  Ident name;
+  if (check(TokKind::KwSort)) {
+    Token t = advance();
+    name.name = "sort";
+    name.span = t.span;
+  } else {
+    name = expect_ident("a source collection name");
+  }
+  if (!nl_before() && check(TokKind::LParen)) {
+    src.kind = TakeSourceKind::Call;
+    src.name = std::move(name);
+    src.args = parse_paren_args();
+    src.span = src.name.span.to(last_span_);
+    return src;
+  }
+  if (!nl_before() && check(TokKind::LBracket)) {
+    auto base = std::make_unique<Expr>();
+    base->kind = ExprKind::Ident;
+    base->ident = name;
+    base->span = name.span;
+    src.kind = TakeSourceKind::Expr;
+    src.expr = parse_index_suffix(std::move(base));
+    src.span = name.span.to(last_span_);
+    return src;
+  }
+  src.kind = TakeSourceKind::Ident;
+  src.name = std::move(name);
+  src.span = src.name.span;
+  return src;
 }
 
 Section Parser::parse_region_block() {
   Section s;
   s.kind = SectionKind::Region;
-  s.span = peek().span;
-  if (!match_any(
-          {TokKind::KwRegion, TokKind::KwAlgo, TokKind::KwHistoList})) {
-    diags_.error(peek().span, "expected region|algo|histoList");
-    return s;
+  Token kw_tok = advance();
+  RegionKw keyword = RegionKw::Region;
+  if (kw_tok.kind == TokKind::KwAlgo) keyword = RegionKw::Algo;
+  else if (kw_tok.kind == TokKind::KwHistoList) keyword = RegionKw::HistoList;
+  Ident name = expect_ident("a name after region keyword");
+  RegionBlock block;
+  block.keyword = keyword;
+  block.name = std::move(name);
+  for (;;) {
+    auto stmt = parse_region_stmt();
+    if (!stmt) break;
+    block.stmts.push_back(std::move(*stmt));
   }
-  if (!check(TokKind::Ident)) {
-    diags_.error(peek().span, "expected ident after region keyword");
-  } else {
-    s.name = advance().text;
-  }
-  skip_newlines();
-  while (!check(TokKind::Eof) && !at_section_start()) {
-    if (!parse_region_stmt()) {
-      if (check(TokKind::Newline)) {
-        skip_newlines();
-        continue;
-      }
-      break;
-    }
-    skip_newlines();
-  }
-  s.detail = "region-block";
+  block.span = kw_tok.span.to(last_span_);
+  s.region = std::move(block);
   return s;
 }
 
-bool Parser::parse_region_stmt() {
+std::optional<RegionStmt> Parser::parse_region_stmt() {
   if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
       check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-    return parse_cut_stmt();
+    return parse_cut_as_region();
   }
   if (check(TokKind::KwReject)) return parse_reject_stmt();
   if (check(TokKind::KwBin)) return parse_bin_stmt();
-  // Contextual `bins` (grammar.ebnf): bare on its line → region-ref;
-  // otherwise same construct as `bin`.
-  if (is_ident_text("bins")) {
-    if (next_is_line_end()) return parse_region_ref();
-    return parse_bin_stmt();
-  }
+  if (is_ident_text("bins") && !next_is_line_end()) return parse_bin_stmt();
   if (check(TokKind::KwWeight)) return parse_weight_stmt();
   if (check(TokKind::KwTrigger)) return parse_trigger_stmt();
   if (check(TokKind::KwHisto)) return parse_histo_stmt();
@@ -527,185 +652,296 @@ bool Parser::parse_region_stmt() {
   if (check(TokKind::KwCounts)) return parse_counts_stmt();
   if (check(TokKind::KwPrint)) return parse_print_stmt();
   if (check(TokKind::KwSort)) return parse_sort_stmt();
-  if (check(TokKind::Ident)) return parse_region_ref();
-  return false;
-}
-
-bool Parser::parse_cut_stmt() {
-  if (!match_any({TokKind::KwSelect, TokKind::KwCut, TokKind::KwCmd,
-                  TokKind::KwCommand})) {
-    return false;
-  }
-  (void)parse_condition();
-  return true;
-}
-
-bool Parser::parse_reject_stmt() {
-  if (!match(TokKind::KwReject)) return false;
-  (void)parse_condition();
-  return true;
-}
-
-bool Parser::parse_region_ref() {
-  if (!check(TokKind::Ident)) return false;
-  advance();
-  return true;
-}
-
-bool Parser::parse_bin_stmt() {
-  if (match(TokKind::KwBin)) {
-    // ok
-  } else if (is_ident_text("bins")) {
+  if (check(TokKind::KwTake) || check(TokKind::KwUsing)) {
     advance();
-  } else {
-    return false;
+    return parse_region_ref();
   }
-  if (check(TokKind::String)) advance();
-  return parse_bin_body();
+  if (check(TokKind::Ident)) return parse_region_ref();
+  return std::nullopt;
 }
 
-bool Parser::parse_bin_body() {
-  // bin-body = postfix boundary-list | condition
-  if (looks_like_postfix_boundary_list()) {
-    (void)parse_postfix();
-    if (!parse_boundary_list()) {
-      diags_.error(peek().span,
-                   "expected boundary-list after bin postfix",
-                   "boundary-list = signed-num signed-num { signed-num }");
+RegionStmt Parser::parse_cut_as_region() {
+  Token kw_tok = advance();
+  std::string kw = "select";
+  if (kw_tok.kind == TokKind::KwCut) kw = "cut";
+  else if (kw_tok.kind == TokKind::KwCmd) kw = "cmd";
+  else if (kw_tok.kind == TokKind::KwCommand) kw = "command";
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Cut;
+  st.keyword = kw;
+  st.cond = parse_condition();
+  st.span = kw_tok.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_reject_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Reject;
+  st.cond = parse_condition();
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_region_ref() {
+  if (check(TokKind::Ident) && iequals(peek().text, "type")) {
+    Token tok = advance();
+    if (!nl_before() && check(TokKind::Ident)) {
+      RegionStmt st;
+      st.kind = RegionStmt::Kind::TypeTag;
+      st.type_value = expect_ident("a region type tag");
+      st.span = tok.span.to(last_span_);
+      return st;
     }
-    return true;
+    RegionStmt st;
+    st.kind = RegionStmt::Kind::RegionRef;
+    st.name.name = tok.text;
+    st.name.span = tok.span;
+    st.span = tok.span;
+    return st;
   }
-  (void)parse_condition();
-  return true;
-}
-
-bool Parser::parse_boundary_list() {
-  if (!parse_signed_num()) return false;
-  if (!parse_signed_num()) {
-    diags_.error(peek().span, "boundary-list needs at least two signed-num");
-    return false;
+  Ident id = expect_ident("a region reference");
+  if (!nl_before()) {
+    diags_.error(id.span, "`" + id.name + "` is not a statement keyword",
+                 "a bare name is only valid alone on its line, as a "
+                 "region/histoList reference");
+    synchronize_statement();
   }
-  while (check(TokKind::Int) || check(TokKind::Real) || check(TokKind::Minus)) {
-    if (!parse_signed_num()) break;
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::RegionRef;
+  st.name = std::move(id);
+  st.span = st.name.span;
+  return st;
+}
+
+RegionStmt Parser::parse_bin_stmt() {
+  Token start = advance();  // bin or bins
+  std::optional<StrLit> label;
+  if (check(TokKind::String)) label = expect_string("a bin label");
+
+  if (at_postfix_start()) {
+    const std::size_t save_pos = pos_;
+    const std::size_t save_diags = diags_.diagnostics().size();
+    auto var = parse_postfix();
+    if (!nl_before() && rest_of_line_is_boundary_list()) {
+      RegionStmt st;
+      st.kind = RegionStmt::Kind::Bin;
+      st.label = std::move(label);
+      st.bin_body.kind = BinBodyKind::Boundaries;
+      st.bin_body.var = std::move(var);
+      while (!nl_before() && at_signed_num()) {
+        st.bin_body.edges.push_back(parse_signed_num());
+      }
+      st.span = start.span.to(last_span_);
+      return st;
+    }
+    pos_ = save_pos;
+    // Cannot truncate DiagSink easily — avoid emitting during speculative
+    // parse by only keeping path when successful. If we got here, discard
+    // by re-parsing condition from save (diags from failed attempt remain
+    // only if parse_postfix errored; rare). Best-effort: leave them.
+    (void)save_diags;
   }
-  return true;
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Bin;
+  st.label = std::move(label);
+  st.bin_body.kind = BinBodyKind::Cond;
+  st.bin_body.cond = parse_condition();
+  st.span = start.span.to(last_span_);
+  return st;
 }
 
-bool Parser::parse_trigger_stmt() {
-  if (!match(TokKind::KwTrigger)) return false;
-  (void)parse_condition();
-  return true;
+RegionStmt Parser::parse_trigger_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Trigger;
+  st.cond = parse_condition();
+  st.span = start.span.to(last_span_);
+  return st;
 }
 
-bool Parser::parse_histo_stmt() {
-  if (!check(TokKind::KwHisto)) return false;
-  Token kw = advance();
-  not_implemented("histo_stmt", kw.span);
-  return true;
-}
-
-bool Parser::parse_histo_arg() {
-  not_implemented("histo_arg", peek().span);
-  return false;
-}
-
-bool Parser::parse_weight_stmt() {
-  if (!check(TokKind::KwWeight)) return false;
-  Token kw = advance();
-  not_implemented("weight_stmt", kw.span);
-  return true;
-}
-
-bool Parser::parse_print_stmt() {
-  if (!check(TokKind::KwPrint)) return false;
-  Token kw = advance();
-  not_implemented("print_stmt", kw.span);
-  return true;
-}
-
-bool Parser::parse_save_stmt() {
-  if (!check(TokKind::KwSave)) return false;
-  Token kw = advance();
-  not_implemented("save_stmt", kw.span);
-  return true;
-}
-
-bool Parser::parse_counts_stmt() {
-  if (!check(TokKind::KwCounts)) return false;
-  Token kw = advance();
-  not_implemented("counts_stmt", kw.span);
-  return true;
-}
-
-bool Parser::parse_sort_stmt() {
-  if (!check(TokKind::KwSort)) return false;
-  Token kw = advance();
-  not_implemented("sort_stmt", kw.span);
-  return true;
-}
-
-Section Parser::parse_table_block() {
-  Section s;
-  s.kind = SectionKind::Table;
-  s.span = peek().span;
-  if (!check(TokKind::KwTable)) {
-    diags_.error(peek().span, "expected table");
-    return s;
+RegionStmt Parser::parse_histo_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Histo;
+  st.name = expect_ident("a histogram name");
+  expect(TokKind::Comma, "`,` after the histogram name");
+  st.title = expect_string("a quoted histogram title");
+  while (match(TokKind::Comma)) {
+    st.histo_args.push_back(parse_histo_arg());
   }
-  Token kw = advance();
-  not_implemented("table_block", kw.span);
-  s.detail = "table-block (stub)";
-  return s;
+  st.span = start.span.to(last_span_);
+  return st;
 }
 
-Section Parser::parse_countsformat_block() {
-  Section s;
-  s.kind = SectionKind::CountsFormat;
-  s.span = peek().span;
-  if (!check(TokKind::KwCountsformat)) {
-    diags_.error(peek().span, "expected countsformat");
-    return s;
+HistoArg Parser::parse_histo_arg() {
+  HistoArg a;
+  if (match(TokKind::LBracket)) {
+    a.kind = HistoArgKind::NumList;
+    while (at_signed_num()) a.nums.push_back(parse_signed_num());
+    expect(TokKind::RBracket, "`]` to close the bin edge list");
+    return a;
   }
-  Token kw = advance();
-  not_implemented("countsformat_block", kw.span);
-  s.detail = "countsformat-block (stub)";
-  return s;
+  if (at_signed_num()) {
+    NumLit first = parse_signed_num();
+    if (!nl_before() && at_signed_num() && !check(TokKind::Comma)) {
+      a.kind = HistoArgKind::NumList;
+      a.nums.push_back(std::move(first));
+      while (!nl_before() && at_signed_num()) {
+        a.nums.push_back(parse_signed_num());
+      }
+      return a;
+    }
+    a.kind = HistoArgKind::Num;
+    a.num = std::move(first);
+    return a;
+  }
+  a.kind = HistoArgKind::Expr;
+  a.expr = parse_condition();
+  return a;
 }
 
-// --- expression ladder (BISON_MAP.md precedence) ---
+RegionStmt Parser::parse_weight_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Weight;
+  if (check(TokKind::KwTrigger)) {
+    Token t = advance();
+    st.name.name = "trigger";
+    st.name.span = t.span;
+  } else {
+    st.name = expect_ident("a weight name");
+  }
+  if (at_signed_num()) {
+    st.weight_value.kind = WeightValueKind::Num;
+    st.weight_value.num = parse_signed_num();
+  } else if (check(TokKind::Ident)) {
+    Ident id = expect_ident("a weight value");
+    if (!nl_before() && check(TokKind::LParen)) {
+      auto call = std::make_unique<Expr>();
+      call->kind = ExprKind::Call;
+      call->field = id;
+      call->args = parse_paren_args();
+      call->span = id.span.to(last_span_);
+      st.weight_value.kind = WeightValueKind::Expr;
+      st.weight_value.expr = std::move(call);
+    } else {
+      auto e = std::make_unique<Expr>();
+      e->kind = ExprKind::Ident;
+      e->ident = id;
+      e->span = id.span;
+      st.weight_value.kind = WeightValueKind::Expr;
+      st.weight_value.expr = std::move(e);
+    }
+  } else {
+    diags_.error(peek().span,
+                 "expected a weight value (number, name or function call)");
+    synchronize_statement();
+    st.weight_value.kind = WeightValueKind::Expr;
+    st.weight_value.expr = make_error(peek().span);
+  }
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_save_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Save;
+  st.name = expect_ident("an output name after `save`");
+  st.format = expect_ident("an output format (e.g. `csv`)");
+  st.args = parse_arg_list_to_eol();
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_print_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Print;
+  st.args = parse_arg_list_to_eol();
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_counts_stmt() {
+  Token start = advance();
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Counts;
+  st.format = expect_ident("a counts format name");
+  while (!nl_before()) {
+    switch (peek().kind) {
+      case TokKind::Int:
+      case TokKind::Real:
+      case TokKind::Ident:
+      case TokKind::Plus:
+      case TokKind::Minus:
+      case TokKind::PlusMinus:
+      case TokKind::Comma:
+        st.counts_items.push_back(advance().text);
+        break;
+      default:
+        diags_.error(peek().span, "unexpected token in counts statement");
+        synchronize_statement();
+        goto done;
+    }
+  }
+done:
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+RegionStmt Parser::parse_sort_stmt() {
+  Token start = advance();
+  const std::size_t raw_start = peek().span.start;
+  std::size_t raw_end = raw_start;
+  while (!nl_before()) {
+    raw_end = advance().span.end;
+  }
+  RegionStmt st;
+  st.kind = RegionStmt::Kind::Sort;
+  if (raw_end > raw_start && raw_end <= src_.size()) {
+    st.sort_raw = std::string(src_.substr(raw_start, raw_end - raw_start));
+  }
+  st.span = start.span.to(last_span_);
+  return st;
+}
+
+// --- expressions ---
 
 std::unique_ptr<Expr> Parser::parse_condition() { return parse_ternary(); }
 
 std::unique_ptr<Expr> Parser::parse_ternary() {
-  // ternary = or-expr [ "?" ternary [ ":" ternary ] ]
-  auto cond = parse_or_expr();
-  if (!match(TokKind::Question)) return cond;
+  auto guard = parse_or_expr();
+  if (!match(TokKind::Question)) return guard;
   auto then_e = parse_ternary();
   std::unique_ptr<Expr> else_e;
+  bool has_else = false;
   if (match(TokKind::Colon)) {
     else_e = parse_ternary();
+    has_else = true;
   }
   auto e = std::make_unique<Expr>();
   e->kind = ExprKind::Ternary;
-  e->span = cond ? cond->span : peek().span;
-  e->text = else_e ? "?:" : "?";
-  e->kids.push_back(std::move(cond));
-  e->kids.push_back(std::move(then_e));
-  if (else_e) e->kids.push_back(std::move(else_e));
+  e->span = guard->span.to(last_span_);
+  e->ternary_has_else = has_else;
+  e->guard = std::move(guard);
+  e->then_e = std::move(then_e);
+  e->else_e = std::move(else_e);
   return e;
 }
 
 std::unique_ptr<Expr> Parser::parse_or_expr() {
   auto left = parse_and_expr();
   while (check(TokKind::KwOr) || check(TokKind::OrOr)) {
-    Token op = advance();
+    advance();
     auto right = parse_and_expr();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    e->kids.push_back(std::move(right));
+    e->bin_op = BinOp::Or;
+    e->span = left->span.to(right->span);
+    e->lhs = std::move(left);
+    e->rhs = std::move(right);
     left = std::move(e);
   }
   return left;
@@ -714,14 +950,14 @@ std::unique_ptr<Expr> Parser::parse_or_expr() {
 std::unique_ptr<Expr> Parser::parse_and_expr() {
   auto left = parse_not_expr();
   while (check(TokKind::KwAnd) || check(TokKind::AndAnd)) {
-    Token op = advance();
+    advance();
     auto right = parse_not_expr();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    e->kids.push_back(std::move(right));
+    e->bin_op = BinOp::And;
+    e->span = left->span.to(right->span);
+    e->lhs = std::move(left);
+    e->rhs = std::move(right);
     left = std::move(e);
   }
   return left;
@@ -733,62 +969,109 @@ std::unique_ptr<Expr> Parser::parse_not_expr() {
     auto inner = parse_not_expr();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Unary;
-    e->span = op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(inner));
+    e->unary_op = UnaryOp::Not;
+    e->span = op.span.to(inner->span);
+    e->child = std::move(inner);
     return e;
   }
   return parse_comparison();
 }
 
 std::unique_ptr<Expr> Parser::parse_comparison() {
-  auto left = parse_additive();
-  auto is_cmp = [&](TokKind k) {
-    return k == TokKind::Gt || k == TokKind::Lt || k == TokKind::Ge ||
-           k == TokKind::Le || k == TokKind::EqEq || k == TokKind::Ne ||
-           k == TokKind::TildeEq;
+  auto first = parse_additive();
+  if (!peek_cmp_op()) return parse_band_suffix(std::move(first));
+
+  struct Link {
+    CmpOp op;
+    std::unique_ptr<Expr> operand;
   };
-  if (is_cmp(peek().kind)) {
-    Token op = advance();
-    auto right = parse_additive();
+  std::vector<Link> links;
+  while (auto op = peek_cmp_op()) {
+    Token op_tok = advance();
+    if (*op == CmpOp::ApproxEq && !tilde_warned_) {
+      tilde_warned_ = true;
+      diags_.warning(op_tok.span, "`~=` semantics are unverified (OPEN-4)",
+                     "treated as `!=` downstream, matching the legacy parser");
+    }
+    links.push_back(Link{*op, parse_additive()});
+  }
+
+  if (links.size() == 1) {
     auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    e->kids.push_back(std::move(right));
+    e->kind = ExprKind::Cmp;
+    e->cmp_op = links[0].op;
+    e->span = first->span.to(links[0].operand->span);
+    e->lhs = std::move(first);
+    e->rhs = std::move(links[0].operand);
     return e;
   }
-  if (check(TokKind::BandIncl) || check(TokKind::BandExcl)) {
-    Token op = advance();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    if (!parse_signed_num()) {
-      diags_.error(peek().span, "expected signed-num after band operator");
+
+  // Chain → nested And of Cmp, cloning shared middles.
+  std::unique_ptr<Expr> prev = std::move(first);
+  std::unique_ptr<Expr> conj;
+  for (auto& link : links) {
+    auto lhs = std::make_unique<Expr>(prev->clone());
+    auto cmp = std::make_unique<Expr>();
+    cmp->kind = ExprKind::Cmp;
+    cmp->cmp_op = link.op;
+    cmp->span = lhs->span.to(link.operand->span);
+    cmp->lhs = std::move(lhs);
+    cmp->rhs = std::make_unique<Expr>(link.operand->clone());
+    if (!conj) {
+      conj = std::move(cmp);
+    } else {
+      auto and_e = std::make_unique<Expr>();
+      and_e->kind = ExprKind::Binary;
+      and_e->bin_op = BinOp::And;
+      and_e->span = conj->span.to(cmp->span);
+      and_e->lhs = std::move(conj);
+      and_e->rhs = std::move(cmp);
+      conj = std::move(and_e);
     }
-    if (!parse_signed_num()) {
-      diags_.error(peek().span,
-                   "expected second signed-num after band operator");
-    }
-    return e;
+    prev = std::move(link.operand);
   }
-  return left;
+  return conj;
+}
+
+std::unique_ptr<Expr> Parser::parse_band_suffix(std::unique_ptr<Expr> lhs) {
+  BandKind kind;
+  if (check(TokKind::BandIncl))
+    kind = BandKind::In;
+  else if (check(TokKind::BandExcl))
+    kind = BandKind::Out;
+  else
+    return lhs;
+  advance();
+  NumLit lo = parse_signed_num();
+  NumLit hi = parse_signed_num();
+  auto e = std::make_unique<Expr>();
+  e->kind = ExprKind::Band;
+  e->band_kind = kind;
+  e->band_lo = std::move(lo);
+  e->band_hi = std::move(hi);
+  e->span = lhs->span.to(last_span_);
+  e->child = std::move(lhs);
+  return e;
 }
 
 std::unique_ptr<Expr> Parser::parse_additive() {
   auto left = parse_multiplicative();
-  while (check(TokKind::Plus) || check(TokKind::Minus)) {
-    Token op = advance();
+  for (;;) {
+    BinOp op;
+    if (check(TokKind::Plus))
+      op = BinOp::Add;
+    else if (check(TokKind::Minus))
+      op = BinOp::Sub;
+    else
+      break;
+    advance();
     auto right = parse_multiplicative();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    e->kids.push_back(std::move(right));
+    e->bin_op = op;
+    e->span = left->span.to(right->span);
+    e->lhs = std::move(left);
+    e->rhs = std::move(right);
     left = std::move(e);
   }
   return left;
@@ -796,225 +1079,366 @@ std::unique_ptr<Expr> Parser::parse_additive() {
 
 std::unique_ptr<Expr> Parser::parse_multiplicative() {
   auto left = parse_unary();
-  while (check(TokKind::Star) || check(TokKind::Slash) ||
-         check(TokKind::Caret)) {
-    Token op = advance();
+  for (;;) {
+    BinOp op;
+    if (check(TokKind::Star))
+      op = BinOp::Mul;
+    else if (check(TokKind::Slash))
+      op = BinOp::Div;
+    else if (check(TokKind::Caret))
+      op = BinOp::Pow;
+    else
+      break;
+    advance();
     auto right = parse_unary();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
-    e->span = left ? left->span : op.span;
-    e->text = op.text;
-    e->kids.push_back(std::move(left));
-    e->kids.push_back(std::move(right));
+    e->bin_op = op;
+    e->span = left->span.to(right->span);
+    e->lhs = std::move(left);
+    e->rhs = std::move(right);
     left = std::move(e);
   }
   return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_unary() {
-  if (match(TokKind::Minus)) {
-    Token op = tokens_[pos_ - 1];
+  if (check(TokKind::Minus)) {
+    Token op = advance();
     auto inner = parse_unary();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Unary;
-    e->span = op.span;
-    e->text = "-";
-    e->kids.push_back(std::move(inner));
+    e->unary_op = UnaryOp::Neg;
+    e->span = op.span.to(inner->span);
+    e->child = std::move(inner);
     return e;
   }
   return parse_postfix();
 }
 
 std::unique_ptr<Expr> Parser::parse_postfix() {
-  auto base = parse_primary();
+  auto expr = parse_primary();
   for (;;) {
     if (match(TokKind::Dot)) {
-      if (!check(TokKind::Ident)) {
-        diags_.error(peek().span, "expected ident after '.'");
-        break;
-      }
-      Token field = advance();
+      Ident field = expect_ident("a property name after `.`");
       auto e = std::make_unique<Expr>();
-      e->kind = ExprKind::Postfix;
-      e->span = base ? base->span : field.span;
-      e->text = "." + field.text;
-      e->kids.push_back(std::move(base));
-      base = std::move(e);
+      e->kind = ExprKind::Dot;
+      e->field = field;
+      e->span = expr->span.to(field.span);
+      e->child = std::move(expr);
+      expr = std::move(e);
       continue;
     }
-    if (match(TokKind::LBracket)) {
+    if (match(TokKind::Arrow)) {
+      Ident field = expect_ident("a member name after `->`");
       auto e = std::make_unique<Expr>();
-      e->kind = ExprKind::Postfix;
-      e->span = base ? base->span : peek().span;
-      e->text = "[]";
-      e->kids.push_back(std::move(base));
-      if (!parse_index()) {
-        diags_.error(peek().span, "expected index inside []");
-      }
-      if (match(TokKind::Colon)) {
-        (void)parse_index();
-      }
-      expect(TokKind::RBracket, "']'");
-      base = std::move(e);
+      e->kind = ExprKind::Member;
+      e->field = field;
+      e->span = expr->span.to(field.span);
+      e->child = std::move(expr);
+      expr = std::move(e);
       continue;
     }
-    if (match(TokKind::Underscore)) {
-      auto e = std::make_unique<Expr>();
-      e->kind = ExprKind::Postfix;
-      e->span = base ? base->span : peek().span;
-      e->text = "_";
-      e->kids.push_back(std::move(base));
-      if (!parse_index()) {
-        diags_.error(peek().span, "expected index after '_'");
+    if (!nl_before() && check(TokKind::LBracket)) {
+      expr = parse_index_suffix(std::move(expr));
+      continue;
+    }
+    if (!nl_before() && match(TokKind::Underscore)) {
+      if (at_index_val()) {
+        IndexVal idx = parse_index_val();
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::UnderscoreIndex;
+        e->index = idx;
+        e->span = expr->span.to(last_span_);
+        e->child = std::move(expr);
+        expr = std::move(e);
+      } else {
+        auto e = std::make_unique<Expr>();
+        e->kind = ExprKind::UnderscoreAll;
+        e->span = expr->span.to(last_span_);
+        e->child = std::move(expr);
+        expr = std::move(e);
       }
-      if (match(TokKind::Colon)) {
-        (void)parse_index();
-      }
-      base = std::move(e);
       continue;
     }
     break;
   }
-  return base;
+  return expr;
+}
+
+IndexVal Parser::parse_index_val() {
+  IndexVal v;
+  Span start = peek().span;
+  if (match(TokKind::Minus)) v.neg = true;
+  if (check(TokKind::Int)) {
+    v.value = static_cast<std::uint64_t>(
+        std::strtoull(peek().text.c_str(), nullptr, 10));
+    advance();
+  } else {
+    diags_.error(peek().span, "expected an integer index");
+  }
+  if (v.neg) {
+    diags_.warning(start.to(last_span_),
+                   "negative index: semantics reserved pending OPEN-3",
+                   "parsed, but tagged Unsupported in semantic analysis");
+  }
+  return v;
+}
+
+std::unique_ptr<Expr> Parser::parse_index_suffix(std::unique_ptr<Expr> base) {
+  advance();  // `[`
+  if (match(TokKind::Colon)) {
+    std::optional<IndexVal> end;
+    if (at_index_val()) end = parse_index_val();
+    expect(TokKind::RBracket, "`]` to close the slice");
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::Slice;
+    e->slice_end = end;
+    e->span = base->span.to(last_span_);
+    e->child = std::move(base);
+    return e;
+  }
+  IndexVal first = parse_index_val();
+  if (match(TokKind::Colon)) {
+    std::optional<IndexVal> end;
+    if (at_index_val()) end = parse_index_val();
+    expect(TokKind::RBracket, "`]` to close the slice");
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::Slice;
+    e->slice_start = first;
+    e->slice_end = end;
+    e->span = base->span.to(last_span_);
+    e->child = std::move(base);
+    return e;
+  }
+  expect(TokKind::RBracket, "`]` to close the index");
+  auto e = std::make_unique<Expr>();
+  e->kind = ExprKind::Index;
+  e->index = first;
+  e->span = base->span.to(last_span_);
+  e->child = std::move(base);
+  return e;
 }
 
 std::unique_ptr<Expr> Parser::parse_primary() {
   if (check(TokKind::Int) || check(TokKind::Real)) {
-    return make_leaf(ExprKind::Number, advance());
-  }
-  if (check(TokKind::String)) {
-    return make_leaf(ExprKind::String, advance());
-  }
-  if (check(TokKind::KwTrue) || check(TokKind::KwFalse)) {
-    return make_leaf(ExprKind::BoolLit, advance());
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::Num;
+    e->num = parse_signed_num();
+    e->span = e->num.span;
+    return e;
   }
   if (check(TokKind::Ident)) {
-    // func-call = ident '(' [ arg-list ] ')'
-    if (peek_n(1).kind == TokKind::LParen) {
-      return parse_func_call();
+    Ident id = expect_ident("an expression");
+    if (!nl_before() && check(TokKind::LParen)) {
+      return parse_func_call(std::move(id));
     }
-    return make_leaf(ExprKind::Ident, advance());
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::Ident;
+    e->ident = std::move(id);
+    e->span = e->ident.span;
+    return e;
+  }
+  if (check(TokKind::KwAll)) {
+    Token t = advance();
+    if (!nl_before() && check(TokKind::LParen)) {
+      Ident id;
+      id.name = "all";
+      id.span = t.span;
+      return parse_func_call(std::move(id));
+    }
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::All;
+    e->span = t.span;
+    return e;
+  }
+  if (check(TokKind::KwNone)) {
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::NoneKw;
+    e->span = advance().span;
+    return e;
+  }
+  if (check(TokKind::KwTrue)) {
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::True;
+    e->span = advance().span;
+    return e;
+  }
+  if (check(TokKind::KwFalse)) {
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::False;
+    e->span = advance().span;
+    return e;
   }
   if (match(TokKind::LParen)) {
     auto inner = parse_condition();
-    expect(TokKind::RParen, "')'");
+    expect(TokKind::RParen, "`)` to close the parenthesis");
     return inner;
   }
-  if (match(TokKind::Pipe)) {
+  if (check(TokKind::Pipe)) {
+    Token start = advance();
     auto inner = parse_additive();
-    expect(TokKind::Pipe, "'|' closing abs");
+    expect(TokKind::Pipe, "`|` to close the absolute value");
     auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Unary;
-    e->span = inner ? inner->span : peek().span;
-    e->text = "abs";
-    e->kids.push_back(std::move(inner));
+    e->kind = ExprKind::Abs;
+    e->span = start.span.to(last_span_);
+    e->child = std::move(inner);
     return e;
   }
-  if (match(TokKind::LBrace)) {
-    Span sp = tokens_[pos_ - 1].span;
-    if (!check(TokKind::RBrace)) {
-      parse_arg_list();
-    }
-    expect(TokKind::RBrace, "'}'");
-    if (!check(TokKind::Ident)) {
-      diags_.error(peek().span, "expected ident after braced property");
-      return make_unsupported(sp, "braced property missing ident");
-    }
-    Token prop = advance();
+  if (check(TokKind::LBrace)) {
+    Token start = advance();
+    std::vector<std::unique_ptr<Arg>> args;
+    args.push_back(parse_arg());
+    while (match(TokKind::Comma)) args.push_back(parse_arg());
+    expect(TokKind::RBrace, "`}` to close the braced object list");
+    Ident prop = expect_ident("a property name after `}`");
     auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Postfix;
-    e->span = sp;
-    e->text = "{}" + prop.text;
+    e->kind = ExprKind::Braced;
+    e->field = prop;
+    e->args = std::move(args);
+    e->span = start.span.to(last_span_);
     return e;
   }
-  diags_.error(peek().span,
-               std::string("expected primary expression (got ") +
+  Span sp = peek().span;
+  diags_.error(sp,
+               std::string("expected an expression (got ") +
                    tok_kind_name(peek().kind) + ")",
                "primary = number | ident | func-call | '(' condition ')' | "
                "'|' additive '|' | '{' arg-list '}' ident");
-  return make_unsupported(peek().span, "missing primary");
+  return make_error(sp);
 }
 
-std::unique_ptr<Expr> Parser::parse_func_call() {
-  Token name = advance();  // Ident
-  expect(TokKind::LParen, "'(' in func-call");
+std::unique_ptr<Expr> Parser::parse_func_call(Ident name) {
   auto e = std::make_unique<Expr>();
   e->kind = ExprKind::Call;
-  e->span = name.span;
-  e->text = name.text;
-  if (!check(TokKind::RParen)) {
-    do {
-      if (check(TokKind::String)) {
-        e->kids.push_back(make_leaf(ExprKind::String, advance()));
-      } else if (check(TokKind::PathLike)) {
-        (void)parse_path_token();
-      } else {
-        auto arg = parse_condition();
-        if (arg) e->kids.push_back(std::move(arg));
-      }
-    } while (match(TokKind::Comma));
-  }
-  expect(TokKind::RParen, "')' in func-call");
+  e->field = std::move(name);
+  e->args = parse_paren_args();
+  e->span = e->field.span.to(last_span_);
   return e;
 }
 
-bool Parser::parse_arg_list() {
-  if (!parse_arg()) return false;
-  while (match(TokKind::Comma)) {
-    if (!parse_arg()) {
-      diags_.error(peek().span, "expected arg after ','");
-      return false;
-    }
+std::vector<std::unique_ptr<Arg>> Parser::parse_paren_args() {
+  expect(TokKind::LParen, "`(`");
+  std::vector<std::unique_ptr<Arg>> args;
+  if (!check(TokKind::RParen)) {
+    args.push_back(parse_arg());
+    while (match(TokKind::Comma)) args.push_back(parse_arg());
   }
-  return true;
+  expect(TokKind::RParen, "`)` to close the argument list");
+  return args;
 }
 
-bool Parser::parse_arg() {
+std::vector<std::unique_ptr<Arg>> Parser::parse_arg_list_to_eol() {
+  std::vector<std::unique_ptr<Arg>> args;
+  args.push_back(parse_arg());
+  while (match(TokKind::Comma)) args.push_back(parse_arg());
+  return args;
+}
+
+std::unique_ptr<Arg> Parser::parse_arg() {
+  auto a = std::make_unique<Arg>();
   if (check(TokKind::String)) {
-    advance();
-    return true;
+    a->kind = Arg::Kind::Str;
+    a->str = expect_string("a string argument");
+    return a;
   }
-  if (parse_path_token()) return true;
-  // P0: remaining arg forms via condition (particle-list still stubbed).
-  auto e = parse_condition();
-  return static_cast<bool>(e);
+  if (check(TokKind::PathLike)) {
+    Token t = advance();
+    diags_.warning(t.span, "bare file-path token is deprecated",
+                   "quote it: \"" + t.text + "\"");
+    a->kind = Arg::Kind::Path;
+    a->str.value = std::move(t.text);
+    a->str.span = t.span;
+    return a;
+  }
+  StrLit path;
+  if (parse_path_token(path)) {
+    a->kind = Arg::Kind::Path;
+    a->str = std::move(path);
+    return a;
+  }
+  a->kind = Arg::Kind::Expr;
+  a->expr = extend_particle_list(parse_condition());
+  return a;
 }
 
-bool Parser::parse_path_token() {
-  if (!check(TokKind::PathLike)) return false;
-  Token t = advance();
-  diags_.warning(
-      t.span, "bare file-path token is deprecated",
-      "quote it: \"" + t.text + "\"");
-  return true;
-}
-
-bool Parser::parse_particle_list() {
-  not_implemented("particle_list", peek().span);
-  return false;
-}
-
-bool Parser::parse_index() {
-  match(TokKind::Minus);
-  if (!(check(TokKind::Int))) {
+bool Parser::parse_path_token(StrLit& out) {
+  // Mirrors Rust `try_path_token`: only valid in arg position. Start at an
+  // Ident and extend over contiguous `[A-Za-z0-9_./-]`, requiring both `.`
+  // and (`-` or `/`). Consume every token whose span starts inside the run.
+  if (!check(TokKind::Ident)) return false;
+  const std::size_t tok_start = peek().span.start;
+  const std::size_t tok_end = peek().span.end;
+  const std::uint32_t line = peek().span.line;
+  const std::uint32_t column = peek().span.column;
+  std::size_t end = tok_start;
+  while (end < src_.size()) {
+    unsigned char u = static_cast<unsigned char>(src_[end]);
+    if (std::isalnum(u) || u == '_' || u == '.' || u == '-' || u == '/')
+      ++end;
+    else
+      break;
+  }
+  if (end <= tok_end) return false;
+  std::string_view run = src_.substr(tok_start, end - tok_start);
+  if (run.find('.') == std::string_view::npos) return false;
+  if (run.find('-') == std::string_view::npos &&
+      run.find('/') == std::string_view::npos)
     return false;
+  // Consume tokens covered by the contiguous path run (use raw cursor:
+  // path pieces may include `.` / `-` tokens that peek() would skip past
+  // newlines for, but paths are single-line).
+  while (pos_ < tokens_.size() && tokens_[pos_].kind != TokKind::Eof &&
+         tokens_[pos_].span.start < end) {
+    last_span_ = tokens_[pos_].span;
+    ++pos_;
   }
-  advance();
+  out.value = std::string(run);
+  out.span = Span::at(tok_start, line, column, end - tok_start);
+  out.span.end = end;
+  diags_.warning(out.span, "bare file-path token is deprecated",
+                 "quote it: \"" + out.value + "\"");
   return true;
 }
 
-bool Parser::parse_signed_num() {
-  match(TokKind::Minus);
-  if (!(check(TokKind::Int) || check(TokKind::Real))) return false;
-  advance();
-  return true;
+std::unique_ptr<Expr> Parser::extend_particle_list(
+    std::unique_ptr<Expr> first) {
+  if (!first->is_postfix_like() || nl_before() || !at_postfix_start()) {
+    return first;
+  }
+  Span start = first->span;
+  auto e = std::make_unique<Expr>();
+  e->kind = ExprKind::ParticleList;
+  e->items.push_back(std::move(first));
+  while (!nl_before() && at_postfix_start()) {
+    e->items.push_back(parse_postfix());
+  }
+  e->span = start.to(last_span_);
+  return e;
+}
+
+NumLit Parser::parse_signed_num() {
+  NumLit n;
+  Span start = peek().span;
+  if (match(TokKind::Minus)) n.neg = true;
+  if (check(TokKind::Int) || check(TokKind::Real)) {
+    Token t = advance();
+    n.raw = t.text;
+    n.is_real = (t.kind == TokKind::Real);
+    n.span = (n.neg ? start.to(t.span) : t.span);
+    return n;
+  }
+  diags_.error(peek().span, "expected a number");
+  n.raw = "0";
+  n.span = peek().span;
+  return n;
 }
 
 ParseResult parse_source(const std::string& source) {
   ParseResult result;
   Lexer lexer(source, result.diags);
   auto tokens = lexer.tokenize();
-  Parser parser(std::move(tokens), result.diags);
+  Parser parser(source, std::move(tokens), result.diags);
   result.file = parser.parse_file();
   return result;
 }

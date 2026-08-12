@@ -8,31 +8,55 @@ From-scratch C++ reimplementation of the **smash2 architecture**
 | Active / forever-oracle tool | [`reimplementation/adl2`](../reimplementation/adl2) (`smash2`, Rust) |
 | Legacy flex/bison tool | [`legacy_parser/`](../legacy_parser/) (transitional secondary oracle only) |
 
+## Module layout (locked)
+
+**Not a single smash-shaped blob.** CMake targets mirror the Rust crate map.
+See [`MODULES.md`](MODULES.md) for the full spine and layering rules.
+
+```
+syntax → sema → {interp ∥ formula} → axioms → solver → analysis → certify
+              ↘ viz (HIR only)
+cli wires libs; does not own core logic
+```
+
+| Target | P1 | Headers |
+|---|---|---|
+| **`adl2_syntax`** | **filled** (RD + AST dump) | `include/adl2/syntax/` |
+| `adl2_sema` … `adl2_viz`, `adl2_util` | stubs | `include/adl2/<module>/` |
+| `smash2_cpp` (`libs/cli`) | dump wiring only | — |
+
+Sources live under `libs/<module>/`. Prefer one reviewable PR per module
+boundary when filling stubs. **No layering violations:** analysis must not
+parse; certify stays a small trusted kernel; viz depends on sema (HIR), not
+AST-only meaning.
+
 ## Status (P1)
 
-P1 expands the P0 harness into a **dump-compatible** recursive-descent
-parser and wires a **corpus dump-diff gate** against Rust smash2.
+P1 fills **`adl2_syntax`** and wires CLI dump + a corpus dump-diff gate
+against Rust smash2. Other module targets exist as stubs so the map is
+real in CMake.
 
 | Deliverable | Status |
 |---|---|
-| Hand-written RD (`grammar.ebnf` → `parse_X`) | Yes — checked fragment |
+| Modular CMake targets (crate map) | Yes |
+| Hand-written RD (`grammar.ebnf` → `parse_X`) in `adl2_syntax` | Yes |
 | Canonical AST dump (`adl_syntax::dump_ast` format) | Yes — byte-for-byte |
-| CLI `smash2_cpp check --dump-ast` | Yes |
+| CLI `smash2_cpp check --dump-ast` | Yes (cli → syntax only) |
 | Corpus dump-diff vs `smash2 check --dump-ast` | **146 / 146** green |
-| Sema / interpreter / verifier / certifier | Deferred (post-P1) |
+| Sema / interp / formula / … | Stub targets only |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
-Sema and later pipelines are out of scope for P1.
 
-## Collaborator packaging (required surface)
+## Collaborator packaging (syntax surface)
 
 | File | Role |
 |---|---|
-| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF — readable source of truth (from SPEC_LANGUAGE §3) |
-| [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison”: tokens, `parse_X`, precedence, diagnostics |
-| `include/adl2/parser.hpp` | Declares one `parse_<nonterminal>` per major EBNF name |
-| `include/adl2/ast.hpp` / `dump.hpp` | Dump-shaped AST + `dump_ast` (Rust format) |
-| `src/syntax/` | Lexer + RD parser + dump |
+| [`MODULES.md`](MODULES.md) | Crate/CMake map + dependency spine |
+| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF for `adl2_syntax` |
+| [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison” → `parse_X` |
+| `include/adl2/syntax/parser.hpp` | One `parse_<nonterminal>` per major EBNF name |
+| `include/adl2/syntax/{ast,dump}.hpp` | Dump-shaped AST + `dump_ast` |
+| `libs/syntax/` | Lexer + RD parser + dump implementation |
 | [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | Build both tools; fail on dump mismatch |
 
 ## Build
@@ -47,64 +71,41 @@ cmake --build cpp/build
 ctest --test-dir cpp/build --output-on-failure
 ```
 
-Binaries:
+Binaries / libs:
 
-- `cpp/build/smash2_cpp` — CLI (`--help`, `check [--dump-ast] <file>`)
-- `libadl2_cpp.a` — static library (syntax + dump)
+- `cpp/build/smash2_cpp` — CLI (`check [--dump-ast] <file>`); links `adl2_syntax`
+- `cpp/build/libs/syntax/libadl2_syntax.a` — P1 implementation
+- `cpp/build/libs/*/libadl2_*.a` — stub anchors (built in the default graph)
 
 ```bash
-./cpp/build/smash2_cpp --help
-./cpp/build/smash2_cpp check cpp/tests/fixtures/tiny.adl
 ./cpp/build/smash2_cpp check --dump-ast examples/tutorials/ex00_helloworld.adl
 ```
 
-`check` lexes and parses. With `--dump-ast`, stdout is the canonical AST
-dump only (diagnostics on stderr), matching Rust
-`smash2 check --dump-ast`. Exit code is nonzero when errors were recorded.
+With `--dump-ast`, stdout is the canonical AST dump only (diagnostics on
+stderr), matching Rust `smash2 check --dump-ast`.
 
 ## Corpus dump-diff gate (forever oracle)
 
-Rust `smash2` is the forever oracle. The P1 gate diffs C++ dumps against
-it over the same 146-file `examples/` corpus as
-`adl-syntax/tests/corpus_gate.rs`:
-
 ```bash
-# builds smash2_cpp + smash2 (cargo -p adl-cli --no-default-features), then diffs
 cpp/scripts/dump_ast_corpus_gate.sh
-
 # or, if both binaries already exist:
 SKIP_BUILD=1 cpp/scripts/dump_ast_corpus_gate.sh
 ```
 
-Byte-for-byte match is required (no normalization). Do not weaken or
-remove the existing `smash2` / `oracle-rust` CI jobs when extending this
-tree.
-
-## Relation to Rust smash2
-
-| CI job | Role |
-|---|---|
-| `smash2` | Full Rust workspace build + test (primary gate) |
-| `oracle-rust` | Forever-oracle smoke: `smash2 check --dump-ast` on a tutorial |
-| `adl2-cpp` | C++ build + ctest + **dump-ast corpus gate** vs smash2 |
+Same 146-file `examples/` corpus as `adl-syntax/tests/corpus_gate.rs`.
+Byte-for-byte match required. Do not weaken `smash2` / `oracle-rust` CI.
 
 ## What’s in / out of P1
 
-**In:** Rich AST aligned with `adl_syntax::ast`, complete-enough RD for
-the checked fragment, `dump_ast` parity, CLI `--dump-ast`, 146-file
-corpus dump-diff script + CI, README / BISON_MAP updates.
+**In:** Module CMake map; `adl2_syntax` dump parity; CLI wiring; 146-file
+corpus gate; stub libs for the rest of the spine.
 
-**Out:** Sema, interpreter, verifier, certifier, axioms, viz, exact
-rationals — those land behind explicit later gates against the Rust
-oracle.
+**Out:** Filling sema/formula/interp/axioms/solver/analysis/certify/viz —
+each behind its own phase/PR against the Rust oracle.
 
-### Notable P1 implementation choices
+### Notable syntax choices
 
-- Path-tokens are recognized **only in argument position** (Rust
-  `try_path_token`), not in the lexer — greedy path lexing incorrectly
-  swallowed expressions like `photons.pt/j.pt`.
-- Comparison chains (`a < x < b`) desugar to nested `Binary op=and` of
-  `Cmp` nodes, matching Rust.
-- Binary/`or`/`and`/`not` dump names are canonical (`or`/`and`/`not`),
-  never `||`/`&&`/`!`.
-- String Debug quoting for dump fields matches Rust `{:?}`.
+- Path-tokens recognized **only in argument position** (Rust
+  `try_path_token`).
+- Comparison chains desugar to nested `Binary op=and` of `Cmp`.
+- Dump uses canonical `and`/`or`/`not` and Rust Debug string quoting.

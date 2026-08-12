@@ -7,13 +7,14 @@ recursive-descent parser under `cpp/`.
 **Bison/Flex are not the implementation.** The readable grammar is
 [`grammar.ebnf`](grammar.ebnf) (from `SPEC_LANGUAGE.md` §3). Every
 nonterminal there maps 1:1 to a `parse_<name>` function in
-`include/adl2/parser.hpp` / `src/syntax/parser.cpp`.
+`include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
+(CMake target **`adl2_syntax`** — see [`MODULES.md`](MODULES.md)).
 
 ## Token layer (`%token` → lexer)
 
 | Bison-ish idea | Here |
 |---|---|
-| `%token SELECT REJECT DEFINE …` | `adl2::TokKind` keywords in `include/adl2/token.hpp`; matched case-insensitively by `Lexer` |
+| `%token SELECT REJECT DEFINE …` | `adl2::syntax::TokKind` keywords in `include/adl2/syntax/token.hpp`; matched case-insensitively by `Lexer` |
 | `%token IDENT NUMBER STRING` | `TokKind::Ident`, `Int`/`Real`, `String` |
 | Bare weight-file path token | **Not** a lexer token (P1). Recognized only in arg position by `parse_path_token()` (Rust `try_path_token`); deprecation warning. `TokKind::PathLike` remains for API compat but is unused by the lexer. |
 | Operators as character tokens | Explicit `TokKind` values (`Gt`, `AndAnd`, `OrOr`, `BandIncl` for `[]`, `Arrow` for `->`, `PlusMinus` for `+-`, …) |
@@ -22,6 +23,9 @@ nonterminal there maps 1:1 to a `parse_<name>` function in
 | Contextual `bins` | **Not** a hard keyword — lexed as `Ident`; `parse_region_stmt` treats bare-line `bins` as `region-ref`, otherwise as `bin-stmt` |
 
 ## Rules → `parse_X()`
+
+Namespace: `adl2::syntax` (this module only — do not park sema/analysis
+types here).
 
 | EBNF nonterminal | Parser entry |
 |---|---|

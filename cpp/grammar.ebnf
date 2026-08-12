@@ -5,7 +5,8 @@
  * Decision record: docs/archive/specs/DECISIONS.md ADR-002 + ADR-010
  *
  * Contract: one hand-written parse_<nonterminal> function per production
- * below (see include/adl2/parser.hpp and BISON_MAP.md). Bison/Flex are NOT
+ * below (see include/adl2/syntax/parser.hpp, libs/syntax/, BISON_MAP.md).
+ * Owned by CMake target adl2_syntax (see MODULES.md). Bison/Flex are NOT
  * the implementation — this file is the readable grammar collaborators
  * audit the C++ against.
  *

@@ -34,3 +34,6 @@ docs/smash2_deck.html
 docs/PRESENTATION_PLAN_2026-07.md
 # stray local binary copies
 /smash2
+
+# C++ P0 harness build tree (ADR-010)
+/cpp/build/

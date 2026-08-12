@@ -44,3 +44,48 @@ jobs:
         run: make
       - name: Golden suite + corpus sweep + z3 spike
         run: make -C legacy_parser test
+
+  # P0 C++ harness (ADR-010). Stock cmake + g++; no bison/flex/z3.
+  cpp-p0:
+    name: adl2-cpp (P0 harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make
+      - name: Configure
+        run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build cpp/build -j$(nproc)
+      - name: Test
+        run: ctest --test-dir cpp/build --output-on-failure
+
+  # Rust smash2 is the forever oracle for the C++ port (ADR-010).
+  # Keep this green alongside cpp-p0; future parity gates will diff
+  # against smash2. Does not replace the full `smash2` workspace job.
+  oracle-rust:
+    name: oracle-rust (smash2 forever-oracle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: reimplementation/adl2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install z3 4.12.2
+        run: |
+          curl -sSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.12.2/z3-4.12.2-x64-glibc-2.35.zip
+          unzip -q /tmp/z3.zip -d /tmp/z3
+          sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
+          z3 --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reimplementation/adl2
+      - name: Build smash2 (oracle)
+        run: cargo build --release -p adl-cli
+      - name: Oracle check on tutorial fixture
+        run: |
+          ./target/release/smash2 check --dump-ast \
+            ../../examples/tutorials/ex01_selection.adl

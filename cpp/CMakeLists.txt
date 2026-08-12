@@ -1,22 +1,30 @@
-# 3.20+: ctest --test-dir (used by CI and local smoke).
+# ADL2 C++ port — modular libs mirroring the Rust crate map (ADR-010).
+# There is NO monolithic libadl2_cpp: each Rust crate is its own CMake
+# target under libs/ (see MODULES.md). 3.20+: ctest --test-dir.
 cmake_minimum_required(VERSION 3.20)
-project(adl2_cpp LANGUAGES CXX)
+project(adl2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(adl2_cpp STATIC
-  src/syntax/diag.cpp
-  src/syntax/lexer.cpp
-  src/syntax/parser.cpp
-)
-target_include_directories(adl2_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_options(adl2_cpp PRIVATE -Wall -Wextra -Wpedantic)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(Adl2Module)
 
-add_executable(smash2_cpp src/main.cpp)
-target_link_libraries(smash2_cpp PRIVATE adl2_cpp)
-target_compile_options(smash2_cpp PRIVATE -Wall -Wextra -Wpedantic)
+# --- module targets (spine order) ---
+# syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+# viz reads HIR only; cli wires modules.
+add_subdirectory(libs/util)
+add_subdirectory(libs/syntax)
+add_subdirectory(libs/sema)
+add_subdirectory(libs/formula)
+add_subdirectory(libs/interp)
+add_subdirectory(libs/axioms)
+add_subdirectory(libs/solver)
+add_subdirectory(libs/analysis)
+add_subdirectory(libs/certify)
+add_subdirectory(libs/viz)
+add_subdirectory(libs/cli)
 
 enable_testing()
 add_subdirectory(tests)

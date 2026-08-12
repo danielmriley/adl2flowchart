@@ -1,0 +1,10 @@
+File
+  Define kw=define name=w @3:1
+    Call name=bdt
+      Path "TMVA_BDT.weights-2016.xml"
+  Region kw=region name=bins @5:1
+  Region kw=region name=SR @7:1
+    RegionRef name=bins @8:3
+    Bin @9:3
+      Boundaries edges=[20 50 100]
+        Ident pT

@@ -1,4 +1,4 @@
-# ADL2 C++ port (`cpp/`) — P0 harness
+# ADL2 C++ port (`cpp/`) — P1 syntax + AST dumps
 
 From-scratch C++ reimplementation of the **smash2 architecture**
 (ADR-010). This directory is the home for that port.
@@ -8,34 +8,61 @@ From-scratch C++ reimplementation of the **smash2 architecture**
 | Active / forever-oracle tool | [`reimplementation/adl2`](../reimplementation/adl2) (`smash2`, Rust) |
 | Legacy flex/bison tool | [`legacy_parser/`](../legacy_parser/) (transitional secondary oracle only) |
 
-P0 is **harness + grammar packaging + ADR**, not smash2 parity.
+## Module layout (locked)
 
-## Goals
+**Not a single smash-shaped blob.** CMake targets mirror the Rust crate map.
+See [`MODULES.md`](MODULES.md) for the full spine and layering rules.
 
-- Full C++ reimplementation of smash2 behavior under `cpp/` (not an
-  in-place rewrite of `legacy_parser/`).
-- Hand-written recursive descent (ADR-002): frozen EBNF, 1:1
-  nonterminal → `parse_X`, bison map for collaborators, grammar-shaped
-  diagnostics.
-- Import soundness non-negotiables from ADR-003–008 + certify / HIR viz /
-  exact rationals (see ADR-010 in
-  [`docs/archive/specs/DECISIONS.md`](../docs/archive/specs/DECISIONS.md)).
-- Keep Rust `smash2` as the **forever oracle** in CI; future parity gates
-  will diff C++ outputs against it.
+```
+syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+viz reads HIR only; cli wires modules.
+```
 
-## Collaborator packaging (required surface)
+| Target | P1 | Headers |
+|---|---|---|
+| **`adl2_syntax`** | **filled** (RD + AST dump) | `libs/syntax/include/adl2/syntax/` |
+| `adl2_sema` … `adl2_viz`, `adl2_util` | stubs | `libs/<module>/include/adl2/<module>/` |
+| `smash2_cpp` (`libs/cli`) | dump wiring only | — |
+
+Sources live under `libs/<module>/`. Prefer one reviewable PR per module
+boundary when filling stubs. **No layering violations:** analysis must not
+parse; certify stays a small trusted kernel; viz depends on sema (HIR), not
+AST-only meaning.
+
+## Status (P1)
+
+P1 fills **`adl2_syntax`** and wires CLI dump + a corpus dump-diff gate
+against Rust smash2. Other module targets exist as stubs so the map is
+real in CMake.
+
+| Deliverable | Status |
+|---|---|
+| Modular CMake targets (crate map) | Yes |
+| Hand-written RD (`grammar.ebnf` → `parse_X`) in `adl2_syntax` | Yes |
+| Canonical AST dump (`adl_syntax::dump_ast` format) | Yes — byte-for-byte |
+| CLI `smash2_cpp check --dump-ast` | Yes (cli → syntax only) |
+| Corpus dump-diff vs `smash2 check --dump-ast` | **146 / 146** green |
+| Sema / interp / formula / … | Stub targets only |
+
+Unsupported constructs still emit honest diagnostics (no silent accept).
+
+## Collaborator packaging (syntax surface)
 
 | File | Role |
 |---|---|
-| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF — readable source of truth (from SPEC_LANGUAGE §3) |
-| [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison”: tokens, `parse_X`, precedence, diagnostics |
-| `include/adl2/parser.hpp` | Declares one `parse_<nonterminal>` per major EBNF name |
-| `src/syntax/` | Lexer + RD parser skeleton (many productions still stub) |
+| [`MODULES.md`](MODULES.md) | Crate/CMake map + dependency spine |
+| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF for `adl2_syntax` |
+| [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison” → `parse_X` |
+| `libs/syntax/include/adl2/syntax/parser.hpp` | One `parse_<nonterminal>` per major EBNF name |
+| `libs/syntax/include/adl2/syntax/{ast,dump}.hpp` | Dump-shaped AST + `dump_ast` |
+| `libs/syntax/` | Lexer + RD parser + dump implementation |
+| [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | Build both tools; fail on dump mismatch |
 
 ## Build
 
 Requires stock Ubuntu toolchain: `cmake` ≥ 3.20, `g++` or `clang++`
-with C++17. **No** bison, flex, z3, or other external libs for P0.
+with C++17. **No** bison, flex, z3, or other external libs for the C++
+binary.
 
 ```bash
 cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
@@ -43,35 +70,42 @@ cmake --build cpp/build
 ctest --test-dir cpp/build --output-on-failure
 ```
 
-Binaries:
+Binaries / libs:
 
-- `cpp/build/smash2_cpp` — CLI skeleton (`--help`, `check <file>`)
-- `libadl2_cpp.a` — static library (syntax harness)
+- `cpp/build/smash2_cpp` — CLI (`check [--dump-ast] <file>`); links `adl2_syntax`
+- `cpp/build/libs/syntax/libadl2_syntax.a` — P1 implementation
+- `cpp/build/libs/*/libadl2_*.a` — stub anchors (built in the default graph)
 
 ```bash
-./cpp/build/smash2_cpp --help
-./cpp/build/smash2_cpp check cpp/tests/fixtures/tiny.adl
+./cpp/build/smash2_cpp check --dump-ast examples/tutorials/ex00_helloworld.adl
 ```
 
-`check` lexes and runs the RD harness. Full ADL is **not** implemented
-yet; unsupported constructs report grammar-shaped “not implemented”
-diagnostics. Exit code is nonzero when errors were recorded.
+With `--dump-ast`, stdout is the canonical AST dump only (diagnostics on
+stderr), matching Rust `smash2 check --dump-ast`.
 
-## Relation to Rust smash2 (forever oracle)
+## Corpus dump-diff gate (forever oracle)
 
-CI job `oracle-rust` is a **smoke** that the forever-oracle binary still
-builds and can `smash2 check --dump-ast` a tutorial file. It does **not**
-assert C++↔Rust parity yet. The full `smash2` workspace test job remains
-the primary CI gate. **Future parity gates will diff C++ outputs against
-smash2** — do not weaken or remove the existing `smash2` job when
-extending this tree.
+```bash
+cpp/scripts/dump_ast_corpus_gate.sh
+# or, if both binaries already exist:
+SKIP_BUILD=1 cpp/scripts/dump_ast_corpus_gate.sh
+```
 
-## What’s in / out of P0
+Same 146-file `examples/` corpus as `adl-syntax/tests/corpus_gate.rs`.
+Both dump commands must **exit 0**; dumps must start with `File`; then
+byte-for-byte match. Do not weaken `smash2` / `oracle-rust` CI.
 
-**In:** ADR-010, frozen EBNF, bison map, CMake lib+CLI, RD skeleton with
-named `parse_X` entry points, layered expression precedence, smoke
-tests, CI build + oracle hook.
+## What’s in / out of P1
 
-**Out:** Sema, interpreter, verifier, certifier, axioms, viz, exact
-rationals, corpus parity — those land behind explicit gates against the
-Rust oracle.
+**In:** Module CMake map; `adl2_syntax` dump parity; CLI wiring; 146-file
+corpus gate; stub libs for the rest of the spine.
+
+**Out:** Filling sema/formula/interp/axioms/solver/analysis/certify/viz —
+each behind its own phase/PR against the Rust oracle.
+
+### Notable syntax choices
+
+- Path-tokens recognized **only in argument position** (Rust
+  `try_path_token`).
+- Comparison chains desugar to nested `Binary op=and` of `Cmp`.
+- Dump uses canonical `and`/`or`/`not` and Rust Debug string quoting.

@@ -8,4 +8,5 @@ FIX="${ROOT}/cpp/tests/fixtures/tiny.adl"
 test -x "$BIN"
 "$BIN" --help | grep -q check
 "$BIN" check "$FIX" | grep -q "check: ok"
+bash "${ROOT}/cpp/tests/dump_parity.sh" "$BIN" "$FIX" "${FIX}.dump"
 echo "smoke: ok"

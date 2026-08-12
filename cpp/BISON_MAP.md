@@ -7,28 +7,32 @@ recursive-descent parser under `cpp/`.
 **Bison/Flex are not the implementation.** The readable grammar is
 [`grammar.ebnf`](grammar.ebnf) (from `SPEC_LANGUAGE.md` §3). Every
 nonterminal there maps 1:1 to a `parse_<name>` function in
-`include/adl2/parser.hpp` / `src/syntax/parser.cpp`.
+`libs/syntax/include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
+(CMake target **`adl2_syntax`** — see [`MODULES.md`](MODULES.md)).
 
 ## Token layer (`%token` → lexer)
 
 | Bison-ish idea | Here |
 |---|---|
-| `%token SELECT REJECT DEFINE …` | `adl2::TokKind` keywords in `include/adl2/token.hpp`; matched case-insensitively by `Lexer` |
+| `%token SELECT REJECT DEFINE …` | `adl2::syntax::TokKind` keywords in `libs/syntax/include/adl2/syntax/token.hpp`; matched case-insensitively by `Lexer` |
 | `%token IDENT NUMBER STRING` | `TokKind::Ident`, `Int`/`Real`, `String` |
-| Bare weight-file path token | `TokKind::PathLike` (lexer) + `parse_path_token()` (arg position only; deprecation warning) |
-| Operators as character tokens | Explicit `TokKind` values (`Gt`, `AndAnd`, `OrOr`, `BandIncl` for `[]`, …) |
+| Bare weight-file path token | **Not** a lexer token (P1). Recognized only in arg position by `parse_path_token()` (Rust `try_path_token`); deprecation warning. `TokKind::PathLike` remains for API compat but is unused by the lexer. |
+| Operators as character tokens | Explicit `TokKind` values (`Gt`, `AndAnd`, `OrOr`, `BandIncl` for `[]`, `Arrow` for `->`, `PlusMinus` for `+-`, …) |
 | `yytext` / `yylval` | `Token { kind, text, span }` — no global lexer state shared with the parser |
-| Flex patterns for ids/numbers | Hand-written scans in `src/syntax/lexer.cpp` following SPEC_LANGUAGE §2 (no hyphen-eating ids; no signed-literal lexing) |
+| Flex patterns for ids/numbers | Hand-written scans in `libs/syntax/src/lexer.cpp` following SPEC_LANGUAGE §2 (no hyphen-eating ids; no signed-literal lexing) |
 | Contextual `bins` | **Not** a hard keyword — lexed as `Ident`; `parse_region_stmt` treats bare-line `bins` as `region-ref`, otherwise as `bin-stmt` |
 
 ## Rules → `parse_X()`
+
+Namespace: `adl2::syntax` (this module only — do not park sema/analysis
+types here).
 
 | EBNF nonterminal | Parser entry |
 |---|---|
 | `file` | `Parser::parse_file` |
 | `section` | `parse_section` |
-| `info-block` / `define` / `object-block` / `region-block` / … | `parse_info_block`, `parse_define`, `parse_object_block`, `parse_region_block`, … |
-| `cut-stmt` / `reject-stmt` / `take-stmt` / … | `parse_cut_stmt`, `parse_reject_stmt`, `parse_take_stmt`, … |
+| `info-block` / `define` / `object-block` / `region-block` / … | `parse_info_block`, `parse_define_section`, `parse_object_block`, `parse_region_block`, … |
+| `cut-stmt` / `reject-stmt` / `take-stmt` / … | `parse_cut_as_region` / object cut arms, `parse_reject_stmt`, `parse_take_stmt`, … |
 | `condition` … `primary` | layered expression parsers (below) |
 
 If you would have written:
@@ -48,12 +52,12 @@ with layered functions — not `%left`/`%right` declarations:
 
 | Tightness (high → low) | EBNF / function | Operators |
 |---|---|---|
-| primary / call / group | `parse_primary` / `parse_func_call` | `(…)`, `{…}ident`, literals |
-| postfix | `parse_postfix` | `.ident`, `[i]`, `_i`, slices |
+| primary / call / group | `parse_primary` / `parse_func_call` | `(…)`, `{…}ident`, literals, `ALL`/`NONE`/`true`/`false` |
+| postfix | `parse_postfix` | `.ident`, `->ident`, `[i]`, `_i`, slices, trailing `_` |
 | unary | `parse_unary` | `-`, then postfix |
 | multiplicative | `parse_multiplicative` | `* / ^` |
 | additive | `parse_additive` | `+ -` |
-| comparison / band | `parse_comparison` | `> < >= <= == != ~=`, `[]` / `][` bands |
+| comparison / band | `parse_comparison` | `> < >= <= == != ~=`, `[]` / `][` bands; chains desugar to `and` of `Cmp` |
 | not | `parse_not_expr` | `not` / `!` (recursive) |
 | and | `parse_and_expr` | `and` / `&&` |
 | or | `parse_or_expr` | `or` / `\|\|` |
@@ -62,6 +66,18 @@ with layered functions — not `%left`/`%right` declarations:
 
 Entry point for every boolean/numeric expression production in the
 statement grammar is `parse_condition()` (alias of the ternary ladder).
+
+## Dump format (P1)
+
+`adl2::syntax::dump_ast` matches Rust `adl_syntax::dump_ast` byte-for-byte:
+
+- 2-space indent; root `File`
+- Spans as `@line:col` (1-based) on section/stmt headers
+- `Binary op=and|or|+|…` (never `&&`/`||`); `Unary op=not|-`; `Cmp op=…`
+- `Num` uses raw unsigned lexeme (+ grammatical sign); strings via Rust
+  Debug quoting (`rust_debug_str`)
+
+Gate: `cpp/scripts/dump_ast_corpus_gate.sh` (146 files).
 
 ## Diagnostics expectations (grammar-shaped)
 
@@ -74,11 +90,11 @@ Unlike a Bison `%error` / `yyerror` string dump:
    (`expected condition after select`, `expected take-source`) so a
    reader can jump from the diagnostic to `grammar.ebnf`.
 3. **No silent accept.** Constructs outside the checked fragment become
-   explicit unsupported/Unknown nodes with a reason — never a guessed
+   explicit unsupported/Error nodes with a reason — never a guessed
    AST (ADR-007).
-4. **P0 honesty.** Incomplete productions return a clear
-   `not implemented: parse_<X>` diagnostic rather than pretending
-   smash2 parity.
+4. **P1 honesty.** Incomplete / unsupported shapes still surface as
+   diagnostics or `Sort (unsupported)` dump lines (matching Rust), not
+   as invented smash2-parity claims.
 
 ## Relation to `legacy_parser/`
 

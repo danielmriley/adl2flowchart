@@ -5,7 +5,8 @@
  * Decision record: docs/archive/specs/DECISIONS.md ADR-002 + ADR-010
  *
  * Contract: one hand-written parse_<nonterminal> function per production
- * below (see include/adl2/parser.hpp and BISON_MAP.md). Bison/Flex are NOT
+ * below (see libs/syntax/include/adl2/syntax/parser.hpp, libs/syntax/, BISON_MAP.md).
+ * Owned by CMake target adl2_syntax (see MODULES.md). Bison/Flex are NOT
  * the implementation — this file is the readable grammar collaborators
  * audit the C++ against.
  *
@@ -13,9 +14,9 @@
  * items in SPEC_LANGUAGE remain as noted there; do not “fix” them in
  * the parser without updating the spec + ADR trail.
  *
- * P0 notes:
- *  - path-token: lexer emits TokKind::PathLike for bare weight-file runs;
- *    parse_path_token() accepts them in arg position (deprecation warning).
+ * P1 notes:
+ *  - path-token: recognized only in arg position by parse_path_token()
+ *    (Rust try_path_token); not greedily lexed (would swallow expr forms).
  *  - `bins` is contextual (see note on bin-stmt): Ident, not a hard keyword.
  *)
 

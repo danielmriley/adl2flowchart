@@ -30,6 +30,10 @@ class Lexer {
   std::size_t i_ = 0;
   std::uint32_t line_ = 1;
   std::uint32_t col_ = 1;
+  /// `_<digit>` splits: full note once per file; extras summarized at EOF
+  /// (matches Rust `adl-syntax` lexer; HIR dumps include these notes).
+  std::uint32_t underscore_splits_ = 0;
+  Span last_underscore_span_{};
 };
 
 }  // namespace adl2::syntax

@@ -1,7 +1,7 @@
-# P1 tests — no external test framework required.
+# P2 tests — no external test framework required.
 # Requires CMake ≥ 3.20 (ctest --test-dir in CI).
-# Full corpus dump-diff vs Rust smash2 lives in
-# cpp/scripts/dump_ast_corpus_gate.sh (CI job adl2-cpp).
+# dump-ast corpus gate: cpp/scripts/dump_ast_corpus_gate.sh
+# dump-hir oracle gate: cpp/scripts/dump_hir_corpus_gate.sh
 
 set(SMASH2_CPP $<TARGET_FILE:smash2_cpp>)
 set(FIXTURE_TINY "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tiny.adl")
@@ -9,6 +9,10 @@ set(FIXTURE_BINS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/bins_and_path.adl")
 set(GOLDEN_TINY "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tiny.adl.dump")
 set(GOLDEN_BINS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/bins_and_path.adl.dump")
 set(DUMP_PARITY "${CMAKE_CURRENT_SOURCE_DIR}/dump_parity.sh")
+
+add_executable(adl2_sema_identity identity.cpp)
+target_link_libraries(adl2_sema_identity PRIVATE adl2_sema adl2_syntax)
+target_compile_options(adl2_sema_identity PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME smash2_cpp_help
   COMMAND ${SMASH2_CPP} --help)
@@ -19,14 +23,15 @@ add_test(NAME smash2_cpp_check_tiny
 add_test(NAME smash2_cpp_check_bins_and_path
   COMMAND ${SMASH2_CPP} check ${FIXTURE_BINS})
 
-# Byte-for-byte dump vs committed goldens (same contract as the corpus gate).
 add_test(NAME smash2_cpp_dump_ast_tiny
   COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_TINY} ${GOLDEN_TINY})
 
 add_test(NAME smash2_cpp_dump_ast_bins_and_path
   COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_BINS} ${GOLDEN_BINS})
 
-# analysis must not see syntax headers (no workspace-wide include dump).
+add_test(NAME adl2_sema_identity
+  COMMAND adl2_sema_identity)
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}
@@ -40,6 +45,5 @@ set_tests_properties(smash2_cpp_help PROPERTIES
 set_tests_properties(smash2_cpp_check_tiny PROPERTIES
   PASS_REGULAR_EXPRESSION "check: ok")
 
-# warnings (path-token deprecation) are fine; errors are not.
 set_tests_properties(smash2_cpp_check_bins_and_path PROPERTIES
   PASS_REGULAR_EXPRESSION "check: ok")

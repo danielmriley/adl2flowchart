@@ -5,7 +5,7 @@
 //! error-severity diagnostics, else 0.
 
 use crate::cmd::{CliError, read_file, unit_name};
-use adl_sema::{ExtDecls, analyze_str};
+use adl_sema::{ExtDecls, analyze_str, hir_dump, quantity_table_dump};
 use adl_syntax::Severity;
 use adl_syntax::diag::{has_errors, render};
 use adl_syntax::span::LineMap;
@@ -16,6 +16,8 @@ pub fn run(
     files: &[PathBuf],
     verbose: bool,
     dump_ast: bool,
+    dump_hir: bool,
+    dump_quantities: bool,
     json: bool,
 ) -> Result<ExitCode, CliError> {
     if json {
@@ -34,6 +36,12 @@ pub fn run(
         // analyze_str merges parse diagnostics in front of sema's, so one
         // resolve pass surfaces both lexical/grammar and resolution issues.
         let hir = analyze_str(&src, &name, &ext);
+        if dump_hir {
+            print!("{}", hir_dump(&hir));
+        }
+        if dump_quantities {
+            print!("{}", quantity_table_dump(&hir));
+        }
 
         if !hir.diags.is_empty() {
             eprint!("{}", render(&src, &name, &hir.diags));

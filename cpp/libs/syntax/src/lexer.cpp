@@ -109,6 +109,13 @@ std::vector<Token> Lexer::tokenize() {
     out.push_back(t);
     if (t.kind == TokKind::Eof) break;
   }
+  if (underscore_splits_ > 1) {
+    const char* plural = (underscore_splits_ == 2) ? "" : "s";
+    diags_.note(last_underscore_span_,
+                "(" + std::to_string(underscore_splits_ - 1) +
+                    " more underscore-index split" + plural +
+                    " in this file)");
+  }
   return out;
 }
 
@@ -310,6 +317,22 @@ Token Lexer::next() {
       ++i_;
       ++col_;
       take_seg();
+    }
+    // Visible note when an `_<digit>` split occurs (SPEC_LANGUAGE §2).
+    // Once per file: the first occurrence gets the full note + help;
+    // the rest are counted and summarized at end of lex (`tokenize`).
+    if (i_ < src_.size() && src_[i_] == '_' && i_ + 1 < src_.size() &&
+        std::isdigit(static_cast<unsigned char>(src_[i_ + 1]))) {
+      Span span = Span::at(begin, line, column, (i_ - begin) + 1);
+      ++underscore_splits_;
+      last_underscore_span_ = span;
+      if (underscore_splits_ == 1) {
+        diags_.note(
+            span,
+            "identifier `" + text +
+                "` ends before `_`: `_<digit>` is the underscore-indexing operator",
+            "write `name[i]` to make the indexing explicit");
+      }
     }
     TokKind kind = keyword_or_ident(text);
     return make(kind, begin, line, column, text);

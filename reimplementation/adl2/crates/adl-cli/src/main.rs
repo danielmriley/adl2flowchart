@@ -50,6 +50,12 @@ enum Command {
         /// Print the canonical AST dump for each file to stdout.
         #[arg(long, conflicts_with = "json")]
         dump_ast: bool,
+        /// Print the canonical HIR dump (`adl_sema::hir_dump`) to stdout.
+        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_quantities"])]
+        dump_hir: bool,
+        /// Print the canonical quantity-table dump to stdout.
+        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_hir"])]
+        dump_quantities: bool,
         /// Emit diagnostics as a JSON array to stdout (machine-readable;
         /// for editors / CI gating) instead of the human text report.
         #[arg(long)]
@@ -240,8 +246,10 @@ fn main() -> ExitCode {
         Command::Check {
             files,
             dump_ast,
+            dump_hir,
+            dump_quantities,
             json,
-        } => cmd::check::run(&files, verbose, dump_ast, json),
+        } => cmd::check::run(&files, verbose, dump_ast, dump_hir, dump_quantities, json),
         Command::Verify {
             files,
             json,

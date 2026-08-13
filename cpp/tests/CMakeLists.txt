@@ -90,3 +90,12 @@ set_tests_properties(adl2_sema_identity PROPERTIES
 
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")
+
+add_executable(adl2_solver_test solver.cpp)
+target_link_libraries(adl2_solver_test PRIVATE adl2_solver)
+target_compile_options(adl2_solver_test PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_solver_test
+  COMMAND adl2_solver_test)
+set_tests_properties(adl2_solver_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")

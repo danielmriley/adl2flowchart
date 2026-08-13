@@ -1,10 +1,23 @@
 //! Canonical formula dump (P3 oracle form). Byte-for-byte vs smash2_cpp
 //! `check --dump-formula`.
+//!
+//! Rat formatting uses existing `to_parts()` only — this module must not
+//! change `adl_sema::Rat` or the encoder.
 
 use crate::encode::EncodedRegion;
 use crate::formula::{Formula, QFormula};
 use crate::lin::LinAtom;
-use adl_sema::Hir;
+use adl_sema::{Hir, Rat};
+
+fn dump_rat(r: &Rat) -> String {
+    let p = r.to_parts();
+    let sign = if p.negative { "-" } else { "" };
+    if p.denominator == "1" {
+        format!("{sign}{}", p.numerator)
+    } else {
+        format!("{sign}{}/{}", p.numerator, p.denominator)
+    }
+}
 
 fn dump_atom(a: &LinAtom) -> String {
     let mut s = String::from("(atom [");
@@ -12,9 +25,13 @@ fn dump_atom(a: &LinAtom) -> String {
         if i > 0 {
             s.push(' ');
         }
-        s.push_str(&format!("({} {q})", c.dump()));
+        s.push_str(&format!("({} {q})", dump_rat(c)));
     }
-    s.push_str(&format!("] {} {})", a.rel().as_str(), a.constant().dump()));
+    s.push_str(&format!(
+        "] {} {})",
+        a.rel().as_str(),
+        dump_rat(a.constant())
+    ));
     s
 }
 

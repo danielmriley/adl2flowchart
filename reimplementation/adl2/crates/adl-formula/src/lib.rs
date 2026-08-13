@@ -15,7 +15,7 @@
 //!   SPEC_ANALYSIS §1 table, including the PHASE0 OPEN-1 `Dual` bounded
 //!   expansion (`k = 3`, empty-collection case in the plus branch).
 
-pub mod dump;
+mod dump;
 pub mod encode;
 pub mod formula;
 pub mod lin;

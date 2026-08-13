@@ -254,19 +254,6 @@ impl Rat {
         }
     }
 
-    /// Canonical dump: integer or `n/d` with the sign on the numerator.
-    /// Shared by smash2 `--dump-formula` and the C++ port.
-    #[must_use]
-    pub fn dump(&self) -> String {
-        let p = self.to_parts();
-        let sign = if p.negative { "-" } else { "" };
-        if p.denominator == "1" {
-            format!("{sign}{}", p.numerator)
-        } else {
-            format!("{sign}{}/{}", p.numerator, p.denominator)
-        }
-    }
-
     /// The numerator / denominator as decimal digit strings (non-negative)
     /// plus a sign, for emitting an SMT-LIB `Real` or a z3 numeral. The
     /// fraction is already in lowest terms (`BigRational` normalizes).
@@ -353,9 +340,7 @@ mod tests {
     fn decimal_literals_are_exact() {
         assert_eq!(Rat::from_decimal_f64(0.3).unwrap().to_parts().numerator, "3");
         assert_eq!(Rat::from_decimal_f64(0.3).unwrap().to_parts().denominator, "10");
-        assert_eq!(Rat::from_decimal_f64(0.3).unwrap().dump(), "3/10");
         assert_eq!(Rat::from_decimal_f64(100.0).unwrap().to_parts().denominator, "1");
-        assert_eq!(Rat::from_decimal_f64(100.0).unwrap().dump(), "100");
         let neg = Rat::from_decimal_f64(-1.5).unwrap();
         assert!(neg.is_negative());
         let p = neg.to_parts();
@@ -370,7 +355,6 @@ mod tests {
         let three = Rat::from_decimal_f64(0.3).unwrap();
         let six_tenths = &nine - &three;
         assert_eq!(six_tenths, Rat::from_decimal_f64(0.6).unwrap());
-        assert_eq!(six_tenths.dump(), "3/5");
         // and is strictly less than the f64 seam literal:
         assert!(six_tenths < Rat::from_decimal_f64(0.6000000000000001).unwrap());
     }

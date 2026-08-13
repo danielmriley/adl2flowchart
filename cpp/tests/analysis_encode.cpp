@@ -217,6 +217,56 @@ void test_duplicate_region_names_are_disambiguated() {
   if (p) CHECK(p->kind == VerdictKind::ProvenDisjoint);
 }
 
+void test_unknown_call_arg_names_the_identifier() {
+  const char* src =
+      "object electrons\n"
+      "  take Electron\n"
+      "  select pT > 40\n"
+      "region A\n"
+      "  select fMT(electrons[0], HardMETLV) > 110\n"
+      "region B\n"
+      "  select fMT(electrons[0], HardMETLV) < 50\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "fmt.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  UnitEnc unit = adl2::analysis::encode_unit(hir, src);
+  CHECK(!unit.regions.empty());
+  bool named = false;
+  for (const auto& r : unit.regions) {
+    for (const auto& d : r.dropped) {
+      CHECK(d.second.find("element-context") == std::string::npos);
+      if (d.second.find("HardMETLV") != std::string::npos &&
+          d.second.find("unknown") != std::string::npos) {
+        named = true;
+      }
+    }
+  }
+  CHECK(named);
+}
+
+void test_unknown_call_arg_suggests_near_name() {
+  const char* src =
+      "object HardMETLV\n"
+      "  take MissingET\n"
+      "object electrons\n"
+      "  take Electron\n"
+      "region A\n"
+      "  select fMT(electrons[0], HardMET_LV) > 110\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "typo.adl", ext);
+  UnitEnc unit = adl2::analysis::encode_unit(hir, src);
+  bool hinted = false;
+  for (const auto& r : unit.regions) {
+    for (const auto& d : r.dropped) {
+      if (d.second.find("HardMET_LV") != std::string::npos &&
+          d.second.find("HardMETLV") != std::string::npos) {
+        hinted = true;
+      }
+    }
+  }
+  CHECK(hinted);
+}
+
 void test_three_arg_entry() {
   ExtDecls ext = ExtDecls::legacy();
   Hir hir = analyze_str(kSrc, "jets.adl", ext);
@@ -233,6 +283,8 @@ int main() {
   test_inherit_flattens_like_paste();
   test_size_hard_filter_presence_guard();
   test_duplicate_region_names_are_disambiguated();
+  test_unknown_call_arg_names_the_identifier();
+  test_unknown_call_arg_suggests_near_name();
   test_three_arg_entry();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;

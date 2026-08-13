@@ -287,14 +287,23 @@ void assert_axioms(Solver& s, const adl2::axioms::AxiomSet& axioms) {
   }
 }
 
-void assert_overs(Solver& s, const RegionCtx& ctx) {
-  for (const auto& p : ctx.overs) {
+std::string join_with(const std::vector<std::string>& parts, const char* sep) {
+  std::string out;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (i) out += sep;
+    out += parts[i];
+  }
+  return out;
+}
+
+void assert_overs(Solver& s, const std::vector<std::pair<AssertName, Over>>& overs) {
+  for (const auto& p : overs) {
     s.assert_formula(p.second.qformula(), p.first);
   }
 }
 
-void assert_unders(Solver& s, const RegionCtx& ctx) {
-  for (const auto& u : ctx.unders) {
+void assert_unders(Solver& s, const std::vector<Under>& unders) {
+  for (const auto& u : unders) {
     s.assert_formula(u.qformula(), std::nullopt);
   }
 }
@@ -303,34 +312,67 @@ void assert_unders(Solver& s, const RegionCtx& ctx) {
 /// its exact negation is the disjunction of their NNF negations (smash2
 /// `negated_under`). Asserting each `¬uᵢ` separately would be `∧ ¬uᵢ` —
 /// the dual, which makes UNSAT easier and fabricates PROVEN SUBSET.
-QFormula negated_under(const RegionCtx& inner) {
+QFormula negated_under(const std::vector<Under>& sup_unders) {
   std::vector<QFormula> parts;
-  parts.reserve(inner.unders.size());
-  for (const auto& u : inner.unders) {
+  parts.reserve(sup_unders.size());
+  for (const auto& u : sup_unders) {
     parts.push_back(u.qformula().qnot());
   }
   return QFormula::of_or(std::move(parts));
 }
 
-/// `UNSAT(Ax ∧ outer⁺ ∧ ¬(inner⁻))` ⇒ outer ⊆ inner. Named QSUB{k} / QSUBNEG
+std::string core_item_human(const CoreItem& c) {
+  if (c.origin == CoreItem::Origin::Axiom) {
+    if (c.statement.empty()) return "axiom " + c.id;
+    return "axiom " + c.id + " (" + c.statement + ")";
+  }
+  if (c.region.empty()) {
+    const std::string& t = c.text.empty() ? c.id : c.text;
+    return "`" + t + "`";
+  }
+  return "`" + c.region + " line " + std::to_string(c.line) + ": " + c.text + "`";
+}
+
+std::string core_reason(const std::vector<CoreItem>& items) {
+  if (items.empty()) return "UNSAT (no core available)";
+  std::vector<std::string> cuts;
+  std::vector<std::string> axs;
+  for (const auto& c : items) {
+    if (c.origin == CoreItem::Origin::Axiom) axs.push_back(core_item_human(c));
+    else cuts.push_back(core_item_human(c));
+  }
+  std::string reason = "UNSAT core: " +
+                       (cuts.size() == 1 ? cuts[0] + " cannot hold"
+                                         : join_with(cuts, " cannot hold together with "));
+  if (cuts.empty()) {
+    reason = "UNSAT core: " + join_with(axs, ", ");
+    return reason;
+  }
+  if (!axs.empty()) reason += " (using " + join_with(axs, ", ") + ")";
+  return reason;
+}
+
+/// `UNSAT(Ax ∧ sub⁺ ∧ ¬(sup⁻))` ⇒ sub ⊆ sup. Named QSUB{k} / QSUBNEG
 /// so certify can replay the core. When certify is on, `Some(false)` is not a
-/// subset claim (smash2 `subset_proof`).
-bool region_subset(Solver& s, const RegionCtx& outer, const RegionCtx& inner, bool certify,
+/// subset claim (smash2 `subset_proof`). Parameter names are the polarity
+/// types: handing unders where overs go does not compile (ADR-004).
+bool region_subset(Solver& s, const std::vector<std::pair<AssertName, Over>>& sub_overs,
+                   const std::vector<Under>& sup_unders, bool certify,
                    std::chrono::milliseconds timeout, Report& report,
                    const adl2::axioms::AxiomSet* axioms,
                    const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
   s.push();
   std::vector<std::pair<AssertName, QFormula>> extra;
-  extra.reserve(outer.overs.size() + 1);
+  extra.reserve(sub_overs.size() + 1);
   std::size_t k = 0;
-  for (const auto& p : outer.overs) {
+  for (const auto& p : sub_overs) {
     AssertName name = AssertName::make("QSUB" + std::to_string(k++));
     QFormula f = p.second.qformula();
     s.assert_formula(f, name);
     extra.emplace_back(name, std::move(f));
   }
   AssertName neg_name = AssertName::make("QSUBNEG");
-  QFormula neg = negated_under(inner);
+  QFormula neg = negated_under(sup_unders);
   s.assert_formula(neg, neg_name);
   extra.emplace_back(neg_name, std::move(neg));
   SatResult r = s.check(timeout);
@@ -691,8 +733,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
 
   // Disjointness: UNSAT(Ax ∧ A⁺ ∧ B⁺). Axioms are on the base frame.
   solver->push();
-  assert_overs(*solver, c1);
-  assert_overs(*solver, c2);
+  assert_overs(*solver, c1.overs);
+  assert_overs(*solver, c2.overs);
   SatResult disjoint = solver->check(timeout);
   note_failure(report, disjoint);
   if (disjoint.is_unsat()) {
@@ -733,17 +775,19 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
           "solver reported UNSAT but the proof could not be independently "
           "certified (budget, shape, or an integrality-only refutation); "
           "candidate, not a claim — ";
-      pr.reason += (core && !core->empty()) ? "solver unsat core" : "solver unsat";
+      pr.reason += core_reason(pr.core);
     } else {
       pr.kind = VerdictKind::ProvenDisjoint;
-      pr.reason = core && !core->empty() ? "solver unsat core" : "solver unsat";
+      pr.reason = core_reason(pr.core);
     }
     return pr;
   }
   solver->pop();
 
-  bool one_in_two = region_subset(*solver, c1, c2, certify, timeout, report, axioms, recon_facts);
-  bool two_in_one = region_subset(*solver, c2, c1, certify, timeout, report, axioms, recon_facts);
+  bool one_in_two =
+      region_subset(*solver, c1.overs, c2.unders, certify, timeout, report, axioms, recon_facts);
+  bool two_in_one =
+      region_subset(*solver, c2.overs, c1.unders, certify, timeout, report, axioms, recon_facts);
   if (a_first) {
     pr.subset_a_in_b = one_in_two;
     pr.subset_b_in_a = two_in_one;
@@ -770,8 +814,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
 
   // Overlap: SAT(Ax ∧ A⁻ ∧ B⁻) + Kleene region3 re-validation.
   solver->push();
-  assert_unders(*solver, c1);
-  assert_unders(*solver, c2);
+  assert_unders(*solver, c1.unders);
+  assert_unders(*solver, c2.unders);
   SatResult overlap = solver->check(timeout);
   note_failure(report, overlap);
   if (!overlap.is_sat()) {
@@ -1396,7 +1440,7 @@ bool bins_disjoint(Solver* solver, std::chrono::milliseconds timeout, bool certi
   AssertName bj_name = AssertName::make("QBINJ");
   if (solver) {
     solver->push();
-    assert_overs(*solver, region_ctx);
+    assert_overs(*solver, region_ctx.overs);
     QFormula bi_f = bi.qformula();
     QFormula bj_f = bj.qformula();
     solver->assert_formula(bi_f, bi_name);
@@ -1439,7 +1483,7 @@ std::pair<CoverageStatus, std::vector<WitnessValue>> bin_coverage(
     const BinSetEnc& set, const RegionCtx& region_ctx, const std::vector<Under>& unders) {
   if (!solver) return {CoverageStatus::Unknown, {}};
   solver->push();
-  assert_overs(*solver, region_ctx);
+  assert_overs(*solver, region_ctx.overs);
   std::vector<std::pair<AssertName, QFormula>> extra;
   for (const auto& p : region_ctx.overs) extra.emplace_back(p.first, p.second.qformula());
   for (std::size_t k = 0; k < unders.size(); ++k) {
@@ -1653,7 +1697,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
       }
     } else if (solver) {
       solver->push();
-      assert_overs(*solver, ctxs[i]);
+      assert_overs(*solver, ctxs[i].overs);
       SatResult er = solver->check(opts.timeout);
       note_failure(report, er);
       std::optional<std::vector<AssertName>> core_names;

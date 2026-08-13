@@ -22,11 +22,14 @@
 /// `UNSAT(Ax ∧ R⁺ ∧ ⋀ ¬Bᵢ⁻)` coverage) and overlap reports carry witness
 /// rows read back from the validated event (pT-sort can permute model
 /// indices). Dual-encoding Over/Under polarity is the production contract —
-/// do not collapse it. Size of a collection whose filter (or combination cut)
-/// is out of fragment is Hard in the encoder (SOUNDNESS_PROOF §8 1b): a
-/// tautology such as `size(weird) >= 0` must not discharge a subset proof.
-/// Subset sample/refute treats not-In (Out *or* Unknown) as a counterexample
-/// to `In(A) ⇒ In(B)`. Duplicate region symbols are reported as `name@line`.
+/// do not collapse it. `assert_overs` / `assert_unders` / `region_subset`
+/// take the projection vectors (ADR-004). Size of a collection whose filter
+/// (or combination cut) is out of fragment is Hard in the encoder
+/// (SOUNDNESS_PROOF §8 1b): a tautology such as `size(weird) >= 0` must not
+/// discharge a subset proof. Subset sample/refute treats not-In (Out *or*
+/// Unknown) as a counterexample to `In(A) ⇒ In(B)`. Duplicate region symbols
+/// are reported as `name@line`. Solver-UNSAT pair reasons are `UNSAT core:`
+/// plus source spans (SPEC_ANALYSIS §3).
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver

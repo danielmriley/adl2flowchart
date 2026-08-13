@@ -555,6 +555,40 @@ void test_reject_size_hard_filter_is_not_a_subset() {
   if (p) CHECK(!subset_named(p, "A", "B"));
 }
 
+void test_solver_core_reason_names_source_spans() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (solver core reason)\n";
+    CHECK(true);
+    return;
+  }
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "object tight\n"
+      "  take Jet\n"
+      "  select pt > 100\n"
+      "region A\n"
+      "  select size(tight) >= 1\n"
+      "region B\n"
+      "  select size(jets) == 0\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "core_span.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  const PairReport* p = find_pair(r, "A", "B");
+  CHECK(p != nullptr);
+  if (!p) return;
+  CHECK(p->kind == VerdictKind::ProvenDisjoint);
+  CHECK(p->proof_path.has_value() && *p->proof_path == adl2::analysis::ProofPath::SolverCore);
+  CHECK(p->reason.find("UNSAT core:") == 0);
+  CHECK(p->reason.find("line ") != std::string::npos);
+  std::string def = r.render_default({});
+  CHECK(def.find("core:") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -570,6 +604,7 @@ int main() {
   test_bin_partition_and_gap();
   test_size_hard_filter_is_not_a_subset_of_tautology();
   test_reject_size_hard_filter_is_not_a_subset();
+  test_solver_core_reason_names_source_spans();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

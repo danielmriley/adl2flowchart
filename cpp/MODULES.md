@@ -46,7 +46,8 @@ it; certify must not depend on analysis. The P0 stub edge
    P4 fills **solver / viz / analysis (interval+pairwise)** plus region3 and
    EPRED/EPRES. P5 fills **certify** (Farkas replay) and **witness**
    (region3 re-validation).   P6 wires certify into `analyze_hir` and ports
-  the default verify report + `objects`. Cutflow tables live in `adl2_interp`.
+  the default verify report + `objects`. Cutflow tables and histogram
+  accumulation live in `adl2_interp`.
 
 ## Include policy
 

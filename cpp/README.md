@@ -61,6 +61,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` + cutflow tables vs smash2 | Fail-closed pair list (pinned count; full stdout) |
+| Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON (no ROOT) |
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
@@ -83,7 +84,7 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dump-diff |
 | [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dump-diff |
 | [`scripts/dump_objects_corpus_gate.sh`](scripts/dump_objects_corpus_gate.sh) | Allowlisted objects dump-diff |
-| [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` event-line diff |
+| [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` full-stdout diff |
 | [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dump-diff |
 
 ## Build
@@ -143,7 +144,7 @@ tables. `verify` defaults to certify ON.
 
 ## Remaining vs smash2 (honest non-parity)
 
-Still to port: histo accumulation + `--histos` (CSV/SVG/ROOT bridges);
+Still to port: `--histos` CSV/SVG/ROOT bridges and native `out.root`;
 sampling + refute gates; `--cross` / reconcile; `--combine` bundles;
 ROOT `ingest` / `run --profile`; byte-identical `verify` JSON/human
 reports (C++ JSON is a compact subset). Native libz3 stays out (ADR-010).

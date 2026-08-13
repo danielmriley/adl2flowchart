@@ -144,6 +144,11 @@ class Interp {
   std::optional<bool> eval_region_membership_idx(std::size_t idx, const Event& event,
                                                  EvalError& err) const;
 
+  /// Evaluate `node` numerically. nullopt + err = hard error; otherwise
+  /// Value or soft NonValue (smash2 `Interp::eval_num`).
+  std::optional<NumOutcome> eval_num(const adl2::sema::HNode& node, const Event& event,
+                                     EvalError& err) const;
+
  private:
   const adl2::sema::Hir* hir_;
   const adl2::sema::ExtDecls* ext_;

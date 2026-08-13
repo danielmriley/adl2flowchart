@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -32,7 +33,7 @@ void print_help(const char* argv0) {
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
          "--dump-formula|--dump-axioms] [--json] <file.adl>\n"
-      << "  " << argv0 << " run [--json] <file.adl> <events.jsonl>\n"
+      << "  " << argv0 << " run [--json] [--histos DIR] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--dump-verdicts]\n"
          "          [--json] [--explain] [--matrix] [--fail-on=KINDS] <file.adl>\n"
@@ -42,8 +43,9 @@ void print_help(const char* argv0) {
       << "Bare `check` always resolves (like smash2). stdout is empty on success;\n"
       << "diagnostics go to stderr. `--dump-ast` still prints the AST dump to stdout.\n"
       << "`run` prints smash2-style event lines then per-region cutflow tables.\n"
-      << "`--json` emits one object per event plus a final {\"cutflow\":...} line\n"
-      << "(no provenance object yet). `--histos` / `--profile` / ROOT are not ported.\n"
+      << "`--json` emits one object per event plus optional histos.json line and\n"
+      << "a {\"cutflow\":...} line (no provenance object yet). `--histos DIR` writes\n"
+      << "histos.json + cutflow.json; ROOT bridges / out.root / --profile are not ported.\n"
       << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
       << "region3 witness. `--no-certify` skips independent replay. Default stdout\n"
@@ -181,7 +183,8 @@ int cmd_dot(const std::string& path, bool ast, bool verbose) {
   return 0;
 }
 
-int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out) {
+int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out,
+            const std::string& histos_dir) {
   std::string src = read_file(adl_path);
   if (src.empty() && !std::ifstream(adl_path).good()) {
     std::cerr << "error: cannot read file: " << adl_path << "\n";
@@ -208,9 +211,11 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
   }
   adl2::interp::Interp interp(hir, ext);
   auto cutflow = adl2::interp::CutflowSet::make(hir, src);
+  auto histos = adl2::interp::HistoSet::make(hir);
   for (std::size_t i = 0; i < events.size(); ++i) {
     auto [results, traces] = interp.run_event_traced(events[i]);
     cutflow.record_event(events[i], results, traces);
+    histos.fill_event(interp, events[i], results);
     if (json_out) {
       std::cout << "{\"event\":" << i << ",\"regions\":[";
       for (std::size_t j = 0; j < results.size(); ++j) {
@@ -225,8 +230,14 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
       }
     }
   }
+  for (const auto& d : histos.diagnostics()) {
+    std::cerr << name << ": " << d << "\n";
+  }
   for (const auto& d : cutflow.diagnostics()) {
     std::cerr << name << ": " << d << "\n";
+  }
+  if (json_out && !hir.histos.empty()) {
+    std::cout << histos.to_json(false) << "\n";
   }
   if (!cutflow.empty()) {
     if (json_out) {
@@ -235,6 +246,29 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
       if (!events.empty()) std::cout << "\n";
       std::cout << cutflow.text_table();
     }
+  }
+  if (!histos_dir.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(histos_dir, ec);
+    if (ec) {
+      std::cerr << "error: cannot create " << histos_dir << ": " << ec.message() << "\n";
+      return 1;
+    }
+    auto write = [&](const std::string& rel, const std::string& body) -> bool {
+      auto path = std::filesystem::path(histos_dir) / rel;
+      std::ofstream out(path);
+      if (!out) {
+        std::cerr << "error: cannot write " << path << "\n";
+        return false;
+      }
+      out << body;
+      return true;
+    };
+    if (!write("histos.json", histos.to_json(true))) return 1;
+    if (!cutflow.empty() && !write("cutflow.json", cutflow.to_json(true))) return 1;
+    std::cerr << name << ": --histos wrote histos.json"
+              << (cutflow.empty() ? "" : " + cutflow.json")
+              << "; ROOT bridges / out.root are not ported\n";
   }
   return 0;
 }
@@ -365,21 +399,31 @@ int main(int argc, char** argv) {
     bool json = false;
     std::string adl;
     std::string events;
+    std::string histos_dir;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--json") {
         json = true;
       } else if (arg == "--verbose" || arg == "-v") {
         verbose = true;
-      } else if (arg == "--histos" || arg == "--profile" || arg == "--csv" || arg == "--svg" ||
-                 arg == "--no-root" || arg == "--flat-names" || arg == "--jobs") {
+      } else if (arg == "--no-root") {
+        // C++ default: no native out.root.
+      } else if (arg == "--histos") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --histos requires a directory\n";
+          return 2;
+        }
+        histos_dir = argv[++i];
+      } else if (arg.compare(0, 9, "--histos=") == 0) {
+        histos_dir = arg.substr(9);
+      } else if (arg == "--profile" || arg == "--csv" || arg == "--svg" || arg == "--flat-names" ||
+                 arg == "--jobs") {
         std::cerr << "error: smash2_cpp run " << arg
-                  << " is not ported (histos/ROOT/profile/jobs)\n";
+                  << " is not ported (ROOT/profile/csv/svg/jobs)\n";
         return 2;
-      } else if (arg.compare(0, 9, "--histos=") == 0 || arg.compare(0, 10, "--profile=") == 0 ||
-                 arg.compare(0, 7, "--jobs=") == 0) {
+      } else if (arg.compare(0, 10, "--profile=") == 0 || arg.compare(0, 7, "--jobs=") == 0) {
         std::cerr << "error: smash2_cpp run " << arg.substr(0, arg.find('='))
-                  << " is not ported (histos/ROOT/profile/jobs)\n";
+                  << " is not ported (ROOT/profile/jobs)\n";
         return 2;
       } else if (adl.empty()) {
         adl = arg;
@@ -396,7 +440,7 @@ int main(int argc, char** argv) {
       return 2;
     }
     (void)verbose;
-    return cmd_run(adl, events, json);
+    return cmd_run(adl, events, json, histos_dir);
   }
   if (cmd == "dot") {
     bool ast = false;

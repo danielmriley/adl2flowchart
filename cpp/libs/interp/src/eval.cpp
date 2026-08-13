@@ -1693,6 +1693,25 @@ std::optional<bool> Interp::eval_region_membership_idx(std::size_t idx, const Ev
   return tri_to_opt(ev.region3(idx), err);
 }
 
+std::optional<NumOutcome> Interp::eval_num(const HNode& node, const Event& event,
+                                           EvalError& err) const {
+  Ev ev{this, &event, {}, {}, {}, {}, {}};
+  auto r = ev.num(node, nullptr);
+  if (r.k == NR::Err) {
+    err = r.err;
+    return std::nullopt;
+  }
+  NumOutcome o;
+  if (r.k == NR::NV) {
+    o.kind = NumOutcomeKind::NonValue;
+    o.nv = r.nv;
+  } else {
+    o.kind = NumOutcomeKind::Value;
+    o.value = r.val.to_f64();
+  }
+  return o;
+}
+
 std::vector<RegionResult> Interp::run_event(const Event& event) const {
   return run_event_traced(event).first;
 }

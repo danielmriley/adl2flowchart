@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adl2::interp {
@@ -70,7 +71,17 @@ struct RegionFlow {
   std::vector<BinFlow> bins;
 };
 
-/// All region cutflows of one resolved analysis unit.
+/// Positional ADL `weight` product in effect **before** each statement
+/// (SPEC_EVENT_PIPELINE §4). Shared by cutflow and histogram fills.
+struct StmtWeights {
+  std::vector<std::pair<double, bool>> eff;
+  std::pair<double, bool> at(std::size_t i) const {
+    if (i >= eff.size()) return {1.0, false};
+    return eff[i];
+  }
+};
+StmtWeights stmt_weights(const adl2::sema::Hir& hir, std::size_t ridx);
+
 class CutflowSet {
  public:
   /// Build the step structure from `hir`; `src` is the unit's source text

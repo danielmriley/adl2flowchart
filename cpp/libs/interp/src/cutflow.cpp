@@ -11,20 +11,11 @@
 #include <utility>
 
 namespace adl2::interp {
-namespace {
 
 using adl2::sema::Hir;
 using adl2::sema::HirRegionStmt;
 using adl2::sema::HirWeightValueKind;
 using adl2::sema::Span;
-
-struct StmtWeights {
-  std::vector<std::pair<double, bool>> eff;
-  std::pair<double, bool> at(std::size_t i) const {
-    if (i >= eff.size()) return {1.0, false};
-    return eff[i];
-  }
-};
 
 StmtWeights stmt_weights(const Hir& hir, std::size_t ridx) {
   const auto& region = hir.regions[ridx];
@@ -57,6 +48,8 @@ StmtWeights stmt_weights(const Hir& hir, std::size_t ridx) {
   }
   return out;
 }
+
+namespace {
 
 std::optional<std::string> snippet(const std::string& src, Span span) {
   if (span.end < span.start || span.end > src.size()) return std::nullopt;

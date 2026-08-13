@@ -6,6 +6,7 @@ JSONL loader enforces pT-descending collections and the NNEG/TAG domain
 the axioms assume. Two-valued `run_event` matches smash2 `run` event lines
 (`PASS` / `fail` / `ERROR:` + bins). `run_event_traced` + `CutflowSet`
 emit smash2 cutflow tables (step / raw / abs% / rel% / errors / sumw ± err).
+`HistoSet` accumulates `histo` statements (TH1/Sumw2; histos.json v2).
 Kleene three-valued membership (`region3` / `eval_region_membership`)
 prefers a decidable False over Unknown and is the witness-validation entry
 point.

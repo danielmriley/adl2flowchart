@@ -200,3 +200,13 @@ add_test(NAME adl2_cutflow_unit
 
 set_tests_properties(adl2_cutflow_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=76 FAIL=0")
+
+add_executable(adl2_histo_unit histo.cpp)
+target_link_libraries(adl2_histo_unit PRIVATE adl2_interp adl2_sema adl2_syntax)
+target_compile_options(adl2_histo_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_histo_unit
+  COMMAND adl2_histo_unit)
+
+set_tests_properties(adl2_histo_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=34 FAIL=0")

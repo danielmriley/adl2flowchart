@@ -5,6 +5,7 @@
 #include "adl2/sema/sema.hpp"
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
+#include "adl2/viz/viz.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -12,27 +13,30 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P3: interp + formula + axioms)\n"
+      << "smash2_cpp — ADL2 C++ port (P4: + adl2_viz DOT)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
          "--dump-formula|--dump-axioms] <file.adl>\n"
       << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
+      << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "\n"
       << "Bare `check` (no dump flag) is parse-only — it does not run name\n"
       << "resolution. Rust `smash2 check` always resolves. This is an\n"
       << "intentional contract, not dump parity. Use --dump-hir / --dump-formula\n"
       << "to run sema (+ encode). `run` prints smash2-style event lines only\n"
-      << "(no cutflow/histo tables).\n"
+      << "(no cutflow/histo tables). `dot` resolves via analyze_str; flowchart\n"
+      << "DOT (default) or `--ast` to stdout; diagnostics to stderr.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
-      << "interp/axioms; no core logic in the executable. Rust smash2 is the\n"
+      << "interp/axioms/viz; no core logic in the executable. Rust smash2 is the\n"
       << "forever oracle.\n";
 }
 
@@ -105,6 +109,42 @@ int cmd_check(const std::string& path, DumpKind dump) {
     return 1;
   }
   std::cout << "check: ok\n";
+  return 0;
+}
+
+void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
+  for (const auto& d : diags) {
+    std::cerr << d.span.line << ":" << d.span.column << ": "
+              << adl2::sema::severity_str(d.severity) << ": " << d.message << "\n";
+    if (!d.help.empty()) {
+      std::cerr << "  help: " << d.help << "\n";
+    }
+  }
+}
+
+int cmd_dot(const std::string& path, bool ast, bool verbose) {
+  std::string src = read_file(path);
+  if (src.empty() && !std::ifstream(path).good()) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  std::string name = unit_name(path);
+  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
+  if (!hir.diags.empty()) {
+    print_sema_diags(hir.diags);
+  }
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot render DOT — resolve errors above\n";
+    return 1;
+  }
+  std::string dot =
+      ast ? adl2::viz::ast_dot(hir) : adl2::viz::flowchart_dot(hir);
+  std::cout << dot;
+  if (verbose) {
+    const char* kind = ast ? "AST" : "flowchart";
+    std::cerr << name << ": " << kind << " DOT emitted (" << hir.regions.size()
+              << " regions, " << hir.objects.size() << " objects)\n";
+  }
   return 0;
 }
 
@@ -190,6 +230,30 @@ int main(int argc, char** argv) {
       return 2;
     }
     return cmd_run(argv[2], argv[3]);
+  }
+  if (cmd == "dot") {
+    bool ast = false;
+    bool verbose = false;
+    std::string path;
+    for (int i = 2; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--ast") {
+        ast = true;
+      } else if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
+      std::cerr << "error: dot requires a file path\n";
+      print_help(argv[0]);
+      return 2;
+    }
+    return cmd_dot(path, ast, verbose);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

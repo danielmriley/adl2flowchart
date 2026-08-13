@@ -83,4 +83,4 @@ set_tests_properties(adl2_sema_identity PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=128 FAIL=0")
 
 set_tests_properties(adl2_p3_unit PROPERTIES
-  PASS_REGULAR_EXPRESSION "PASS=62 FAIL=0")
+  PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")

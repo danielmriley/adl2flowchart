@@ -29,6 +29,9 @@ jobs:
       - name: Build
         run: cargo build --release --workspace
       - name: Test
+        # `prop_encoder_vs_interp` can flake on the known-open SOUNDNESS_PROOF
+        # §8 1c (unindexed WholeDR false PROVEN SUBSET). That is not a
+        # dump-formula regression. Do not skip the test or lower PROPTEST_CASES.
         run: cargo test --release --workspace
 
   legacy:

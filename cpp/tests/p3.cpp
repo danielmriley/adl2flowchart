@@ -6,6 +6,7 @@
 #include "adl2/sema/sema.hpp"
 
 #include <iostream>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -77,6 +78,15 @@ void test_linatom_merge() {
 void test_axiom_catalog() {
   CHECK(adl2::axioms::catalog_size() == adl2::axioms::AXIOM_COUNT);
   CHECK(adl2::axioms::AXIOM_COUNT == 19);
+  static const char* kIds[19] = {
+      "ORD",     "SZ0",     "SUB",      "UNI",     "NNEG",   "DPHI",
+      "TAG",     "TWIN",    "EPRED",    "IDOM",    "SZSLICE","SZPERM",
+      "COMBSIZE","TRIG",    "XSUB",     "XEQ",     "PRES",   "PDEF",
+      "EPRES"};
+  for (int i = 0; i < adl2::axioms::catalog_size(); ++i) {
+    CHECK(std::string(adl2::axioms::axiom_id_str(adl2::axioms::catalog()[i].id)) ==
+          kIds[i]);
+  }
   std::set<std::string> ids;
   for (int i = 0; i < adl2::axioms::catalog_size(); ++i) {
     ids.insert(adl2::axioms::axiom_id_str(adl2::axioms::catalog()[i].id));
@@ -85,34 +95,147 @@ void test_axiom_catalog() {
   CHECK(ids.count("TAG"));
   CHECK(ids.count("PDEF"));
   CHECK(ids.count("EPRES"));
+  CHECK(ids.count("COMBSIZE"));
   for (int i = 0; i < adl2::axioms::catalog_size(); ++i) {
     const auto& e = adl2::axioms::catalog()[i];
     std::string st = e.statement;
     // Prohibited: mere mention of C[i] implying size(C) > i (unguarded).
     CHECK(st.find("referencing C[i] implies size(C) > i") == std::string::npos);
+    CHECK(st.find("C[i] implies size") == std::string::npos);
   }
+}
+
+bool unguarded_size_gt(const Hir& hir, const adl2::formula::QFormula& f) {
+  using QF = adl2::formula::QFormula;
+  switch (f.kind) {
+    case QF::Kind::And:
+      for (const auto& x : f.items) {
+        if (unguarded_size_gt(hir, x)) return true;
+      }
+      return false;
+    case QF::Kind::Or:
+    case QF::Kind::True:
+    case QF::Kind::False:
+      return false;
+    case QF::Kind::Atom: {
+      if (f.atom.terms().size() != 1) return false;
+      if (f.atom.terms()[0].first != Rat::from_i64(1)) return false;
+      const auto& q = hir.table.quantity(f.atom.terms()[0].second);
+      if (q.kind != QuantityKind::Size) return false;
+      const auto& k = f.atom.constant();
+      if (f.atom.rel() == Rel::Gt) return k >= Rat::from_i64(0);
+      if (f.atom.rel() == Rel::Ge) return k >= Rat::from_i64(1);
+      return false;
+    }
+  }
+  return false;
+}
+
+void test_no_existence_from_mention() {
+  // Port of adl-axioms `axioms_hold_on_the_empty_event_no_existence_from_mention`:
+  // mentioning jets[2].pt must not emit an unguarded size(jets) > 2.
+  auto hir = analyze_str(
+      "object jets\n  take Jet\n"
+      "region SR\n  select jets[2].pt > 10\n",
+      "mention.adl", ExtDecls::legacy());
+  CHECK(!has_errors(hir.diags));
+  std::set<QuantityId> qs;
+  for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) qs.insert(QuantityId{i});
+  auto set = adl2::axioms::emit_axioms(hir, ExtDecls::legacy(), qs);
+  bool prohibited = false;
+  int epred = 0;
+  int epres = 0;
+  for (const auto& inst : set.instances) {
+    if (inst.id == adl2::axioms::AxiomId::Epred) ++epred;
+    if (inst.id == adl2::axioms::AxiomId::Epres) ++epres;
+    if (unguarded_size_gt(hir, inst.formula)) prohibited = true;
+  }
+  CHECK(!prohibited);
+  CHECK(epred == 0);  // P3a emitter stub; bump when EPRED is ported
+  CHECK(epres == 0);  // P3a emitter stub; bump when EPRES is ported
+  adl2::interp::EventError err;
+  auto empty = adl2::interp::parse_event(
+      R"({"Jet":[],"MET":{"pt":0.0,"phi":0.0}})", ExtDecls::legacy(), err);
+  CHECK(empty.has_value());
 }
 
 void test_tag_exact_name() {
   auto hir = analyze_str(
       "object jets\n  take Jet\n"
-      "region SR\n  select jets[0].btagDeepB > 0.2\n  select jets[0].btag >= 0\n",
+      "region SR\n"
+      "  select jets[0].btagDeepB > 0.2\n"
+      "  select jets[0].btagDeepFlavB > 0.2\n"
+      "  select jets[0].mybtag > 0.2\n"
+      "  select jets[0].btag >= 0\n",
       "test.adl", ExtDecls::legacy());
   CHECK(!has_errors(hir.diags));
   std::set<QuantityId> qs;
   for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) qs.insert(QuantityId{i});
   auto set = adl2::axioms::emit_axioms(hir, ExtDecls::legacy(), qs);
   bool saw_btag = false;
-  bool saw_deep = false;
+  bool saw_substring = false;
   for (const auto& inst : set.instances) {
     if (inst.id != adl2::axioms::AxiomId::Tag) continue;
-    if (inst.description.find("DeepB") != std::string::npos ||
-        inst.description.find("deepb") != std::string::npos)
-      saw_deep = true;
-    if (inst.description.find(".btag") != std::string::npos) saw_btag = true;
+    const auto& d = inst.description;
+    if (d.find("DeepB") != std::string::npos || d.find("deepb") != std::string::npos ||
+        d.find("DeepFlav") != std::string::npos || d.find("mybtag") != std::string::npos)
+      saw_substring = true;
+    if (d.find(".btag") != std::string::npos && d.find("Deep") == std::string::npos &&
+        d.find("mybtag") == std::string::npos)
+      saw_btag = true;
   }
   CHECK(saw_btag);
-  CHECK(!saw_deep);
+  CHECK(!saw_substring);
+}
+
+void collect_all_qs(Hir& hir, std::set<QuantityId>& qs) {
+  for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) qs.insert(QuantityId{i});
+}
+
+bool comb_desc_has(const adl2::axioms::AxiomSet& set, const char* needle) {
+  for (const auto& inst : set.instances) {
+    if (inst.id != adl2::axioms::AxiomId::CombSize) continue;
+    if (inst.description.find(needle) != std::string::npos) return true;
+  }
+  return false;
+}
+
+void test_combsize_cross_source() {
+  auto hir = analyze_str(
+      "object jets\n  take Jet\nobject eles\n  take Ele\n"
+      "region SR\n  select size(jets) >= 0\n",
+      "comb.adl", ExtDecls::legacy());
+  CHECK(!has_errors(hir.diags));
+  auto jets = hir.collection_of("jets");
+  auto eles = hir.collection_of("eles");
+  CHECK(jets.has_value());
+  CHECK(eles.has_value());
+  auto comb = hir.table.intern_collection(Collection::combination(
+      {*jets, *eles}, CombKind::Cartesian, {}, std::nullopt, {}));
+  hir.table.intern_quantity(Quantity::size(comb));
+  std::set<QuantityId> qs;
+  collect_all_qs(hir, qs);
+  auto set = adl2::axioms::emit_axioms(hir, ExtDecls::legacy(), qs);
+  CHECK(comb_desc_has(set, ">= 0"));
+  CHECK(comb_desc_has(set, " = 0 => "));
+  CHECK(comb_desc_has(set, "all parts >= 1"));
+}
+
+void test_combsize_same_source_omits_positive_lb() {
+  auto hir = analyze_str(
+      "object jets\n  take Jet\nregion SR\n  select size(jets) >= 0\n",
+      "comb2.adl", ExtDecls::legacy());
+  CHECK(!has_errors(hir.diags));
+  auto jets = hir.collection_of("jets");
+  CHECK(jets.has_value());
+  auto comb = hir.table.intern_collection(Collection::combination(
+      {*jets, *jets}, CombKind::Disjoint, {}, std::nullopt, {}));
+  hir.table.intern_quantity(Quantity::size(comb));
+  std::set<QuantityId> qs;
+  collect_all_qs(hir, qs);
+  auto set = adl2::axioms::emit_axioms(hir, ExtDecls::legacy(), qs);
+  CHECK(comb_desc_has(set, "< 2 => "));
+  CHECK(!comb_desc_has(set, "all parts >= 1"));
 }
 
 void test_event_pt_order() {
@@ -175,7 +298,10 @@ int main() {
   test_formula_polarity();
   test_linatom_merge();
   test_axiom_catalog();
+  test_no_existence_from_mention();
   test_tag_exact_name();
+  test_combsize_cross_source();
+  test_combsize_same_source_omits_positive_lb();
   test_event_pt_order();
   test_interp_tiny();
   test_encode_presence();

@@ -50,8 +50,8 @@ P1 filled **`adl2_syntax`**. P2 filled **`adl2_sema`**. P3 fills
 | Polarity-aware Formula IR (`Over`/`Under` as types) | Yes |
 | HIR → Formula encoder | Yes |
 | CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned count) |
-| Axiom catalog (19) + emitters | Yes; EPRED/EPRES emitters stubbed |
-| Prohibited-axiom tests (TAG exact-name) | Yes (`adl2_p3_unit`) |
+| Axiom catalog (19) + emitters | Yes; CombSize matches catalog; EPRED/EPRES emitters stubbed |
+| Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=116 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` event lines vs smash2 | Fail-closed pair list (pinned count) |
 | Solver / analysis / certify / viz | Stub targets only |
@@ -123,4 +123,5 @@ P2 dump-hir/identity kept green.
 
 **Out:** Filling solver/analysis/certify/viz; Kleene `region3` membership;
 cutflow/histo tables; full 146-file formula dump; complete EPRED/EPRES
-emitters. Each later module behind its own phase/PR against the Rust oracle.
+emitters; `--dump-axioms` CLI (no Rust oracle yet). Each later module
+behind its own phase/PR against the Rust oracle.

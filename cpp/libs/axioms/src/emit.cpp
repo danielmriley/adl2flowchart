@@ -399,6 +399,9 @@ struct Emit {
   }
 
   void comb_size(const std::vector<QuantityId>& qs) {
+    // Mirrors Rust `Emit::comb_size`. Catalog statement and emitter must
+    // agree: cross-source empty-factor and cuts-free cartesian lower bound
+    // are emitted here (P3 follow-up; previously the catalog overclaimed).
     for (auto q : qs) {
       const auto& qq = hir->table.quantity(q);
       if (qq.kind != QuantityKind::Size) continue;
@@ -411,29 +414,58 @@ struct Emit {
       }
       if (c.kind != CollectionKind::Combination) continue;
       push(AxiomId::CombSize, qatom({{1.0, q}}, Rel::Ge, 0), label(q) + " >= 0");
+
+      std::vector<QuantityId> part_sizes;
+      part_sizes.reserve(c.parts.size());
+      for (auto p : c.parts) {
+        part_sizes.push_back(hir->table.intern_quantity(Quantity::size(p)));
+      }
       bool same = c.parts.size() >= 2;
       for (std::size_t i = 1; i < c.parts.size(); ++i) {
         if (!(c.parts[i] == c.parts[0])) same = false;
       }
       if (c.comb_kind == CombKind::Disjoint && same && !c.parts.empty()) {
-        auto qs0 = hir->table.intern_quantity(Quantity::size(c.parts[0]));
+        auto qs0 = part_sizes[0];
         // size(C) < 2 => size(K) = 0  ≡  size(C) >= 2 ∨ size(K) = 0
         auto f = qor({qatom({{1.0, qs0}}, Rel::Ge, 2), qatom({{1.0, q}}, Rel::Eq, 0)});
         push(AxiomId::CombSize, std::move(f),
-             "size(src) < 2 => " + label(q) + " = 0");
+             label(qs0) + " < 2 => " + label(q) + " = 0");
+      } else {
+        // Cross-source / cartesian: any factor empty => size(K) = 0.
+        for (auto qp : part_sizes) {
+          auto f = qor({qatom({{1.0, qp}}, Rel::Ge, 1), qatom({{1.0, q}}, Rel::Eq, 0)});
+          push(AxiomId::CombSize, std::move(f),
+               label(qp) + " = 0 => " + label(q) + " = 0");
+        }
+        // all-parts-nonempty => size(K) >= 1 only for a bare cartesian
+        // (no per-tuple cuts, no candidate). Cross-source disjoint is
+        // excluded: value-distinctness can drop the sole pair.
+        if (c.comb_kind == CombKind::Cartesian && c.cuts.empty() &&
+            !c.candidate.has_value() && !part_sizes.empty()) {
+          std::vector<QFormula> alts;
+          alts.reserve(part_sizes.size() + 1);
+          for (auto qp : part_sizes) {
+            alts.push_back(qatom({{1.0, qp}}, Rel::Le, 0));
+          }
+          alts.push_back(qatom({{1.0, q}}, Rel::Ge, 1));
+          push(AxiomId::CombSize, qor(std::move(alts)),
+               "all parts >= 1 => " + label(q) + " >= 1");
+        }
       }
     }
   }
 
   void epred(const std::vector<QuantityId>& qs) {
-    // Size-guarded membership: size(F) > i is already the existence floor.
-    // Full predicate encoding is deferred when the filter is not a simple
-    // comparison the formula encoder can ground at F[i]; catalog still lists
-    // EPRED. Simple size facts above cover the vacuity side.
+    // P3a stub: catalog lists EPRED; the size-guarded predicate encoder is
+    // not ported. Vacuity/size facts (SZ0/SUB/…) still emit. Do not treat
+    // a missing EPRED instance as “the fact was proved unnecessary”.
     (void)qs;
   }
 
-  void epres(const std::vector<QuantityId>& qs) { (void)qs; }
+  void epres(const std::vector<QuantityId>& qs) {
+    // P3a stub: catalog lists EPRES; element-presence facts are not ported.
+    (void)qs;
+  }
 };
 
 }  // namespace

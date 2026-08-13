@@ -1,5 +1,8 @@
 #include "adl2/interp/cutflow.hpp"
 
+#include "adl2/interp/provenance.hpp"
+#include "json_writer.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -181,98 +184,6 @@ void record_bin(BinFlow& acc, const BinOutcome& outcome, double w_in) {
   acc.failed += 1;
 }
 
-std::string json_escape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out.push_back('"');
-  for (unsigned char c : s) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (c < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-          out += buf;
-        } else {
-          out.push_back(static_cast<char>(c));
-        }
-    }
-  }
-  out.push_back('"');
-  return out;
-}
-
-struct JsonWriter {
-  std::string out;
-  bool pretty = false;
-  std::size_t depth = 0;
-  std::vector<bool> has_item;
-  bool pending_value = false;
-
-  explicit JsonWriter(bool p) : pretty(p) {}
-
-  void newline_indent() {
-    if (!pretty) return;
-    out.push_back('\n');
-    out.append(depth * 2, ' ');
-  }
-
-  void item() {
-    if (pending_value) {
-      pending_value = false;
-      return;
-    }
-    if (!has_item.empty()) {
-      if (has_item.back()) out.push_back(',');
-      has_item.back() = true;
-      newline_indent();
-    }
-  }
-
-  void open(char c) {
-    item();
-    out.push_back(c);
-    ++depth;
-    has_item.push_back(false);
-  }
-  void close(char c) {
-    --depth;
-    bool had = !has_item.empty() && has_item.back();
-    if (!has_item.empty()) has_item.pop_back();
-    if (had) newline_indent();
-    out.push_back(c);
-  }
-  void key(const char* k) {
-    item();
-    out.push_back('"');
-    out += k;
-    out += "\":";
-    if (pretty) out.push_back(' ');
-    pending_value = true;
-  }
-  void raw(const std::string& v) {
-    item();
-    out += v;
-  }
-  void null() { raw("null"); }
-  void str_val(const std::string& s) {
-    item();
-    out += json_escape(s);
-  }
-  void num(double v) {
-    item();
-    out += json_f64(v);
-  }
-  std::string finish() {
-    if (pretty) out.push_back('\n');
-    return out;
-  }
-};
-
 void counts_json(JsonWriter& w, Counts c) {
   w.open('{');
   w.key("raw");
@@ -382,10 +293,18 @@ void CutflowSet::record_event(const Event& event, const std::vector<RegionResult
 }
 
 std::string CutflowSet::to_json(bool pretty) const {
+  return to_json_with(pretty, nullptr);
+}
+
+std::string CutflowSet::to_json_with(bool pretty, const Provenance* provenance) const {
   JsonWriter w(pretty);
   w.open('{');
   w.key("version");
   w.raw("1");
+  if (provenance) {
+    w.key("provenance");
+    provenance->write(w);
+  }
   w.key("total");
   counts_json(w, total_);
   w.key("regions");

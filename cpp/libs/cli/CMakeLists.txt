@@ -10,6 +10,8 @@ target_link_libraries(smash2_cpp PRIVATE
   adl2_axioms
   adl2_viz
   adl2_analysis
+  adl2_rootfile
+  adl2_certify
 )
 target_compile_options(smash2_cpp PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(smash2_cpp PROPERTIES

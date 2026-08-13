@@ -8,5 +8,6 @@ adl2_add_library(adl2_interp
     src/histo.cpp
     src/bridges.cpp
     src/sample.cpp
+    src/provenance.cpp
   PUBLIC_DEPS adl2_sema
 )

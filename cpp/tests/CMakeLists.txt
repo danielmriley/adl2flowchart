@@ -281,5 +281,17 @@ add_test(NAME adl2_analysis_combine
 set_tests_properties(adl2_analysis_combine PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=53 FAIL=0")
 
+add_executable(adl2_rootfile_unit rootfile.cpp)
+target_link_libraries(adl2_rootfile_unit PRIVATE adl2_rootfile)
+target_compile_options(adl2_rootfile_unit PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(adl2_rootfile_unit PRIVATE
+  ROOTFILE_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/libs/rootfile/fixtures")
+
+add_test(NAME adl2_rootfile_unit
+  COMMAND adl2_rootfile_unit)
+
+set_tests_properties(adl2_rootfile_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
 add_test(NAME smash2_cpp_recheck_usage
   COMMAND bash -c "$<TARGET_FILE:smash2_cpp-recheck>; test $? -eq 2")

@@ -13,6 +13,8 @@
 
 namespace adl2::interp {
 
+struct Provenance;
+
 struct Hist1D {
   std::uint32_t nbins = 0;
   double lo = 0;
@@ -114,6 +116,7 @@ class HistoSet {
                   const std::vector<RegionResult>& results);
   std::vector<std::string> diagnostics() const;
   std::string to_json(bool pretty) const;
+  std::string to_json_with(bool pretty, const Provenance* provenance) const;
   std::vector<HistoFill> histos;
 
  private:

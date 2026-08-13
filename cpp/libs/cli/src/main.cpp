@@ -5,12 +5,14 @@
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
+#include "adl2/rootfile/rootfile.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
 #include "adl2/viz/viz.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -35,29 +38,31 @@ bool stdout_color() {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify + cutflow + --cross)\n"
+      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify + cutflow + ROOT I/O)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
          "--dump-formula|--dump-axioms] [--json] <file.adl>...\n"
       << "  " << argv0 << " run [--json] [--histos DIR] [--csv] [--svg] [--flat-names]\n"
-         "          [--no-root] <file.adl> <events.jsonl>\n"
+         "          [--no-root] [--profile NAME] [--jobs N] <file.adl> <events.jsonl|events.root>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
          "          [--cross] [--combine DIR] [--recon=all|related] [--dump-verdicts]\n"
          "          [--json] [--explain] [--matrix] [--fail-on=KINDS]\n"
          "          <file.adl|dir>...\n"
       << "  " << argv0 << " objects <file.adl>\n"
-      << "  " << argv0 << " ingest  (not ported: no ROOT / adl-ingest)\n"
+      << "  " << argv0 << " ingest --profile NAME [-o events.jsonl] [--emit-script DIR] [events.root]\n"
       << "\n"
       << "Bare `check` always resolves (like smash2). stdout is empty on success;\n"
       << "diagnostics go to stderr. `--dump-ast` still prints the AST dump to stdout.\n"
       << "`run` prints smash2-style event lines then per-region cutflow tables.\n"
       << "`--json` emits one object per event plus optional histos.json line and\n"
-      << "a {\"cutflow\":...} line (no provenance object yet). `--histos DIR` writes\n"
-      << "histos.json, cutflow.json, make_histos.C, and to_root.py; `--csv`/`--svg`\n"
-      << "add per-histogram files. Native `out.root` / `--profile` are not ported.\n"
+      << "a {\"cutflow\":...} line (provenance `tool` is smash2_cpp 0.1.0).\n"
+      << "`--histos DIR` writes histos.json, cutflow.json, make_histos.C, to_root.py,\n"
+      << "and native `out.root` (skip with `--no-root`); `--csv`/`--svg` add files.\n"
+      << "`--profile NAME` ingests a ROOT TTree (delphes|nanoaod) into the same loader.\n"
+      << "`--jobs N` is accepted and ignored (outputs are independent of parallelism).\n"
       << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
       << "region3 witness + sampling/refute gates (sampling 64 events; refute on).\n"
@@ -312,17 +317,162 @@ int cmd_dot(const std::string& path, bool ast, bool verbose) {
   return 0;
 }
 
+
+bool write_root_file(const std::string& path, const adl2::interp::HistoSet& set,
+                     const adl2::interp::CutflowSet& cutflow,
+                     const adl2::interp::Provenance& provenance, bool flat, bool verbose) {
+  using adl2::rootfile::CutflowStep;
+  using adl2::rootfile::FlowBin;
+  using adl2::rootfile::H1Spec;
+  using adl2::rootfile::H1VarSpec;
+  using adl2::rootfile::H2Spec;
+  using adl2::rootfile::RootFile;
+  std::array<std::uint8_t, 16> z{};
+  RootFile root = RootFile::create();
+  root.with_datime(adl2::rootfile::pack_datime(2026, 6, 12, 0, 0, 0)).with_uuids(z, z);
+
+  auto skip = [](const std::string& name, const adl2::rootfile::Error& e) {
+    std::cerr << "`" << name << "`: skipped in out.root — " << e.to_string() << "\n";
+  };
+
+  for (const auto& fill : set.histos) {
+    std::string region_dir = adl2::interp::dir_name(fill.region);
+    std::vector<std::string> dir;
+    std::string name;
+    if (flat) {
+      name = adl2::interp::root_name(fill.region, fill.name);
+    } else {
+      dir.push_back(region_dir);
+      name = fill.name;
+    }
+    if (fill.hist.kind == adl2::interp::HistAccKind::H1) {
+      const auto& h = fill.hist.h1;
+      H1Spec spec;
+      spec.title = fill.title;
+      spec.nbins = h.nbins;
+      spec.lo = h.lo;
+      spec.hi = h.hi;
+      spec.sumw = h.sumw;
+      spec.sumw2 = h.sumw2;
+      spec.under = {h.underflow_w, h.underflow_w2};
+      spec.over = {h.overflow_w, h.overflow_w2};
+      spec.entries = static_cast<double>(h.entries);
+      spec.tsumw = h.tsumw;
+      spec.tsumw2 = h.tsumw2;
+      spec.tsumwx = h.tsumwx;
+      spec.tsumwx2 = h.tsumwx2;
+      RootFile snap = root;
+      if (auto e = root.add_th1d_at(dir, name, spec)) {
+        skip(name, *e);
+        root = std::move(snap);
+      }
+    } else if (fill.hist.kind == adl2::interp::HistAccKind::H1Var) {
+      const auto& h = fill.hist.h1var;
+      H1VarSpec spec;
+      spec.title = fill.title;
+      spec.edges = h.edges;
+      spec.sumw = h.sumw;
+      spec.sumw2 = h.sumw2;
+      spec.under = {h.underflow_w, h.underflow_w2};
+      spec.over = {h.overflow_w, h.overflow_w2};
+      spec.entries = static_cast<double>(h.entries);
+      spec.tsumw = h.tsumw;
+      spec.tsumw2 = h.tsumw2;
+      spec.tsumwx = h.tsumwx;
+      spec.tsumwx2 = h.tsumwx2;
+      RootFile snap = root;
+      if (auto e = root.add_th1d_var_at(dir, name, spec)) {
+        skip(name, *e);
+        root = std::move(snap);
+      }
+    } else {
+      const auto& h = fill.hist.h2;
+      H2Spec spec;
+      spec.title = fill.title;
+      spec.nx = h.nx;
+      spec.xlo = h.xlo;
+      spec.xhi = h.xhi;
+      spec.ny = h.ny;
+      spec.ylo = h.ylo;
+      spec.yhi = h.yhi;
+      spec.sumw = h.sumw;
+      spec.sumw2 = h.sumw2;
+      spec.entries = static_cast<double>(h.entries);
+      spec.tsumw = h.tsumw;
+      spec.tsumw2 = h.tsumw2;
+      spec.tsumwx = h.tsumwx;
+      spec.tsumwx2 = h.tsumwx2;
+      spec.tsumwy = h.tsumwy;
+      spec.tsumwy2 = h.tsumwy2;
+      spec.tsumwxy = h.tsumwxy;
+      RootFile snap = root;
+      if (auto e = root.add_th2d_at(dir, name, spec)) {
+        skip(name, *e);
+        root = std::move(snap);
+      }
+    }
+  }
+
+  for (const auto& flow : cutflow.regions()) {
+    std::string base = adl2::interp::dir_name(flow.name);
+    std::vector<std::string> dir;
+    if (!flat) dir.push_back(base);
+    std::vector<CutflowStep> steps;
+    steps.reserve(flow.steps.size());
+    for (const auto& st : flow.steps) {
+      CutflowStep cs;
+      cs.label = st.label;
+      cs.raw = st.counts.raw;
+      cs.sumw = st.counts.sumw;
+      cs.sumw2 = st.counts.sumw2;
+      steps.push_back(std::move(cs));
+    }
+    std::uint64_t processed = flow.steps.empty() ? 0 : flow.steps[0].counts.raw;
+    RootFile snap = root;
+    if (auto e = root.add_cutflow_at(dir, base, steps, processed)) {
+      skip(base + "__cutflow", *e);
+      root = std::move(snap);
+    }
+  }
+
+  std::string prov_json = provenance.to_json(false);
+  {
+    RootFile snap = root;
+    if (auto e = root.add_tnamed_at({}, "smash2_provenance", prov_json)) {
+      skip("smash2_provenance", *e);
+      root = std::move(snap);
+    }
+  }
+  if (auto e = root.finish(path)) {
+    std::cerr << "error: cannot write " << path << ": " << e->to_string() << "\n";
+    return false;
+  }
+  if (verbose) std::cerr << "wrote " << path << "\n";
+  return true;
+}
+
 int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out,
-            const std::string& histos_dir, bool csv, bool svg, bool flat_names) {
+            const std::string& histos_dir, bool csv, bool svg, bool flat_names, bool no_root,
+            const std::string& profile, bool verbose) {
   std::string src = read_file(adl_path);
   if (src.empty() && !std::ifstream(adl_path).good()) {
     std::cerr << "error: cannot read file: " << adl_path << "\n";
     return 2;
   }
-  std::string jsonl = read_file(events_path);
-  if (jsonl.empty() && !std::ifstream(events_path).good()) {
-    std::cerr << "error: cannot read file: " << events_path << "\n";
-    return 1;
+  std::string jsonl;
+  std::string input_sha;
+  std::optional<std::string> profile_id;
+  std::vector<std::pair<std::string, std::string>> decides;
+  if (!profile.empty()) {
+    std::cerr << "error: smash2_cpp run --profile is waiting on adl2_ingest in this build\n";
+    return 2;
+  } else {
+    jsonl = read_file(events_path);
+    if (jsonl.empty() && !std::ifstream(events_path).good()) {
+      std::cerr << "error: cannot read file: " << events_path << "\n";
+      return 1;
+    }
+    input_sha = adl2::certify::sha256_hex(jsonl);
   }
   std::string name = unit_name(adl_path);
   auto ext = adl2::sema::ExtDecls::legacy();
@@ -359,6 +509,18 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
       }
     }
   }
+  adl2::interp::Provenance provenance;
+  provenance.tool = "smash2_cpp 0.1.0";
+  provenance.adl_file = name;
+  provenance.adl_sha256 = adl2::certify::sha256_hex(src);
+  adl2::interp::InputIdentity ident;
+  ident.file = unit_name(events_path);
+  ident.sha256 = input_sha;
+  ident.events = events.size();
+  ident.profile = profile_id;
+  provenance.input = ident;
+  provenance.decides = std::move(decides);
+
   for (const auto& d : histos.diagnostics()) {
     std::cerr << name << ": " << d << "\n";
   }
@@ -366,11 +528,11 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
     std::cerr << name << ": " << d << "\n";
   }
   if (json_out && !hir.histos.empty()) {
-    std::cout << histos.to_json(false) << "\n";
+    std::cout << histos.to_json_with(false, &provenance) << "\n";
   }
   if (!cutflow.empty()) {
     if (json_out) {
-      std::cout << "{\"cutflow\":" << cutflow.to_json(false) << "}\n";
+      std::cout << "{\"cutflow\":" << cutflow.to_json_with(false, &provenance) << "}\n";
     } else {
       if (!events.empty()) std::cout << "\n";
       std::cout << cutflow.text_table();
@@ -393,10 +555,14 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
       out << body;
       return true;
     };
-    if (!write("histos.json", histos.to_json(true))) return 1;
-    if (!cutflow.empty() && !write("cutflow.json", cutflow.to_json(true))) return 1;
+    if (!write("histos.json", histos.to_json_with(true, &provenance))) return 1;
+    if (!cutflow.empty() && !write("cutflow.json", cutflow.to_json_with(true, &provenance))) return 1;
     if (!write("make_histos.C", adl2::interp::make_histos_c(histos, flat_names))) return 1;
     if (!write("to_root.py", adl2::interp::to_root_py(histos, flat_names))) return 1;
+    if (!no_root) {
+      auto root_path = (std::filesystem::path(histos_dir) / "out.root").string();
+      if (!write_root_file(root_path, histos, cutflow, provenance, flat_names, verbose)) return 1;
+    }
     if (csv) {
       for (const auto& f : adl2::interp::csv_files(histos)) {
         if (!write(f.first, f.second)) return 1;
@@ -409,9 +575,10 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
     }
     std::cerr << name << ": --histos wrote histos.json"
               << (cutflow.empty() ? "" : " + cutflow.json") << " + make_histos.C + to_root.py";
+    if (!no_root) std::cerr << " + out.root";
     if (csv) std::cerr << " + csv";
     if (svg) std::cerr << " + svg";
-    std::cerr << " (native out.root not ported)\n";
+    std::cerr << "\n";
   }
   return 0;
 }
@@ -802,6 +969,8 @@ int main(int argc, char** argv) {
     bool csv = false;
     bool svg = false;
     bool flat_names = false;
+    bool no_root = false;
+    std::string profile;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--json") {
@@ -809,7 +978,7 @@ int main(int argc, char** argv) {
       } else if (arg == "--verbose" || arg == "-v") {
         verbose = true;
       } else if (arg == "--no-root") {
-        // C++ default: no native out.root.
+        no_root = true;
       } else if (arg == "--csv") {
         csv = true;
       } else if (arg == "--svg") {
@@ -824,14 +993,22 @@ int main(int argc, char** argv) {
         histos_dir = argv[++i];
       } else if (arg.compare(0, 9, "--histos=") == 0) {
         histos_dir = arg.substr(9);
-      } else if (arg == "--profile" || arg == "--jobs") {
-        std::cerr << "error: smash2_cpp run " << arg
-                  << " is not ported (ROOT/profile; --jobs is a no-op — omit it)\n";
-        return 2;
-      } else if (arg.compare(0, 10, "--profile=") == 0 || arg.compare(0, 7, "--jobs=") == 0) {
-        std::cerr << "error: smash2_cpp run " << arg.substr(0, arg.find('='))
-                  << " is not ported (ROOT/profile/jobs)\n";
-        return 2;
+      } else if (arg == "--profile") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --profile requires a name\n";
+          return 2;
+        }
+        profile = argv[++i];
+      } else if (arg.compare(0, 10, "--profile=") == 0) {
+        profile = arg.substr(10);
+      } else if (arg == "--jobs") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --jobs requires a value\n";
+          return 2;
+        }
+        ++i;  // accepted and ignored (smash2: outputs independent of --jobs)
+      } else if (arg.compare(0, 7, "--jobs=") == 0) {
+        // accepted and ignored
       } else if (adl.empty()) {
         adl = arg;
       } else if (events.empty()) {
@@ -846,12 +1023,11 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
-    if ((csv || svg || flat_names) && histos_dir.empty()) {
+    if ((csv || svg || flat_names || no_root) && histos_dir.empty()) {
       std::cerr << "error: --csv/--svg/--flat-names/--no-root require --histos\n";
       return 2;
     }
-    (void)verbose;
-    return cmd_run(adl, events, json, histos_dir, csv, svg, flat_names);
+    return cmd_run(adl, events, json, histos_dir, csv, svg, flat_names, no_root, profile, verbose);
   }
   if (cmd == "dot") {
     bool ast = false;

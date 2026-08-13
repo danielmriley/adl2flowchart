@@ -17,6 +17,8 @@
 
 namespace adl2::interp {
 
+struct Provenance;
+
 struct Counts {
   std::uint64_t raw = 0;
   double sumw = 0;
@@ -98,9 +100,10 @@ class CutflowSet {
   Counts total() const { return total_; }
 
   /// Canonical `cutflow.json` (schema `version: 1`). Compact when
-  /// `pretty` is false. No provenance object (CLI `--json` differs from
-  /// smash2 by that optional key until provenance is ported).
+  /// `pretty` is false. Optional `provenance` is SPEC_EVENT_PIPELINE §6
+  /// (`version`, then `provenance`, then `total`).
   std::string to_json(bool pretty) const;
+  std::string to_json_with(bool pretty, const Provenance* provenance) const;
 
   /// Fixed-width per-region stdout tables matching smash2 `run`.
   std::string text_table() const;

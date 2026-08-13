@@ -13,7 +13,7 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_formula` | `adl-formula` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
-| `adl2_solver` | `adl-solver` | stub | `adl2_axioms` (PUBLIC) |
+| `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
 | `adl2_analysis` | `adl-analysis` | stub | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | stub | `adl2_analysis` (PUBLIC, tiny) |
 | `adl2_viz` | `adl-viz` | stub | `adl2_sema` (PUBLIC; HIR only) |

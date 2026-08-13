@@ -293,5 +293,20 @@ add_test(NAME adl2_rootfile_unit
 set_tests_properties(adl2_rootfile_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
 
+add_executable(adl2_ingest_unit ingest.cpp)
+target_link_libraries(adl2_ingest_unit PRIVATE adl2_ingest)
+target_compile_options(adl2_ingest_unit PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(adl2_ingest_unit PRIVATE
+  INGEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/../reimplementation/adl2/crates/adl-ingest/fixtures")
+
+add_test(NAME adl2_ingest_unit
+  COMMAND adl2_ingest_unit)
+
+set_tests_properties(adl2_ingest_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
 add_test(NAME smash2_cpp_recheck_usage
   COMMAND bash -c "$<TARGET_FILE:smash2_cpp-recheck>; test $? -eq 2")
+
+add_test(NAME smash2_cpp_ingest_unknown_profile
+  COMMAND bash -c "$<TARGET_FILE:smash2_cpp> ingest --profile atlas -o /tmp/smash2_cpp_never.jsonl; test $? -eq 2")

@@ -18,7 +18,8 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_certify` | `adl-certify` | **filled** (P5 kernel + P6 bundles / SHA-256) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `adl2_rootfile` | `rootfile` | **filled** (P6: native `out.root`) | — |
-| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis + rootfile |
+| `adl2_ingest` | `adl-ingest` | **filled** (P6: TTree → JSONL) | zlib PRIVATE |
+| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis + rootfile + ingest |
 | `smash2_cpp-recheck` | `smash2-recheck` | **filled** (`smash2-combine/2` replay) | `adl2_certify` |
 | `adl2_util` | _(optional)_ | stub | — |
 
@@ -30,7 +31,7 @@ name is `adl2`; libraries are the `adl2_*` targets above.
 ```
 syntax → sema → {interp ‖ formula} → axioms → solver
                                     ↘ certify ↗ analysis
-rootfile is a leaf (histogram TFile writer); ingest is a leaf (ROOT TTree → JSONL).
+rootfile is a leaf (histogram TFile writer); ingest is a leaf (ROOT TTree → JSONL, zlib for ZL baskets).
 viz reads HIR only; cli wires modules.
 ```
 

@@ -4,6 +4,7 @@
 #include "adl2/certify/sha256.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
+#include "adl2/ingest/ingest.hpp"
 #include "adl2/interp/interp.hpp"
 #include "adl2/rootfile/rootfile.hpp"
 #include "adl2/sema/sema.hpp"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -75,7 +77,7 @@ void print_help(const char* argv0) {
       << "`A vs B: KIND` line. Directories expand to sorted `*.adl` files.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
-      << "interp/axioms/viz/analysis; no core logic in the executable. Rust smash2 is the\n"
+      << "interp/axioms/viz/analysis/rootfile/ingest; no core logic in the executable. Rust smash2 is the\n"
       << "forever oracle.\n";
 }
 
@@ -85,6 +87,13 @@ std::string read_file(const std::string& path) {
   std::ostringstream ss;
   ss << in.rdbuf();
   return ss.str();
+}
+
+std::vector<std::uint8_t> read_file_binary(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
 }
 
 std::string unit_name(const std::string& path) {
@@ -451,6 +460,24 @@ bool write_root_file(const std::string& path, const adl2::interp::HistoSet& set,
   return true;
 }
 
+void print_profile_choices(const adl2::ingest::Profile& profile) {
+  std::cerr << "profile " << profile.id() << ":\n";
+  for (const auto& kv : profile.decides()) {
+    std::cerr << "  " << kv.first << " = " << kv.second << "\n";
+  }
+}
+
+void print_ingest_diags(const std::vector<adl2::ingest::IngestDiag>& diags, const std::string& profile_id,
+                        bool verbose) {
+  for (const auto& d : diags) {
+    if (d.verbose_only() && !verbose) continue;
+    std::cerr << "profile " << profile_id << ": " << d.to_string() << "\n";
+    if (verbose) {
+      if (auto detail = d.verbose_detail()) std::cerr << "  " << *detail << "\n";
+    }
+  }
+}
+
 int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out,
             const std::string& histos_dir, bool csv, bool svg, bool flat_names, bool no_root,
             const std::string& profile, bool verbose) {
@@ -464,8 +491,29 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
   std::optional<std::string> profile_id;
   std::vector<std::pair<std::string, std::string>> decides;
   if (!profile.empty()) {
-    std::cerr << "error: smash2_cpp run --profile is waiting on adl2_ingest in this build\n";
-    return 2;
+    auto prof = adl2::ingest::by_name(profile);
+    if (!prof) {
+      std::cerr << "error: unknown profile `" << profile
+                << "` (known: " << adl2::ingest::known_profiles_csv() << ")\n";
+      return 2;
+    }
+    if (verbose) print_profile_choices(*prof);
+    auto raw = read_file_binary(events_path);
+    if (raw.empty() && !std::ifstream(events_path).good()) {
+      std::cerr << "error: cannot read file: " << events_path << "\n";
+      return 1;
+    }
+    input_sha = adl2::certify::sha256_hex(raw);
+    profile_id = prof->id();
+    decides = prof->decides();
+    adl2::ingest::IngestError ierr;
+    auto ingested = adl2::ingest::read_root(events_path, *prof, ierr);
+    if (!ingested) {
+      std::cerr << events_path << ": " << ierr.to_string() << "\n";
+      return 1;
+    }
+    print_ingest_diags(ingested->diags, ingested->profile_id, verbose);
+    jsonl = ingested->jsonl();
   } else {
     jsonl = read_file(events_path);
     if (jsonl.empty() && !std::ifstream(events_path).good()) {
@@ -905,6 +953,59 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
   return worst;
 }
 
+int cmd_ingest(const std::optional<std::string>& input, const std::string& profile_name,
+               const std::optional<std::string>& output, const std::optional<std::string>& emit_script,
+               bool verbose) {
+  auto profile = adl2::ingest::by_name(profile_name);
+  if (!profile) {
+    std::cerr << "error: unknown profile `" << profile_name
+              << "` (known: " << adl2::ingest::known_profiles_csv() << ")\n";
+    return 2;
+  }
+  if (!output && !emit_script) {
+    std::cerr << "error: nothing to do: pass `-o FILE` to materialize JSONL and/or `--emit-script DIR`\n";
+    return 2;
+  }
+  if (output && !input) {
+    std::cerr << "error: `-o` needs a ROOT input file to ingest\n";
+    return 2;
+  }
+  if (verbose) print_profile_choices(*profile);
+  if (emit_script) {
+    std::error_code ec;
+    std::filesystem::create_directories(*emit_script, ec);
+    if (ec) {
+      std::cerr << "error: cannot create directory " << *emit_script << ": " << ec.message() << "\n";
+      return 1;
+    }
+    auto path = std::filesystem::path(*emit_script) / "to_jsonl.py";
+    std::ofstream out(path);
+    if (!out) {
+      std::cerr << "error: cannot write " << path.string() << "\n";
+      return 1;
+    }
+    out << adl2::ingest::to_jsonl_py(*profile);
+    if (verbose) std::cerr << "wrote " << path.string() << "\n";
+  }
+  if (input && output) {
+    adl2::ingest::IngestError err;
+    auto ingested = adl2::ingest::read_root(*input, *profile, err);
+    if (!ingested) {
+      std::cerr << *input << ": " << err.to_string() << "\n";
+      return 1;
+    }
+    print_ingest_diags(ingested->diags, ingested->profile_id, verbose);
+    std::ofstream out(*output);
+    if (!out) {
+      std::cerr << "error: cannot write " << *output << "\n";
+      return 1;
+    }
+    out << ingested->jsonl();
+    if (verbose) std::cerr << "wrote " << *output << " (" << ingested->entries << " events)\n";
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1073,8 +1174,54 @@ int main(int argc, char** argv) {
     return cmd_objects(path, verbose);
   }
   if (cmd == "ingest") {
-    std::cerr << "error: smash2_cpp ingest is not ported (no ROOT / adl-ingest)\n";
-    return 2;
+    std::string profile;
+    std::optional<std::string> output;
+    std::optional<std::string> emit_script;
+    std::optional<std::string> input;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--profile") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --profile requires a name\n";
+          return 2;
+        }
+        profile = argv[++i];
+      } else if (arg.compare(0, 10, "--profile=") == 0) {
+        profile = arg.substr(10);
+      } else if (arg == "-o" || arg == "--output") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: -o requires a file path\n";
+          return 2;
+        }
+        output = argv[++i];
+      } else if (arg.compare(0, 3, "-o=") == 0) {
+        output = arg.substr(3);
+      } else if (arg == "--emit-script") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --emit-script requires a directory\n";
+          return 2;
+        }
+        emit_script = argv[++i];
+      } else if (arg.compare(0, 14, "--emit-script=") == 0) {
+        emit_script = arg.substr(14);
+      } else if (!arg.empty() && arg[0] == '-') {
+        std::cerr << "error: unknown ingest option '" << arg << "'\n";
+        return 2;
+      } else if (!input) {
+        input = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (profile.empty()) {
+      std::cerr << "error: ingest requires --profile NAME (known: "
+                << adl2::ingest::known_profiles_csv() << ")\n";
+      return 2;
+    }
+    return cmd_ingest(input, profile, output, emit_script, verbose);
   }
   if (cmd == "verify") {
     bool no_solver = false;

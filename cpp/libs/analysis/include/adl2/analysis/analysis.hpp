@@ -66,7 +66,9 @@ struct AnalysisOptions {
 /// PROVEN claims are checked through the interpreter and demoted on hit.
 /// When `opts.certify` is true, solver-UNSAT
 /// disjointness/emptiness is independently replayed; `Some(false)` demotes
-/// the claim to CANDIDATE. Interval-path disagreements are diagnostics, not
+/// the claim to CANDIDATE. Pairwise subset flags are `UNSAT(Ax ∧ A⁺ ∧ ¬(B⁻))`
+/// with `¬(B⁻)` one Or of NNF negations (smash2 `negated_under`); uncertified
+/// solver-UNSAT is not a subset claim. Interval-path disagreements are diagnostics, not
 /// demotions. `src` is the unit text used for cut line-text.
 Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
                    const adl2::sema::ExtDecls& ext, const AnalysisOptions& opts);

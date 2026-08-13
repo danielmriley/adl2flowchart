@@ -157,7 +157,7 @@ set_tests_properties(adl2_solver_test PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
 
 set_tests_properties(adl2_region3 PROPERTIES
-  PASS_REGULAR_EXPRESSION "PASS=30 FAIL=0")
+  PASS_REGULAR_EXPRESSION "PASS=80 FAIL=0")
 
 set_tests_properties(adl2_interval_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=46 FAIL=0")

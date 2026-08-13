@@ -1121,10 +1121,21 @@ std::optional<bool> Ev::whole_cmp(CmpOp op, const HNode& lhs, const HNode& rhs, 
   }
   auto min = whole_angular_min(kind, a, b, span, elem, err);
   if (!err.reason.empty()) return std::nullopt;
+  // Smash2 compares `NumVal::Approx(+∞)` via f64 (`angular_whole_cmp`).
+  // `NumVal::from_f64` rejects inf (§4.4); that sentinel is "no pair
+  // existed", not a failed dR, so compare the raw doubles. Falling back
+  // to 0 made empty-product `dR == 0` PASS.
   double m = min.value_or(std::numeric_limits<double>::infinity());
-  auto approx_v = NumVal::from_f64(m);
-  if (!approx_v) approx_v = NumVal::from_f64(0);
-  return cmp_num(use, *approx_v, c.val);
+  double thresh = c.val.to_f64();
+  switch (use) {
+    case CmpOp::Eq:
+      return m == thresh;
+    case CmpOp::Ne:
+    case CmpOp::ApproxEq:
+      return m != thresh;
+    default:
+      return false;
+  }
 }
 
 std::optional<LV> Ev::lorentz(const ParticleRef& p, Span span, const EventObject* elem, NonValue& nv,

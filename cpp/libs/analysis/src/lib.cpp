@@ -121,6 +121,13 @@ struct Certified {
   std::optional<CertPayload> payload;
 };
 
+void note_failure(Report& report, const SatResult& r);
+Certified certify_named_formulas(bool certify, const std::optional<std::vector<AssertName>>& core,
+                                 const std::vector<std::pair<AssertName, QFormula>>& extra,
+                                 const adl2::axioms::AxiomSet* axioms,
+                                 const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
+                                 bool keep_payload);
+
 /// Accumulator for `--combine` (origins, recon derivation chains, bundles).
 struct CombineAcc {
   bool enabled = false;
@@ -197,17 +204,50 @@ void assert_unders(Solver& s, const RegionCtx& ctx) {
   }
 }
 
-bool subset_unsat(Solver& s, const RegionCtx& outer, const RegionCtx& inner,
-                  std::chrono::milliseconds timeout) {
-  // UNSAT(Ax ∧ outer⁺ ∧ ¬inner⁻). Axioms live on the base frame.
-  s.push();
-  assert_overs(s, outer);
+/// `¬(R⁻)`: the under-projection is the conjunction of statement unders, so
+/// its exact negation is the disjunction of their NNF negations (smash2
+/// `negated_under`). Asserting each `¬uᵢ` separately would be `∧ ¬uᵢ` —
+/// the dual, which makes UNSAT easier and fabricates PROVEN SUBSET.
+QFormula negated_under(const RegionCtx& inner) {
+  std::vector<QFormula> parts;
+  parts.reserve(inner.unders.size());
   for (const auto& u : inner.unders) {
-    s.assert_formula(u.qformula().qnot(), std::nullopt);
+    parts.push_back(u.qformula().qnot());
   }
+  return QFormula::of_or(std::move(parts));
+}
+
+/// `UNSAT(Ax ∧ outer⁺ ∧ ¬(inner⁻))` ⇒ outer ⊆ inner. Named QSUB{k} / QSUBNEG
+/// so certify can replay the core. When certify is on, `Some(false)` is not a
+/// subset claim (smash2 `subset_proof`).
+bool region_subset(Solver& s, const RegionCtx& outer, const RegionCtx& inner, bool certify,
+                   std::chrono::milliseconds timeout, Report& report,
+                   const adl2::axioms::AxiomSet* axioms,
+                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
+  s.push();
+  std::vector<std::pair<AssertName, QFormula>> extra;
+  extra.reserve(outer.overs.size() + 1);
+  std::size_t k = 0;
+  for (const auto& p : outer.overs) {
+    AssertName name = AssertName::make("QSUB" + std::to_string(k++));
+    QFormula f = p.second.qformula();
+    s.assert_formula(f, name);
+    extra.emplace_back(name, std::move(f));
+  }
+  AssertName neg_name = AssertName::make("QSUBNEG");
+  QFormula neg = negated_under(inner);
+  s.assert_formula(neg, neg_name);
+  extra.emplace_back(neg_name, std::move(neg));
   SatResult r = s.check(timeout);
+  note_failure(report, r);
+  std::optional<std::vector<AssertName>> core_names;
+  if (r.is_unsat()) {
+    if (auto core = s.unsat_core()) core_names = *core;
+  }
   s.pop();
-  return r.is_unsat();
+  if (!r.is_unsat()) return false;
+  auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts, false);
+  return cert.flag != false;
 }
 
 std::unique_ptr<SubprocessSolver> make_solver(SolverChoice choice, std::string& label) {
@@ -607,8 +647,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
   }
   solver->pop();
 
-  bool one_in_two = subset_unsat(*solver, c1, c2, timeout);
-  bool two_in_one = subset_unsat(*solver, c2, c1, timeout);
+  bool one_in_two = region_subset(*solver, c1, c2, certify, timeout, report, axioms, recon_facts);
+  bool two_in_one = region_subset(*solver, c2, c1, certify, timeout, report, axioms, recon_facts);
   if (a_first) {
     pr.subset_a_in_b = one_in_two;
     pr.subset_b_in_a = two_in_one;

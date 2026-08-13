@@ -4,6 +4,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <vector>
 
 using namespace adl2::sema;
 
@@ -214,6 +215,57 @@ region BASE
   CHECK(two.has_value() && three.has_value() && *two == *three && *two);
 }
 
+bool named_pass(const std::vector<adl2::interp::RegionResult>& rs, const char* name) {
+  for (const auto& r : rs) {
+    if (r.name == name) return r.pass.has_value() && *r.pass;
+  }
+  return false;
+}
+
+void check_dr_cut(const char* cut, const char* json, bool want,
+                  const char* label) {
+  std::string adl = std::string("object jets\n  take Jet\nobject eles\n  take Ele\nregion r\n  select ") +
+                    cut + "\n";
+  auto ext = ExtDecls::legacy();
+  auto hir = analyze_str(adl, label, ext);
+  CHECK(!has_errors(hir.diags));
+  adl2::interp::Interp ip(hir, ext);
+  adl2::interp::EventError ee;
+  auto ev = adl2::interp::parse_event(json, ext, ee);
+  CHECK(ev.has_value());
+  if (!ev) return;
+  auto three = mem(ip, "r", *ev);
+  CHECK(three.has_value() && *three == want);
+  adl2::interp::EvalError err;
+  auto two = ip.eval_region_by_name("r", ev.has_value() ? *ev : adl2::interp::Event{}, err);
+  CHECK(two.has_value() && *two == want);
+  auto run = ip.run_event(*ev);
+  CHECK(named_pass(run, "r") == want);
+}
+
+void test_empty_product_dr() {
+  const char* both =
+      R"({"Jet":[{"pt":50,"eta":0.0,"phi":0.0,"m":5}],"Ele":[{"pt":30,"eta":1.0,"phi":1.0,"m":0}],"MET":{"pt":80,"phi":0.4}})";
+  const char* no_ele =
+      R"({"Jet":[{"pt":50,"eta":0.0,"phi":0.0,"m":5}],"Ele":[],"MET":{"pt":80,"phi":0.4}})";
+  const char* no_jet =
+      R"({"Jet":[],"Ele":[{"pt":30,"eta":1.0,"phi":1.0,"m":0}],"MET":{"pt":80,"phi":0.4}})";
+  const char* neither = R"({"Jet":[],"Ele":[],"MET":{"pt":80,"phi":0.4}})";
+
+  check_dr_cut("dR(jets, eles) > 0.4", both, true, "dr_both_gt");
+  check_dr_cut("dR(jets, eles) < 0.4", both, false, "dr_both_lt");
+
+  check_dr_cut("dR(jets, eles) > 999", no_ele, true, "dr_noele_gt");
+  check_dr_cut("dR(jets, eles) < 999", no_ele, false, "dr_noele_lt");
+  check_dr_cut("dR(jets, eles) == 0", no_ele, false, "dr_noele_eq");
+  check_dr_cut("dR(jets, eles) != 0", no_ele, true, "dr_noele_ne");
+
+  check_dr_cut("dR(jets, eles) == 0", no_jet, false, "dr_nojet_eq");
+  check_dr_cut("dR(jets, eles) != 0", no_jet, true, "dr_nojet_ne");
+  check_dr_cut("dR(jets, eles) == 0", neither, false, "dr_none_eq");
+  check_dr_cut("dR(jets, eles) != 0", neither, true, "dr_none_ne");
+}
+
 }  // namespace
 
 int main() {
@@ -223,6 +275,7 @@ int main() {
   test_ternary_and_absorbing();
   test_two_valued_still_short_circuits();
   test_opaque_free_agrees();
+  test_empty_product_dr();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

@@ -61,12 +61,12 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` + cutflow tables vs smash2 | Fail-closed pair list (pinned count; full stdout) |
-| Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON + `make_histos.C`/`to_root.py`; `--csv`/`--svg` (no native `out.root`) |
-| Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
+| Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON + `make_histos.C`/`to_root.py` + native `out.root` |
+| Kleene `region3` membership | Yes (`adl2_region3`, `PASS=80 FAIL=0`; empty-product `dR` matches smash2 `+∞` sentinel) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3) |
-| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. |
+| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=79); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. Pairwise subset uses smash2 `negated_under` + certify fail-closed. |
 | Human verify report | Default stdout of `verify` (trust / findings / regions / matrix / pairwise / recon). Not claimed byte-identical to smash2. `--json` is smash2 schema v4 snake_case. |
 | `--cross` | `merge_hirs` + XSUB/XEQ reconcile; `--recon=all\|related` |
 | `objects` | `adl2::sema::object_table` + CLI `objects` (allowlist **171**) |
@@ -145,10 +145,14 @@ tables. `verify` defaults to certify ON.
 
 ## Remaining vs smash2 (honest non-parity)
 
-Still to port: `--combine` certificate bundles / `smash2-recheck`; ROOT
-`ingest` / `run --profile` / native `out.root`; provenance object (C++
-omits it so it cannot claim `tool: smash2 <rust version>`). Native libz3
-stays out (ADR-010). `--cross` / merge / reconciliation (XSUB/XEQ) and
-`--histos` CSV/SVG/`make_histos.C`/`to_root.py` bridges are ported.
-`verify --json` uses smash2 schema v4 snake_case kinds (not claimed
-byte-identical on every field).
+Ported: `--combine` / `smash2_cpp-recheck`, ROOT `ingest` / `run --profile` /
+native `out.root`, provenance (`tool` is `smash2_cpp 0.1.0`, not `smash2`).
+`--cross` / merge / XSUB/XEQ and `--histos` CSV/SVG/`make_histos.C` /
+`to_root.py` bridges are ported. `verify --json` uses smash2 schema v4
+snake_case kinds (not claimed byte-identical on every field).
+
+Not claimed identical: dump-axioms allowlist **108** (not 172); `--jobs`
+accepted and ignored; histos.json numbers may use a different shortest
+round-trip than smash2 ryu. Native libz3 stays out (ADR-010). C++ has no
+`prop_encoder_vs_interp` battery — PROVEN still rests on smash2 dump-diff
+plus C++ unit pins.

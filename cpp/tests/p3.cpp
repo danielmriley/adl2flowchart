@@ -135,7 +135,7 @@ void test_no_existence_from_mention() {
   // Port of adl-axioms `axioms_hold_on_the_empty_event_no_existence_from_mention`:
   // mentioning jets[2].pt must not emit an unguarded size(jets) > 2.
   auto hir = analyze_str(
-      "object jets\n  take Jet\n"
+      "object jets\n  take Jet\n  select pt > 30\n"
       "region SR\n  select jets[2].pt > 10\n",
       "mention.adl", ExtDecls::legacy());
   CHECK(!has_errors(hir.diags));
@@ -151,8 +151,8 @@ void test_no_existence_from_mention() {
     if (unguarded_size_gt(hir, inst.formula)) prohibited = true;
   }
   CHECK(!prohibited);
-  CHECK(epred == 0);  // P3a emitter stub; bump when EPRED is ported
-  CHECK(epres == 0);  // P3a emitter stub; bump when EPRES is ported
+  CHECK(epred == 1);
+  CHECK(epres == 1);
   adl2::interp::EventError err;
   auto empty = adl2::interp::parse_event(
       R"({"Jet":[],"MET":{"pt":0.0,"phi":0.0}})", ExtDecls::legacy(), err);

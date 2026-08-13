@@ -5,7 +5,8 @@ Reference interpreter: Event â†’ bool/values (Rust `adl-interp`, SPEC_LANGUAGE Â
 JSONL loader enforces pT-descending collections and the NNEG/TAG domain
 the axioms assume. Two-valued `run_event` matches smash2 `run` event lines
 (`PASS` / `fail` / `ERROR:` + bins). Kleene three-valued membership
-(`region3`) is deferred to a later phase (witness validation).
+(`region3` / `eval_region_membership`) prefers a decidable False over
+Unknown and is the witness-validation entry point.
 
 Headers: `libs/interp/include/adl2/interp/`
 

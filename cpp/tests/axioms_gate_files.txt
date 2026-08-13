@@ -2,12 +2,15 @@
 # Paths relative to repo root. Claimed set size is pinned
 # (EXPECTED_FILES in cpp/scripts/dump_axioms_corpus_gate.sh).
 #
-# Not claimed (rust emits EPRED/EPRES; C++ those emitters are P3a stubs):
+# Claimed after EPRED/EPRES port (byte-identical vs smash2):
 #   examples/tutorials/ex00_helloworld.adl
 #   examples/tutorials/ex01_selection.adl
 #   legacy_parser/tests/golden/disjoint_pt.adl
 cpp/tests/fixtures/tiny.adl
+examples/tutorials/ex00_helloworld.adl
 examples/tutorials/ex00_info.adl
+examples/tutorials/ex01_selection.adl
+legacy_parser/tests/golden/disjoint_pt.adl
 legacy_parser/tests/golden/or_met.adl
 legacy_parser/tests/golden/overlap_met.adl
 legacy_parser/tests/golden/size_bjets.adl

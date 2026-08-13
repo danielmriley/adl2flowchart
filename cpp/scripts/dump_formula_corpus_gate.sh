@@ -11,7 +11,7 @@
 #   COUNT_ONLY=1 cpp/scripts/dump_formula_corpus_gate.sh
 set -euo pipefail
 
-EXPECTED_FILES=10
+EXPECTED_FILES=172
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"

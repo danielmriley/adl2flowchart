@@ -31,13 +31,14 @@ bool stdout_color() {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify report + cutflow)\n"
+      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify + cutflow + --cross)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
-         "--dump-formula|--dump-axioms] [--json] <file.adl>\n"
-      << "  " << argv0 << " run [--json] [--histos DIR] <file.adl> <events.jsonl>\n"
+         "--dump-formula|--dump-axioms] [--json] <file.adl>...\n"
+      << "  " << argv0 << " run [--json] [--histos DIR] [--csv] [--svg] [--flat-names]\n"
+         "          [--no-root] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
          "          [--cross] [--recon=all|related] [--dump-verdicts]\n"
@@ -51,7 +52,8 @@ void print_help(const char* argv0) {
       << "`run` prints smash2-style event lines then per-region cutflow tables.\n"
       << "`--json` emits one object per event plus optional histos.json line and\n"
       << "a {\"cutflow\":...} line (no provenance object yet). `--histos DIR` writes\n"
-      << "histos.json + cutflow.json; ROOT bridges / out.root / --profile are not ported.\n"
+      << "histos.json, cutflow.json, make_histos.C, and to_root.py; `--csv`/`--svg`\n"
+      << "add per-histogram files. Native `out.root` / `--profile` are not ported.\n"
       << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
       << "region3 witness + sampling/refute gates (sampling 64 events; refute on).\n"
@@ -109,63 +111,83 @@ void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
   }
 }
 
-int cmd_check(const std::string& path, DumpKind dump, bool json) {
-  std::string src = read_file(path);
-  if (src.empty() && !std::ifstream(path).good()) {
-    std::cerr << "error: cannot read file: " << path << "\n";
+int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool json) {
+  if (json && dump != DumpKind::None) {
+    std::cerr << "error: --json cannot be combined with --dump-*\n";
     return 2;
   }
-  std::string name = unit_name(path);
-
-  if (dump == DumpKind::Ast) {
-    auto result = adl2::syntax::parse_source(src);
-    std::cout << adl2::syntax::dump_ast(src, result.file);
-  }
-
-  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
-
+  auto ext = adl2::sema::ExtDecls::legacy();
   if (json) {
     std::cout << "[";
-    for (std::size_t i = 0; i < hir.diags.size(); ++i) {
-      const auto& d = hir.diags[i];
-      if (i) std::cout << ",";
-      std::cout << "{\"file\":\"" << json_escape(name) << "\",\"severity\":\""
-                << adl2::sema::severity_str(d.severity) << "\",\"line\":" << d.span.line
-                << ",\"col\":" << d.span.column << ",\"start\":" << d.span.start
-                << ",\"end\":" << d.span.end << ",\"message\":\"" << json_escape(d.message)
-                << "\",\"label\":null,\"help\":"
-                << (d.help.empty() ? "null" : ("\"" + json_escape(d.help) + "\"")) << "}";
+    bool first = true;
+    bool any_err = false;
+    for (const auto& path : paths) {
+      std::string src = read_file(path);
+      if (src.empty() && !std::ifstream(path).good()) {
+        std::cerr << "error: cannot read file: " << path << "\n";
+        return 2;
+      }
+      std::string name = unit_name(path);
+      auto hir = adl2::sema::analyze_str(src, name, ext);
+      for (const auto& d : hir.diags) {
+        if (!first) std::cout << ",";
+        first = false;
+        std::cout << "{\"file\":\"" << json_escape(name) << "\",\"severity\":\""
+                  << adl2::sema::severity_str(d.severity) << "\",\"line\":" << d.span.line
+                  << ",\"col\":" << d.span.column << ",\"start\":" << d.span.start
+                  << ",\"end\":" << d.span.end << ",\"message\":\"" << json_escape(d.message)
+                  << "\",\"label\":null,\"help\":"
+                  << (d.help.empty() ? "null" : ("\"" + json_escape(d.help) + "\"")) << "}";
+      }
+      if (adl2::sema::has_errors(hir.diags)) any_err = true;
     }
     std::cout << "]\n";
-    return adl2::sema::has_errors(hir.diags) ? 1 : 0;
+    return any_err ? 1 : 0;
   }
 
-  if (dump == DumpKind::Hir) {
-    std::cout << adl2::sema::hir_dump(hir);
-  } else if (dump == DumpKind::Quantities) {
-    std::cout << adl2::sema::quantity_table_dump(hir);
-  } else if (dump == DumpKind::Formula) {
-    auto regions = adl2::formula::encode_regions(hir);
-    std::cout << adl2::formula::dump_encoded(hir, regions);
-  } else if (dump == DumpKind::Axioms) {
-    auto regions = adl2::formula::encode_regions(hir);
-    (void)regions;
-    std::set<adl2::sema::QuantityId> qs;
-    for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
-      qs.insert(adl2::sema::QuantityId{i});
+  bool any_err = false;
+  for (const auto& path : paths) {
+    std::string src = read_file(path);
+    if (src.empty() && !std::ifstream(path).good()) {
+      std::cerr << "error: cannot read file: " << path << "\n";
+      return 2;
     }
-    auto set = adl2::axioms::emit_axioms(hir, adl2::sema::ExtDecls::legacy(), qs);
-    std::cout << adl2::axioms::dump_axioms(hir, set);
-  }
+    std::string name = unit_name(path);
 
-  if (!hir.diags.empty()) {
-    print_sema_diags(hir.diags);
+    if (dump == DumpKind::Ast) {
+      auto result = adl2::syntax::parse_source(src);
+      std::cout << adl2::syntax::dump_ast(src, result.file);
+    }
+
+    auto hir = adl2::sema::analyze_str(src, name, ext);
+
+    if (dump == DumpKind::Hir) {
+      std::cout << adl2::sema::hir_dump(hir);
+    } else if (dump == DumpKind::Quantities) {
+      std::cout << adl2::sema::quantity_table_dump(hir);
+    } else if (dump == DumpKind::Formula) {
+      auto regions = adl2::formula::encode_regions(hir);
+      std::cout << adl2::formula::dump_encoded(hir, regions);
+    } else if (dump == DumpKind::Axioms) {
+      auto regions = adl2::formula::encode_regions(hir);
+      (void)regions;
+      std::set<adl2::sema::QuantityId> qs;
+      for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+        qs.insert(adl2::sema::QuantityId{i});
+      }
+      auto set = adl2::axioms::emit_axioms(hir, ext, qs);
+      std::cout << adl2::axioms::dump_axioms(hir, set);
+    }
+
+    if (!hir.diags.empty()) {
+      print_sema_diags(hir.diags);
+    }
+    if (adl2::sema::has_errors(hir.diags)) {
+      std::cerr << name << ": FAILED\n";
+      any_err = true;
+    }
   }
-  if (adl2::sema::has_errors(hir.diags)) {
-    std::cerr << name << ": FAILED\n";
-    return 1;
-  }
-  return 0;
+  return any_err ? 1 : 0;
 }
 
 int cmd_dot(const std::string& path, bool ast, bool verbose) {
@@ -195,7 +217,7 @@ int cmd_dot(const std::string& path, bool ast, bool verbose) {
 }
 
 int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out,
-            const std::string& histos_dir) {
+            const std::string& histos_dir, bool csv, bool svg, bool flat_names) {
   std::string src = read_file(adl_path);
   if (src.empty() && !std::ifstream(adl_path).good()) {
     std::cerr << "error: cannot read file: " << adl_path << "\n";
@@ -277,9 +299,23 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool js
     };
     if (!write("histos.json", histos.to_json(true))) return 1;
     if (!cutflow.empty() && !write("cutflow.json", cutflow.to_json(true))) return 1;
+    if (!write("make_histos.C", adl2::interp::make_histos_c(histos, flat_names))) return 1;
+    if (!write("to_root.py", adl2::interp::to_root_py(histos, flat_names))) return 1;
+    if (csv) {
+      for (const auto& f : adl2::interp::csv_files(histos)) {
+        if (!write(f.first, f.second)) return 1;
+      }
+    }
+    if (svg) {
+      for (const auto& f : adl2::interp::svg_files(histos)) {
+        if (!write(f.first, f.second)) return 1;
+      }
+    }
     std::cerr << name << ": --histos wrote histos.json"
-              << (cutflow.empty() ? "" : " + cutflow.json")
-              << "; ROOT bridges / out.root are not ported\n";
+              << (cutflow.empty() ? "" : " + cutflow.json") << " + make_histos.C + to_root.py";
+    if (csv) std::cerr << " + csv";
+    if (svg) std::cerr << " + svg";
+    std::cerr << " (native out.root not ported)\n";
   }
   return 0;
 }
@@ -613,7 +649,7 @@ int main(int argc, char** argv) {
   if (cmd == "check") {
     DumpKind dump = DumpKind::None;
     bool json = false;
-    std::string path;
+    std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--verbose" || arg == "-v") {
@@ -630,25 +666,28 @@ int main(int argc, char** argv) {
         dump = DumpKind::Axioms;
       } else if (arg == "--json") {
         json = true;
-      } else if (path.empty()) {
-        path = arg;
-      } else {
+      } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
         return 2;
+      } else {
+        paths.push_back(arg);
       }
     }
-    if (path.empty()) {
+    if (paths.empty()) {
       std::cerr << "error: check requires a file path\n";
       print_help(argv[0]);
       return 2;
     }
-    return cmd_check(path, dump, json);
+    return cmd_check(paths, dump, json);
   }
   if (cmd == "run") {
     bool json = false;
     std::string adl;
     std::string events;
     std::string histos_dir;
+    bool csv = false;
+    bool svg = false;
+    bool flat_names = false;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--json") {
@@ -657,6 +696,12 @@ int main(int argc, char** argv) {
         verbose = true;
       } else if (arg == "--no-root") {
         // C++ default: no native out.root.
+      } else if (arg == "--csv") {
+        csv = true;
+      } else if (arg == "--svg") {
+        svg = true;
+      } else if (arg == "--flat-names") {
+        flat_names = true;
       } else if (arg == "--histos") {
         if (i + 1 >= argc) {
           std::cerr << "error: --histos requires a directory\n";
@@ -665,10 +710,9 @@ int main(int argc, char** argv) {
         histos_dir = argv[++i];
       } else if (arg.compare(0, 9, "--histos=") == 0) {
         histos_dir = arg.substr(9);
-      } else if (arg == "--profile" || arg == "--csv" || arg == "--svg" || arg == "--flat-names" ||
-                 arg == "--jobs") {
+      } else if (arg == "--profile" || arg == "--jobs") {
         std::cerr << "error: smash2_cpp run " << arg
-                  << " is not ported (ROOT/profile/csv/svg/jobs)\n";
+                  << " is not ported (ROOT/profile; --jobs is a no-op — omit it)\n";
         return 2;
       } else if (arg.compare(0, 10, "--profile=") == 0 || arg.compare(0, 7, "--jobs=") == 0) {
         std::cerr << "error: smash2_cpp run " << arg.substr(0, arg.find('='))
@@ -688,8 +732,12 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
+    if ((csv || svg || flat_names) && histos_dir.empty()) {
+      std::cerr << "error: --csv/--svg/--flat-names/--no-root require --histos\n";
+      return 2;
+    }
     (void)verbose;
-    return cmd_run(adl, events, json, histos_dir);
+    return cmd_run(adl, events, json, histos_dir, csv, svg, flat_names);
   }
   if (cmd == "dot") {
     bool ast = false;

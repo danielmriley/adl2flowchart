@@ -91,6 +91,14 @@ void test_interval_proves_disjoint_jets() {
   CHECK(dump.find("High vs Low: PROVEN DISJOINT") != std::string::npos);
   CHECK(dump.find("High vs Mid: POSSIBLY OVERLAPPING") != std::string::npos);
   CHECK(dump.find("Low vs Mid: POSSIBLY OVERLAPPING") != std::string::npos);
+
+  std::string js = r.to_json();
+  CHECK(js.find("\"kind\": \"proven_disjoint\"") != std::string::npos);
+  CHECK(js.find("\"empty\": \"unknown\"") != std::string::npos);
+  CHECK(js.find("\"bin_checks\": []") != std::string::npos);
+  CHECK(js.find("\"internal_diagnostics\": []") != std::string::npos);
+  CHECK(js.find("\"proof_path\": \"interval\"") != std::string::npos);
+  CHECK(js.find("PROVEN DISJOINT") == std::string::npos);
 }
 
 void test_encode_statement_granularity() {

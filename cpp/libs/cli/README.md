@@ -11,8 +11,9 @@ success; diagnostics go to stderr. `--dump-ast` prints the AST dump then
 still resolves. `--dump-hir` / `--dump-quantities` / `--dump-formula` /
 `--dump-axioms` print the corresponding dump. `run` prints smash2-style
 event lines plus per-region cutflow tables (`--json` is compact JSONL +
-cutflow; `--histos DIR` writes histos.json + cutflow.json; no provenance /
-ROOT / `--profile`). `dot` emits HIR
+cutflow; `--histos DIR` writes histos.json + cutflow.json + make_histos.C +
+to_root.py; `--csv`/`--svg` add per-histogram files; no provenance /
+native `out.root` / `--profile`). `dot` emits HIR
 flowchart/AST DOT. `objects` prints `adl2::sema::object_table`. `verify`
 defaults to solver + certify on; `--no-certify` skips Farkas replay;
 `--dump-verdicts` is the compact `A vs B: KIND` form; default stdout is

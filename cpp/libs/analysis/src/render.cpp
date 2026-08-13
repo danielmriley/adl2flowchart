@@ -1,4 +1,5 @@
 #include "adl2/analysis/report.hpp"
+#include "adl2/interp/eval.hpp"
 
 #include <algorithm>
 #include <set>
@@ -1013,6 +1014,14 @@ std::string Report::render_explain(const RenderOptions& opts) const {
     if (!p.core.empty()) {
       out += "    core:";
       for (const auto& c : p.core) out += " " + c.id;
+      out += "\n";
+    }
+    if (!p.witness.empty()) {
+      out += "    witness:";
+      for (const auto& w : p.witness) {
+        out += " " + w.quantity + "=" + adl2::interp::json_f64(w.value);
+        if (w.derived) out += "*";
+      }
       out += "\n";
     }
   }

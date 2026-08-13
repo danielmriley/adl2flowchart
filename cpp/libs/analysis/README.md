@@ -11,7 +11,8 @@ P4 fills:
   regions accept the realized event; otherwise Candidate / Possibly
 - Compact `dump_verdicts` (`A vs B: KIND`)
 
-Not claimed: `--combine` certificate bundles. Sampling/refute gates and
-`--cross` reconciliation (XSUB/XEQ) are wired.
+Not claimed: `--combine` certificate bundles. Sampling/refute gates,
+`--cross` reconciliation (XSUB/XEQ), and smash2-schema `verify --json`
+are wired.
 
 Headers: `libs/analysis/include/adl2/analysis/`

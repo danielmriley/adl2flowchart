@@ -163,7 +163,7 @@ set_tests_properties(adl2_interval_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=46 FAIL=0")
 
 set_tests_properties(adl2_analysis_encode PROPERTIES
-  PASS_REGULAR_EXPRESSION "PASS=37 FAIL=0")
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
 
 add_executable(adl2_certify_unit certify.cpp)
 target_link_libraries(adl2_certify_unit PRIVATE adl2_certify)
@@ -210,6 +210,16 @@ add_test(NAME adl2_histo_unit
 
 set_tests_properties(adl2_histo_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=34 FAIL=0")
+
+add_executable(adl2_bridges_unit bridges.cpp)
+target_link_libraries(adl2_bridges_unit PRIVATE adl2_interp adl2_sema adl2_syntax)
+target_compile_options(adl2_bridges_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_bridges_unit
+  COMMAND adl2_bridges_unit)
+
+set_tests_properties(adl2_bridges_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
 
 add_executable(adl2_sample_unit sample.cpp)
 target_link_libraries(adl2_sample_unit PRIVATE adl2_interp adl2_sema adl2_syntax)

@@ -61,13 +61,14 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` + cutflow tables vs smash2 | Fail-closed pair list (pinned count; full stdout) |
-| Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON (no ROOT) |
+| Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON + `make_histos.C`/`to_root.py`; `--csv`/`--svg` (no native `out.root`) |
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3) |
 | Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. |
-| Human verify report | Default stdout of `verify` (trust / findings / regions / matrix / pairwise). Not claimed byte-identical to smash2 (sampling/refute/recon absent). |
+| Human verify report | Default stdout of `verify` (trust / findings / regions / matrix / pairwise / recon). Not claimed byte-identical to smash2. `--json` is smash2 schema v4 snake_case. |
+| `--cross` | `merge_hirs` + XSUB/XEQ reconcile; `--recon=all\|related` |
 | `objects` | `adl2::sema::object_table` + CLI `objects` (allowlist **171**) |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
@@ -144,8 +145,10 @@ tables. `verify` defaults to certify ON.
 
 ## Remaining vs smash2 (honest non-parity)
 
-Still to port: `--histos` CSV/SVG/ROOT bridges and native `out.root`;
-`--combine` certificate bundles / `smash2-recheck`; ROOT `ingest` /
-`run --profile`; byte-identical `verify` JSON/human reports (C++ JSON is a
-compact subset). Native libz3 stays out (ADR-010). `--cross` / merge /
-reconciliation (XSUB/XEQ) are ported.
+Still to port: `--combine` certificate bundles / `smash2-recheck`; ROOT
+`ingest` / `run --profile` / native `out.root`; provenance object (C++
+omits it so it cannot claim `tool: smash2 <rust version>`). Native libz3
+stays out (ADR-010). `--cross` / merge / reconciliation (XSUB/XEQ) and
+`--histos` CSV/SVG/`make_histos.C`/`to_root.py` bridges are ported.
+`verify --json` uses smash2 schema v4 snake_case kinds (not claimed
+byte-identical on every field).

@@ -1,7 +1,8 @@
 #pragma once
 
 /// Report data model (SPEC_ANALYSIS §6). Port of Rust `adl-analysis::report`
-/// enums, compact pairwise dump, default human rendering, and a compact JSON.
+/// enums, compact pairwise dump, default human rendering, and versioned JSON
+/// (schema v4, serde `snake_case` field/enum names).
 
 #include <cstdint>
 #include <optional>
@@ -27,8 +28,11 @@ enum class ProofPath {
 };
 
 const char* proof_path_human(ProofPath p);
+/// serde `snake_case` (`interval` / `solver_core`).
+const char* proof_path_json(ProofPath p);
 
 enum class DiagnosticClass { FailClosed, Contradiction };
+const char* diagnostic_class_json(DiagnosticClass c);
 
 struct Diagnostic {
   DiagnosticClass class_ = DiagnosticClass::FailClosed;
@@ -53,6 +57,8 @@ enum class VerdictKind {
 };
 
 const char* verdict_kind_human(VerdictKind k);
+/// serde `snake_case` (`proven_disjoint`, …).
+const char* verdict_kind_json(VerdictKind k);
 
 struct SourceRef {
   std::uint32_t line = 0;
@@ -77,6 +83,7 @@ struct CoreItem {
 enum class EmptyStatus { Proven, Candidate, NotProven, Unknown };
 
 const char* empty_status_human(EmptyStatus s);
+const char* empty_status_json(EmptyStatus s);
 
 struct RegionReport {
   std::string name;
@@ -91,6 +98,12 @@ struct RegionReport {
   std::optional<ProofPath> empty_proof;
 };
 
+struct WitnessValue {
+  std::string quantity;
+  double value = 0;
+  bool derived = false;
+};
+
 struct PairReport {
   std::string a;
   std::string b;
@@ -100,6 +113,7 @@ struct PairReport {
   std::vector<std::string> shared_dimensions;
   bool subset_a_in_b = false;
   bool subset_b_in_a = false;
+  std::vector<WitnessValue> witness;
   std::optional<bool> witness_validated;
   std::optional<bool> certified;
   std::vector<CoreItem> core;
@@ -108,6 +122,7 @@ struct PairReport {
 };
 
 enum class CoverageStatus { Proven, NotProven, Unknown };
+const char* coverage_status_json(CoverageStatus s);
 
 struct BinCheckReport {
   std::string region;
@@ -116,6 +131,7 @@ struct BinCheckReport {
   std::size_t disjoint_pairs_proven = 0;
   std::size_t disjoint_pairs_total = 0;
   CoverageStatus coverage = CoverageStatus::Unknown;
+  std::vector<WitnessValue> gap_witness;
 };
 
 /// What reconciliation concluded about one candidate pair of collections.
@@ -130,6 +146,7 @@ enum class ReconOutcome {
 const char* recon_outcome_symbol(ReconOutcome o);
 /// Catalog family emitted for this outcome, or nullptr.
 const char* recon_outcome_axiom(ReconOutcome o);
+const char* recon_outcome_json(ReconOutcome o);
 
 struct ReconReport {
   std::string a;

@@ -1,5 +1,7 @@
 #include "adl2/analysis/report.hpp"
+#include "adl2/interp/eval.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <sstream>
 #include <utility>
@@ -15,6 +17,20 @@ const char* proof_path_human(ProofPath p) {
       return "solver unsat core";
   }
   return "?";
+}
+
+const char* proof_path_json(ProofPath p) {
+  switch (p) {
+    case ProofPath::Interval:
+      return "interval";
+    case ProofPath::SolverCore:
+      return "solver_core";
+  }
+  return "interval";
+}
+
+const char* diagnostic_class_json(DiagnosticClass c) {
+  return c == DiagnosticClass::Contradiction ? "contradiction" : "fail_closed";
 }
 
 const char* verdict_kind_human(VerdictKind k) {
@@ -35,6 +51,24 @@ const char* verdict_kind_human(VerdictKind k) {
   return "?";
 }
 
+const char* verdict_kind_json(VerdictKind k) {
+  switch (k) {
+    case VerdictKind::ProvenDisjoint:
+      return "proven_disjoint";
+    case VerdictKind::ProvenOverlapping:
+      return "proven_overlapping";
+    case VerdictKind::CandidateOverlapping:
+      return "candidate_overlapping";
+    case VerdictKind::CandidateDisjoint:
+      return "candidate_disjoint";
+    case VerdictKind::PossiblyOverlapping:
+      return "possibly_overlapping";
+    case VerdictKind::Unknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
 const char* empty_status_human(EmptyStatus s) {
   switch (s) {
     case EmptyStatus::Proven:
@@ -47,6 +81,32 @@ const char* empty_status_human(EmptyStatus s) {
       return "UNKNOWN EMPTY";
   }
   return "?";
+}
+
+const char* empty_status_json(EmptyStatus s) {
+  switch (s) {
+    case EmptyStatus::Proven:
+      return "proven";
+    case EmptyStatus::Candidate:
+      return "candidate";
+    case EmptyStatus::NotProven:
+      return "not_proven";
+    case EmptyStatus::Unknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+const char* coverage_status_json(CoverageStatus s) {
+  switch (s) {
+    case CoverageStatus::Proven:
+      return "proven";
+    case CoverageStatus::NotProven:
+      return "not_proven";
+    case CoverageStatus::Unknown:
+      return "unknown";
+  }
+  return "unknown";
 }
 
 const char* recon_outcome_symbol(ReconOutcome o) {
@@ -77,6 +137,22 @@ const char* recon_outcome_axiom(ReconOutcome o) {
       return nullptr;
   }
   return nullptr;
+}
+
+const char* recon_outcome_json(ReconOutcome o) {
+  switch (o) {
+    case ReconOutcome::Equivalent:
+      return "equivalent";
+    case ReconOutcome::ARefinesB:
+      return "a_refines_b";
+    case ReconOutcome::BRefinesA:
+      return "b_refines_a";
+    case ReconOutcome::Unrelated:
+      return "unrelated";
+    case ReconOutcome::Skipped:
+      return "skipped";
+  }
+  return "unrelated";
 }
 
 bool parse_recon_filter(const std::string& s, ReconFilter& out, std::string& err) {
@@ -273,105 +349,408 @@ std::string json_escape(const std::string& s) {
   return out;
 }
 
-std::string json_opt_bool(const std::optional<bool>& v) {
-  if (!v) return "null";
-  return *v ? "true" : "false";
-}
+/// serde_json `to_string_pretty` writer (2-space indent, `: ` after keys).
+struct Jw {
+  std::ostringstream os;
+  int indent = 0;
+  bool needs_comma = false;
+
+  void pad() {
+    os << '\n';
+    for (int i = 0; i < indent; ++i) os << "  ";
+  }
+  void comma() {
+    if (needs_comma) os << ',';
+    needs_comma = false;
+  }
+  void begin_obj() {
+    os << '{';
+    indent++;
+    needs_comma = false;
+  }
+  void end_obj() {
+    indent--;
+    pad();
+    os << '}';
+    needs_comma = true;
+  }
+  void begin_arr() {
+    os << '[';
+    indent++;
+    needs_comma = false;
+  }
+  void end_arr() {
+    indent--;
+    pad();
+    os << ']';
+    needs_comma = true;
+  }
+  void empty_arr() {
+    os << "[]";
+    needs_comma = true;
+  }
+  void key(const char* k) {
+    comma();
+    pad();
+    os << '"' << k << "\": ";
+  }
+  void str(const std::string& s) {
+    os << '"' << json_escape(s) << '"';
+    needs_comma = true;
+  }
+  void raw(const char* v) {
+    os << v;
+    needs_comma = true;
+  }
+  void boolean(bool v) { raw(v ? "true" : "false"); }
+  void null() { raw("null"); }
+  void u64(std::uint64_t v) {
+    os << v;
+    needs_comma = true;
+  }
+  void f64(double v) {
+    os << adl2::interp::json_f64(v);
+    needs_comma = true;
+  }
+  void opt_bool(const std::optional<bool>& v) {
+    if (!v) null();
+    else boolean(*v);
+  }
+
+  void str_array(const std::vector<std::string>& xs) {
+    if (xs.empty()) {
+      empty_arr();
+      return;
+    }
+    begin_arr();
+    for (const auto& x : xs) {
+      comma();
+      pad();
+      str(x);
+    }
+    end_arr();
+  }
+
+  void dropped_array(const std::vector<DroppedLeaf>& xs) {
+    if (xs.empty()) {
+      empty_arr();
+      return;
+    }
+    begin_arr();
+    for (const auto& d : xs) {
+      comma();
+      pad();
+      begin_obj();
+      key("line");
+      u64(d.line);
+      key("reason");
+      str(d.reason);
+      end_obj();
+    }
+    end_arr();
+  }
+
+  void core_array(const std::vector<CoreItem>& xs) {
+    if (xs.empty()) {
+      empty_arr();
+      return;
+    }
+    begin_arr();
+    for (const auto& c : xs) {
+      comma();
+      pad();
+      begin_obj();
+      key("origin");
+      if (c.origin == CoreItem::Origin::Axiom) {
+        str("axiom");
+        key("id");
+        str(c.id);
+        key("statement");
+        str(c.statement);
+      } else {
+        str("cut");
+        key("region");
+        str(c.region);
+        key("line");
+        u64(c.line);
+        key("text");
+        str(c.text);
+      }
+      end_obj();
+    }
+    end_arr();
+  }
+
+  void witness_array(const std::vector<WitnessValue>& xs) {
+    if (xs.empty()) {
+      empty_arr();
+      return;
+    }
+    begin_arr();
+    for (const auto& w : xs) {
+      comma();
+      pad();
+      begin_obj();
+      key("quantity");
+      str(w.quantity);
+      key("value");
+      f64(w.value);
+      key("derived");
+      boolean(w.derived);
+      end_obj();
+    }
+    end_arr();
+  }
+};
 
 }  // namespace
 
 std::string Report::to_json() const {
-  std::ostringstream os;
-  os << "{\n";
-  os << "  \"schema_version\": " << schema_version << ",\n";
-  os << "  \"unit\": \"" << json_escape(unit) << "\",\n";
-  os << "  \"solver\": \"" << json_escape(solver) << "\",\n";
-  os << "  \"certification\": " << (certification ? "true" : "false") << ",\n";
+  Jw j;
+  j.begin_obj();
+  j.key("schema_version");
+  j.u64(schema_version);
+  j.key("unit");
+  j.str(unit);
+  j.key("solver");
+  j.str(solver);
+  if (solver_degraded) {
+    j.key("solver_degraded");
+    j.str(*solver_degraded);
+  }
+  if (solver_failures) {
+    j.key("solver_failures");
+    j.begin_obj();
+    j.key("spawn");
+    j.u64(solver_failures->spawn);
+    j.key("errors");
+    j.u64(solver_failures->errors);
+    j.key("first_reason");
+    j.str(solver_failures->first_reason);
+    j.end_obj();
+  }
+  j.key("certification");
+  j.boolean(certification);
   if (sampling) {
-    os << "  \"sampling\": {\"events\": " << sampling->events
-       << ", \"refutations\": " << sampling->refutations << "},\n";
+    j.key("sampling");
+    j.begin_obj();
+    j.key("events");
+    j.u64(sampling->events);
+    j.key("refutations");
+    j.u64(sampling->refutations);
+    j.end_obj();
   }
   if (refute) {
-    os << "  \"refute\": {\"probes\": " << refute->probes
-       << ", \"refutations\": " << refute->refutations << "},\n";
+    j.key("refute");
+    j.begin_obj();
+    j.key("probes");
+    j.u64(refute->probes);
+    j.key("refutations");
+    j.u64(refute->refutations);
+    j.end_obj();
   }
-  os << "  \"regions\": [\n";
-  for (std::size_t i = 0; i < regions.size(); ++i) {
-    const auto& rr = regions[i];
-    os << "    {\"name\": \"" << json_escape(rr.name) << "\", \"exact\": "
-       << (rr.exact ? "true" : "false") << ", \"empty\": \""
-       << empty_status_human(rr.empty) << "\", \"leaves_encoded\": "
-       << rr.leaves_encoded << ", \"leaves_total\": " << rr.leaves_total << "}";
-    os << (i + 1 < regions.size() ? ",\n" : "\n");
-  }
-  os << "  ],\n";
-  os << "  \"pairwise\": [\n";
-  for (std::size_t i = 0; i < pairwise.size(); ++i) {
-    const auto& p = pairwise[i];
-    os << "    {\"a\": \"" << json_escape(p.a) << "\", \"b\": \"" << json_escape(p.b)
-       << "\", \"kind\": \"" << verdict_kind_human(p.kind) << "\", \"reason\": \""
-       << json_escape(p.reason) << "\", \"exact\": " << (p.exact ? "true" : "false")
-       << ", \"subset_a_in_b\": " << (p.subset_a_in_b ? "true" : "false")
-       << ", \"subset_b_in_a\": " << (p.subset_b_in_a ? "true" : "false")
-       << ", \"certified\": " << json_opt_bool(p.certified)
-       << ", \"witness_validated\": " << json_opt_bool(p.witness_validated) << "}";
-    os << (i + 1 < pairwise.size() ? ",\n" : "\n");
-  }
-  os << "  ],\n";
-  os << "  \"axioms_used\": [\n";
-  for (std::size_t i = 0; i < axioms_used.size(); ++i) {
-    const auto& a = axioms_used[i];
-    os << "    {\"id\": \"" << json_escape(a.id) << "\", \"instances\": " << a.instances
-       << ", \"assumption\": \"" << json_escape(a.assumption) << "\"}";
-    os << (i + 1 < axioms_used.size() ? ",\n" : "\n");
-  }
-  os << "  ]";
-  if (!reconciliations.empty()) {
-    os << ",\n  \"reconciliations\": [\n";
-    for (std::size_t i = 0; i < reconciliations.size(); ++i) {
-      const auto& r = reconciliations[i];
-      const char* ax = recon_outcome_axiom(r.outcome);
-      os << "    {\"a\": \"" << json_escape(r.a) << "\", \"b\": \"" << json_escape(r.b)
-         << "\", \"outcome\": \"";
-      switch (r.outcome) {
-        case ReconOutcome::Equivalent:
-          os << "equivalent";
-          break;
-        case ReconOutcome::ARefinesB:
-          os << "a_refines_b";
-          break;
-        case ReconOutcome::BRefinesA:
-          os << "b_refines_a";
-          break;
-        case ReconOutcome::Unrelated:
-          os << "unrelated";
-          break;
-        case ReconOutcome::Skipped:
-          os << "skipped";
-          break;
+  j.key("regions");
+  if (regions.empty()) {
+    j.empty_arr();
+  } else {
+    j.begin_arr();
+    for (const auto& rr : regions) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("name");
+      j.str(rr.name);
+      j.key("leaves_encoded");
+      j.u64(rr.leaves_encoded);
+      j.key("leaves_total");
+      j.u64(rr.leaves_total);
+      j.key("exact");
+      j.boolean(rr.exact);
+      j.key("or_clauses");
+      j.u64(rr.or_clauses);
+      j.key("dual_hedges");
+      j.u64(rr.dual_hedges);
+      j.key("dropped");
+      j.dropped_array(rr.dropped);
+      j.key("empty");
+      j.str(empty_status_json(rr.empty));
+      j.key("empty_core");
+      j.core_array(rr.empty_core);
+      if (rr.empty_proof) {
+        j.key("empty_proof");
+        j.str(proof_path_json(*rr.empty_proof));
       }
-      os << "\"";
-      if (r.base) os << ", \"base\": \"" << json_escape(*r.base) << "\"";
-      if (!r.note.empty()) os << ", \"note\": \"" << json_escape(r.note) << "\"";
-      if (ax) os << ", \"axiom\": \"" << ax << "\"";
-      os << "}";
-      os << (i + 1 < reconciliations.size() ? ",\n" : "\n");
+      j.end_obj();
     }
-    os << "  ]";
+    j.end_arr();
+  }
+  j.key("pairwise");
+  if (pairwise.empty()) {
+    j.empty_arr();
+  } else {
+    j.begin_arr();
+    for (const auto& p : pairwise) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("a");
+      j.str(p.a);
+      j.key("b");
+      j.str(p.b);
+      j.key("kind");
+      j.str(verdict_kind_json(p.kind));
+      j.key("reason");
+      j.str(p.reason);
+      j.key("exact");
+      j.boolean(p.exact);
+      j.key("shared_dimensions");
+      j.str_array(p.shared_dimensions);
+      j.key("subset_a_in_b");
+      j.boolean(p.subset_a_in_b);
+      j.key("subset_b_in_a");
+      j.boolean(p.subset_b_in_a);
+      j.key("witness");
+      j.witness_array(p.witness);
+      j.key("witness_validated");
+      j.opt_bool(p.witness_validated);
+      if (p.certified) {
+        j.key("certified");
+        j.boolean(*p.certified);
+      }
+      j.key("core");
+      j.core_array(p.core);
+      if (p.proof_path) {
+        j.key("proof_path");
+        j.str(proof_path_json(*p.proof_path));
+      }
+      if (p.certificate_size) {
+        j.key("certificate_size");
+        j.u64(*p.certificate_size);
+      }
+      j.end_obj();
+    }
+    j.end_arr();
+  }
+  j.key("bin_checks");
+  if (bin_checks.empty()) {
+    j.empty_arr();
+  } else {
+    j.begin_arr();
+    for (const auto& b : bin_checks) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("region");
+      j.str(b.region);
+      j.key("variable");
+      j.str(b.variable);
+      j.key("n_bins");
+      j.u64(b.n_bins);
+      j.key("disjoint_pairs_proven");
+      j.u64(b.disjoint_pairs_proven);
+      j.key("disjoint_pairs_total");
+      j.u64(b.disjoint_pairs_total);
+      j.key("coverage");
+      j.str(coverage_status_json(b.coverage));
+      j.key("gap_witness");
+      j.witness_array(b.gap_witness);
+      j.end_obj();
+    }
+    j.end_arr();
+  }
+  if (!reconciliations.empty()) {
+    j.key("reconciliations");
+    j.begin_arr();
+    for (const auto& r : reconciliations) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("a");
+      j.str(r.a);
+      j.key("b");
+      j.str(r.b);
+      j.key("outcome");
+      j.str(recon_outcome_json(r.outcome));
+      if (r.base) {
+        j.key("base");
+        j.str(*r.base);
+      }
+      if (!r.note.empty()) {
+        j.key("note");
+        j.str(r.note);
+      }
+      if (!r.a_units.empty()) {
+        j.key("a_units");
+        j.str_array(r.a_units);
+      }
+      if (!r.b_units.empty()) {
+        j.key("b_units");
+        j.str_array(r.b_units);
+      }
+      j.end_obj();
+    }
+    j.end_arr();
   }
   if (!recon_near_misses.empty()) {
-    os << ",\n  \"recon_near_misses\": [\n";
-    for (std::size_t i = 0; i < recon_near_misses.size(); ++i) {
-      const auto& n = recon_near_misses[i];
-      os << "    {\"a\": \"" << json_escape(n.a) << "\", \"b\": \"" << json_escape(n.b)
-         << "\", \"base_a\": \"" << json_escape(n.base_a) << "\", \"base_b\": \""
-         << json_escape(n.base_b) << "\"}";
-      os << (i + 1 < recon_near_misses.size() ? ",\n" : "\n");
+    j.key("recon_near_misses");
+    j.begin_arr();
+    for (const auto& n : recon_near_misses) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("a");
+      j.str(n.a);
+      j.key("b");
+      j.str(n.b);
+      j.key("base_a");
+      j.str(n.base_a);
+      j.key("base_b");
+      j.str(n.base_b);
+      j.end_obj();
     }
-    os << "  ]";
+    j.end_arr();
   }
-  os << "\n}\n";
-  return os.str();
+  j.key("axioms_used");
+  if (axioms_used.empty()) {
+    j.empty_arr();
+  } else {
+    j.begin_arr();
+    for (const auto& a : axioms_used) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("id");
+      j.str(a.id);
+      j.key("statement");
+      j.str(a.statement);
+      j.key("assumption");
+      j.str(a.assumption);
+      j.key("instances");
+      j.u64(a.instances);
+      j.end_obj();
+    }
+    j.end_arr();
+  }
+  j.key("internal_diagnostics");
+  j.str_array(internal_diagnostics);
+  if (!diagnostics.empty()) {
+    j.key("diagnostics");
+    j.begin_arr();
+    for (const auto& d : diagnostics) {
+      j.comma();
+      j.pad();
+      j.begin_obj();
+      j.key("class");
+      j.str(diagnostic_class_json(d.class_));
+      j.key("message");
+      j.str(d.message);
+      j.end_obj();
+    }
+    j.end_arr();
+  }
+  j.end_obj();
+  j.os << '\n';
+  return j.os.str();
 }
 
 }  // namespace adl2::analysis

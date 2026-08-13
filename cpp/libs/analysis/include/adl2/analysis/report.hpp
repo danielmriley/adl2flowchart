@@ -125,6 +125,7 @@ struct PairReport {
 
 enum class CoverageStatus { Proven, NotProven, Unknown };
 const char* coverage_status_json(CoverageStatus s);
+const char* coverage_status_human(CoverageStatus s);
 
 struct BinCheckReport {
   std::string region;

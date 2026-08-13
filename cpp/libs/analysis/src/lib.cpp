@@ -7,6 +7,8 @@
 #include "adl2/certify/certify.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/formula/lin.hpp"
+#include "adl2/interp/eval.hpp"
+#include "adl2/interp/event.hpp"
 #include "adl2/interp/interp.hpp"
 #include "adl2/interp/sample.hpp"
 #include "adl2/sema/dump.hpp"
@@ -31,11 +33,15 @@ namespace adl2::analysis {
 namespace {
 
 using adl2::formula::LinAtom;
+using adl2::formula::Over;
 using adl2::formula::QFormula;
 using adl2::formula::Rel;
+using adl2::formula::Under;
 using adl2::interp::Event;
 using adl2::interp::EvalError;
 using adl2::interp::Interp;
+using adl2::interp::NumOutcomeKind;
+using adl2::interp::parse_event;
 using adl2::sema::CollectionId;
 using adl2::sema::CollectionKind;
 using adl2::sema::ElemIndexKind;
@@ -146,6 +152,92 @@ Presence presence_of(const Hir& hir, QuantityId q) {
   return Presence::of_indicator(*pid);
 }
 
+std::optional<QuantityId> lookup_size(const Hir& hir, CollectionId coll) {
+  return hir.table.quantity_id(Quantity::size(coll));
+}
+
+/// Solver-model rows (smash2 `witness_values`). Mentioned quantities plus
+/// derived sizes of collections whose elements appear.
+std::vector<WitnessValue> witness_values(const Hir& hir, const Model& model,
+                                         const std::set<QuantityId>& mentioned) {
+  std::vector<WitnessValue> rows;
+  std::set<QuantityId> listed;
+  for (auto q : mentioned) {
+    if (auto v = model.get_f64(q)) {
+      if (listed.insert(q).second) {
+        WitnessValue w;
+        w.quantity = adl2::axioms::quantity_label(hir, q);
+        w.value = *v;
+        w.derived = false;
+        rows.push_back(std::move(w));
+      }
+    }
+  }
+  for (auto q : mentioned) {
+    const Quantity& qq = hir.table.quantity(q);
+    if (qq.kind != QuantityKind::ElemProp) continue;
+    auto sq = lookup_size(hir, qq.coll);
+    if (!sq || listed.count(*sq)) continue;
+    if (auto v = model.get_f64(*sq)) {
+      listed.insert(*sq);
+      WitnessValue w;
+      w.quantity = adl2::axioms::quantity_label(hir, *sq);
+      w.value = *v;
+      w.derived = true;
+      rows.push_back(std::move(w));
+    }
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const WitnessValue& a, const WitnessValue& b) { return a.quantity < b.quantity; });
+  return rows;
+}
+
+/// Validated overlap rows (smash2 `validated_witness_values` / review F2):
+/// read back from the realized event so pT-sort cannot display a pre-sort
+/// index next to a "validated" label.
+std::vector<WitnessValue> validated_witness_values(const Hir& hir, const adl2::sema::ExtDecls& ext,
+                                                   const Interp& interp, const std::string& json,
+                                                   const Model& model,
+                                                   const std::set<QuantityId>& mentioned) {
+  adl2::interp::EventError ee;
+  auto event = parse_event(json, ext, ee);
+  if (!event) return witness_values(hir, model, mentioned);
+  auto value_of = [&](QuantityId q) -> std::optional<double> {
+    EvalError err;
+    auto o = interp.eval_quantity(q, *event, err);
+    if (o && o->kind == NumOutcomeKind::Value) return o->value;
+    return model.get_f64(q);
+  };
+  std::vector<WitnessValue> rows;
+  std::set<QuantityId> listed;
+  for (auto q : mentioned) {
+    if (auto v = value_of(q)) {
+      if (listed.insert(q).second) {
+        WitnessValue w;
+        w.quantity = adl2::axioms::quantity_label(hir, q);
+        w.value = *v;
+        w.derived = false;
+        rows.push_back(std::move(w));
+      }
+    }
+  }
+  for (auto q : mentioned) {
+    const Quantity& qq = hir.table.quantity(q);
+    if (qq.kind != QuantityKind::ElemProp) continue;
+    auto sq = lookup_size(hir, qq.coll);
+    if (!sq || listed.count(*sq)) continue;
+    if (auto v = value_of(*sq)) {
+      listed.insert(*sq);
+      WitnessValue w;
+      w.quantity = adl2::axioms::quantity_label(hir, *sq);
+      w.value = *v;
+      w.derived = true;
+      rows.push_back(std::move(w));
+    }
+  }
+  return rows;
+}
+
 std::vector<std::string> shared_dims(const Hir& hir, const RegionEnc& ra,
                                      const RegionEnc& rb) {
   std::vector<std::string> out;
@@ -177,6 +269,9 @@ void declare_all(Solver& s, const Hir& hir, const UnitEnc& unit,
                  const std::set<QuantityId>& extra) {
   std::set<QuantityId> all_q;
   for (const auto& r : unit.regions) all_q.insert(r.quantities.begin(), r.quantities.end());
+  for (const auto& set : unit.bin_sets) {
+    for (const auto& f : set.bins) formula_quantities(f, all_q);
+  }
   for (const auto& inst : axioms.instances) qformula_quantities(inst.formula, all_q);
   all_q.insert(extra.begin(), extra.end());
   for (auto q : all_q) {
@@ -705,16 +800,19 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
 
   std::optional<std::string> last_reject;
   std::optional<Validation> outcome;
+  std::optional<Model> kept;
   for (int attempt = 0; attempt < MAX_WITNESS_ATTEMPTS; ++attempt) {
     auto model = solver->model();
     if (!model) break;
     Validation v = validate_witness(hir, ext, interp, *model, combined, ra.idx, rb.idx);
     if (v.kind == ValidationKind::Rejected) {
       std::string first_why = v.payload;
-      Validation snapped =
-          validate_witness(hir, ext, interp, snap_model(*model), combined, ra.idx, rb.idx);
-      if (snapped.kind != ValidationKind::Rejected) {
-        outcome = std::move(snapped);
+      Model snapped = snap_model(*model);
+      Validation sv =
+          validate_witness(hir, ext, interp, snapped, combined, ra.idx, rb.idx);
+      if (sv.kind != ValidationKind::Rejected) {
+        kept = std::move(snapped);
+        outcome = std::move(sv);
         break;
       }
       last_reject = std::move(first_why);
@@ -726,6 +824,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
       if (!retry.is_sat()) break;
       continue;
     }
+    kept = std::move(*model);
     outcome = std::move(v);
     break;
   }
@@ -736,6 +835,9 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = std::string("both region cut sets are satisfiable together (") + OVERLAP_CAVEAT +
                 ")";
     pr.witness_validated = true;
+    if (kept) {
+      pr.witness = validated_witness_values(hir, ext, interp, outcome->payload, *kept, combined);
+    }
     return pr;
   }
   if (outcome && outcome->kind == ValidationKind::Candidate) {
@@ -747,6 +849,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
             "a proof (") +
         OVERLAP_CAVEAT + "); " + outcome->payload;
     pr.witness_validated = false;
+    if (kept) pr.witness = witness_values(hir, *kept, combined);
     return pr;
   }
 
@@ -1217,6 +1320,193 @@ ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool cer
   return run;
 }
 
+/// Interval-path bin certification. Disagreement is a diagnostic, never a
+/// demotion (smash2 `bins_disjoint` interval arm).
+void certify_interval_bin(const std::vector<RefutingPart>& parts, const RegionCtx& region_ctx,
+                          const AssertName& bi_name, const Over& bi, const AssertName& bj_name,
+                          const Over& bj, bool certify, Report& report, const std::string& region) {
+  if (!certify) return;
+  auto lookup = [&](const AssertName& n) -> std::optional<QFormula> {
+    if (n == bi_name) return bi.qformula();
+    if (n == bj_name) return bj.qformula();
+    return over_of(region_ctx.overs, n);
+  };
+  if (parts.empty()) {
+    file_contradiction(report,
+                       "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region " +
+                           region +
+                           ": the interval layer reported no refuting atoms. The interval "
+                           "layer and the replay kernel disagree — one of them is wrong; the "
+                           "count is left as it was.");
+    return;
+  }
+  std::vector<QFormula> whole_fs;
+  std::vector<AssertName> seen;
+  for (const auto& p : parts) {
+    const AssertName& name = p.src();
+    bool dup = false;
+    for (const auto& n : seen) {
+      if (n == name) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+    auto f = lookup(name);
+    if (!f) {
+      file_contradiction(report,
+                         "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region " +
+                             region + ": no over-projection recorded for assert " + name.value +
+                             ". The interval layer and the replay kernel disagree — one of "
+                             "them is wrong; the count is left as it was.");
+      return;
+    }
+    seen.push_back(name);
+    whole_fs.push_back(*f);
+  }
+  if (adl2::certify::certify_bounds(whole_fs)) return;
+  std::vector<QFormula> lean_fs;
+  for (const auto& p : parts) {
+    if (p.kind == RefutingPart::Kind::Whole) {
+      file_contradiction(report,
+                         "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region " +
+                             region +
+                             ": the kernel did not accept the constant-false cut. The interval "
+                             "layer and the replay kernel disagree — one of them is wrong; the "
+                             "count is left as it was.");
+      return;
+    }
+    lean_fs.push_back(QFormula::of_atom(p.atom));
+  }
+  if (adl2::certify::certify_bounds(lean_fs)) return;
+  file_contradiction(report,
+                     "INTERVAL CERTIFICATE unavailable for a disjoint bin pair of region " +
+                         region +
+                         ": the interval layer and the replay kernel disagree — one of them "
+                         "is wrong; the count is left as it was.");
+}
+
+/// `UNSAT(Ax ∧ R⁺ ∧ Bᵢ⁺ ∧ Bⱼ⁺)` ⇒ bins i, j disjoint within R.
+bool bins_disjoint(Solver* solver, std::chrono::milliseconds timeout, bool certify,
+                   Report& report, const adl2::axioms::AxiomSet* axioms,
+                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
+                   const RegionCtx& region_ctx, const Over& bi, const Over& bj,
+                   const std::string& region) {
+  AssertName bi_name = AssertName::make("QBINI");
+  AssertName bj_name = AssertName::make("QBINJ");
+  if (solver) {
+    solver->push();
+    assert_overs(*solver, region_ctx);
+    QFormula bi_f = bi.qformula();
+    QFormula bj_f = bj.qformula();
+    solver->assert_formula(bi_f, bi_name);
+    solver->assert_formula(bj_f, bj_name);
+    SatResult r = solver->check(timeout);
+    note_failure(report, r);
+    std::optional<std::vector<AssertName>> core;
+    if (r.is_unsat()) {
+      if (auto c = solver->unsat_core()) core = *c;
+    }
+    solver->pop();
+    if (!r.is_unsat()) return false;
+    std::vector<std::pair<AssertName, QFormula>> extra;
+    for (const auto& p : region_ctx.overs) extra.emplace_back(p.first, p.second.qformula());
+    extra.emplace_back(bi_name, std::move(bi_f));
+    extra.emplace_back(bj_name, std::move(bj_f));
+    auto cert = certify_named_formulas(certify, core, extra, axioms, recon_facts, false);
+    return !(cert.flag.has_value() && !*cert.flag);
+  }
+  IntervalMap a = region_ctx.intervals;
+  a.add_over(bi_name, bi);
+  IntervalMap b = region_ctx.intervals;
+  b.add_over(bj_name, bj);
+  std::optional<std::vector<RefutingPart>> parts;
+  if (auto e = a.self_empty()) parts = e->parts();
+  else if (auto e = b.self_empty()) parts = e->parts();
+  else if (auto d = a.disjoint_with(b, [](QuantityId) { return Presence::total(); })) {
+    parts = d->parts;
+  }
+  if (!parts) return false;
+  certify_interval_bin(*parts, region_ctx, bi_name, bi, bj_name, bj, certify, report, region);
+  return true;
+}
+
+/// `UNSAT(Ax ∧ R⁺ ∧ ⋀ᵢ ¬(Bᵢ⁻))` ⇒ the bins cover the region.
+std::pair<CoverageStatus, std::vector<WitnessValue>> bin_coverage(
+    Solver* solver, std::chrono::milliseconds timeout, bool certify, Report& report,
+    const adl2::axioms::AxiomSet* axioms,
+    const std::vector<std::pair<AssertName, QFormula>>* recon_facts, const Hir& hir,
+    const BinSetEnc& set, const RegionCtx& region_ctx, const std::vector<Under>& unders) {
+  if (!solver) return {CoverageStatus::Unknown, {}};
+  solver->push();
+  assert_overs(*solver, region_ctx);
+  std::vector<std::pair<AssertName, QFormula>> extra;
+  for (const auto& p : region_ctx.overs) extra.emplace_back(p.first, p.second.qformula());
+  for (std::size_t k = 0; k < unders.size(); ++k) {
+    AssertName name = AssertName::make("QBINNEG" + std::to_string(k));
+    QFormula neg = unders[k].qformula().qnot();
+    solver->assert_formula(neg, name);
+    extra.emplace_back(name, std::move(neg));
+  }
+  SatResult result = solver->check(timeout);
+  note_failure(report, result);
+  std::pair<CoverageStatus, std::vector<WitnessValue>> out{CoverageStatus::Unknown, {}};
+  if (result.is_unsat()) {
+    std::optional<std::vector<AssertName>> core;
+    if (auto c = solver->unsat_core()) core = *c;
+    auto cert = certify_named_formulas(certify, core, extra, axioms, recon_facts, false);
+    if (cert.flag.has_value() && !*cert.flag) {
+      out.first = CoverageStatus::NotProven;
+    } else {
+      out.first = CoverageStatus::Proven;
+    }
+  } else if (result.is_sat()) {
+    std::set<QuantityId> bin_qs;
+    for (const auto& f : set.bins) formula_quantities(f, bin_qs);
+    if (auto m = solver->model()) out.second = witness_values(hir, *m, bin_qs);
+    out.first = CoverageStatus::NotProven;
+  }
+  solver->pop();
+  return out;
+}
+
+BinCheckReport bin_check(Solver* solver, std::chrono::milliseconds timeout, bool certify,
+                         Report& report, const adl2::axioms::AxiomSet* axioms,
+                         const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
+                         const Hir& hir, const BinSetEnc& set, const RegionCtx& region_ctx,
+                         std::string region_name) {
+  std::vector<Over> overs;
+  std::vector<Under> unders;
+  overs.reserve(set.bins.size());
+  unders.reserve(set.bins.size());
+  for (const auto& f : set.bins) {
+    overs.push_back(f.over());
+    unders.push_back(f.under());
+  }
+  std::size_t n = set.bins.size();
+  std::size_t proven = 0;
+  std::size_t total = n * (n > 0 ? n - 1 : 0) / 2;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i + 1; j < n; ++j) {
+      if (bins_disjoint(solver, timeout, certify, report, axioms, recon_facts, region_ctx,
+                        overs[i], overs[j], region_name)) {
+        ++proven;
+      }
+    }
+  }
+  auto cov = bin_coverage(solver, timeout, certify, report, axioms, recon_facts, hir, set,
+                          region_ctx, unders);
+  BinCheckReport br;
+  br.region = std::move(region_name);
+  br.variable = set.variable;
+  br.n_bins = n;
+  br.disjoint_pairs_proven = proven;
+  br.disjoint_pairs_total = total;
+  br.coverage = cov.first;
+  br.gap_witness = std::move(cov.second);
+  return br;
+}
+
 }  // namespace
 
 void classify_overlap_non_sat(PairReport& pr, const adl2::solver::SatResult& overlap,
@@ -1250,9 +1540,25 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
 
   std::set<QuantityId> qs;
   for (const auto& r : unit.regions) qs.insert(r.quantities.begin(), r.quantities.end());
+  for (const auto& set : unit.bin_sets) {
+    for (const auto& f : set.bins) formula_quantities(f, qs);
+  }
   adl2::axioms::AxiomSet axioms;
   if (opts.solver != SolverChoice::NoSolver || opts.reconcile) {
     axioms = adl2::axioms::emit_axioms(hir, ext, qs);
+  }
+
+  // Smash2: intern size(C) for every collection with a mentioned element so
+  // witness rows can name the derived size without further table mutation.
+  {
+    std::set<CollectionId> elem_colls;
+    for (auto q : qs) {
+      const Quantity& qq = hir.table.quantity(q);
+      if (qq.kind == QuantityKind::ElemProp && qq.index.kind == ElemIndexKind::FromFront) {
+        elem_colls.insert(qq.coll);
+      }
+    }
+    for (auto c : elem_colls) hir.table.intern_quantity(Quantity::size(c));
   }
 
   std::optional<ReconEnc> recon;
@@ -1394,6 +1700,13 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
                 report, gate_refutations, refute_refutations);
       report.pairwise.push_back(std::move(pr));
     }
+  }
+
+  for (const auto& set : unit.bin_sets) {
+    if (set.region_idx >= ctxs.size() || set.region_idx >= unit.regions.size()) continue;
+    report.bin_checks.push_back(bin_check(solver, opts.timeout, opts.certify, report,
+                                          solver ? &axioms : nullptr, &recon_run.facts, hir, set,
+                                          ctxs[set.region_idx], unit.regions[set.region_idx].name));
   }
 
   if (!gate_events.empty()) {

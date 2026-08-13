@@ -549,6 +549,24 @@ void test_ext_met_family() {
   CHECK(!ext.is_function("D0"));
 }
 
+void test_subnormal_literal_is_an_error() {
+  // Smash2 lexer.rs: nonzero subnormal f64 is a lexical error (exact Rat vs
+  // f64 interpreter diverge only there).
+  std::string lit = "0." + std::string(320, '0') + "1";
+  std::string src =
+      "object jets\n  take Jet\nregion R\n  select jets[0].pt > " + lit + "\n";
+  auto hir = analyze(src.c_str());
+  CHECK(has_error_containing(hir, "subnormal"));
+}
+
+void test_underflow_to_zero_is_not_an_error() {
+  std::string lit = "0." + std::string(400, '0') + "1";
+  std::string src =
+      "object jets\n  take Jet\nregion R\n  select jets[0].pt > " + lit + "\n";
+  auto hir = analyze(src.c_str());
+  CHECK(!has_error_containing(hir, "subnormal"));
+}
+
 }  // namespace
 
 int main() {
@@ -583,6 +601,8 @@ int main() {
   test_object_scoped_define();
   test_object_scoped_at_region();
   test_underscore_index_notes();
+  test_subnormal_literal_is_an_error();
+  test_underflow_to_zero_is_not_an_error();
   std::cout << "adl2_sema identity: PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

@@ -149,6 +149,12 @@ class Interp {
   std::optional<NumOutcome> eval_num(const adl2::sema::HNode& node, const Event& event,
                                      EvalError& err) const;
 
+  /// Value a interned quantity at a realized event (smash2
+  /// `Interp::eval_quantity`). Used to print overlap witness rows from the
+  /// validated event, not the pre-sort solver model.
+  std::optional<NumOutcome> eval_quantity(adl2::sema::QuantityId q, const Event& event,
+                                          EvalError& err) const;
+
  private:
   const adl2::sema::Hir* hir_;
   const adl2::sema::ExtDecls* ext_;

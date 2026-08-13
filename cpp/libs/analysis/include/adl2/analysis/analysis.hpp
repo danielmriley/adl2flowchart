@@ -17,7 +17,12 @@
 /// `opts.reconcile` (CLI `--cross`) proves same-base collection refinements
 /// and asserts derived XSUB/XEQ size facts. `opts.combine` (CLI `--combine`)
 /// assembles a replayable `smash2-combine/2` bundle for every certified
-/// PROVEN DISJOINT pair that survives the gates.
+/// PROVEN DISJOINT pair that survives the gates. Histogram `bin` statements
+/// are checked after pairwise (`UNSAT(Ax ∧ R⁺ ∧ Bᵢ⁺ ∧ Bⱼ⁺)` disjointness,
+/// `UNSAT(Ax ∧ R⁺ ∧ ⋀ ¬Bᵢ⁻)` coverage) and overlap reports carry witness
+/// rows read back from the validated event (pT-sort can permute model
+/// indices). Dual-encoding Over/Under polarity is the production contract —
+/// do not collapse it.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver

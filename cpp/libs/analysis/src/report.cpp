@@ -109,6 +109,18 @@ const char* coverage_status_json(CoverageStatus s) {
   return "unknown";
 }
 
+const char* coverage_status_human(CoverageStatus s) {
+  switch (s) {
+    case CoverageStatus::Proven:
+      return "proven";
+    case CoverageStatus::NotProven:
+      return "not proven";
+    case CoverageStatus::Unknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
 const char* recon_outcome_symbol(ReconOutcome o) {
   switch (o) {
     case ReconOutcome::Equivalent:

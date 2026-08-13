@@ -145,7 +145,7 @@ set_tests_properties(smash2_cpp_help PROPERTIES
   PASS_REGULAR_EXPRESSION "objects")
 
 set_tests_properties(adl2_sema_identity PROPERTIES
-  PASS_REGULAR_EXPRESSION "PASS=128 FAIL=0")
+  PASS_REGULAR_EXPRESSION "PASS=130 FAIL=0")
 
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=123 FAIL=0")

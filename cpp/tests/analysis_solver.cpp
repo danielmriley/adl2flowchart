@@ -8,6 +8,7 @@
 #include <string>
 
 using adl2::analysis::AnalysisOptions;
+using adl2::analysis::CoverageStatus;
 using adl2::analysis::EmptyStatus;
 using adl2::analysis::PairReport;
 using adl2::analysis::Report;
@@ -87,6 +88,7 @@ void test_solver_disjoint_and_overlap() {
     CHECK(hm->kind != VerdictKind::ProvenDisjoint);
     CHECK(hm->kind == VerdictKind::ProvenOverlapping);
     CHECK(hm->witness_validated.has_value() && *hm->witness_validated);
+    CHECK(!hm->witness.empty());
     CHECK(subset_named(hm, "High", "Mid"));
     CHECK(!subset_named(hm, "Mid", "High"));
   }
@@ -356,6 +358,121 @@ void test_integrality_only_is_candidate_not_proven() {
   }
 }
 
+void test_validated_witness_rows_from_event() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (witness rows)\n";
+    CHECK(true);
+    return;
+  }
+  // Review F2: pT-sort can permute model indices. Displayed rows must come
+  // from the validated event, so a pt>100 jet in the event makes JET[0].pt > 100.
+  const char* src =
+      "object bigjets\n"
+      "  take Jet\n"
+      "  select pt > 100\n"
+      "region RA\n"
+      "  select size(Jet) >= 2\n"
+      "  select pT(Jet[0]) > 20\n"
+      "region RB\n"
+      "  select size(Jet) >= 2\n"
+      "  select size(bigjets) >= 1\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "f2.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  CHECK(r.pairwise.size() == 1);
+  if (r.pairwise.empty()) return;
+  const PairReport& p = r.pairwise[0];
+  CHECK(p.kind == VerdictKind::ProvenOverlapping);
+  CHECK(p.witness_validated.has_value() && *p.witness_validated);
+  CHECK(!p.witness.empty());
+  bool found_lead = false;
+  for (const auto& w : p.witness) {
+    if (w.quantity == "JET[0].pt") {
+      found_lead = true;
+      CHECK(w.value > 100.0);
+    }
+  }
+  CHECK(found_lead);
+}
+
+void test_bin_partition_and_gap() {
+  const char* src =
+      "object MET\n"
+      "  take MissingET\n"
+      "region SR_binned\n"
+      "  select MET.pT > 250\n"
+      "  bin MET 250 300 500\n"
+      "region SR_gap\n"
+      "  select MET.pT > 250\n"
+      "  bin MET 300 500\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "bins_partition.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+
+  AnalysisOptions none;
+  none.solver = SolverChoice::NoSolver;
+  Report r_none = adl2::analysis::analyze_hir(hir, src, ext, none);
+  CHECK(r_none.bin_checks.size() == 2);
+  // No-solver coverage is Unknown; interval can still prove adjacent bins disjoint.
+  bool saw_binned = false;
+  bool saw_gap = false;
+  for (const auto& b : r_none.bin_checks) {
+    if (b.region == "SR_binned") {
+      saw_binned = true;
+      CHECK(b.n_bins == 3);
+      CHECK(b.disjoint_pairs_total == 3);
+      CHECK(b.coverage == CoverageStatus::Unknown);
+    }
+    if (b.region == "SR_gap") {
+      saw_gap = true;
+      CHECK(b.n_bins == 2);
+      CHECK(b.disjoint_pairs_total == 1);
+      CHECK(b.coverage == CoverageStatus::Unknown);
+    }
+  }
+  CHECK(saw_binned);
+  CHECK(saw_gap);
+
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (bin coverage)\n";
+    CHECK(true);
+    return;
+  }
+  Hir hir2 = analyze_str(src, "bins_partition.adl", ext);
+  AnalysisOptions on;
+  on.solver = SolverChoice::SubprocessZ3;
+  Report r = adl2::analysis::analyze_hir(hir2, src, ext, on);
+  const adl2::analysis::BinCheckReport* binned = nullptr;
+  const adl2::analysis::BinCheckReport* gap = nullptr;
+  for (const auto& b : r.bin_checks) {
+    if (b.region == "SR_binned") binned = &b;
+    if (b.region == "SR_gap") gap = &b;
+  }
+  CHECK(binned != nullptr);
+  if (binned) {
+    CHECK(binned->n_bins == 3);
+    CHECK(binned->disjoint_pairs_proven == 3);
+    CHECK(binned->disjoint_pairs_total == 3);
+    CHECK(binned->coverage == CoverageStatus::Proven);
+  }
+  CHECK(gap != nullptr);
+  if (gap) {
+    CHECK(gap->n_bins == 2);
+    CHECK(gap->disjoint_pairs_proven == 1);
+    CHECK(gap->disjoint_pairs_total == 1);
+    CHECK(gap->coverage == CoverageStatus::NotProven);
+    CHECK(!gap->gap_witness.empty());
+  }
+  std::string explain = r.render_explain({});
+  CHECK(explain.find("SR_binned [MET]: 3 bins; disjoint 3/3 pairs; coverage: proven") !=
+        std::string::npos);
+  CHECK(explain.find("SR_gap [MET]: 2 bins; disjoint 1/1 pairs; coverage: not proven") !=
+        std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -367,6 +484,8 @@ int main() {
   test_overlap_non_sat_taxonomy();
   test_oriented_twins_cap_sat_direction();
   test_integrality_only_is_candidate_not_proven();
+  test_validated_witness_rows_from_event();
+  test_bin_partition_and_gap();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

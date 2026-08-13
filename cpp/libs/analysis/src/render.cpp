@@ -792,8 +792,20 @@ void render_bins(const Report& report, const Style& st, std::ostringstream& s) {
   if (report.bin_checks.empty()) return;
   s << "\n" << st.head("== bins ==") << "\n";
   for (const auto& b : report.bin_checks) {
-    s << "  " << b.region << " [" << b.variable << "]: " << b.n_bins << " bins, "
-      << b.disjoint_pairs_proven << "/" << b.disjoint_pairs_total << " pairs disjoint\n";
+    std::string coverage;
+    switch (b.coverage) {
+      case CoverageStatus::Proven:
+        coverage = "coverage proven";
+        break;
+      case CoverageStatus::NotProven:
+        coverage = st.verdict(VerdictKind::PossiblyOverlapping, "coverage NOT PROVEN");
+        break;
+      case CoverageStatus::Unknown:
+        coverage = "coverage unknown";
+        break;
+    }
+    s << "  " << b.region << "  [" << b.variable << "]  " << b.n_bins << " bins  disjoint "
+      << b.disjoint_pairs_proven << "/" << b.disjoint_pairs_total << "  " << coverage << "\n";
   }
 }
 
@@ -1023,6 +1035,22 @@ std::string Report::render_explain(const RenderOptions& opts) const {
         if (w.derived) out += "*";
       }
       out += "\n";
+    }
+  }
+  if (!bin_checks.empty()) {
+    out += "\n== bins ==\n";
+    for (const auto& b : bin_checks) {
+      std::string coverage = coverage_status_human(b.coverage);
+      if (b.coverage == CoverageStatus::NotProven && !b.gap_witness.empty()) {
+        coverage += " (gap witness:";
+        for (const auto& w : b.gap_witness) {
+          coverage += " " + w.quantity + " = " + adl2::interp::json_f64(w.value);
+        }
+        coverage += ")";
+      }
+      out += b.region + " [" + b.variable + "]: " + std::to_string(b.n_bins) +
+             " bins; disjoint " + std::to_string(b.disjoint_pairs_proven) + "/" +
+             std::to_string(b.disjoint_pairs_total) + " pairs; coverage: " + coverage + "\n";
     }
   }
   for (const auto& d : diagnostics) {

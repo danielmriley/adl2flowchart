@@ -6,11 +6,13 @@
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
+#include "adl2/sema/quantity.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adl2::axioms {
@@ -100,6 +102,12 @@ struct AxiomSet {
 
 std::string collection_label(const adl2::sema::Hir& hir, adl2::sema::CollectionId c);
 std::string quantity_label(const adl2::sema::Hir& hir, adl2::sema::QuantityId q);
+
+/// Oriented twin pairs (same oriented kind, reversed arguments) inside `qs`.
+/// Pairs whose combined quantities contain such a twin cap the SAT direction
+/// at POSSIBLY until OPEN-2 is resolved (smash2 `twin_pairs`, SPEC_ANALYSIS §4).
+std::vector<std::pair<adl2::sema::QuantityId, adl2::sema::QuantityId>> twin_pairs(
+    const adl2::sema::QuantityTable& table, const std::set<adl2::sema::QuantityId>& qs);
 
 /// Emit axiom instances over `quantities` to a fixpoint (helper quantities
 /// interned by one round get their own facts in the next).

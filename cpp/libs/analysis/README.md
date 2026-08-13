@@ -10,7 +10,10 @@ P4 fills:
   solver-UNSAT is **CANDIDATE DISJOINT**), subset flags via
   `UNSAT(Ax ∧ A⁺ ∧ ¬(B⁻))` with `¬(B⁻)` one Or of NNF negations (fail-closed
   under certify), SAT unders + Kleene `region3` witness → **PROVEN OVERLAPPING**
-  only if both regions accept the realized event; otherwise Candidate / Possibly
+  only if both regions accept the realized event; otherwise Candidate / Possibly.
+  Oriented twin pairs (OPEN-2) cap SAT-direction overlap at POSSIBLY.
+  UNKNOWN only when the solver is inconclusive in **both** directions; a SAT-side
+  unknown or an encoding-gap Unsat is POSSIBLY, never a certified claim.
 - Compact `dump_verdicts` (`A vs B: KIND`)
 
 Sampling/refute gates, `--cross` reconciliation (XSUB/XEQ), smash2-schema

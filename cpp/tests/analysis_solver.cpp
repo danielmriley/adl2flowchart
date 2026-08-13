@@ -1,8 +1,10 @@
 #include "adl2/analysis/analysis.hpp"
+#include "adl2/axioms/axioms.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/solver/solver.hpp"
 
 #include <iostream>
+#include <set>
 #include <string>
 
 using adl2::analysis::AnalysisOptions;
@@ -10,6 +12,7 @@ using adl2::analysis::PairReport;
 using adl2::analysis::Report;
 using adl2::analysis::SolverChoice;
 using adl2::analysis::VerdictKind;
+using adl2::analysis::classify_overlap_non_sat;
 using adl2::sema::ExtDecls;
 using adl2::sema::Hir;
 using adl2::sema::analyze_str;
@@ -213,6 +216,80 @@ void test_certify_interval_pair() {
   CHECK(human.find("PROVEN DISJOINT") != std::string::npos);
 }
 
+void test_overlap_non_sat_taxonomy() {
+  using adl2::solver::SatResult;
+  PairReport pr;
+
+  classify_overlap_non_sat(pr, SatResult::unknown("timeout"), SatResult::unknown("timeout"));
+  CHECK(pr.kind == VerdictKind::Unknown);
+  CHECK(pr.reason.find("both directions") != std::string::npos);
+  CHECK(pr.kind != VerdictKind::ProvenDisjoint);
+  CHECK(pr.kind != VerdictKind::ProvenOverlapping);
+
+  classify_overlap_non_sat(pr, SatResult::unknown("timeout"), SatResult::sat());
+  CHECK(pr.kind == VerdictKind::PossiblyOverlapping);
+  CHECK(pr.reason.find("SAT direction") != std::string::npos);
+  CHECK(pr.kind != VerdictKind::Unknown);
+
+  classify_overlap_non_sat(pr, SatResult::unknown("timeout"), SatResult::unsat());
+  CHECK(pr.kind == VerdictKind::PossiblyOverlapping);
+  CHECK(pr.kind != VerdictKind::Unknown);
+
+  classify_overlap_non_sat(pr, SatResult::unsat(), SatResult::sat());
+  CHECK(pr.kind == VerdictKind::PossiblyOverlapping);
+  CHECK(pr.reason.find("encoding gap") != std::string::npos);
+
+  classify_overlap_non_sat(pr, SatResult::sat(), SatResult::sat());
+  CHECK(pr.kind == VerdictKind::PossiblyOverlapping);
+  CHECK(pr.kind != VerdictKind::ProvenOverlapping);
+}
+
+const char* kAngularTwins =
+    "object eles\n"
+    "  take Ele\n"
+    "object muons\n"
+    "  take Muo\n"
+    "region SR_a\n"
+    "  select size(eles) >= 1\n"
+    "  select size(muons) >= 1\n"
+    "  select dEta(eles[0], muons[0]) > 1\n"
+    "region SR_b\n"
+    "  select size(eles) >= 1\n"
+    "  select size(muons) >= 1\n"
+    "  select dEta(muons[0], eles[0]) > 1\n";
+
+void test_oriented_twins_cap_sat_direction() {
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kAngularTwins, "angular_order.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+
+  std::set<adl2::sema::QuantityId> qs;
+  for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+    qs.insert(adl2::sema::QuantityId{i});
+  }
+  auto twins = adl2::axioms::twin_pairs(hir.table, qs);
+  CHECK(!twins.empty());
+
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (OPEN-2 twin cap)\n";
+    CHECK(true);
+    return;
+  }
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  Report r = adl2::analysis::analyze_hir(hir, kAngularTwins, ext, opts);
+  const PairReport* p = find_pair(r, "SR_a", "SR_b");
+  CHECK(p != nullptr);
+  if (p) {
+    CHECK(p->kind != VerdictKind::ProvenDisjoint);
+    CHECK(p->kind != VerdictKind::ProvenOverlapping);
+    CHECK(p->kind == VerdictKind::PossiblyOverlapping);
+    CHECK(p->reason.find("OPEN-2") != std::string::npos ||
+          p->reason.find("twin") != std::string::npos);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -221,6 +298,8 @@ int main() {
   test_multi_statement_subset_is_or_of_negations();
   test_no_solver_caps_overlap_at_possibly();
   test_certify_on_keeps_single_cut_subset();
+  test_overlap_non_sat_taxonomy();
+  test_oriented_twins_cap_sat_direction();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

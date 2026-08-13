@@ -7,14 +7,17 @@
 /// realization: PROVEN OVERLAPPING only after Kleene `region3` accepts the
 /// realized event in both regions. P6 wires `adl2_certify`: solver-UNSAT
 /// whose core cannot be independently replayed is CANDIDATE DISJOINT, never
-/// PROVEN. Library default `certify=false` keeps encode/interval unit pins
-/// stable; CLI `verify` passes `certify=true` (Rust default). Sampling /
-/// refute gates are off in the library (`sample_gate=0`, `refute_gate=false`);
-/// CLI `verify` turns them on (`64` / true; `--no-refute-gate` disables the
-/// adversarial search). `opts.reconcile` (CLI `--cross`) proves same-base
-/// collection refinements and asserts derived XSUB/XEQ size facts.
-/// `opts.combine` (CLI `--combine`) assembles a replayable `smash2-combine/2`
-/// bundle for every certified PROVEN DISJOINT pair that survives the gates.
+/// PROVEN. Oriented twin pairs (OPEN-2) cap the SAT direction at POSSIBLY.
+/// UNKNOWN is reserved for solver-inconclusive *both* directions; a SAT-side
+/// unknown or an encoding-gap Unsat is POSSIBLY, not a claim. Library default
+/// `certify=false` keeps encode/interval unit pins stable; CLI `verify` passes
+/// `certify=true` (Rust default). Sampling / refute gates are off in the
+/// library (`sample_gate=0`, `refute_gate=false`); CLI `verify` turns them on
+/// (`64` / true; `--no-refute-gate` disables the adversarial search).
+/// `opts.reconcile` (CLI `--cross`) proves same-base collection refinements
+/// and asserts derived XSUB/XEQ size facts. `opts.combine` (CLI `--combine`)
+/// assembles a replayable `smash2-combine/2` bundle for every certified
+/// PROVEN DISJOINT pair that survives the gates.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver
@@ -27,6 +30,7 @@
 #include "adl2/analysis/witness.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
+#include "adl2/solver/solver.hpp"
 
 #include <chrono>
 #include <string>
@@ -72,6 +76,13 @@ struct AnalysisOptions {
 /// demotions. `src` is the unit text used for cut line-text.
 Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
                    const adl2::sema::ExtDecls& ext, const AnalysisOptions& opts);
+
+/// Smash2 overlap-query remainder: a non-SAT overlap check is never a PROVEN
+/// claim. UNKNOWN only when *both* disjoint and overlap queries were
+/// solver-unknown; overlap Unsat is an encoding gap (POSSIBLY); SAT-direction
+/// unknown with a decided disjoint query is POSSIBLY.
+void classify_overlap_non_sat(PairReport& pr, const adl2::solver::SatResult& overlap,
+                              const adl2::solver::SatResult& disjoint);
 
 inline Report analyze_hir(adl2::sema::Hir& hir, const adl2::sema::ExtDecls& ext,
                           const AnalysisOptions& opts) {

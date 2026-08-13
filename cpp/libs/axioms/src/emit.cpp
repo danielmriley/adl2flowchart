@@ -532,6 +532,24 @@ std::string collection_label(const Hir& hir, CollectionId c) {
   return c.to_string();
 }
 
+std::vector<std::pair<QuantityId, QuantityId>> twin_pairs(
+    const adl2::sema::QuantityTable& table, const std::set<QuantityId>& qs) {
+  std::vector<std::pair<QuantityId, QuantityId>> out;
+  std::vector<QuantityId> list(qs.begin(), qs.end());
+  for (std::size_t n = 0; n < list.size(); ++n) {
+    const Quantity& q1 = table.quantity(list[n]);
+    if (q1.kind != QuantityKind::AngularSep || !q1.oriented) continue;
+    for (std::size_t m = n + 1; m < list.size(); ++m) {
+      const Quantity& q2 = table.quantity(list[m]);
+      if (q2.kind != QuantityKind::AngularSep || !q2.oriented) continue;
+      if (q1.ang == q2.ang && q1.a == q2.b && q1.b == q2.a && q1.a != q1.b) {
+        out.emplace_back(list[n], list[m]);
+      }
+    }
+  }
+  return out;
+}
+
 std::string quantity_label(const Hir& hir, QuantityId q) {
   const auto& qq = hir.table.quantity(q);
   switch (qq.kind) {

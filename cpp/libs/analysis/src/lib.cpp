@@ -657,6 +657,22 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.subset_b_in_a = one_in_two;
   }
 
+  // SAT-direction cap (SPEC_ANALYSIS §4 / OPEN-2): oriented twins make a
+  // joint model convention-ambiguous, so overlap is POSSIBLY, never PROVEN.
+  std::set<QuantityId> combined = ra.quantities;
+  combined.insert(rb.quantities.begin(), rb.quantities.end());
+  auto twins = adl2::axioms::twin_pairs(hir.table, combined);
+  if (!twins.empty()) {
+    pr.kind = VerdictKind::PossiblyOverlapping;
+    const auto& t = twins.front();
+    pr.reason =
+        "convention-ambiguous oriented twin pair present (" +
+        adl2::axioms::quantity_label(hir, t.first) + " / " +
+        adl2::axioms::quantity_label(hir, t.second) +
+        "): SAT-direction verdicts capped at POSSIBLY until OPEN-2 is resolved";
+    return pr;
+  }
+
   // Overlap: SAT(Ax ∧ A⁻ ∧ B⁻) + Kleene region3 re-validation.
   solver->push();
   assert_unders(*solver, c1);
@@ -665,15 +681,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
   note_failure(report, overlap);
   if (!overlap.is_sat()) {
     solver->pop();
-    if (overlap.is_unknown()) {
-      pr.kind = VerdictKind::Unknown;
-      pr.reason = overlap.reason.empty() ? "solver unknown on overlap query" : overlap.reason;
-      return pr;
-    }
-    pr.kind = VerdictKind::PossiblyOverlapping;
-    pr.reason = disjoint.is_unknown()
-                    ? (disjoint.reason.empty() ? "solver unknown on disjointness" : disjoint.reason)
-                    : "solver SAT/UNSAT split did not prove disjointness or overlap";
+    classify_overlap_non_sat(pr, overlap, disjoint);
     return pr;
   }
   if (pr.shared_dimensions.empty()) {
@@ -685,8 +693,6 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     return pr;
   }
 
-  std::set<QuantityId> combined = ra.quantities;
-  combined.insert(rb.quantities.begin(), rb.quantities.end());
   if (mentions_back_index(hir, combined)) {
     solver->pop();
     pr.kind = VerdictKind::PossiblyOverlapping;
@@ -759,9 +765,14 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     } else {
       pr.reason = "overlap model found, but witness re-validation failed; downgraded to POSSIBLY (" +
                   why + ")";
+      file_fail_closed(report, "WITNESS NOT REALIZED for " + ra.name + " vs " + rb.name +
+                                   ": witness validation failed for every model tried "
+                                   "within the retry budget, so the overlap is capped at "
+                                   "POSSIBLY and no claim is made — " +
+                                   why);
     }
   } else {
-    pr.reason = "under-approximations intersect, but no witness could be realized";
+    pr.reason = "solver returned SAT but no model; capped at POSSIBLY";
   }
   return pr;
 }
@@ -1207,6 +1218,30 @@ ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool cer
 }
 
 }  // namespace
+
+void classify_overlap_non_sat(PairReport& pr, const adl2::solver::SatResult& overlap,
+                              const adl2::solver::SatResult& disjoint) {
+  if (overlap.is_unknown()) {
+    if (disjoint.is_unknown()) {
+      pr.kind = VerdictKind::Unknown;
+      pr.reason = "solver inconclusive in both directions (" + disjoint.reason + "; " +
+                  overlap.reason + ")";
+    } else {
+      pr.kind = VerdictKind::PossiblyOverlapping;
+      pr.reason = "solver inconclusive in the SAT direction (" + overlap.reason + ")";
+    }
+    return;
+  }
+  if (overlap.is_unsat()) {
+    pr.kind = VerdictKind::PossiblyOverlapping;
+    pr.reason =
+        "over-approximations may intersect but under-approximations cannot: "
+        "an encoding gap blocks both a disjointness and an overlap proof";
+    return;
+  }
+  pr.kind = VerdictKind::PossiblyOverlapping;
+  pr.reason = "no solver";
+}
 
 Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls& ext,
                    const AnalysisOptions& opts) {

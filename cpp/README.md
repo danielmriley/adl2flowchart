@@ -54,17 +54,17 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Identity unit battery (`adl2_sema_identity`) | Yes (`PASS=128 FAIL=0`) |
 | Polarity-aware Formula IR (`Over`/`Under` as types) | Yes |
 | HIR → Formula encoder | Yes |
-| CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned count) |
+| CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned **172**) |
 | CLI `--dump-axioms` vs smash2 | Fail-closed allowlist (pinned **9**) |
 | Axiom catalog (19) + emitters | Yes; EPRED/EPRES ported |
-| Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=116 FAIL=0`) |
+| Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` event lines vs smash2 | Fail-closed pair list (pinned count) |
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (solver-SAT overlap is **candidate**, not proven) |
-| Independent Farkas certify | **API locked** (replay stub fails closed) |
+| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **not wired** into verify |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
 
@@ -124,7 +124,8 @@ SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 ```
 
 AST gate: **146 / 146**. HIR gate: **38 files × 2** dumps. DOT gate: **39
-files × 2** (flowchart + AST). Formula and interp gates are fail-closed
+files × 2** (flowchart + AST). Formula gate: **172** files (fail-closed;
+`bad_syntax.adl` excluded — both sides exit 1). Interp gates are fail-closed
 allowlists — shrinking or growing the list without bumping the pin fails CI. Files not on a list are **not claimed**.
 Do not weaken `smash2` / `oracle-rust` CI.
 
@@ -138,7 +139,6 @@ tables deferred).
 `adl2_analysis` (interval + solver pairwise); Kleene `region3`; EPRED/EPRES;
 CLI `dot` / `verify`; retained P1–P3 gates.
 
-**Out:** Independent Farkas certification; witness realization (so no
+**Out:** Certify not wired into `analyze_hir`; witness realization (so no
 PROVEN OVERLAPPING); cross-file reconciliation; sampling/refute gates;
-cutflow/histo tables; full 146-file formula dump; byte-identical
-`smash2 verify` reports.
+cutflow/histo tables; byte-identical `smash2 verify` reports.

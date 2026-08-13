@@ -14,7 +14,7 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
-| `adl2_analysis` | `adl-analysis` | **filled** (P4; interval + solver pairwise; witness stub) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
+| `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 region3 witness) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | API locked (P5 fill) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis |

@@ -3,12 +3,14 @@
 /// `adl2_analysis` — Verify / pairwise analysis (Rust adl-analysis). Must not parse.
 ///
 /// P4 fills interval fast path, statement-granularity encode, report enums,
-/// and a subprocess-solver pairwise engine. Certify / reconcile / refute /
-/// witness realization are not claimed. Solver-SAT overlap is
-/// CANDIDATE OVERLAPPING (no interpreter re-validation yet).
+/// and a subprocess-solver pairwise engine. P5 fills SAT-side witness
+/// realization: PROVEN OVERLAPPING only after Kleene `region3` accepts the
+/// realized event in both regions. Certify / reconcile / refute are not
+/// claimed here.
 ///
 /// Dependency spine (do not invert):
-///   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+///   syntax → sema → {interp ‖ formula} → axioms → solver
+///                                    ↘ certify ↗ analysis
 ///   viz reads HIR only; cli wires modules.
 
 #include "adl2/analysis/encode.hpp"

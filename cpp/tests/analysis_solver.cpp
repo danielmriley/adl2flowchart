@@ -73,9 +73,8 @@ void test_solver_disjoint_and_overlap() {
   CHECK(hm != nullptr);
   if (hm) {
     CHECK(hm->kind != VerdictKind::ProvenDisjoint);
-    CHECK(hm->kind != VerdictKind::ProvenOverlapping);
-    CHECK(hm->kind == VerdictKind::CandidateOverlapping ||
-          hm->kind == VerdictKind::PossiblyOverlapping);
+    CHECK(hm->kind == VerdictKind::ProvenOverlapping);
+    CHECK(hm->witness_validated.has_value() && *hm->witness_validated);
     CHECK(hm->subset_a_in_b);
   }
 }

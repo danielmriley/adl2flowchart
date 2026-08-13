@@ -63,7 +63,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
-| Interval fast path + pairwise `verify` | Yes (solver-SAT overlap is **candidate**, not proven) |
+| Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3) |
 | Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **not wired** into verify |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
@@ -139,6 +139,7 @@ tables deferred).
 `adl2_analysis` (interval + solver pairwise); Kleene `region3`; EPRED/EPRES;
 CLI `dot` / `verify`; retained P1–P3 gates.
 
-**Out:** Certify not wired into `analyze_hir`; witness realization (so no
-PROVEN OVERLAPPING); cross-file reconciliation; sampling/refute gates;
-cutflow/histo tables; byte-identical `smash2 verify` reports.
+**Out:** Certify not wired into `analyze_hir`; cross-file reconciliation;
+sampling/refute gates; cutflow/histo tables; byte-identical `smash2 verify`
+reports. `refined_model` interior tightening and OPEN-2 twin-pair SAT cap
+are not ported.

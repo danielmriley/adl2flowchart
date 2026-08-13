@@ -7,11 +7,11 @@ P4 fills:
 - Interval fast path (exact `Rat` bounds, And-spine only)
 - Statement-granularity encode (inherit flattened)
 - Subprocess-solver pairwise: `UNSAT(Ax ∧ A⁺ ∧ B⁺)` disjoint, subset flags,
-  SAT unders → **CANDIDATE OVERLAPPING** (witness realization not ported)
+  SAT unders + Kleene `region3` witness → **PROVEN OVERLAPPING** only if both
+  regions accept the realized event; otherwise Candidate / Possibly
 - Compact `dump_verdicts` (`A vs B: KIND`)
 
-Not claimed: independent Farkas certification, reconciliation, sampling/refute
-gates, `--combine` bundles, PROVEN OVERLAPPING (needs region3 witness
-re-validation of a realized model).
+Not claimed: independent Farkas certification (kernel exists, not wired),
+reconciliation, sampling/refute gates, `--combine` bundles.
 
 Headers: `libs/analysis/include/adl2/analysis/`

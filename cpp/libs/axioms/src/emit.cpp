@@ -1,11 +1,15 @@
 #include "adl2/axioms/axioms.hpp"
 
+#include "elem_pred.hpp"
+
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/lin.hpp"
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <sstream>
+#include <utility>
 
 namespace adl2::axioms {
 namespace {
@@ -24,6 +28,7 @@ using adl2::sema::ExtDecls;
 using adl2::sema::Hir;
 using adl2::sema::ParticleKind;
 using adl2::sema::ParticleRef;
+using adl2::sema::PropId;
 using adl2::sema::Quantity;
 using adl2::sema::QuantityId;
 using adl2::sema::QuantityKind;
@@ -461,15 +466,59 @@ struct Emit {
   }
 
   void epred(const std::vector<QuantityId>& qs) {
-    // P3a stub: catalog lists EPRED; the size-guarded predicate encoder is
-    // not ported. Vacuity/size facts (SZ0/SUB/…) still emit. Do not treat
-    // a missing EPRED instance as “the fact was proved unnecessary”.
-    (void)qs;
+    std::set<std::pair<CollectionId, std::uint32_t>> targets;
+    for (auto q : qs) {
+      const auto& qq = hir->table.quantity(q);
+      if (qq.kind != QuantityKind::ElemProp) continue;
+      if (qq.index.kind != ElemIndexKind::FromFront) continue;
+      if (hir->table.collection(qq.coll).kind != CollectionKind::Filtered) continue;
+      targets.insert({qq.coll, qq.index.n});
+    }
+    for (auto [coll, i] : targets) {
+      const auto& c = hir->table.collection(coll);
+      if (c.kind != CollectionKind::Filtered) continue;
+      const auto& pred_node = hir->elem_pred(c.pred).node;
+      auto pred_f = encode_elem_pred(hir->table, pred_node, coll, i);
+      if (!pred_f) continue;
+      auto size_q = hir->table.intern_quantity(Quantity::size(coll));
+      auto guard = qatom({{1.0, size_q}}, Rel::Le, static_cast<double>(i));
+      auto f = QFormula::of_or({std::move(guard), std::move(*pred_f)});
+      std::string cl = collection_label(*hir, coll);
+      push(AxiomId::Epred, std::move(f),
+           "size(" + cl + ") > " + std::to_string(i) + " => filter predicate holds for " + cl +
+               "[" + std::to_string(i) + "]");
+    }
   }
 
   void epres(const std::vector<QuantityId>& qs) {
-    // P3a stub: catalog lists EPRES; element-presence facts are not ported.
-    (void)qs;
+    std::set<std::pair<CollectionId, std::uint32_t>> targets;
+    for (auto q : qs) {
+      const auto& qq = hir->table.quantity(q);
+      if (qq.kind != QuantityKind::ElemProp) continue;
+      if (qq.index.kind != ElemIndexKind::FromFront) continue;
+      if (hir->table.collection(qq.coll).kind != CollectionKind::Filtered) continue;
+      targets.insert({qq.coll, qq.index.n});
+    }
+    for (auto [coll, i] : targets) {
+      const auto& c = hir->table.collection(coll);
+      if (c.kind != CollectionKind::Filtered) continue;
+      const auto& pred_node = hir->elem_pred(c.pred).node;
+      std::set<PropId> props;
+      collect_self_props(pred_node, props);
+      auto size_q = hir->table.intern_quantity(Quantity::size(coll));
+      for (auto prop : props) {
+        if (!requires_present(pred_node, prop)) continue;
+        auto q = hir->table.intern_quantity(
+            Quantity::elem_prop(coll, ElemIndex::from_front(i), prop));
+        auto p = hir->table.intern_quantity(Quantity::present(q));
+        auto guard = qatom({{1.0, size_q}}, Rel::Le, static_cast<double>(i));
+        auto fact = qatom({{1.0, p}}, Rel::Ge, 1.0);
+        auto f = QFormula::of_or({std::move(guard), std::move(fact)});
+        push(AxiomId::Epres, std::move(f),
+             "size(" + collection_label(*hir, coll) + ") > " + std::to_string(i) +
+                 " => defined(" + label(q) + ")");
+      }
+    }
   }
 };
 

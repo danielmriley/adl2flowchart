@@ -6,15 +6,12 @@
 # Both dump commands must exit 0 and emit a dump starting with `unit:`.
 # A crash, usage error, empty dump, or mismatch fails the gate.
 #
-# Not claimed: files whose rust dump includes EPRED/EPRES instances
-# (C++ emitters for those ids are stubbed in P3a).
-#
 # Usage (from repo root):
 #   cpp/scripts/dump_axioms_corpus_gate.sh
 #   COUNT_ONLY=1 cpp/scripts/dump_axioms_corpus_gate.sh
 set -euo pipefail
 
-EXPECTED_FILES=6
+EXPECTED_FILES=9
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"

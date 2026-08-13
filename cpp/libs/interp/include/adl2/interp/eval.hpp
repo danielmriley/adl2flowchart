@@ -22,6 +22,40 @@ struct EvalError {
   bool is_missing_event_data() const { return kind == EvalErrorKind::MissingEventData; }
 };
 
+/// Three-valued (Kleene) truth for witness-validation membership.
+/// `Unknown` carries the blocking reason; a decidable False is never hidden
+/// behind it (`False ∧ Unknown = False`, `True ∨ Unknown = True`).
+enum class TriKind { True, False, Unknown };
+
+struct Tri {
+  TriKind kind = TriKind::Unknown;
+  EvalError err;
+
+  static Tri ttrue() {
+    Tri t;
+    t.kind = TriKind::True;
+    return t;
+  }
+  static Tri ffalse() {
+    Tri t;
+    t.kind = TriKind::False;
+    return t;
+  }
+  static Tri unknown(EvalError e) {
+    Tri t;
+    t.kind = TriKind::Unknown;
+    t.err = std::move(e);
+    return t;
+  }
+  static Tri from_bool(bool b) { return b ? ttrue() : ffalse(); }
+
+  Tri tnot() const {
+    if (kind == TriKind::True) return ffalse();
+    if (kind == TriKind::False) return ttrue();
+    return *this;
+  }
+};
+
 enum class NonValueKind { NonFinite, MissingElement, MissingProperty, EmptyReduction };
 
 struct NonValue {
@@ -77,6 +111,14 @@ class Interp {
   /// missing event data or out-of-fragment.
   std::optional<bool> eval_region_by_name(const std::string& name, const Event& event,
                                           EvalError& err) const;
+
+  /// Kleene membership. nullopt + err = Unknown; true/false = decidable.
+  /// Prefers a decidable False over any Unknown (does not consult the
+  /// two-valued region cache).
+  std::optional<bool> eval_region_membership(const std::string& name, const Event& event,
+                                             EvalError& err) const;
+  std::optional<bool> eval_region_membership_idx(std::size_t idx, const Event& event,
+                                                 EvalError& err) const;
 
  private:
   const adl2::sema::Hir* hir_;

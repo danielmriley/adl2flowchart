@@ -90,3 +90,13 @@ set_tests_properties(adl2_sema_identity PROPERTIES
 
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")
+
+add_executable(adl2_region3 region3.cpp)
+target_link_libraries(adl2_region3 PRIVATE adl2_sema adl2_syntax adl2_interp)
+target_compile_options(adl2_region3 PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_region3
+  COMMAND adl2_region3)
+
+set_tests_properties(adl2_region3 PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=30 FAIL=0")

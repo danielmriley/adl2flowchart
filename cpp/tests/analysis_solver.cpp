@@ -1,5 +1,7 @@
 #include "adl2/analysis/analysis.hpp"
+#include "adl2/analysis/refute.hpp"
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/interp/interp.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/solver/solver.hpp"
 
@@ -473,6 +475,86 @@ void test_bin_partition_and_gap() {
         std::string::npos);
 }
 
+const char* kSizeHardFilter =
+    "object jets\n"
+    "  take Jet\n"
+    "object weird\n"
+    "  take Jet\n"
+    "  select bdt > 0.5\n"
+    "region A\n"
+    "  select size(jets) >= 1\n"
+    "region B\n"
+    "  select size(weird) >= 0\n";
+
+void test_size_hard_filter_is_not_a_subset_of_tautology() {
+  // SOUNDNESS_PROOF §8 1b: size(weird) is a hard error (undeclared `bdt`), so
+  // B is In for no event that has a jet. A ⊆ B must not be claimed.
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kSizeHardFilter, "size_hard.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+
+  adl2::interp::Interp interp(hir, ext);
+  adl2::interp::EventError ev_err;
+  auto ev = adl2::interp::parse_event(
+      R"({"Jet":[{"pt":80,"eta":0,"phi":0,"m":1}],"MET":{"pt":10,"phi":0}})", ext, ev_err);
+  CHECK(ev.has_value());
+  if (!ev) return;
+  adl2::interp::EvalError mem_err;
+  auto in_a = interp.eval_region_membership_idx(0, *ev, mem_err);
+  auto in_b = interp.eval_region_membership_idx(1, *ev, mem_err);
+  CHECK(in_a == true);
+  CHECK(!in_b.has_value());
+
+  auto cex = adl2::analysis::search_subset_counterexample(interp, 0, 1, {*ev});
+  CHECK(cex.has_value());
+
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (size-hard-filter subset)\n";
+    CHECK(true);
+    return;
+  }
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  opts.sample_gate = 64;
+  opts.refute_gate = true;
+  Report r = adl2::analysis::analyze_hir(hir, kSizeHardFilter, ext, opts);
+  const PairReport* p = find_pair(r, "A", "B");
+  CHECK(p != nullptr);
+  if (p) {
+    CHECK(!subset_named(p, "A", "B"));
+    CHECK(!subset_named(p, "B", "A"));
+  }
+}
+
+void test_reject_size_hard_filter_is_not_a_subset() {
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "object weird\n"
+      "  take Jet\n"
+      "  select bdt > 0.5\n"
+      "region A\n"
+      "  select size(jets) >= 1\n"
+      "region B\n"
+      "  reject size(weird) < 0\n";
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (reject size-hard-filter subset)\n";
+    CHECK(true);
+    return;
+  }
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "size_hard_reject.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  const PairReport* p = find_pair(r, "A", "B");
+  CHECK(p != nullptr);
+  if (p) CHECK(!subset_named(p, "A", "B"));
+}
+
 }  // namespace
 
 int main() {
@@ -486,6 +568,8 @@ int main() {
   test_integrality_only_is_candidate_not_proven();
   test_validated_witness_rows_from_event();
   test_bin_partition_and_gap();
+  test_size_hard_filter_is_not_a_subset_of_tautology();
+  test_reject_size_hard_filter_is_not_a_subset();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

@@ -401,9 +401,56 @@ struct Encoder {
   QuantityTable* table;
   const std::vector<adl2::sema::HirRegion>* regions;
   SymbolTable* symbols;
-  const std::vector<adl2::sema::ElemPred>* elem_preds;
+  const std::vector<adl2::sema::ElemPred>* elem_preds = nullptr;
   DiagTable diags;
   std::vector<std::size_t> stack;
+
+  /// SOUNDNESS_PROOF §8 1b: `QuantityTable::absence(Size)` is `Never`, but
+  /// materializing a collection whose filter (or combination cut) is out of
+  /// fragment is a hard interpreter error. Size of that collection is then
+  /// Hard here — encoder-local, so SZ0 on in-fragment collections is unchanged.
+  bool pred_hard(ElemPredId id) const {
+    if (!elem_preds || id.id >= elem_preds->size()) return false;
+    return (*elem_preds)[id.id].node.has_unsupported();
+  }
+  bool coll_hard(CollectionId c) const {
+    const Collection& col = table->collection(c);
+    switch (col.kind) {
+      case CollectionKind::Base:
+        return false;
+      case CollectionKind::Filtered:
+        return pred_hard(col.pred) || coll_hard(col.parent);
+      case CollectionKind::Slice:
+      case CollectionKind::Sorted:
+        return coll_hard(col.parent);
+      case CollectionKind::Union: {
+        for (auto p : col.parts) {
+          if (coll_hard(p)) return true;
+        }
+        return false;
+      }
+      case CollectionKind::Combination: {
+        for (auto p : col.parts) {
+          if (coll_hard(p)) return true;
+        }
+        for (auto cut : col.cuts) {
+          if (pred_hard(cut)) return true;
+        }
+        return false;
+      }
+      case CollectionKind::CombProject:
+        return coll_hard(col.parent);
+    }
+    return false;
+  }
+  Absence absence_of(QuantityId q) const {
+    const Quantity& qq = table->quantity(q);
+    if (qq.kind == QuantityKind::Size && coll_hard(qq.coll)) return Absence::Hard;
+    return table->absence(q);
+  }
+  bool may_be_absent_of(QuantityId q) const {
+    return adl2::sema::absence_possible(absence_of(q));
+  }
 
   Formula unknown(Span span, std::string reason) {
     return Formula::unknown(diags.push(span, std::move(reason)));
@@ -420,7 +467,7 @@ struct Encoder {
     if (!inner.is_exact()) return inner;
     std::vector<QuantityId> needed;
     for (auto q : quants) {
-      if (table->may_be_absent(q)) needed.push_back(q);
+      if (may_be_absent_of(q)) needed.push_back(q);
     }
     if (needed.empty()) return inner;
     std::vector<Formula> parts;
@@ -445,7 +492,7 @@ struct Encoder {
         break;
       case Formula::Kind::Atom:
         for (const auto& t : f.atom.terms()) {
-          if (table->absence(t.second) == Absence::Hard) out.insert(t.second);
+          if (absence_of(t.second) == Absence::Hard) out.insert(t.second);
         }
         break;
       case Formula::Kind::And:
@@ -495,7 +542,7 @@ struct Encoder {
     switch (f.kind) {
       case Formula::Kind::Atom: {
         for (const auto& t : f.atom.terms()) {
-          if (table->absence(t.second) == Absence::Soft) return {};
+          if (absence_of(t.second) == Absence::Soft) return {};
         }
         std::set<QuantityId> s;
         for (const auto& t : f.atom.terms()) s.insert(t.second);

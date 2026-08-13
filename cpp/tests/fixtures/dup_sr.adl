@@ -1,0 +1,6 @@
+object jets
+  take Jet
+region SR
+  select jets[0].pt > 100
+region SR
+  select jets[0].pt < 50

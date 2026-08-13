@@ -168,7 +168,9 @@ std::optional<Event> search_subset_counterexample(const Interp& interp, std::siz
   for (const auto& e : probes) {
     auto a = memb(interp, sub, e);
     auto b = memb(interp, sup, e);
-    if (a == true && b == false) return e;
+    // Subset is In(sub) ⇒ In(sup). Unknown on the superset is a counterexample;
+    // demanding Out (Some(false)) cannot see SOUNDNESS_PROOF §8 1b.
+    if (a == true && b != true) return e;
   }
   return std::nullopt;
 }

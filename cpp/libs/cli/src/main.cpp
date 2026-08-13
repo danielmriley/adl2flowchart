@@ -813,8 +813,8 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
       return 2;
     }
     auto hir = adl2::sema::analyze_str(src, labels[i], ext);
+    if (!hir.diags.empty()) print_sema_diags(hir.diags);
     if (adl2::sema::has_errors(hir.diags)) {
-      print_sema_diags(hir.diags);
       std::cerr << labels[i] << ": analysis did not run (resolve errors above)\n";
       return 1;
     }
@@ -926,8 +926,8 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
     }
     const std::string& name = labels[i];
     auto hir = adl2::sema::analyze_str(src, name, ext);
+    if (!hir.diags.empty()) print_sema_diags(hir.diags);
     if (adl2::sema::has_errors(hir.diags)) {
-      print_sema_diags(hir.diags);
       std::cerr << name << ": cannot verify — resolve errors\n";
       worst = std::max(worst, 1);
       continue;

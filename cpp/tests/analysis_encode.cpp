@@ -12,8 +12,10 @@ using adl2::analysis::UnitEnc;
 using adl2::analysis::VerdictKind;
 using adl2::analysis::dump_verdicts;
 using adl2::analysis::verdict_kind_human;
+using adl2::formula::Formula;
 using adl2::sema::ExtDecls;
 using adl2::sema::Hir;
+using adl2::sema::QuantityKind;
 using adl2::sema::analyze_str;
 
 namespace {
@@ -139,6 +141,82 @@ void test_inherit_flattens_like_paste() {
   if (bl) CHECK(bl->kind == VerdictKind::ProvenDisjoint);
 }
 
+bool formula_mentions_present(const Formula& f, const adl2::sema::QuantityTable& table) {
+  switch (f.kind) {
+    case Formula::Kind::Atom:
+      for (const auto& t : f.atom.terms()) {
+        if (table.quantity(t.second).kind == QuantityKind::Present) return true;
+      }
+      return false;
+    case Formula::Kind::And:
+    case Formula::Kind::Or:
+      for (const auto& p : f.items) {
+        if (formula_mentions_present(p, table)) return true;
+      }
+      return false;
+    case Formula::Kind::Dual:
+      return (f.plus && formula_mentions_present(*f.plus, table)) ||
+             (f.minus && formula_mentions_present(*f.minus, table));
+    default:
+      return false;
+  }
+}
+
+void test_size_hard_filter_presence_guard() {
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "object weird\n"
+      "  take Jet\n"
+      "  select bdt > 0.5\n"
+      "region A\n"
+      "  select size(jets) >= 1\n"
+      "region B\n"
+      "  select size(weird) >= 0\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "size_hard.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  UnitEnc unit = adl2::analysis::encode_unit(hir, src);
+  CHECK(unit.regions.size() == 2);
+  CHECK(unit.regions[0].name == "A");
+  CHECK(unit.regions[1].name == "B");
+  CHECK(unit.regions[0].stmts.size() == 1);
+  CHECK(unit.regions[1].stmts.size() == 1);
+  CHECK(unit.regions[0].stmts[0].formula.is_exact());
+  CHECK(unit.regions[1].stmts[0].formula.is_exact());
+  CHECK(!formula_mentions_present(unit.regions[0].stmts[0].formula, hir.table));
+  CHECK(formula_mentions_present(unit.regions[1].stmts[0].formula, hir.table));
+}
+
+void test_duplicate_region_names_are_disambiguated() {
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "region SR\n"
+      "  select jets[0].pt > 100\n"
+      "region SR\n"
+      "  select jets[0].pt < 50\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "dup.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  bool saw_dup = false;
+  for (const auto& d : hir.diags) {
+    if (d.message.find("duplicate region") != std::string::npos) saw_dup = true;
+  }
+  CHECK(saw_dup);
+  UnitEnc unit = adl2::analysis::encode_unit(hir, src);
+  CHECK(unit.regions.size() == 2);
+  CHECK(unit.regions[0].name != unit.regions[1].name);
+  CHECK(unit.regions[0].name.find("SR@") == 0);
+  CHECK(unit.regions[1].name.find("SR@") == 0);
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::NoSolver;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  const PairReport* p = find_pair(r, unit.regions[0].name.c_str(), unit.regions[1].name.c_str());
+  CHECK(p != nullptr);
+  if (p) CHECK(p->kind == VerdictKind::ProvenDisjoint);
+}
+
 void test_three_arg_entry() {
   ExtDecls ext = ExtDecls::legacy();
   Hir hir = analyze_str(kSrc, "jets.adl", ext);
@@ -153,6 +231,8 @@ int main() {
   test_interval_proves_disjoint_jets();
   test_encode_statement_granularity();
   test_inherit_flattens_like_paste();
+  test_size_hard_filter_presence_guard();
+  test_duplicate_region_names_are_disambiguated();
   test_three_arg_entry();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;

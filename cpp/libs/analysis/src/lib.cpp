@@ -997,13 +997,13 @@ void gate_pair(PairReport& report, std::size_t ia, std::size_t ib, const Interp&
   auto sample_subset = [&](std::size_t sub, std::size_t sup, bool& flag, const char* label) {
     if (!flag || gate_events.empty()) return;
     for (const auto& e : gate_events) {
-      if (memb(interp, sub, e) == true && memb(interp, sup, e) == false) {
+      if (memb(interp, sub, e) == true && memb(interp, sup, e) != true) {
         ++sample_refutations;
         flag = false;
         file_contradiction(diag, std::string("SAMPLING GATE refuted PROVEN SUBSET (") + label +
                                      ") for " + report.a + " vs " + report.b +
-                                     ": a sampled event is in the subset region but not the "
-                                     "superset; claim withdrawn");
+                                     ": a sampled event is In the subset region but not In the "
+                                     "superset (Out or Unknown); claim withdrawn");
         break;
       }
     }
@@ -1015,8 +1015,8 @@ void gate_pair(PairReport& report, std::size_t ia, std::size_t ib, const Interp&
       flag = false;
       file_contradiction(diag, std::string("REFUTE GATE refuted PROVEN SUBSET (") + label +
                                    ") for " + report.a + " vs " + report.b +
-                                   ": an adversarial probe is in the subset region but not the "
-                                   "superset; claim withdrawn");
+                                   ": an adversarial probe is In the subset region but not In the "
+                                   "superset (Out or Unknown); claim withdrawn");
     }
   };
   bool a_in_b = report.subset_a_in_b;

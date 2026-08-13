@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <memory>
 #include <utility>
 
@@ -25,6 +26,20 @@ using adl2::sema::QuantityId;
 using adl2::sema::QuantityKind;
 using adl2::sema::QuantityTable;
 using adl2::sema::Span;
+using adl2::sema::Symbol;
+
+std::string region_report_name(const Hir& hir, std::size_t ridx,
+                               const std::map<Symbol, std::size_t>& uses,
+                               std::map<std::string, std::size_t>& taken) {
+  const HirRegion& r = hir.regions[ridx];
+  std::string name = hir.symbols.display(r.name);
+  auto it = uses.find(r.name);
+  if (it == uses.end() || it->second <= 1) return name;
+  name += "@" + std::to_string(r.span.line);
+  if (taken[name] > 0) name += ":" + std::to_string(r.span.column);
+  ++taken[name];
+  return name;
+}
 
 /// Byte-offset → line map. Local copy of syntax LineMap so analysis never
 /// includes parser headers.
@@ -319,8 +334,12 @@ UnitEnc encode_unit(Hir& hir, const std::string& src) {
   LineMap map(src);
   UnitEnc unit;
 
+  std::map<Symbol, std::size_t> name_uses;
+  for (const auto& r : hir.regions) ++name_uses[r.name];
+  std::map<std::string, std::size_t> taken_report_names;
+
   for (std::size_t ridx = 0; ridx < hir.regions.size(); ++ridx) {
-    std::string name = hir.symbols.display(hir.regions[ridx].name);
+    std::string name = region_report_name(hir, ridx, name_uses, taken_report_names);
     std::vector<HirRegionStmt> own = hir.regions[ridx].stmts;
     std::vector<HirRegionStmt> stmt_list;
     stmt_list.reserve(own.size());

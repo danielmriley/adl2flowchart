@@ -26,6 +26,10 @@ add_test(NAME smash2_cpp_check_bins_and_path
 add_test(NAME smash2_cpp_check_stdout_empty
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_silent.sh ${SMASH2_CPP} ${FIXTURE_TINY})
 
+add_test(NAME smash2_cpp_verify_duplicate_region_warns
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/verify_dup_warns.sh ${SMASH2_CPP}
+          ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/dup_sr.adl)
+
 add_test(NAME hir_gate_allowlist_count
   COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_hir_corpus_gate.sh)
 set_property(TEST hir_gate_allowlist_count PROPERTY ENVIRONMENT

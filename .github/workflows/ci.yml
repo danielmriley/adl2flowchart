@@ -29,6 +29,9 @@ jobs:
       - name: Build
         run: cargo build --release --workspace
       - name: Test
+        # `prop_encoder_vs_interp` can flake on the known-open SOUNDNESS_PROOF
+        # §8 1c (unindexed WholeDR false PROVEN SUBSET). That is not a
+        # dump-formula regression. Do not skip the test or lower PROPTEST_CASES.
         run: cargo test --release --workspace
 
   legacy:
@@ -45,11 +48,11 @@ jobs:
       - name: Golden suite + corpus sweep + z3 spike
         run: make -C legacy_parser test
 
-  # P2 C++ syntax + sema HIR dumps (ADR-010). Stock cmake + g++; no bison/flex.
-  # Dump-diff gates build Rust smash2 as forever oracle (--no-default-features
-  # so the job does not need libz3; dump-ast is syntax-only, dump-hir is sema).
+  # P3 C++ syntax + sema + formula/interp/axioms (ADR-010). Stock cmake + g++;
+  # no bison/flex. Dump-diff / run-diff gates build Rust smash2 as forever
+  # oracle (--no-default-features so the job does not need libz3).
   adl2-cpp:
-    name: adl2-cpp (P2 dump-ast + dump-hir gates)
+    name: adl2-cpp (P3 dump-ast + dump-hir + formula + interp + axioms gates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +74,12 @@ jobs:
         run: cpp/scripts/dump_ast_corpus_gate.sh
       - name: Dump-hir/quantities oracle gate (vs Rust smash2)
         run: SKIP_BUILD=1 cpp/scripts/dump_hir_corpus_gate.sh
+      - name: Dump-formula oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
+      - name: Interpreter run oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
+      - name: Dump-axioms oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
 
   # Rust smash2 is the forever oracle for the C++ port (ADR-010).
   # Keep this green alongside adl2-cpp; do not remove or weaken it.

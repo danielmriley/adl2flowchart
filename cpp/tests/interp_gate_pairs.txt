@@ -1,0 +1,7 @@
+# P3 interpreter run-parity allowlist vs Rust smash2 (fail-closed).
+# Each line: <adl> <jsonl>  (paths relative to repo root).
+# Compared: stdout lines starting with "event " only (cutflow/histo deferred).
+# Claimed pair count is pinned (EXPECTED_PAIRS in cpp/scripts/interp_run_gate.sh).
+cpp/tests/fixtures/tiny.adl cpp/tests/fixtures/tiny_events.jsonl
+examples/tutorials/ex00_helloworld.adl cpp/tests/fixtures/ex00_events.jsonl
+examples/tutorials/ex01_selection.adl reimplementation/adl2/crates/adl-difftest/tests/fixtures/ex02_events.jsonl

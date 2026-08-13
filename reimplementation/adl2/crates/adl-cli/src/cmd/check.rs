@@ -5,10 +5,13 @@
 //! error-severity diagnostics, else 0.
 
 use crate::cmd::{CliError, read_file, unit_name};
-use adl_sema::{ExtDecls, analyze_str, hir_dump, quantity_table_dump};
+use adl_axioms::{dump_axioms, emit_axioms};
+use adl_formula::{dump_encoded, encode_regions};
+use adl_sema::{ExtDecls, QuantityId, analyze_str, hir_dump, quantity_table_dump};
 use adl_syntax::Severity;
 use adl_syntax::diag::{has_errors, render};
 use adl_syntax::span::LineMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -18,6 +21,8 @@ pub fn run(
     dump_ast: bool,
     dump_hir: bool,
     dump_quantities: bool,
+    dump_formula: bool,
+    dump_axioms_flag: bool,
     json: bool,
 ) -> Result<ExitCode, CliError> {
     if json {
@@ -35,12 +40,24 @@ pub fn run(
         }
         // analyze_str merges parse diagnostics in front of sema's, so one
         // resolve pass surfaces both lexical/grammar and resolution issues.
-        let hir = analyze_str(&src, &name, &ext);
+        let mut hir = analyze_str(&src, &name, &ext);
         if dump_hir {
             print!("{}", hir_dump(&hir));
         }
         if dump_quantities {
             print!("{}", quantity_table_dump(&hir));
+        }
+        if dump_formula {
+            let regions = encode_regions(&mut hir);
+            print!("{}", dump_encoded(&hir, &regions));
+        }
+        if dump_axioms_flag {
+            let _regions = encode_regions(&mut hir);
+            let qs: BTreeSet<QuantityId> = (0..hir.table.quantities().len() as u32)
+                .map(QuantityId)
+                .collect();
+            let set = emit_axioms(&mut hir, &ext, &qs);
+            print!("{}", dump_axioms(&hir, &set));
         }
 
         if !hir.diags.is_empty() {

@@ -9,15 +9,15 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | CMake target | Rust crate | Status | Depends on |
 |---|---|---|---|
 | `adl2_syntax` | `adl-syntax` | **filled** (P1) | — |
-| `adl2_sema` | `adl-sema` | **filled** (P2) | `adl2_syntax` (**PRIVATE** includes; `LINK_ONLY` at link) |
-| `adl2_formula` | `adl-formula` | stub | `adl2_sema` (PUBLIC) |
-| `adl2_interp` | `adl-interp` | stub | `adl2_sema` (PUBLIC) |
-| `adl2_axioms` | `adl-axioms` | stub | `adl2_formula` (PUBLIC) |
+| `adl2_sema` | `adl-sema` | **filled** (P2; Rat/NumVal in P3) | `adl2_syntax` (**PRIVATE** includes; `LINK_ONLY` at link) |
+| `adl2_formula` | `adl-formula` | **filled** (P3) | `adl2_sema` (PUBLIC) |
+| `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
+| `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | stub | `adl2_axioms` (PUBLIC) |
 | `adl2_analysis` | `adl-analysis` | stub | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | stub | `adl2_analysis` (PUBLIC, tiny) |
 | `adl2_viz` | `adl-viz` | stub | `adl2_sema` (PUBLIC; HIR only) |
-| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | `adl2_syntax` + `adl2_sema` (P2 dumps) |
+| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms |
 | `adl2_util` | _(optional)_ | stub | — |
 
 There is **no** `libadl2_cpp` / monolithic static blob. The CMake `project()`
@@ -38,8 +38,8 @@ viz reads HIR only; cli wires modules.
 4. **certify stays a small trusted kernel** — no parser/analysis sprawl.
 5. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
 6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
-   P2 stays inside **sema** (+ dump/CLI glue + a small lexer-note parity fix
-   in syntax). Formula / interp / analysis remain later phases.
+   P3 fills **formula / interp / axioms**. Solver / analysis / certify / viz
+   remain later phases.
 
 ## Include policy
 
@@ -73,4 +73,5 @@ cpp/
   BISON_MAP.md                           collaborator map (owned by syntax)
 ```
 
-Namespaces follow modules: `adl2::syntax`, `adl2::sema`, …
+Namespaces follow modules: `adl2::syntax`, `adl2::sema`, `adl2::formula`,
+`adl2::interp`, `adl2::axioms`, …

@@ -41,6 +41,31 @@ add_test(NAME smash2_cpp_dump_ast_bins_and_path
 add_test(NAME adl2_sema_identity
   COMMAND adl2_sema_identity)
 
+add_executable(adl2_p3_unit p3.cpp)
+target_link_libraries(adl2_p3_unit PRIVATE adl2_sema adl2_syntax adl2_formula adl2_interp adl2_axioms)
+target_compile_options(adl2_p3_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_p3_unit
+  COMMAND adl2_p3_unit)
+
+add_test(NAME formula_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_formula_corpus_gate.sh)
+set_property(TEST formula_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
+add_test(NAME interp_gate_pair_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/interp_run_gate.sh)
+set_property(TEST interp_gate_pair_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
+add_test(NAME axioms_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_axioms_corpus_gate.sh)
+set_property(TEST axioms_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}
@@ -62,3 +87,6 @@ set_tests_properties(smash2_cpp_bare_check_parse_only_note PROPERTIES
 
 set_tests_properties(adl2_sema_identity PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=128 FAIL=0")
+
+set_tests_properties(adl2_p3_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")

@@ -43,6 +43,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Crate identity marker used by the bootstrap smoke test.
 pub const CRATE_NAME: &str = "adl-axioms";
 
+mod dump;
+pub use dump::dump_axioms;
+
 /// Sound over-approximation of π for range axioms: an axiom bound must
 /// be ≥ the true π, and `3.141592653589793 < π`, so we widen by one ulp.
 pub const PI_UPPER: f64 = 3.141_592_653_589_794;

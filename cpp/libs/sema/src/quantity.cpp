@@ -301,6 +301,57 @@ Absence QuantityTable::absence(QuantityId q) const {
   return Absence::Soft;
 }
 
+bool QuantityTable::whole_pair_legs(QuantityId q, AngKind& kind, CollectionId& a,
+                                    CollectionId& b) const {
+  const Quantity& qq = quantity(q);
+  if (qq.kind != QuantityKind::AngularSep) return false;
+  if (qq.a.kind != ParticleKind::Whole || qq.b.kind != ParticleKind::Whole) {
+    return false;
+  }
+  kind = qq.ang;
+  a = qq.a.coll;
+  b = qq.b.coll;
+  return true;
+}
+
+bool QuantityTable::has_unindexed_leg(QuantityId q) const {
+  const Quantity& qq = quantity(q);
+  if (qq.kind != QuantityKind::AngularSep) return false;
+  return qq.a.kind == ParticleKind::Whole || qq.b.kind == ParticleKind::Whole;
+}
+
+void QuantityTable::existence_floor(
+    QuantityId q, std::map<CollectionId, std::uint32_t>& out) const {
+  auto need = [&](CollectionId coll, std::uint32_t i) {
+    auto it = out.find(coll);
+    if (it == out.end()) out.emplace(coll, i);
+    else if (i > it->second) it->second = i;
+  };
+  auto floor_need = [](const ElemIndex& index) -> std::optional<std::uint32_t> {
+    if (index.kind == ElemIndexKind::FromFront) return index.n;
+    if (index.n >= 1) return index.n - 1;
+    return std::nullopt;
+  };
+  const Quantity& qq = quantity(q);
+  switch (qq.kind) {
+    case QuantityKind::ElemProp:
+      if (auto n = floor_need(qq.index)) need(qq.coll, *n);
+      break;
+    case QuantityKind::AngularSep:
+      for (const ParticleRef* p : {&qq.a, &qq.b}) {
+        if (p->kind == ParticleKind::Elem) {
+          if (auto n = floor_need(p->index)) need(p->coll, *n);
+        }
+      }
+      break;
+    case QuantityKind::Present:
+      existence_floor(qq.inner, out);
+      break;
+    default:
+      break;
+  }
+}
+
 bool QuantityTable::filter_chain(CollectionId id, Symbol& base,
                                  std::vector<ElemPredId>& preds) const {
   preds.clear();

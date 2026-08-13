@@ -1,8 +1,14 @@
-# `adl2_interp` (stub)
+# `adl2_interp`
 
-Cutflow / membership interpreter (Rust adl-interp). Parallel to formula after sema.
+Reference interpreter: Event → bool/values (Rust `adl-interp`, SPEC_LANGUAGE §4).
 
-**P1:** empty/stub library so the Rust crate map exists as CMake targets.
-Do not land core logic here until this module's phase.
+JSONL loader enforces pT-descending collections and the NNEG/TAG domain
+the axioms assume. Two-valued `run_event` matches smash2 `run` event lines
+(`PASS` / `fail` / `ERROR:` + bins). Kleene three-valued membership
+(`region3`) is deferred to a later phase (witness validation).
 
 Headers: `libs/interp/include/adl2/interp/`
+
+Oracle: `smash2_cpp run` vs `smash2 run` on pinned pairs
+(`cpp/tests/interp_gate_pairs.txt`); compared lines start with `event `
+(cutflow/histo tables deferred).

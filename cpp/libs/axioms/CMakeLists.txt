@@ -1,5 +1,7 @@
-# adl2_axioms — theory axioms over formula IR (Rust adl-axioms). P1: stub.
-adl2_add_library(adl2_axioms STUB
-  SOURCES src/stub.cpp
+# adl2_axioms — audited axiom catalog + emitters (Rust adl-axioms / ADR-008).
+adl2_add_library(adl2_axioms
+  SOURCES
+    src/catalog.cpp
+    src/emit.cpp
   PUBLIC_DEPS adl2_formula
 )

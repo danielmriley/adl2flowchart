@@ -1,9 +1,15 @@
+#include "adl2/axioms/axioms.hpp"
+#include "adl2/formula/dump.hpp"
+#include "adl2/formula/encode.hpp"
+#include "adl2/interp/interp.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -11,19 +17,23 @@ namespace {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P2: adl2_sema HIR + identity)\n"
+      << "smash2_cpp — ADL2 C++ port (P3: interp + formula + axioms)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
-      << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities] <file.adl>\n"
+      << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
+         "--dump-formula|--dump-axioms] <file.adl>\n"
+      << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
       << "\n"
-      << "Bare `check` (no dump flag) is parse-only in P2 — it does not run\n"
-      << "name resolution. Rust `smash2 check` always resolves. This is an\n"
-      << "intentional contract, not dump parity. Use --dump-hir or\n"
-      << "--dump-quantities to run sema.\n"
+      << "Bare `check` (no dump flag) is parse-only — it does not run name\n"
+      << "resolution. Rust `smash2 check` always resolves. This is an\n"
+      << "intentional contract, not dump parity. Use --dump-hir / --dump-formula\n"
+      << "to run sema (+ encode). `run` prints smash2-style event lines only\n"
+      << "(no cutflow/histo tables).\n"
       << "\n"
-      << "Modular libs (see cpp/MODULES.md): cli wires adl2_syntax + adl2_sema;\n"
-      << "no core logic in the executable. Rust smash2 is the forever oracle.\n";
+      << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
+      << "interp/axioms; no core logic in the executable. Rust smash2 is the\n"
+      << "forever oracle.\n";
 }
 
 std::string read_file(const std::string& path) {
@@ -40,7 +50,7 @@ std::string unit_name(const std::string& path) {
   return path.substr(slash + 1);
 }
 
-enum class DumpKind { None, Ast, Hir, Quantities };
+enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
 
 int cmd_check(const std::string& path, DumpKind dump) {
   std::string src = read_file(path);
@@ -58,19 +68,31 @@ int cmd_check(const std::string& path, DumpKind dump) {
     return result.diags.has_errors() ? 1 : 0;
   }
 
-  if (dump == DumpKind::Hir || dump == DumpKind::Quantities) {
-    auto hir = adl2::sema::analyze_str(src, unit_name(path),
-                                      adl2::sema::ExtDecls::legacy());
+  if (dump == DumpKind::Hir || dump == DumpKind::Quantities || dump == DumpKind::Formula ||
+      dump == DumpKind::Axioms) {
+    auto hir = adl2::sema::analyze_str(src, unit_name(path), adl2::sema::ExtDecls::legacy());
     if (dump == DumpKind::Hir) {
       std::cout << adl2::sema::hir_dump(hir);
-    } else {
+    } else if (dump == DumpKind::Quantities) {
       std::cout << adl2::sema::quantity_table_dump(hir);
+    } else if (dump == DumpKind::Formula) {
+      auto regions = adl2::formula::encode_regions(hir);
+      std::cout << adl2::formula::dump_encoded(hir, regions);
+    } else {
+      auto regions = adl2::formula::encode_regions(hir);
+      (void)regions;
+      std::set<adl2::sema::QuantityId> qs;
+      for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+        qs.insert(adl2::sema::QuantityId{i});
+      }
+      auto set = adl2::axioms::emit_axioms(hir, adl2::sema::ExtDecls::legacy(), qs);
+      std::cout << adl2::axioms::dump_axioms(hir, set);
     }
     return adl2::sema::has_errors(hir.diags) ? 1 : 0;
   }
 
   std::cerr
-      << "note: smash2_cpp check is parse-only (P2); it does not resolve. "
+      << "note: smash2_cpp check is parse-only; it does not resolve. "
       << "Rust smash2 check always runs sema. Use --dump-hir to resolve.\n";
   auto result = adl2::syntax::parse_source(src);
   std::cout << "check: " << path << "\n";
@@ -83,6 +105,40 @@ int cmd_check(const std::string& path, DumpKind dump) {
     return 1;
   }
   std::cout << "check: ok\n";
+  return 0;
+}
+
+int cmd_run(const std::string& adl_path, const std::string& events_path) {
+  std::string src = read_file(adl_path);
+  if (src.empty() && !std::ifstream(adl_path).good()) {
+    std::cerr << "error: cannot read file: " << adl_path << "\n";
+    return 2;
+  }
+  std::string jsonl = read_file(events_path);
+  if (jsonl.empty() && !std::ifstream(events_path).good()) {
+    std::cerr << "error: cannot read file: " << events_path << "\n";
+    return 2;
+  }
+  auto ext = adl2::sema::ExtDecls::legacy();
+  auto hir = adl2::sema::analyze_str(src, unit_name(adl_path), ext);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << unit_name(adl_path) << ": cannot run — resolve errors\n";
+    return 1;
+  }
+  std::vector<adl2::interp::Event> events;
+  adl2::interp::EventError err;
+  if (!adl2::interp::read_jsonl(jsonl, ext, events, err)) {
+    std::cerr << events_path << ": " << err.to_string() << "\n";
+    return 1;
+  }
+  adl2::interp::Interp interp(hir, ext);
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    auto results = interp.run_event(events[i]);
+    for (const auto& r : results) {
+      std::cout << "event " << i << ": " << r.name << " -> "
+                << adl2::interp::format_region_text(r) << "\n";
+    }
+  }
   return 0;
 }
 
@@ -109,6 +165,10 @@ int main(int argc, char** argv) {
         dump = DumpKind::Hir;
       } else if (arg == "--dump-quantities") {
         dump = DumpKind::Quantities;
+      } else if (arg == "--dump-formula") {
+        dump = DumpKind::Formula;
+      } else if (arg == "--dump-axioms") {
+        dump = DumpKind::Axioms;
       } else if (path.empty()) {
         path = arg;
       } else {
@@ -122,6 +182,14 @@ int main(int argc, char** argv) {
       return 2;
     }
     return cmd_check(path, dump);
+  }
+  if (cmd == "run") {
+    if (argc != 4) {
+      std::cerr << "error: run requires <file.adl> <events.jsonl>\n";
+      print_help(argv[0]);
+      return 2;
+    }
+    return cmd_run(argv[2], argv[3]);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

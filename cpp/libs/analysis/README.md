@@ -11,7 +11,7 @@ P4 fills:
   regions accept the realized event; otherwise Candidate / Possibly
 - Compact `dump_verdicts` (`A vs B: KIND`)
 
-Not claimed: independent Farkas certification (kernel exists, not wired),
-reconciliation, sampling/refute gates, `--combine` bundles.
+Not claimed: `--combine` certificate bundles. Sampling/refute gates and
+`--cross` reconciliation (XSUB/XEQ) are wired.
 
 Headers: `libs/analysis/include/adl2/analysis/`

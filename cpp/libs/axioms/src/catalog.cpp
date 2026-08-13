@@ -1,5 +1,7 @@
 #include "adl2/axioms/axioms.hpp"
 
+#include "adl2/formula/lin.hpp"
+
 namespace adl2::axioms {
 
 const CatalogEntry* catalog() {
@@ -151,6 +153,18 @@ const CatalogEntry* catalog() {
 }
 
 int catalog_size() { return AXIOM_COUNT; }
+
+adl2::formula::QFormula derived_size_le(adl2::sema::QuantityId sub,
+                                        adl2::sema::QuantityId sup) {
+  using adl2::formula::LinAtom;
+  using adl2::formula::QFormula;
+  using adl2::formula::Rel;
+  using adl2::sema::Rat;
+  std::vector<LinAtom::Term> ts;
+  ts.emplace_back(Rat::one(), sub);
+  ts.emplace_back(Rat::from_i64(-1), sup);
+  return QFormula::of_atom(LinAtom::make(std::move(ts), Rel::Le, Rat::zero()));
+}
 
 int module_anchor() { return 3; }
 

@@ -443,4 +443,151 @@ bool requires_present(const adl2::sema::HNode& pred, adl2::sema::PropId prop) {
   }
 }
 
+namespace {
+
+using adl2::formula::DiagTable;
+using adl2::formula::Formula;
+using adl2::sema::CollectionId;
+using adl2::sema::HNode;
+using adl2::sema::ParticleKind;
+using adl2::sema::ParticleRef;
+using adl2::sema::Quantity;
+using adl2::sema::QuantityArgKind;
+using adl2::sema::QuantityId;
+using adl2::sema::QuantityKind;
+using adl2::sema::QuantityTable;
+using HKind = HNode::Kind;
+
+Formula lift_qformula(const QFormula& q) {
+  switch (q.kind) {
+    case QFormula::Kind::True:
+      return Formula::ttrue();
+    case QFormula::Kind::False:
+      return Formula::ffalse();
+    case QFormula::Kind::Atom:
+      return Formula::of_atom(q.atom);
+    case QFormula::Kind::And: {
+      std::vector<Formula> v;
+      v.reserve(q.items.size());
+      for (const auto& p : q.items) v.push_back(lift_qformula(p));
+      return Formula::of_and(std::move(v));
+    }
+    case QFormula::Kind::Or: {
+      std::vector<Formula> v;
+      v.reserve(q.items.size());
+      for (const auto& p : q.items) v.push_back(lift_qformula(p));
+      return Formula::of_or(std::move(v));
+    }
+  }
+  return Formula::ttrue();
+}
+
+bool particle_binder_or_reduce(const ParticleRef& p) {
+  switch (p.kind) {
+    case ParticleKind::Binder:
+    case ParticleKind::ReduceElem:
+    case ParticleKind::ThisElem:
+      return true;
+    case ParticleKind::Sum:
+      for (const auto& q : p.parts) {
+        if (particle_binder_or_reduce(q)) return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
+bool references_binder_or_reduce(const QuantityTable& table, const HNode& node) {
+  if (node.kind == HKind::Quantity) {
+    const Quantity& qq = table.quantity(node.qid);
+    if (qq.kind == QuantityKind::AngularSep) {
+      if (particle_binder_or_reduce(qq.a) || particle_binder_or_reduce(qq.b)) return true;
+    } else if (qq.kind == QuantityKind::ExternalFn) {
+      for (const auto& a : qq.args) {
+        if (a.kind == QuantityArgKind::Particle && particle_binder_or_reduce(a.particle)) {
+          return true;
+        }
+      }
+    }
+  }
+  for (const HNode* c : node.children()) {
+    if (references_binder_or_reduce(table, *c)) return true;
+  }
+  return false;
+}
+
+bool quantity_is_concrete_peer(const QuantityTable& table, QuantityId q) {
+  const Quantity& qq = table.quantity(q);
+  switch (qq.kind) {
+    case QuantityKind::ElemProp:
+    case QuantityKind::AngularSep:
+    case QuantityKind::Size:
+      return true;
+    case QuantityKind::Present:
+      return quantity_is_concrete_peer(table, qq.inner);
+    case QuantityKind::EventScalar:
+    case QuantityKind::ExternalFn:
+      return false;
+  }
+  return false;
+}
+
+bool references_concrete_peer(const QuantityTable& table, const HNode& node) {
+  if (node.kind == HKind::Quantity && quantity_is_concrete_peer(table, node.qid)) return true;
+  for (const HNode* c : node.children()) {
+    if (references_concrete_peer(table, *c)) return true;
+  }
+  return false;
+}
+
+Formula encode_pred_formula(QuantityTable& table, const HNode& node, CollectionId base,
+                            std::uint32_t index, DiagTable& diags) {
+  if (!node.tag.in_fragment) {
+    return Formula::unknown(diags.push(node.span, "opaque element-predicate conjunct"));
+  }
+  switch (node.kind) {
+    case HKind::Bool:
+      return node.bool_val ? Formula::ttrue() : Formula::ffalse();
+    case HKind::And: {
+      std::vector<Formula> v;
+      v.reserve(node.items.size());
+      for (const auto& p : node.items) {
+        v.push_back(encode_pred_formula(table, p, base, index, diags));
+      }
+      return Formula::of_and(std::move(v));
+    }
+    case HKind::Or: {
+      std::vector<Formula> v;
+      v.reserve(node.items.size());
+      for (const auto& p : node.items) {
+        v.push_back(encode_pred_formula(table, p, base, index, diags));
+      }
+      return Formula::of_or(std::move(v));
+    }
+    case HKind::Not:
+      return encode_pred_formula(table, *node.a, base, index, diags).fnot();
+    case HKind::Cmp:
+    case HKind::Band:
+      if (auto qf = encode_pred_exact(table, node, base, index)) {
+        return lift_qformula(*qf);
+      }
+      return Formula::unknown(
+          diags.push(node.span, "non-linear or opaque comparison in element predicate"));
+    default:
+      return Formula::unknown(diags.push(node.span, "unsupported element-predicate shape"));
+  }
+}
+
+}  // namespace
+
+std::optional<adl2::formula::Formula> encode_elem_pred_generic(
+    adl2::sema::QuantityTable& table, const adl2::sema::HNode& node,
+    adl2::sema::CollectionId base, std::uint32_t index, adl2::formula::DiagTable& diags) {
+  if (references_binder_or_reduce(table, node) || references_concrete_peer(table, node)) {
+    return std::nullopt;
+  }
+  return encode_pred_formula(table, node, base, index, diags);
+}
+
 }  // namespace adl2::axioms

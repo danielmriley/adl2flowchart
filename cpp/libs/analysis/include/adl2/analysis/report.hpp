@@ -118,6 +118,36 @@ struct BinCheckReport {
   CoverageStatus coverage = CoverageStatus::Unknown;
 };
 
+/// What reconciliation concluded about one candidate pair of collections.
+enum class ReconOutcome {
+  Equivalent,
+  ARefinesB,
+  BRefinesA,
+  Unrelated,
+  Skipped,
+};
+
+const char* recon_outcome_symbol(ReconOutcome o);
+/// Catalog family emitted for this outcome, or nullptr.
+const char* recon_outcome_axiom(ReconOutcome o);
+
+struct ReconReport {
+  std::string a;
+  std::string b;
+  ReconOutcome outcome = ReconOutcome::Unrelated;
+  std::optional<std::string> base;
+  std::string note;
+  std::vector<std::string> a_units;
+  std::vector<std::string> b_units;
+};
+
+struct ReconNearMissReport {
+  std::string a;
+  std::string b;
+  std::string base_a;
+  std::string base_b;
+};
+
 struct AxiomUse {
   std::string id;
   std::string statement;
@@ -148,10 +178,16 @@ struct FailOn {
   static bool parse(const std::string& s, FailOn& out, std::string& err);
 };
 
-/// Presentation flags for the human report (`--matrix`, color).
+/// Which reconciliation ledger rows to show (`--recon`).
+enum class ReconFilter { All, Related };
+
+bool parse_recon_filter(const std::string& s, ReconFilter& out, std::string& err);
+
+/// Presentation flags for the human report (`--matrix`, color, `--recon`).
 struct RenderOptions {
   bool color = false;
   bool force_matrix = false;
+  ReconFilter recon = ReconFilter::All;
 };
 
 struct Report {
@@ -166,6 +202,8 @@ struct Report {
   std::vector<RegionReport> regions;
   std::vector<PairReport> pairwise;
   std::vector<BinCheckReport> bin_checks;
+  std::vector<ReconReport> reconciliations;
+  std::vector<ReconNearMissReport> recon_near_misses;
   std::vector<AxiomUse> axioms_used;
   std::vector<std::string> internal_diagnostics;
   std::vector<Diagnostic> diagnostics;

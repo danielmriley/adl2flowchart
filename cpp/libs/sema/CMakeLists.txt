@@ -35,6 +35,7 @@ adl2_add_library(adl2_sema
     src/resolve.cpp
     src/resolve_expr.cpp
     src/objects.cpp
+    src/merge.cpp
     ${ADL2_EXT_EMBED}
   PRIVATE_DEPS adl2_syntax
 )

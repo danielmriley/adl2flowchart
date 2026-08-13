@@ -8,6 +8,7 @@
 #include "adl2/sema/hir.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -107,6 +108,27 @@ AxiomSet emit_axioms(adl2::sema::Hir& hir, const adl2::sema::ExtDecls& ext,
 
 /// Canonical dump of emitted instances (id + description + formula).
 std::string dump_axioms(const adl2::sema::Hir& hir, const AxiomSet& set);
+
+/// Reserved element index used ONLY by cross-collection reconciliation.
+/// Unreachable from source: every resolver path clamps to
+/// `MAX_SOURCE_ELEM_INDEX` (strictly below).
+inline constexpr std::uint32_t GENERIC_INDEX = 0xFFFFFFFFu;
+static_assert(GENERIC_INDEX > adl2::sema::MAX_SOURCE_ELEM_INDEX,
+              "generic-element sentinel must sit above every source index");
+
+/// Canonical `size(sub) <= size(sup)` encoding shared by SUB and XSUB.
+/// `sub` and `sup` MUST be distinct `Quantity::Size` ids.
+adl2::formula::QFormula derived_size_le(adl2::sema::QuantityId sub,
+                                        adl2::sema::QuantityId sup);
+
+/// Encode a filter predicate onto `base[index]` (pass `GENERIC_INDEX`) as an
+/// EXACT three-valued Formula. Opaque leaves become Unknown — never dropped.
+/// Returns nullopt if the predicate references a binder/reduce or a concrete
+/// peer element (fail-closed: the whole reconciliation pair is NO-RELATION).
+std::optional<adl2::formula::Formula> encode_elem_pred_generic(
+    adl2::sema::QuantityTable& table, const adl2::sema::HNode& node,
+    adl2::sema::CollectionId base, std::uint32_t index,
+    adl2::formula::DiagTable& diags);
 
 int module_anchor();
 

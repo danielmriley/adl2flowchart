@@ -11,5 +11,6 @@ adl2_add_library(adl2_analysis
     src/lib.cpp
     src/witness.cpp
     src/refute.cpp
+    src/reconcile.cpp
   PUBLIC_DEPS adl2_solver adl2_interp adl2_certify
 )

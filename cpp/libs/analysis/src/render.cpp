@@ -796,6 +796,89 @@ void render_bins(const Report& report, const Style& st, std::ostringstream& s) {
   }
 }
 
+std::string recon_label(const std::string& name, const std::vector<std::string>& units) {
+  if (units.empty()) return name;
+  std::string joined;
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    if (i) joined += ", ";
+    joined += units[i];
+  }
+  return name + " [" + joined + "]";
+}
+
+void render_reconciliation(const Report& report, const Style& st, ReconFilter filter,
+                           std::ostringstream& s) {
+  if (report.reconciliations.empty() && report.recon_near_misses.empty()) return;
+  s << "\n" << st.head("== collection reconciliation ==") << "\n";
+
+  std::vector<const ReconReport*> rows;
+  for (const auto& r : report.reconciliations) {
+    if (filter == ReconFilter::All || recon_outcome_axiom(r.outcome) != nullptr) {
+      rows.push_back(&r);
+    }
+  }
+  std::vector<std::pair<std::string, std::string>> labels;
+  labels.reserve(rows.size());
+  for (const auto* r : rows) {
+    labels.emplace_back(recon_label(r->a, r->a_units), recon_label(r->b, r->b_units));
+  }
+  std::size_t a_w = 0;
+  std::size_t b_w = 0;
+  for (const auto& lb : labels) {
+    a_w = std::max(a_w, utf8_chars(lb.first));
+    b_w = std::max(b_w, utf8_chars(lb.second));
+  }
+  std::size_t related = 0;
+  for (const auto& r : report.reconciliations) {
+    if (recon_outcome_axiom(r.outcome)) ++related;
+  }
+  if (!report.reconciliations.empty()) {
+    s << "  " << related << " of " << report.reconciliations.size() << " candidate pair(s) related";
+    if (filter == ReconFilter::Related) {
+      s << "; showing the " << rows.size()
+        << " related row(s) only (--recon=all for every candidate)";
+    }
+    s << "\n";
+    s << "  legend: `C<id>#name [file]` = the collection with that internal id, named `name`, "
+         "declared in `file`; ≡ equivalent (XEQ)  ⊆/⊇ refines (XSUB)  ? unrelated  ⊘ skipped\n";
+  }
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const auto* r = rows[i];
+    const char* ax = recon_outcome_axiom(r->outcome);
+    std::string tail;
+    if (ax && r->base) {
+      tail = std::string(ax) + "  (base " + *r->base + ")";
+    } else if (ax) {
+      tail = ax;
+    }
+    std::string note;
+    if (!r->note.empty()) note = "— " + r->note;
+    std::string line = "  " + pad_right(labels[i].first, a_w) + "  " +
+                       recon_outcome_symbol(r->outcome) + "  " +
+                       pad_right(labels[i].second, b_w) + "  " + tail + note;
+    while (!line.empty() && line.back() == ' ') line.pop_back();
+    s << line << "\n";
+  }
+  for (const auto& n : report.recon_near_misses) {
+    s << "  note: " << n.a << " and " << n.b
+      << " have identical cut structure but different bases (`" << n.base_a << "` vs `"
+      << n.base_b
+      << "`); they cannot be related unless those bases are known to be the same input\n";
+  }
+}
+
+bool pair_is_cross(const PairReport& p) {
+  auto last_unit = [](const std::string& name, std::string& unit) -> bool {
+    auto pos = name.rfind("::");
+    if (pos == std::string::npos) return false;
+    unit = name.substr(0, pos);
+    return true;
+  };
+  std::string fa, fb;
+  if (!last_unit(p.a, fa) || !last_unit(p.b, fb)) return false;
+  return fa != fb;
+}
+
 }  // namespace
 
 std::string Report::render_default(const RenderOptions& opts) const {
@@ -826,6 +909,7 @@ std::string Report::render_default(const RenderOptions& opts) const {
   render_matrix(*this, st, empty_set, opts.force_matrix, s);
   render_pairwise(*this, st, empty_set, s);
   render_bins(*this, st, s);
+  render_reconciliation(*this, st, opts.recon, s);
 
   s << "\n" << st.head("== axioms used ==") << "\n";
   if (axioms_used.empty()) {
@@ -874,6 +958,31 @@ std::string Report::render_default(const RenderOptions& opts) const {
     << (pairwise.size() == 1 ? "" : "s") << " — " << counts[0] << " proven disjoint, "
     << counts[1] << " proven overlapping" << candidate_note << ", " << counts[3]
     << " possibly overlapping, " << counts[4] << " unknown\n";
+  bool namespaced = false;
+  for (const auto& r : regions) {
+    if (r.name.find("::") != std::string::npos) {
+      namespaced = true;
+      break;
+    }
+  }
+  if (namespaced) {
+    std::size_t cross = 0, intra = 0, cd = 0, co = 0;
+    for (const auto& p : pairwise) {
+      if (pair_is_cross(p)) {
+        ++cross;
+        if (p.kind == VerdictKind::ProvenDisjoint) ++cd;
+        if (p.kind == VerdictKind::ProvenOverlapping ||
+            p.kind == VerdictKind::CandidateOverlapping) {
+          ++co;
+        }
+      } else {
+        ++intra;
+      }
+    }
+    s << "  cross-file: " << cross << " of " << pairwise.size()
+      << " pairs span two analyses (" << cd << " proven disjoint, " << co
+      << " overlapping/candidate); the other " << intra << " are intra-analysis\n";
+  }
   return s.str();
 }
 

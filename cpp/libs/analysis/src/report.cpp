@@ -49,6 +49,57 @@ const char* empty_status_human(EmptyStatus s) {
   return "?";
 }
 
+const char* recon_outcome_symbol(ReconOutcome o) {
+  switch (o) {
+    case ReconOutcome::Equivalent:
+      return "≡";
+    case ReconOutcome::ARefinesB:
+      return "⊆";
+    case ReconOutcome::BRefinesA:
+      return "⊇";
+    case ReconOutcome::Unrelated:
+      return "?";
+    case ReconOutcome::Skipped:
+      return "⊘";
+  }
+  return "?";
+}
+
+const char* recon_outcome_axiom(ReconOutcome o) {
+  switch (o) {
+    case ReconOutcome::Equivalent:
+      return "XEQ";
+    case ReconOutcome::ARefinesB:
+    case ReconOutcome::BRefinesA:
+      return "XSUB";
+    case ReconOutcome::Unrelated:
+    case ReconOutcome::Skipped:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+bool parse_recon_filter(const std::string& s, ReconFilter& out, std::string& err) {
+  std::string tok = s;
+  auto b = tok.find_first_not_of(" \t");
+  auto e = tok.find_last_not_of(" \t");
+  if (b == std::string::npos) {
+    err = "unknown --recon value `` (all|related)";
+    return false;
+  }
+  tok = tok.substr(b, e - b + 1);
+  if (tok == "all") {
+    out = ReconFilter::All;
+    return true;
+  }
+  if (tok == "related") {
+    out = ReconFilter::Related;
+    return true;
+  }
+  err = "unknown --recon value `" + tok + "` (all|related)";
+  return false;
+}
+
 bool FailOn::parse(const std::string& s, FailOn& out, std::string& err) {
   out = FailOn{};
   std::string tok;
@@ -274,8 +325,52 @@ std::string Report::to_json() const {
        << ", \"assumption\": \"" << json_escape(a.assumption) << "\"}";
     os << (i + 1 < axioms_used.size() ? ",\n" : "\n");
   }
-  os << "  ]\n";
-  os << "}\n";
+  os << "  ]";
+  if (!reconciliations.empty()) {
+    os << ",\n  \"reconciliations\": [\n";
+    for (std::size_t i = 0; i < reconciliations.size(); ++i) {
+      const auto& r = reconciliations[i];
+      const char* ax = recon_outcome_axiom(r.outcome);
+      os << "    {\"a\": \"" << json_escape(r.a) << "\", \"b\": \"" << json_escape(r.b)
+         << "\", \"outcome\": \"";
+      switch (r.outcome) {
+        case ReconOutcome::Equivalent:
+          os << "equivalent";
+          break;
+        case ReconOutcome::ARefinesB:
+          os << "a_refines_b";
+          break;
+        case ReconOutcome::BRefinesA:
+          os << "b_refines_a";
+          break;
+        case ReconOutcome::Unrelated:
+          os << "unrelated";
+          break;
+        case ReconOutcome::Skipped:
+          os << "skipped";
+          break;
+      }
+      os << "\"";
+      if (r.base) os << ", \"base\": \"" << json_escape(*r.base) << "\"";
+      if (!r.note.empty()) os << ", \"note\": \"" << json_escape(r.note) << "\"";
+      if (ax) os << ", \"axiom\": \"" << ax << "\"";
+      os << "}";
+      os << (i + 1 < reconciliations.size() ? ",\n" : "\n");
+    }
+    os << "  ]";
+  }
+  if (!recon_near_misses.empty()) {
+    os << ",\n  \"recon_near_misses\": [\n";
+    for (std::size_t i = 0; i < recon_near_misses.size(); ++i) {
+      const auto& n = recon_near_misses[i];
+      os << "    {\"a\": \"" << json_escape(n.a) << "\", \"b\": \"" << json_escape(n.b)
+         << "\", \"base_a\": \"" << json_escape(n.base_a) << "\", \"base_b\": \""
+         << json_escape(n.base_b) << "\"}";
+      os << (i + 1 < recon_near_misses.size() ? ",\n" : "\n");
+    }
+    os << "  ]";
+  }
+  os << "\n}\n";
   return os.str();
 }
 

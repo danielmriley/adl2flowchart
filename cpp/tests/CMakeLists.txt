@@ -240,3 +240,23 @@ add_test(NAME adl2_analysis_gates
 
 set_tests_properties(adl2_analysis_gates PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_merge_unit merge.cpp)
+target_link_libraries(adl2_merge_unit PRIVATE adl2_sema adl2_syntax)
+target_compile_options(adl2_merge_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_merge_unit
+  COMMAND adl2_merge_unit)
+
+set_tests_properties(adl2_merge_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_analysis_cross analysis_cross.cpp)
+target_link_libraries(adl2_analysis_cross PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_cross PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_cross
+  COMMAND adl2_analysis_cross)
+
+set_tests_properties(adl2_analysis_cross PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")

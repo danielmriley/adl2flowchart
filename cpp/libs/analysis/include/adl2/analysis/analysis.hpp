@@ -11,7 +11,8 @@
 /// stable; CLI `verify` passes `certify=true` (Rust default). Sampling /
 /// refute gates are off in the library (`sample_gate=0`, `refute_gate=false`);
 /// CLI `verify` turns them on (`64` / true; `--no-refute-gate` disables the
-/// adversarial search). Reconcile (`--cross`) is not claimed here.
+/// adversarial search). `opts.reconcile` (CLI `--cross`) proves same-base
+/// collection refinements and asserts derived XSUB/XEQ size facts.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver
@@ -55,8 +56,9 @@ struct AnalysisOptions {
   bool combine = false;
 };
 
-/// Encode `hir` and run interval + optional solver pairwise. Does not parse
-/// or reconcile. When `opts.sample_gate > 0` / `opts.refute_gate`, UNSAT-side
+/// Encode `hir` and run interval + optional solver pairwise. Does not parse.
+/// When `opts.reconcile`, same-base filtered collections are related via
+/// derived size facts (XSUB/XEQ) before pairwise. When `opts.sample_gate > 0` / `opts.refute_gate`, UNSAT-side
 /// PROVEN claims are checked through the interpreter and demoted on hit.
 /// When `opts.certify` is true, solver-UNSAT
 /// disjointness/emptiness is independently replayed; `Some(false)` demotes

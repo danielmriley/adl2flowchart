@@ -8,6 +8,7 @@
 #include "adl2/syntax/parser.hpp"
 #include "adl2/viz/viz.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
@@ -16,6 +17,9 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
+#include <unordered_map>
+#include <unordered_set>
 #include <unistd.h>
 #include <vector>
 
@@ -36,8 +40,9 @@ void print_help(const char* argv0) {
       << "  " << argv0 << " run [--json] [--histos DIR] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
-         "          [--dump-verdicts] [--json] [--explain] [--matrix]\n"
-         "          [--fail-on=KINDS] <file.adl>\n"
+         "          [--cross] [--recon=all|related] [--dump-verdicts]\n"
+         "          [--json] [--explain] [--matrix] [--fail-on=KINDS]\n"
+         "          <file.adl|dir>...\n"
       << "  " << argv0 << " objects <file.adl>\n"
       << "  " << argv0 << " ingest  (not ported: no ROOT / adl-ingest)\n"
       << "\n"
@@ -51,9 +56,11 @@ void print_help(const char* argv0) {
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
       << "region3 witness + sampling/refute gates (sampling 64 events; refute on).\n"
       << "`--no-certify` skips independent replay. `--no-refute-gate` skips the\n"
-      << "adversarial probe search. `--cross` / `--combine` are not ported yet.\n"
+      << "adversarial probe search. `--cross` merges all inputs into one identity\n"
+      << "space and reconciles same-base filtered collections (XSUB/XEQ).\n"
+      << "`--combine` / smash2-recheck bundles are not ported yet.\n"
       << "Default stdout is the human report; `--dump-verdicts` prints one\n"
-      << "`A vs B: KIND` line.\n"
+      << "`A vs B: KIND` line. Directories expand to sorted `*.adl` files.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
       << "interp/axioms/viz/analysis; no core logic in the executable. Rust smash2 is the\n"
@@ -297,42 +304,131 @@ int cmd_objects(const std::string& path, bool verbose) {
   return 0;
 }
 
-int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool no_refute_gate,
-               bool dump_only, bool json, bool explain, bool matrix, const std::string& fail_on_s) {
-  std::string src = read_file(path);
-  if (src.empty() && !std::ifstream(path).good()) {
-    std::cerr << "error: cannot read file: " << path << "\n";
-    return 2;
+void warn_if_no_solver(const std::string& name, const adl2::analysis::Report& report,
+                       bool no_solver) {
+  if (!no_solver && report.solver == "none") {
+    std::cerr << name
+              << ": WARNING — no SMT solver found, so only the solver-free interval checks ran; "
+                 "overlaps and any disjoint/empty beyond simple interval bounds cap at POSSIBLY. "
+                 "Put a `z3` binary on PATH. Pass `--no-solver` to acknowledge and silence this.\n";
   }
-  std::string name = unit_name(path);
-  auto ext = adl2::sema::ExtDecls::legacy();
-  auto hir = adl2::sema::analyze_str(src, name, ext);
-  if (adl2::sema::has_errors(hir.diags)) {
-    print_sema_diags(hir.diags);
-    std::cerr << name << ": cannot verify — resolve errors\n";
-    return 1;
+  if (report.solver_degraded) {
+    std::cerr << name << ": WARNING — " << *report.solver_degraded
+              << ". Gate CI on this with --fail-on=unknown.\n";
   }
-  adl2::analysis::FailOn fail_on;
-  if (!fail_on_s.empty()) {
-    std::string err;
-    if (!adl2::analysis::FailOn::parse(fail_on_s, fail_on, err)) {
-      std::cerr << "error: " << err << "\n";
-      return 2;
+}
+
+bool expand_adl_inputs(const std::vector<std::string>& inputs, std::vector<std::string>& out,
+                       std::string& err) {
+  std::unordered_set<std::string> seen;
+  auto push_unique = [&](const std::string& p) {
+    std::string key = p;
+    std::error_code ec;
+    auto can = std::filesystem::canonical(std::filesystem::path(p), ec);
+    if (!ec) key = can.string();
+    if (!seen.insert(key).second) {
+      std::cerr << "smash2_cpp: ignoring duplicate input " << p << "\n";
+      return;
+    }
+    out.push_back(p);
+  };
+  for (const auto& p : inputs) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(p, ec)) {
+      std::vector<std::string> found;
+      for (const auto& ent : std::filesystem::directory_iterator(p, ec)) {
+        if (ec) {
+          err = "cannot read directory " + p;
+          return false;
+        }
+        if (!ent.is_regular_file()) continue;
+        if (ent.path().extension() == ".adl") found.push_back(ent.path().string());
+      }
+      std::sort(found.begin(), found.end());
+      if (found.empty()) {
+        err = "no .adl files in directory " + p;
+        return false;
+      }
+      for (const auto& f : found) push_unique(f);
+    } else {
+      push_unique(p);
     }
   }
-  adl2::analysis::AnalysisOptions opts;
-  opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
-                          : adl2::analysis::SolverChoice::Auto;
-  opts.certify = !no_certify;
-  opts.sample_gate = 64;
-  opts.refute_gate = !no_refute_gate;
-  opts.fail_on = fail_on;
+  return true;
+}
+
+std::vector<std::string> unit_labels(const std::vector<std::string>& files) {
+  auto suffix = [](const std::string& p, std::size_t k) {
+    std::vector<std::string> comps;
+    for (const auto& c : std::filesystem::path(p)) comps.push_back(c.string());
+    if (k > comps.size()) k = comps.size();
+    std::string out;
+    for (std::size_t i = comps.size() - k; i < comps.size(); ++i) {
+      if (!out.empty()) out += "/";
+      out += comps[i];
+    }
+    return out;
+  };
+  std::vector<std::string> labels;
+  labels.reserve(files.size());
+  for (const auto& f : files) labels.push_back(unit_name(f));
+  std::size_t max_k = 1;
+  for (const auto& f : files) {
+    std::size_t n = 0;
+    for (const auto& c : std::filesystem::path(f)) {
+      (void)c;
+      ++n;
+    }
+    if (n > max_k) max_k = n;
+  }
+  for (std::size_t k = 2; k <= max_k; ++k) {
+    std::unordered_map<std::string, std::size_t> counts;
+    for (const auto& l : labels) {
+      std::string lk = l;
+      for (char& c : lk) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      counts[lk]++;
+    }
+    bool unique = true;
+    for (const auto& kv : counts) {
+      if (kv.second > 1) unique = false;
+    }
+    if (unique) break;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+      std::string lk = labels[i];
+      for (char& c : lk) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (counts[lk] > 1) labels[i] = suffix(files[i], k);
+    }
+  }
+  return labels;
+}
+
+int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::string& name,
+                   const adl2::sema::ExtDecls& ext, const adl2::analysis::AnalysisOptions& opts,
+                   bool dump_only, bool json, bool explain, bool matrix, bool verbose,
+                   bool no_solver, bool multi, bool first, std::string& json_out) {
   auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  warn_if_no_solver(name, report, no_solver);
+  if (verbose) {
+    std::cerr << name << ": solver=" << report.solver << "; regions=" << report.regions.size()
+              << "; pairs=" << report.pairwise.size() << "\n";
+  }
   if (dump_only) {
+    if (multi && !first) std::cout << "\n";
     std::cout << adl2::analysis::dump_verdicts(report);
   } else if (json) {
-    std::cout << report.to_json();
+    json_out = report.to_json();
+    for (const auto& d : report.internal_diagnostics) {
+      std::cerr << "internal: " << d << "\n";
+    }
   } else {
+    if (multi) {
+      if (!first) std::cout << "\n";
+      std::cout << "==== " << name << " ====\n";
+    }
     adl2::analysis::RenderOptions ropts;
     ropts.color = stdout_color();
     ropts.force_matrix = matrix;
@@ -342,7 +438,154 @@ int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool no
       std::cout << report.render_default(ropts);
     }
   }
-  return report.exit_code(fail_on);
+  auto findings = report.findings(opts.fail_on);
+  if (!findings.empty()) {
+    std::cerr << name << ": --fail-on fired:\n";
+    for (const auto& f : findings) std::cerr << "  " << f << "\n";
+  }
+  return report.exit_code(opts.fail_on);
+}
+
+int run_cross(const std::vector<std::string>& files, const std::vector<std::string>& labels,
+              const adl2::sema::ExtDecls& ext, adl2::analysis::AnalysisOptions opts, bool dump_only,
+              bool json, bool explain, bool matrix, bool verbose, bool no_solver,
+              adl2::analysis::ReconFilter recon_filter) {
+  std::vector<adl2::sema::Hir> hirs;
+  hirs.reserve(files.size());
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    std::string src = read_file(files[i]);
+    if (src.empty() && !std::ifstream(files[i]).good()) {
+      std::cerr << "error: cannot read file: " << files[i] << "\n";
+      return 2;
+    }
+    auto hir = adl2::sema::analyze_str(src, labels[i], ext);
+    if (adl2::sema::has_errors(hir.diags)) {
+      print_sema_diags(hir.diags);
+      std::cerr << labels[i] << ": analysis did not run (resolve errors above)\n";
+      return 1;
+    }
+    hirs.push_back(std::move(hir));
+  }
+  std::vector<const adl2::sema::Hir*> refs;
+  refs.reserve(hirs.size());
+  for (const auto& h : hirs) refs.push_back(&h);
+  auto merged = adl2::sema::merge_hirs(refs);
+  opts.reconcile = true;
+  auto report = adl2::analysis::analyze_hir(merged, "", ext, opts);
+  warn_if_no_solver("cross", report, no_solver || opts.solver == adl2::analysis::SolverChoice::NoSolver);
+  if (verbose) {
+    std::cerr << "cross: " << files.size() << " units; regions=" << report.regions.size()
+              << "; pairs=" << report.pairwise.size() << "\n";
+  }
+  if (dump_only) {
+    std::cout << adl2::analysis::dump_verdicts(report);
+  } else if (json) {
+    std::cout << report.to_json();
+    for (const auto& d : report.internal_diagnostics) {
+      std::cerr << "internal: " << d << "\n";
+    }
+  } else {
+    adl2::analysis::RenderOptions ropts;
+    ropts.color = stdout_color();
+    ropts.force_matrix = matrix;
+    ropts.recon = recon_filter;
+    if (explain) {
+      std::cout << report.render_explain(ropts);
+    } else {
+      std::cout << report.render_default(ropts);
+    }
+  }
+  auto findings = report.findings(opts.fail_on);
+  if (!findings.empty()) {
+    std::cerr << "cross: --fail-on fired:\n";
+    for (const auto& f : findings) std::cerr << "  " << f << "\n";
+  }
+  return report.exit_code(opts.fail_on);
+}
+
+int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_certify,
+               bool no_refute_gate, bool dump_only, bool json, bool explain, bool matrix,
+               bool verbose, bool cross, const std::string& fail_on_s,
+               const std::string& recon_s) {
+  bool had_dir = false;
+  for (const auto& p : inputs) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(p, ec)) had_dir = true;
+  }
+  std::vector<std::string> files;
+  std::string err;
+  if (!expand_adl_inputs(inputs, files, err)) {
+    std::cerr << "error: " << err << "\n";
+    return 2;
+  }
+  if (files.empty()) {
+    std::cerr << "error: verify requires a file path\n";
+    return 2;
+  }
+  adl2::analysis::FailOn fail_on;
+  if (!fail_on_s.empty()) {
+    if (!adl2::analysis::FailOn::parse(fail_on_s, fail_on, err)) {
+      std::cerr << "error: " << err << "\n";
+      return 2;
+    }
+  }
+  adl2::analysis::ReconFilter recon_filter = adl2::analysis::ReconFilter::All;
+  if (!recon_s.empty()) {
+    if (!adl2::analysis::parse_recon_filter(recon_s, recon_filter, err)) {
+      std::cerr << "error: " << err << "\n";
+      return 2;
+    }
+  }
+  auto ext = adl2::sema::ExtDecls::legacy();
+  adl2::analysis::AnalysisOptions opts;
+  opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
+                          : adl2::analysis::SolverChoice::Auto;
+  opts.certify = !no_certify;
+  opts.sample_gate = 64;
+  opts.refute_gate = !no_refute_gate;
+  opts.fail_on = fail_on;
+  auto labels = unit_labels(files);
+  if (cross) {
+    return run_cross(files, labels, ext, opts, dump_only, json, explain, matrix, verbose, no_solver,
+                     recon_filter);
+  }
+  int worst = 0;
+  std::vector<std::string> json_reports;
+  bool multi = files.size() > 1;
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    std::string src = read_file(files[i]);
+    if (src.empty() && !std::ifstream(files[i]).good()) {
+      std::cerr << "error: cannot read file: " << files[i] << "\n";
+      worst = std::max(worst, 2);
+      continue;
+    }
+    const std::string& name = labels[i];
+    auto hir = adl2::sema::analyze_str(src, name, ext);
+    if (adl2::sema::has_errors(hir.diags)) {
+      print_sema_diags(hir.diags);
+      std::cerr << name << ": cannot verify — resolve errors\n";
+      worst = std::max(worst, 1);
+      continue;
+    }
+    std::string json_out;
+    int code = run_one_verify(hir, src, name, ext, opts, dump_only, json, explain, matrix, verbose,
+                              no_solver, multi, i == 0, json_out);
+    if (json) json_reports.push_back(std::move(json_out));
+    worst = std::max(worst, code);
+  }
+  if (json) {
+    if (multi || had_dir) {
+      std::cout << "[";
+      for (std::size_t i = 0; i < json_reports.size(); ++i) {
+        if (i) std::cout << ",";
+        std::cout << json_reports[i];
+      }
+      std::cout << "]\n";
+    } else if (!json_reports.empty()) {
+      std::cout << json_reports[0];
+    }
+  }
+  return worst;
 }
 
 }  // namespace
@@ -503,8 +746,10 @@ int main(int argc, char** argv) {
     bool json = false;
     bool explain = false;
     bool matrix = false;
+    bool cross = false;
     std::string fail_on;
-    std::string path;
+    std::string recon;
+    std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--no-solver") {
@@ -513,11 +758,20 @@ int main(int argc, char** argv) {
         no_certify = true;
       } else if (arg == "--no-refute-gate") {
         no_refute_gate = true;
-      } else if (arg == "--cross" || arg == "--combine" || arg.compare(0, 10, "--combine=") == 0 ||
-                 arg.compare(0, 8, "--recon=") == 0 || arg == "--recon") {
-        std::cerr << "error: smash2_cpp verify " << arg
-                  << " is not ported yet (--cross/--combine/--recon)\n";
+      } else if (arg == "--cross") {
+        cross = true;
+      } else if (arg == "--combine" || arg.compare(0, 10, "--combine=") == 0) {
+        std::cerr << "error: smash2_cpp verify --combine is not ported yet "
+                     "(certificate bundles / smash2-recheck)\n";
         return 2;
+      } else if (arg == "--recon") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --recon requires a value (all|related)\n";
+          return 2;
+        }
+        recon = argv[++i];
+      } else if (arg.compare(0, 8, "--recon=") == 0) {
+        recon = arg.substr(8);
       } else if (arg == "--dump-verdicts") {
         dump_only = true;
       } else if (arg == "--json") {
@@ -536,21 +790,20 @@ int main(int argc, char** argv) {
           return 2;
         }
         fail_on = argv[++i];
-      } else if (path.empty()) {
-        path = arg;
-      } else {
+      } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
         return 2;
+      } else {
+        paths.push_back(arg);
       }
     }
-    if (path.empty()) {
+    if (paths.empty()) {
       std::cerr << "error: verify requires a file path\n";
       print_help(argv[0]);
       return 2;
     }
-    (void)verbose;
-    return cmd_verify(path, no_solver, no_certify, no_refute_gate, dump_only, json, explain, matrix,
-                      fail_on);
+    return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, json, explain, matrix,
+                      verbose, cross, fail_on, recon);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

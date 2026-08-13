@@ -1,5 +1,6 @@
 #include "adl2/analysis/analysis.hpp"
 
+#include "adl2/analysis/reconcile.hpp"
 #include "adl2/analysis/refute.hpp"
 #include "adl2/axioms/axioms.hpp"
 #include "adl2/certify/certify.hpp"
@@ -7,6 +8,7 @@
 #include "adl2/formula/lin.hpp"
 #include "adl2/interp/interp.hpp"
 #include "adl2/interp/sample.hpp"
+#include "adl2/sema/dump.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/solver/solver.hpp"
 
@@ -32,6 +34,8 @@ using adl2::formula::Rel;
 using adl2::interp::Event;
 using adl2::interp::EvalError;
 using adl2::interp::Interp;
+using adl2::sema::CollectionId;
+using adl2::sema::CollectionKind;
 using adl2::sema::ElemIndexKind;
 using adl2::sema::Hir;
 using adl2::sema::ParticleKind;
@@ -137,10 +141,12 @@ void qformula_quantities(const QFormula& f, std::set<QuantityId>& out) {
 }
 
 void declare_all(Solver& s, const Hir& hir, const UnitEnc& unit,
-                 const adl2::axioms::AxiomSet& axioms) {
+                 const adl2::axioms::AxiomSet& axioms,
+                 const std::set<QuantityId>& extra) {
   std::set<QuantityId> all_q;
   for (const auto& r : unit.regions) all_q.insert(r.quantities.begin(), r.quantities.end());
   for (const auto& inst : axioms.instances) qformula_quantities(inst.formula, all_q);
+  all_q.insert(extra.begin(), extra.end());
   for (auto q : all_q) {
     QSort sort = hir.table.quantity(q).kind == QuantityKind::Size ? QSort::Int : QSort::Real;
     s.declare(q, sort);
@@ -205,6 +211,14 @@ void note_failure(Report& report, const SatResult& r) {
 void file_contradiction(Report& report, std::string msg) {
   Diagnostic d;
   d.class_ = DiagnosticClass::Contradiction;
+  d.message = std::move(msg);
+  report.diagnostics.push_back(std::move(d));
+  report.internal_diagnostics.push_back(report.diagnostics.back().message);
+}
+
+void file_fail_closed(Report& report, std::string msg) {
+  Diagnostic d;
+  d.class_ = DiagnosticClass::FailClosed;
   d.message = std::move(msg);
   report.diagnostics.push_back(std::move(d));
   report.internal_diagnostics.push_back(report.diagnostics.back().message);
@@ -318,7 +332,8 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
 std::pair<std::optional<bool>, std::optional<std::size_t>> certify_named_formulas(
     bool certify, const std::optional<std::vector<AssertName>>& core,
     const std::vector<std::pair<AssertName, QFormula>>& extra,
-    const adl2::axioms::AxiomSet* axioms) {
+    const adl2::axioms::AxiomSet* axioms,
+    const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
   if (!certify) return {std::nullopt, std::nullopt};
   if (!core || core->empty()) return {false, std::nullopt};
   std::map<AssertName, QFormula> fmap;
@@ -327,6 +342,9 @@ std::pair<std::optional<bool>, std::optional<std::size_t>> certify_named_formula
     for (std::size_t i = 0; i < axioms->instances.size(); ++i) {
       fmap[AssertName::make("AX" + std::to_string(i))] = axioms->instances[i].formula;
     }
+  }
+  if (recon_facts) {
+    for (const auto& e : *recon_facts) fmap[e.first] = e.second;
   }
   std::vector<QFormula> formulas;
   formulas.reserve(core->size());
@@ -344,7 +362,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
                                    const Interp& interp, const RegionEnc& ra, const RegionEnc& rb,
                                    const RegionCtx& ca, const RegionCtx& cb, Solver* solver,
                                    std::chrono::milliseconds timeout, Report& report, bool certify,
-                                   const adl2::axioms::AxiomSet* axioms) {
+                                   const adl2::axioms::AxiomSet* axioms,
+                                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
   PairReport pr;
   pr.a = ra.name;
   pr.b = rb.name;
@@ -408,7 +427,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     std::vector<std::pair<AssertName, QFormula>> extra;
     for (const auto& p : c1.overs) extra.emplace_back(p.first, p.second.qformula());
     for (const auto& p : c2.overs) extra.emplace_back(p.first, p.second.qformula());
-    auto cert = certify_named_formulas(certify, core_names, extra, axioms);
+    auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts);
     pr.certified = cert.first;
     if (cert.first == true) pr.certificate_size = cert.second;
     if (core) {
@@ -733,6 +752,244 @@ bool refute_empty(std::size_t idx, const std::string& name, const Interp& interp
   return false;
 }
 
+bool rsplit_once(const std::string& s, std::string& left, std::string& right) {
+  auto pos = s.rfind("::");
+  if (pos == std::string::npos) return false;
+  left = s.substr(0, pos);
+  right = s.substr(pos + 2);
+  return true;
+}
+
+std::string coll_label(const Hir& hir, CollectionId c) {
+  return adl2::sema::collection_ref(hir, c);
+}
+
+std::string size_label(const Hir& hir, QuantityId q) {
+  const Quantity& qq = hir.table.quantity(q);
+  if (qq.kind == QuantityKind::Size) {
+    return "size(" + adl2::sema::collection_ref(hir, qq.coll) + ")";
+  }
+  return adl2::axioms::quantity_label(hir, q);
+}
+
+std::vector<std::string> coll_units(const Hir& hir, const UnitEnc& unit, CollectionId c) {
+  auto mentions = [&](QuantityId q) {
+    const Quantity& qq = hir.table.quantity(q);
+    if (qq.kind == QuantityKind::Size) return qq.coll == c;
+    if (qq.kind == QuantityKind::ElemProp) return qq.coll == c;
+    return false;
+  };
+  std::vector<std::string> out;
+  for (const auto& r : unit.regions) {
+    std::string file, rest;
+    if (!rsplit_once(r.name, file, rest)) continue;
+    bool seen = false;
+    for (const auto& u : out) {
+      if (u == file) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    for (auto q : r.quantities) {
+      if (mentions(q)) {
+        out.push_back(file);
+        break;
+      }
+    }
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+std::optional<std::string> base_label(const Hir& hir, CollectionId c) {
+  adl2::sema::Symbol base;
+  std::vector<adl2::sema::ElemPredId> preds;
+  if (!hir.table.filter_chain(c, base, preds)) return std::nullopt;
+  return hir.symbols.display(base);
+}
+
+std::set<std::pair<QuantityId, QuantityId>> existing_size_le(
+    const adl2::axioms::AxiomSet& axioms) {
+  std::set<std::pair<QuantityId, QuantityId>> out;
+  for (const auto& inst : axioms.instances) {
+    if (inst.id != adl2::axioms::AxiomId::Sub) continue;
+    if (inst.formula.kind != QFormula::Kind::Atom) continue;
+    std::vector<QuantityId> qs;
+    for (const auto& t : inst.formula.atom.terms()) qs.push_back(t.second);
+    if (qs.size() != 2) continue;
+    for (auto pair : {std::pair<QuantityId, QuantityId>{qs[0], qs[1]},
+                      std::pair<QuantityId, QuantityId>{qs[1], qs[0]}}) {
+      if (inst.formula == adl2::axioms::derived_size_le(pair.first, pair.second)) {
+        out.insert(pair);
+      }
+    }
+  }
+  return out;
+}
+
+bool frame_sat(Solver& s, const adl2::formula::Formula& phi_a,
+               const adl2::formula::Formula& phi_b, std::chrono::milliseconds timeout,
+               Report& report) {
+  s.push();
+  s.assert_formula(phi_a.under().qformula(), std::nullopt);
+  s.assert_formula(phi_b.under().qformula(), std::nullopt);
+  SatResult r = s.check(timeout);
+  note_failure(report, r);
+  s.pop();
+  return r.is_sat();
+}
+
+/// Returns (holds, certified_chain). `holds` is true when UNSAT and not
+/// `Some(false)` from certify. Chain is present only when certified.
+std::pair<bool, bool> subset_proof(Solver& s, const adl2::formula::Over& sub_over,
+                                   const adl2::formula::Under& sup_under, bool certify,
+                                   std::chrono::milliseconds timeout, Report& report,
+                                   const adl2::axioms::AxiomSet* axioms,
+                                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
+  s.push();
+  AssertName qsub = AssertName::make("QSUB0");
+  AssertName qneg = AssertName::make("QSUBNEG");
+  QFormula over_f = sub_over.qformula();
+  QFormula neg = sup_under.qformula().qnot();
+  s.assert_formula(over_f, qsub);
+  s.assert_formula(neg, qneg);
+  SatResult r = s.check(timeout);
+  note_failure(report, r);
+  std::optional<std::vector<AssertName>> core_names;
+  if (r.is_unsat()) {
+    if (auto core = s.unsat_core()) core_names = *core;
+  }
+  s.pop();
+  if (!r.is_unsat()) return {false, false};
+  std::vector<std::pair<AssertName, QFormula>> extra;
+  extra.emplace_back(qsub, over_f);
+  extra.emplace_back(qneg, neg);
+  auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts);
+  bool holds = cert.first != false;
+  bool chain = cert.first == true;
+  return {holds, chain};
+}
+
+struct PredImplies {
+  bool a_in_b = false;
+  bool b_in_a = false;
+  bool a_chain = false;
+  bool b_chain = false;
+};
+
+PredImplies prove_pred_implies(Solver& s, const adl2::formula::Formula& phi_a,
+                               const adl2::formula::Formula& phi_b, bool certify,
+                               std::chrono::milliseconds timeout, Report& report,
+                               const adl2::axioms::AxiomSet* axioms,
+                               const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
+  PredImplies out;
+  if (!frame_sat(s, phi_a, phi_b, timeout, report)) return out;
+  auto a = subset_proof(s, phi_a.over(), phi_b.under(), certify, timeout, report, axioms,
+                        recon_facts);
+  auto b = subset_proof(s, phi_b.over(), phi_a.under(), certify, timeout, report, axioms,
+                        recon_facts);
+  out.a_in_b = a.first;
+  out.a_chain = a.second;
+  out.b_in_a = b.first;
+  out.b_chain = b.second;
+  return out;
+}
+
+struct ReconRun {
+  std::map<std::string, std::size_t> counts;
+  std::vector<std::pair<AssertName, QFormula>> facts;
+  std::vector<ReconReport> ledger;
+  std::vector<ReconNearMissReport> near_misses;
+};
+
+ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool certify,
+                         std::chrono::milliseconds timeout, Report& report,
+                         const adl2::axioms::AxiomSet& axioms, ReconEnc recon) {
+  ReconRun run;
+  for (const auto& s : recon.skipped) {
+    ReconReport row;
+    row.a = coll_label(hir, s.coll_a);
+    row.b = coll_label(hir, s.coll_b);
+    row.outcome = ReconOutcome::Skipped;
+    row.note = s.reason;
+    row.a_units = coll_units(hir, unit, s.coll_a);
+    row.b_units = coll_units(hir, unit, s.coll_b);
+    run.ledger.push_back(std::move(row));
+  }
+  for (const auto& n : recon.near_misses) {
+    ReconNearMissReport row;
+    row.a = coll_label(hir, n.coll_a);
+    row.b = coll_label(hir, n.coll_b);
+    row.base_a = n.base_a;
+    row.base_b = n.base_b;
+    run.near_misses.push_back(std::move(row));
+  }
+  if (!solver || recon.empty()) return run;
+  auto existing = existing_size_le(axioms);
+  std::size_t k = 0;
+  for (const auto& cand : recon.candidates) {
+    PredImplies pi = prove_pred_implies(*solver, cand.phi_a, cand.phi_b, certify, timeout, report,
+                                       &axioms, &run.facts);
+    std::string label_a = coll_label(hir, cand.coll_a);
+    std::string label_b = coll_label(hir, cand.coll_b);
+    ReconReport row;
+    row.a = label_a;
+    row.b = label_b;
+    if (pi.a_in_b && pi.b_in_a) {
+      row.outcome = ReconOutcome::Equivalent;
+    } else if (pi.a_in_b) {
+      row.outcome = ReconOutcome::ARefinesB;
+    } else if (pi.b_in_a) {
+      row.outcome = ReconOutcome::BRefinesA;
+    } else {
+      row.outcome = ReconOutcome::Unrelated;
+    }
+    row.base = base_label(hir, cand.coll_a);
+    if (!(pi.a_in_b || pi.b_in_a)) row.note = "neither cut set implies the other";
+    row.a_units = coll_units(hir, unit, cand.coll_a);
+    row.b_units = coll_units(hir, unit, cand.coll_b);
+    run.ledger.push_back(std::move(row));
+
+    struct Fact {
+      QuantityId sub;
+      QuantityId sup;
+      adl2::axioms::AxiomId id;
+      bool chain;
+    };
+    std::vector<Fact> facts;
+    if (pi.a_in_b && pi.b_in_a) {
+      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xeq, pi.a_chain});
+      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xeq, pi.b_chain});
+    } else if (pi.a_in_b) {
+      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xsub, pi.a_chain});
+    } else if (pi.b_in_a) {
+      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xsub, pi.b_chain});
+    }
+    for (const auto& f : facts) {
+      if (f.sub == f.sup || existing.count({f.sub, f.sup})) continue;
+      if (certify && !f.chain) {
+        file_fail_closed(report, "RECONCILIATION FACT WITHHELD for " + label_a + " / " +
+                                     label_b +
+                                     ": the subset refutation behind it produced no "
+                                     "replayable certificate, so the derived size fact is "
+                                     "not asserted.");
+        continue;
+      }
+      QFormula fact = adl2::axioms::derived_size_le(f.sub, f.sup);
+      AssertName name = AssertName::make("XR" + std::to_string(k));
+      std::string statement =
+          size_label(hir, f.sub) + " <= " + size_label(hir, f.sup);
+      solver->assert_formula(fact, name);
+      run.facts.emplace_back(name, fact);
+      (void)statement;
+      run.counts[adl2::axioms::axiom_id_str(f.id)]++;
+      ++k;
+    }
+  }
+  return run;
+}
+
 }  // namespace
 
 Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls& ext,
@@ -740,17 +997,37 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   retag_opaque_externals(hir);
   UnitEnc unit = encode_unit(hir, src);
 
+  std::set<QuantityId> qs;
+  for (const auto& r : unit.regions) qs.insert(r.quantities.begin(), r.quantities.end());
+  adl2::axioms::AxiomSet axioms;
+  if (opts.solver != SolverChoice::NoSolver || opts.reconcile) {
+    axioms = adl2::axioms::emit_axioms(hir, ext, qs);
+  }
+
+  std::optional<ReconEnc> recon;
+  if (opts.reconcile) recon = build_recon(hir, ext);
+
   std::string solver_label;
   std::unique_ptr<SubprocessSolver> owned = make_solver(opts.solver, solver_label);
   Solver* solver = owned.get();
 
-  adl2::axioms::AxiomSet axioms;
+  std::set<QuantityId> recon_qs;
+  if (recon) recon_qs = recon->quantities();
   if (solver) {
-    std::set<QuantityId> qs;
-    for (const auto& r : unit.regions) qs.insert(r.quantities.begin(), r.quantities.end());
-    axioms = adl2::axioms::emit_axioms(hir, ext, qs);
-    declare_all(*solver, hir, unit, axioms);
+    declare_all(*solver, hir, unit, axioms, recon_qs);
     assert_axioms(*solver, axioms);
+  }
+
+  Report report;
+  report.schema_version = SCHEMA_VERSION;
+  report.unit = hir.unit;
+  report.solver = solver_label;
+  report.certification = opts.certify;
+
+  ReconRun recon_run;
+  if (recon) {
+    recon_run = apply_reconcile(hir, unit, solver, opts.certify, opts.timeout, report, axioms,
+                                std::move(*recon));
   }
 
   std::vector<RegionCtx> ctxs;
@@ -770,12 +1047,6 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   }
   std::size_t gate_refutations = 0;
   std::size_t refute_refutations = 0;
-
-  Report report;
-  report.schema_version = SCHEMA_VERSION;
-  report.unit = hir.unit;
-  report.solver = solver_label;
-  report.certification = opts.certify;
 
   for (std::size_t i = 0; i < unit.regions.size(); ++i) {
     const RegionEnc& r = unit.regions[i];
@@ -814,7 +1085,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
       if (er.is_unsat()) {
         std::vector<std::pair<AssertName, QFormula>> extra;
         for (const auto& p : ctxs[i].overs) extra.emplace_back(p.first, p.second.qformula());
-        auto cert = certify_named_formulas(opts.certify, core_names, extra, &axioms);
+        auto cert = certify_named_formulas(opts.certify, core_names, extra, &axioms,
+                                           &recon_run.facts);
         rr.empty = (cert.first == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
         rr.empty_proof = ProofPath::SolverCore;
       } else {
@@ -842,7 +1114,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
       PairReport pr = interval_or_solver_pair(
           hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
-          opts.timeout, report, opts.certify, solver ? &axioms : nullptr);
+          opts.timeout, report, opts.certify, solver ? &axioms : nullptr, &recon_run.facts);
       gate_pair(pr, unit.regions[i].idx, unit.regions[j].idx, interp, gate_events, refute_probes,
                 report, gate_refutations, refute_refutations);
       report.pairwise.push_back(std::move(pr));
@@ -868,21 +1140,28 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
         " solver check(s) failed via `" + report.solver + "`";
   }
 
-  if (!axioms.instances.empty()) {
+  if (!axioms.instances.empty() || !recon_run.counts.empty()) {
     std::map<adl2::axioms::AxiomId, std::size_t> counts;
     for (const auto& inst : axioms.instances) counts[inst.id]++;
     const auto* ids = adl2::axioms::axiom_id_all();
     for (int i = 0; i < adl2::axioms::AXIOM_COUNT; ++i) {
+      std::size_t n = 0;
       auto it = counts.find(ids[i]);
-      if (it == counts.end()) continue;
+      if (it != counts.end()) n = it->second;
+      auto rit = recon_run.counts.find(adl2::axioms::axiom_id_str(ids[i]));
+      if (rit != recon_run.counts.end()) n += rit->second;
+      if (n == 0) continue;
       AxiomUse u;
       u.id = adl2::axioms::axiom_id_str(ids[i]);
       u.statement = catalog_statement(ids[i]);
       u.assumption = catalog_assumption(ids[i]);
-      u.instances = it->second;
+      u.instances = n;
       report.axioms_used.push_back(std::move(u));
     }
   }
+
+  report.reconciliations = std::move(recon_run.ledger);
+  report.recon_near_misses = std::move(recon_run.near_misses);
 
   return report;
 }

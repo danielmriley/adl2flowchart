@@ -145,6 +145,7 @@ tables. `verify` defaults to certify ON.
 ## Remaining vs smash2 (honest non-parity)
 
 Still to port: `--histos` CSV/SVG/ROOT bridges and native `out.root`;
-sampling + refute gates; `--cross` / reconcile; `--combine` bundles;
-ROOT `ingest` / `run --profile`; byte-identical `verify` JSON/human
-reports (C++ JSON is a compact subset). Native libz3 stays out (ADR-010).
+`--combine` certificate bundles / `smash2-recheck`; ROOT `ingest` /
+`run --profile`; byte-identical `verify` JSON/human reports (C++ JSON is a
+compact subset). Native libz3 stays out (ADR-010). `--cross` / merge /
+reconciliation (XSUB/XEQ) are ported.

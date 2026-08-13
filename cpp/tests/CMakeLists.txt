@@ -90,3 +90,23 @@ set_tests_properties(adl2_sema_identity PROPERTIES
 
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")
+
+add_executable(adl2_interval_unit interval.cpp)
+target_link_libraries(adl2_interval_unit PRIVATE adl2_analysis)
+target_compile_options(adl2_interval_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_interval_unit
+  COMMAND adl2_interval_unit)
+
+add_executable(adl2_analysis_encode analysis_encode.cpp)
+target_link_libraries(adl2_analysis_encode PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_encode PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_encode
+  COMMAND adl2_analysis_encode)
+
+set_tests_properties(adl2_interval_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=46 FAIL=0")
+
+set_tests_properties(adl2_analysis_encode PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=37 FAIL=0")

@@ -1,6 +1,11 @@
-# adl2_analysis — verify / pairwise analysis (Rust adl-analysis). P1: stub.
+# adl2_analysis — verify / pairwise analysis (Rust adl-analysis).
+# P4: interval fast path + statement encode + report enums (no solver).
 # Consumes solver (+ interp for membership/oracle paths). Does NOT parse.
-adl2_add_library(adl2_analysis STUB
-  SOURCES src/stub.cpp
+adl2_add_library(adl2_analysis
+  SOURCES
+    src/interval.cpp
+    src/encode.cpp
+    src/report.cpp
+    src/lib.cpp
   PUBLIC_DEPS adl2_solver adl2_interp
 )

@@ -50,6 +50,7 @@ P1 filled **`adl2_syntax`**. P2 filled **`adl2_sema`**. P3 fills
 | Polarity-aware Formula IR (`Over`/`Under` as types) | Yes |
 | HIR → Formula encoder | Yes |
 | CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned count) |
+| CLI `--dump-axioms` vs smash2 | Fail-closed allowlist (pinned count; no EPRED/EPRES files) |
 | Axiom catalog (19) + emitters | Yes; CombSize matches catalog; EPRED/EPRES emitters stubbed |
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=116 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
@@ -68,6 +69,7 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | 146-file AST dump-diff vs smash2 |
 | [`scripts/dump_hir_corpus_gate.sh`](scripts/dump_hir_corpus_gate.sh) | Allowlisted HIR/quantity dump-diff |
 | [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dump-diff |
+| [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dump-diff |
 | [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` event-line diff |
 
 ## Build
@@ -123,5 +125,4 @@ P2 dump-hir/identity kept green.
 
 **Out:** Filling solver/analysis/certify/viz; Kleene `region3` membership;
 cutflow/histo tables; full 146-file formula dump; complete EPRED/EPRES
-emitters; `--dump-axioms` CLI (no Rust oracle yet). Each later module
-behind its own phase/PR against the Rust oracle.
+emitters. Each later module behind its own phase/PR against the Rust oracle.

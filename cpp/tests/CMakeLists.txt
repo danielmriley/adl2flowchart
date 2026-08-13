@@ -60,6 +60,12 @@ set_property(TEST interp_gate_pair_count PROPERTY ENVIRONMENT
   "COUNT_ONLY=1"
   "SKIP_BUILD=1")
 
+add_test(NAME axioms_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_axioms_corpus_gate.sh)
+set_property(TEST axioms_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}

@@ -1,3 +1,4 @@
+#include "adl2/axioms/axioms.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
@@ -5,8 +6,10 @@
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -19,7 +22,7 @@ void print_help(const char* argv0) {
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
-         "--dump-formula] <file.adl>\n"
+         "--dump-formula|--dump-axioms] <file.adl>\n"
       << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
       << "\n"
       << "Bare `check` (no dump flag) is parse-only — it does not run name\n"
@@ -47,7 +50,7 @@ std::string unit_name(const std::string& path) {
   return path.substr(slash + 1);
 }
 
-enum class DumpKind { None, Ast, Hir, Quantities, Formula };
+enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
 
 int cmd_check(const std::string& path, DumpKind dump) {
   std::string src = read_file(path);
@@ -65,15 +68,25 @@ int cmd_check(const std::string& path, DumpKind dump) {
     return result.diags.has_errors() ? 1 : 0;
   }
 
-  if (dump == DumpKind::Hir || dump == DumpKind::Quantities || dump == DumpKind::Formula) {
+  if (dump == DumpKind::Hir || dump == DumpKind::Quantities || dump == DumpKind::Formula ||
+      dump == DumpKind::Axioms) {
     auto hir = adl2::sema::analyze_str(src, unit_name(path), adl2::sema::ExtDecls::legacy());
     if (dump == DumpKind::Hir) {
       std::cout << adl2::sema::hir_dump(hir);
     } else if (dump == DumpKind::Quantities) {
       std::cout << adl2::sema::quantity_table_dump(hir);
-    } else {
+    } else if (dump == DumpKind::Formula) {
       auto regions = adl2::formula::encode_regions(hir);
       std::cout << adl2::formula::dump_encoded(hir, regions);
+    } else {
+      auto regions = adl2::formula::encode_regions(hir);
+      (void)regions;
+      std::set<adl2::sema::QuantityId> qs;
+      for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+        qs.insert(adl2::sema::QuantityId{i});
+      }
+      auto set = adl2::axioms::emit_axioms(hir, adl2::sema::ExtDecls::legacy(), qs);
+      std::cout << adl2::axioms::dump_axioms(hir, set);
     }
     return adl2::sema::has_errors(hir.diags) ? 1 : 0;
   }
@@ -154,6 +167,8 @@ int main(int argc, char** argv) {
         dump = DumpKind::Quantities;
       } else if (arg == "--dump-formula") {
         dump = DumpKind::Formula;
+      } else if (arg == "--dump-axioms") {
+        dump = DumpKind::Axioms;
       } else if (path.empty()) {
         path = arg;
       } else {

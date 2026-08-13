@@ -18,7 +18,9 @@ empty-factor `size(part)=0 => size(K)=0`, and the cuts-free cartesian
 `all parts nonempty => size(K) >= 1`. The same-source positive lower bound
 is deliberately omitted (value-distinctness).
 
-There is **no** `smash2_cpp check --dump-axioms` CLI flag until a Rust
-oracle dump exists. `dump_axioms()` stays a library helper for unit tests.
+There is a fail-closed `smash2_cpp check --dump-axioms` oracle gate vs
+Rust `smash2 check --dump-axioms` (allowlist in
+`cpp/tests/axioms_gate_files.txt`; files that emit EPRED/EPRES are not
+claimed while those C++ emitters are stubbed).
 
 Headers: `libs/axioms/include/adl2/axioms/`

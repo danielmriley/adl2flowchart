@@ -255,7 +255,12 @@ struct Emit {
       ts.emplace_back(Rat::one(), q);
       for (auto p : parts) ts.emplace_back(Rat::from_i64(-1), p);
       auto f = QFormula::of_atom(LinAtom::make(std::move(ts), Rel::Le, Rat::zero()));
-      push(AxiomId::Uni, std::move(f), label(q) + " <= sum of parts");
+      std::string sum;
+      for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i) sum += " + ";
+        sum += label(parts[i]);
+      }
+      push(AxiomId::Uni, std::move(f), label(q) + " <= " + sum);
     }
   }
 
@@ -550,8 +555,8 @@ AxiomSet emit_axioms(Hir& hir, const ExtDecls& ext, const std::set<QuantityId>& 
 }
 
 std::string dump_axioms(const Hir& hir, const AxiomSet& set) {
-  (void)hir;
   std::ostringstream os;
+  os << "unit: " << hir.unit << "\n";
   os << "axioms " << set.instances.size() << "\n";
   for (const auto& inst : set.instances) {
     os << axiom_id_str(inst.id) << " " << inst.description << "\n";

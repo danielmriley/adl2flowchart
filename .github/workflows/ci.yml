@@ -52,7 +52,7 @@ jobs:
   # no bison/flex. Dump-diff / run-diff gates build Rust smash2 as forever
   # oracle (--no-default-features so the job does not need libz3).
   adl2-cpp:
-    name: adl2-cpp (P3 dump-ast + dump-hir + formula + interp gates)
+    name: adl2-cpp (P3 dump-ast + dump-hir + formula + interp + axioms gates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +78,8 @@ jobs:
         run: SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
       - name: Interpreter run oracle gate (vs Rust smash2)
         run: SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
+      - name: Dump-axioms oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
 
   # Rust smash2 is the forever oracle for the C++ port (ADR-010).
   # Keep this green alongside adl2-cpp; do not remove or weaken it.

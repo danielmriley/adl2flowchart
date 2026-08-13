@@ -13,6 +13,12 @@ namespace adl2::analysis {
 /// Bumped on any breaking schema change. v4 matches Rust `SCHEMA_VERSION`.
 inline constexpr std::uint32_t SCHEMA_VERSION = 4;
 
+/// Printed with every PROVEN OVERLAPPING (SPEC_ANALYSIS §2).
+inline constexpr const char* OVERLAP_CAVEAT =
+    "a model exists in the per-event scalar fragment; opaque "
+    "external-function values and padded out-of-range element variables are free — the witness "
+    "is a candidate, not a simulated event";
+
 /// How an UNSAT-side claim was obtained. Descriptive provenance: it names
 /// the route, never the confidence.
 enum class ProofPath {

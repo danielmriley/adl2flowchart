@@ -2,11 +2,15 @@
 
 #include "adl2/axioms/axioms.hpp"
 #include "adl2/formula/formula.hpp"
+#include "adl2/formula/lin.hpp"
+#include "adl2/interp/interp.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/solver/solver.hpp"
 
+#include <cmath>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -15,16 +19,63 @@
 namespace adl2::analysis {
 namespace {
 
+using adl2::formula::LinAtom;
 using adl2::formula::QFormula;
+using adl2::formula::Rel;
+using adl2::interp::Interp;
+using adl2::sema::ElemIndexKind;
 using adl2::sema::Hir;
+using adl2::sema::ParticleKind;
 using adl2::sema::Quantity;
 using adl2::sema::QuantityId;
 using adl2::sema::QuantityKind;
+using adl2::sema::Rat;
 using adl2::solver::AssertName;
+using adl2::solver::Model;
 using adl2::solver::QSort;
 using adl2::solver::SatResult;
 using adl2::solver::Solver;
 using adl2::solver::SubprocessSolver;
+
+constexpr int MAX_WITNESS_ATTEMPTS = 6;
+
+Model snap_model(const Model& model) {
+  const double grid = 4194304.0;  // 2^22
+  std::map<QuantityId, Rat> snapped;
+  for (const auto& kv : model.values()) {
+    double f = kv.second.to_f64();
+    double s = (std::isfinite(f) && std::fabs(f) < 1e9) ? std::round(f * grid) / grid : f;
+    if (auto r = Rat::from_decimal_f64(s)) snapped[kv.first] = *r;
+  }
+  return Model(std::move(snapped));
+}
+
+std::optional<QFormula> blocking_clause(const Model& model,
+                                        const std::set<QuantityId>& mentioned) {
+  std::vector<QFormula> parts;
+  for (auto q : mentioned) {
+    if (auto v = model.get(q)) {
+      parts.push_back(QFormula::of_atom(LinAtom::single(q, Rel::Ne, *v)));
+    }
+  }
+  if (parts.empty()) return std::nullopt;
+  return QFormula::of_or(std::move(parts));
+}
+
+bool mentions_back_index(const Hir& hir, const std::set<QuantityId>& quantities) {
+  auto is_back = [](const adl2::sema::ElemIndex& i) {
+    return i.kind == ElemIndexKind::FromBack;
+  };
+  for (auto q : quantities) {
+    const Quantity& qq = hir.table.quantity(q);
+    if (qq.kind == QuantityKind::ElemProp && is_back(qq.index)) return true;
+    if (qq.kind == QuantityKind::AngularSep) {
+      if (qq.a.kind == ParticleKind::Elem && is_back(qq.a.index)) return true;
+      if (qq.b.kind == ParticleKind::Elem && is_back(qq.b.index)) return true;
+    }
+  }
+  return false;
+}
 
 struct RegionCtx {
   IntervalMap intervals;
@@ -142,7 +193,8 @@ void note_failure(Report& report, const SatResult& r) {
   }
 }
 
-PairReport interval_or_solver_pair(const Hir& hir, const RegionEnc& ra, const RegionEnc& rb,
+PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& ext,
+                                   const Interp& interp, const RegionEnc& ra, const RegionEnc& rb,
                                    const RegionCtx& ca, const RegionCtx& cb, Solver* solver,
                                    std::chrono::milliseconds timeout, Report& report) {
   PairReport pr;
@@ -224,39 +276,112 @@ PairReport interval_or_solver_pair(const Hir& hir, const RegionEnc& ra, const Re
     pr.subset_b_in_a = one_in_two;
   }
 
-  // Overlap: SAT(Ax ∧ A⁻ ∧ B⁻). No witness realization in P4 → candidate,
-  // never PROVEN OVERLAPPING (the SAT-side net is the interpreter).
+  // Overlap: SAT(Ax ∧ A⁻ ∧ B⁻) + Kleene region3 re-validation.
   solver->push();
   assert_unders(*solver, c1);
   assert_unders(*solver, c2);
   SatResult overlap = solver->check(timeout);
   note_failure(report, overlap);
-  solver->pop();
-  if (overlap.is_sat()) {
-    if (pr.shared_dimensions.empty()) {
-      pr.kind = VerdictKind::PossiblyOverlapping;
-      pr.reason =
-          "under-approximations intersect but the regions share no dimension; "
-          "capped at POSSIBLY";
-    } else {
-      pr.kind = VerdictKind::CandidateOverlapping;
-      pr.reason =
-          "under-approximations are SAT; witness realization/re-validation is "
-          "not ported, so this is a candidate, not PROVEN OVERLAPPING";
-      pr.witness_validated = false;
+  if (!overlap.is_sat()) {
+    solver->pop();
+    if (overlap.is_unknown()) {
+      pr.kind = VerdictKind::Unknown;
+      pr.reason = overlap.reason.empty() ? "solver unknown on overlap query" : overlap.reason;
+      return pr;
     }
+    pr.kind = VerdictKind::PossiblyOverlapping;
+    pr.reason = disjoint.is_unknown()
+                    ? (disjoint.reason.empty() ? "solver unknown on disjointness" : disjoint.reason)
+                    : "solver SAT/UNSAT split did not prove disjointness or overlap";
     return pr;
   }
-  if (overlap.is_unknown()) {
-    pr.kind = VerdictKind::Unknown;
-    pr.reason = overlap.reason.empty() ? "solver unknown on overlap query" : overlap.reason;
+  if (pr.shared_dimensions.empty()) {
+    solver->pop();
+    pr.kind = VerdictKind::PossiblyOverlapping;
+    pr.reason =
+        "under-approximations intersect but the regions share no dimension; "
+        "capped at POSSIBLY";
+    return pr;
+  }
+
+  std::set<QuantityId> combined = ra.quantities;
+  combined.insert(rb.quantities.begin(), rb.quantities.end());
+  if (mentions_back_index(hir, combined)) {
+    solver->pop();
+    pr.kind = VerdictKind::PossiblyOverlapping;
+    pr.reason =
+        "under-approximations intersect, but a back-indexed element "
+        "(`coll[-k]`) is not realizable by the witness builder; "
+        "capped at POSSIBLY";
+    return pr;
+  }
+
+  std::optional<std::string> last_reject;
+  std::optional<Validation> outcome;
+  for (int attempt = 0; attempt < MAX_WITNESS_ATTEMPTS; ++attempt) {
+    auto model = solver->model();
+    if (!model) break;
+    Validation v = validate_witness(hir, ext, interp, *model, combined, ra.idx, rb.idx);
+    if (v.kind == ValidationKind::Rejected) {
+      std::string first_why = v.payload;
+      Validation snapped =
+          validate_witness(hir, ext, interp, snap_model(*model), combined, ra.idx, rb.idx);
+      if (snapped.kind != ValidationKind::Rejected) {
+        outcome = std::move(snapped);
+        break;
+      }
+      last_reject = std::move(first_why);
+      auto block = blocking_clause(*model, combined);
+      if (!block) break;
+      solver->assert_formula(*block, std::nullopt);
+      SatResult retry = solver->check(timeout);
+      note_failure(report, retry);
+      if (!retry.is_sat()) break;
+      continue;
+    }
+    outcome = std::move(v);
+    break;
+  }
+  solver->pop();
+
+  if (outcome && outcome->kind == ValidationKind::Validated) {
+    pr.kind = VerdictKind::ProvenOverlapping;
+    pr.reason = std::string("both region cut sets are satisfiable together (") + OVERLAP_CAVEAT +
+                ")";
+    pr.witness_validated = true;
+    return pr;
+  }
+  if (outcome && outcome->kind == ValidationKind::Candidate) {
+    pr.kind = VerdictKind::CandidateOverlapping;
+    pr.reason =
+        std::string(
+            "a joint model exists but rests on an opaque quantity the "
+            "interpreter cannot decide, so the witness is a candidate, not "
+            "a proof (") +
+        OVERLAP_CAVEAT + "); " + outcome->payload;
+    pr.witness_validated = false;
     return pr;
   }
 
   pr.kind = VerdictKind::PossiblyOverlapping;
-  pr.reason = disjoint.is_unknown()
-                  ? (disjoint.reason.empty() ? "solver unknown on disjointness" : disjoint.reason)
-                  : "solver SAT/UNSAT split did not prove disjointness or overlap";
+  if (last_reject) {
+    const std::string& why = *last_reject;
+    if (!pr.exact || why.find("no reference interpretation") != std::string::npos ||
+        why.find("OPEN-1 unresolved") != std::string::npos ||
+        why.find("cannot evaluate") != std::string::npos ||
+        why.find("unresolved identifier") != std::string::npos) {
+      pr.reason =
+          "under-approximations intersect, but no witness could be realized "
+          "through the interpreter (the region depends on an opaque quantity); "
+          "capped at POSSIBLY (" +
+          why + ")";
+    } else {
+      pr.reason = "overlap model found, but witness re-validation failed; downgraded to POSSIBLY (" +
+                  why + ")";
+    }
+  } else {
+    pr.reason = "under-approximations intersect, but no witness could be realized";
+  }
   return pr;
 }
 
@@ -283,6 +408,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   std::vector<RegionCtx> ctxs;
   ctxs.reserve(unit.regions.size());
   for (const auto& r : unit.regions) ctxs.push_back(build_ctx(r));
+
+  Interp interp(hir, ext);
 
   Report report;
   report.schema_version = SCHEMA_VERSION;
@@ -329,8 +456,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   for (std::size_t i = 0; i < unit.regions.size(); ++i) {
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
       report.pairwise.push_back(interval_or_solver_pair(
-          hir, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver, opts.timeout,
-          report));
+          hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
+          opts.timeout, report));
     }
   }
 

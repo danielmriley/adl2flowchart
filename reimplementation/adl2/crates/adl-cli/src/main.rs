@@ -51,11 +51,14 @@ enum Command {
         #[arg(long, conflicts_with = "json")]
         dump_ast: bool,
         /// Print the canonical HIR dump (`adl_sema::hir_dump`) to stdout.
-        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_quantities"])]
+        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_quantities", "dump_formula"])]
         dump_hir: bool,
         /// Print the canonical quantity-table dump to stdout.
-        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_hir"])]
+        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_hir", "dump_formula"])]
         dump_quantities: bool,
+        /// Print the canonical region-formula dump (`adl_formula::dump_encoded`) to stdout.
+        #[arg(long, conflicts_with_all = ["json", "dump_ast", "dump_hir", "dump_quantities"])]
+        dump_formula: bool,
         /// Emit diagnostics as a JSON array to stdout (machine-readable;
         /// for editors / CI gating) instead of the human text report.
         #[arg(long)]
@@ -248,8 +251,17 @@ fn main() -> ExitCode {
             dump_ast,
             dump_hir,
             dump_quantities,
+            dump_formula,
             json,
-        } => cmd::check::run(&files, verbose, dump_ast, dump_hir, dump_quantities, json),
+        } => cmd::check::run(
+            &files,
+            verbose,
+            dump_ast,
+            dump_hir,
+            dump_quantities,
+            dump_formula,
+            json,
+        ),
         Command::Verify {
             files,
             json,

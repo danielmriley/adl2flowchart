@@ -533,6 +533,14 @@ class QuantityTable {
   Absence absence(QuantityId q) const;
   bool may_be_absent(QuantityId q) const { return absence_possible(absence(q)); }
 
+  /// `(kind, A, B)` of an angular separation between two WHOLE collections.
+  bool whole_pair_legs(QuantityId q, AngKind& kind, CollectionId& a,
+                       CollectionId& b) const;
+  /// Angular separation with an unindexed (Whole) leg.
+  bool has_unindexed_leg(QuantityId q) const;
+  /// Element-existence floors: `size(C) > n` required for `q` to exist.
+  void existence_floor(QuantityId q, std::map<CollectionId, std::uint32_t>& out) const;
+
   /// Flatten a pure filter chain to (base symbol, preds base-down).
   bool filter_chain(CollectionId id, Symbol& base,
                     std::vector<ElemPredId>& preds) const;

@@ -1,9 +1,9 @@
-# `adl2_sema` (P2 — filled)
+# `adl2_sema` (P2 — filled; P3 added Rat/NumVal)
 
 Name resolution, interned Quantity/Collection identity, define resolution,
 fragment tagging, and HIR — the C++ port of Rust `adl-sema`
 (SPEC_ARCHITECTURE §4). Downstream of syntax only; public headers never
-include parser types.
+include parser types. P3 adds exact `Rat` / `NumVal` (formula + interp).
 
 **P1** left this as a stub so the crate map existed in CMake. **P2** fills
 it. Do not blob resolve/HIR into syntax or analysis.
@@ -19,6 +19,7 @@ it. Do not blob resolve/HIR into syntax or analysis.
 | `ext.hpp` | `ExtDecls::legacy()` (embedded `legacy_parser/adl/*.txt`) |
 | `dump.hpp` | `hir_dump` / `quantity_table_dump` (Rust Debug format) |
 | `ops.hpp` / `diag.hpp` | ops + diagnostics copied so HIR does not include syntax |
+| `rat.hpp` / `num.hpp` | exact `Rat` / `NumVal` (P3; formula + interp) |
 | `sema.hpp` | umbrella |
 
 `analyze(FileAst)` stays private (`src/resolver.hpp`) so formula / interp /

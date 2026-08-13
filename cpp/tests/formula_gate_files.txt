@@ -1,0 +1,18 @@
+# P3 dump-formula oracle gate allowlist vs Rust smash2 (fail-closed).
+# Paths relative to repo root. Claimed set size is pinned
+# (EXPECTED_FILES in cpp/scripts/dump_formula_corpus_gate.sh).
+# Shrinking or growing without bumping the pin fails CI.
+#
+# Not claimed (power/ratio constant-fold differs from smash2 on these):
+#   examples/tutorials/ex04_syntaxes.adl
+#   examples/tutorials/ex06_bins.adl
+examples/tutorials/ex00_helloworld.adl
+examples/tutorials/ex00_info.adl
+examples/tutorials/ex01_selection.adl
+examples/tutorials/ex02_histograms.adl
+legacy_parser/tests/golden/disjoint_pt.adl
+legacy_parser/tests/golden/or_met.adl
+legacy_parser/tests/golden/overlap_met.adl
+legacy_parser/tests/golden/size_bjets.adl
+legacy_parser/tests/golden/union_size.adl
+cpp/tests/fixtures/tiny.adl

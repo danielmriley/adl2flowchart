@@ -15,10 +15,12 @@
 //!   SPEC_ANALYSIS §1 table, including the PHASE0 OPEN-1 `Dual` bounded
 //!   expansion (`k = 3`, empty-collection case in the plus branch).
 
+pub mod dump;
 pub mod encode;
 pub mod formula;
 pub mod lin;
 
+pub use dump::{dump_encoded, dump_formula, dump_qformula};
 pub use encode::{
     EncodedRegion, MAX_STATIC_SLICE_REDUCE, OPEN1_BOUND, encode_region, encode_regions,
 };

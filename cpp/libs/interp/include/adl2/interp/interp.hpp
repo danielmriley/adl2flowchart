@@ -1,17 +1,9 @@
 #pragma once
 
-/// `adl2_interp` — Cutflow / membership interpreter (Rust adl-interp). Parallel to formula after sema.
-///
-/// P1 status: **stub**. API surface will grow in a dedicated phase.
-/// Headers live under `libs/interp/include/adl2/interp/` so seams stay obvious.
-///
-/// Dependency spine (do not invert):
-///   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
-///   viz reads HIR only; cli wires modules.
+/// `adl2_interp` — reference interpreter (Rust `adl-interp` / SPEC_LANGUAGE §4).
+/// Parallel to formula after sema. This is the executable semantics oracle.
 
-namespace adl2::interp {
+#include "adl2/interp/eval.hpp"
+#include "adl2/interp/event.hpp"
 
-/// Linkable anchor for the stub static library (not a public API).
-int module_anchor();
-
-}  // namespace adl2::interp
+namespace adl2::interp {}  // namespace adl2::interp

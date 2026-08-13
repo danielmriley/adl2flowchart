@@ -30,6 +30,8 @@ adl2_add_library(adl2_sema
     src/hir.cpp
     src/ext.cpp
     src/dump.cpp
+    src/rat.cpp
+    src/num.cpp
     src/resolve.cpp
     src/resolve_expr.cpp
     ${ADL2_EXT_EMBED}

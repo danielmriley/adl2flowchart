@@ -26,13 +26,13 @@ bool stdout_color() {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify report)\n"
+      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify report + cutflow)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
          "--dump-formula|--dump-axioms] [--json] <file.adl>\n"
-      << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
+      << "  " << argv0 << " run [--json] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--dump-verdicts]\n"
          "          [--json] [--explain] [--matrix] [--fail-on=KINDS] <file.adl>\n"
@@ -41,7 +41,9 @@ void print_help(const char* argv0) {
       << "\n"
       << "Bare `check` always resolves (like smash2). stdout is empty on success;\n"
       << "diagnostics go to stderr. `--dump-ast` still prints the AST dump to stdout.\n"
-      << "`run` prints smash2-style event lines (cutflow/histo tables not yet ported).\n"
+      << "`run` prints smash2-style event lines then per-region cutflow tables.\n"
+      << "`--json` emits one object per event plus a final {\"cutflow\":...} line\n"
+      << "(no provenance object yet). `--histos` / `--profile` / ROOT are not ported.\n"
       << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
       << "region3 witness. `--no-certify` skips independent replay. Default stdout\n"
@@ -179,7 +181,7 @@ int cmd_dot(const std::string& path, bool ast, bool verbose) {
   return 0;
 }
 
-int cmd_run(const std::string& adl_path, const std::string& events_path) {
+int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out) {
   std::string src = read_file(adl_path);
   if (src.empty() && !std::ifstream(adl_path).good()) {
     std::cerr << "error: cannot read file: " << adl_path << "\n";
@@ -190,11 +192,12 @@ int cmd_run(const std::string& adl_path, const std::string& events_path) {
     std::cerr << "error: cannot read file: " << events_path << "\n";
     return 1;
   }
+  std::string name = unit_name(adl_path);
   auto ext = adl2::sema::ExtDecls::legacy();
-  auto hir = adl2::sema::analyze_str(src, unit_name(adl_path), ext);
+  auto hir = adl2::sema::analyze_str(src, name, ext);
+  if (!hir.diags.empty()) print_sema_diags(hir.diags);
   if (adl2::sema::has_errors(hir.diags)) {
-    print_sema_diags(hir.diags);
-    std::cerr << unit_name(adl_path) << ": cannot run — resolve errors\n";
+    std::cerr << name << ": cannot run — resolve errors\n";
     return 1;
   }
   std::vector<adl2::interp::Event> events;
@@ -204,11 +207,33 @@ int cmd_run(const std::string& adl_path, const std::string& events_path) {
     return 1;
   }
   adl2::interp::Interp interp(hir, ext);
+  auto cutflow = adl2::interp::CutflowSet::make(hir, src);
   for (std::size_t i = 0; i < events.size(); ++i) {
-    auto results = interp.run_event(events[i]);
-    for (const auto& r : results) {
-      std::cout << "event " << i << ": " << r.name << " -> "
-                << adl2::interp::format_region_text(r) << "\n";
+    auto [results, traces] = interp.run_event_traced(events[i]);
+    cutflow.record_event(events[i], results, traces);
+    if (json_out) {
+      std::cout << "{\"event\":" << i << ",\"regions\":[";
+      for (std::size_t j = 0; j < results.size(); ++j) {
+        if (j) std::cout << ",";
+        std::cout << adl2::interp::format_region_json(results[j]);
+      }
+      std::cout << "]}\n";
+    } else {
+      for (const auto& r : results) {
+        std::cout << "event " << i << ": " << r.name << " -> "
+                  << adl2::interp::format_region_text(r) << "\n";
+      }
+    }
+  }
+  for (const auto& d : cutflow.diagnostics()) {
+    std::cerr << name << ": " << d << "\n";
+  }
+  if (!cutflow.empty()) {
+    if (json_out) {
+      std::cout << "{\"cutflow\":" << cutflow.to_json(false) << "}\n";
+    } else {
+      if (!events.empty()) std::cout << "\n";
+      std::cout << cutflow.text_table();
     }
   }
   return 0;
@@ -337,15 +362,41 @@ int main(int argc, char** argv) {
     return cmd_check(path, dump, json);
   }
   if (cmd == "run") {
-    if (argc - arg0 + 2 != 4 && argc != (verbose ? 5 : 4)) {
-      // accept run <adl> <jsonl>
+    bool json = false;
+    std::string adl;
+    std::string events;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--json") {
+        json = true;
+      } else if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--histos" || arg == "--profile" || arg == "--csv" || arg == "--svg" ||
+                 arg == "--no-root" || arg == "--flat-names" || arg == "--jobs") {
+        std::cerr << "error: smash2_cpp run " << arg
+                  << " is not ported (histos/ROOT/profile/jobs)\n";
+        return 2;
+      } else if (arg.compare(0, 9, "--histos=") == 0 || arg.compare(0, 10, "--profile=") == 0 ||
+                 arg.compare(0, 7, "--jobs=") == 0) {
+        std::cerr << "error: smash2_cpp run " << arg.substr(0, arg.find('='))
+                  << " is not ported (histos/ROOT/profile/jobs)\n";
+        return 2;
+      } else if (adl.empty()) {
+        adl = arg;
+      } else if (events.empty()) {
+        events = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
     }
-    if (argc < arg0 + 2) {
+    if (adl.empty() || events.empty()) {
       std::cerr << "error: run requires <file.adl> <events.jsonl>\n";
       print_help(argv[0]);
       return 2;
     }
-    return cmd_run(argv[arg0], argv[arg0 + 1]);
+    (void)verbose;
+    return cmd_run(adl, events, json);
   }
   if (cmd == "dot") {
     bool ast = false;

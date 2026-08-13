@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # P3 interpreter run gate: compare smash2_cpp `run` vs smash2 `run`
-# on pinned (adl, jsonl) pairs. Only stdout lines starting with `event `
-# are compared (cutflow / histo tables are deferred).
+# on pinned (adl, jsonl) pairs. Full stdout (event lines + cutflow tables).
 #
-# Both commands must exit 0. A crash, usage error, or event-line mismatch
+# Both commands must exit 0. A crash, usage error, or stdout mismatch
 # fails the gate.
 #
 # Usage (from repo root):
@@ -59,7 +58,7 @@ ok=0
 fail=0
 failures=()
 
-echo "==> interp run-diff ${#PAIRS[@]} pairs (event lines only; Rust oracle vs smash2_cpp)"
+echo "==> interp run-diff ${#PAIRS[@]} pairs (full stdout; Rust oracle vs smash2_cpp)"
 for pair in "${PAIRS[@]}"; do
   adl="${pair%% *}"
   jsonl="${pair#* }"
@@ -83,18 +82,16 @@ for pair in "${PAIRS[@]}"; do
   "$SMASH2_CPP" run "$ROOT/$adl" "$ROOT/$jsonl" >"$tmpdir/cpp.out" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
   set -e
-  grep '^event ' "$tmpdir/rust.out" >"$tmpdir/rust.ev" || true
-  grep '^event ' "$tmpdir/cpp.out" >"$tmpdir/cpp.ev" || true
 
   reason=""
   if [[ "$rc_rust" -ne 0 ]]; then
     reason="rust smash2 run exited $rc_rust"
   elif [[ "$rc_cpp" -ne 0 ]]; then
     reason="smash2_cpp run exited $rc_cpp"
-  elif [[ ! -s "$tmpdir/rust.ev" ]]; then
-    reason="rust run produced no event lines"
-  elif ! diff -q "$tmpdir/rust.ev" "$tmpdir/cpp.ev" >/dev/null; then
-    reason="event-line mismatch"
+  elif [[ ! -s "$tmpdir/rust.out" ]]; then
+    reason="rust run produced empty stdout"
+  elif ! diff -q "$tmpdir/rust.out" "$tmpdir/cpp.out" >/dev/null; then
+    reason="stdout mismatch"
   fi
 
   if [[ -z "$reason" ]]; then
@@ -104,7 +101,7 @@ for pair in "${PAIRS[@]}"; do
     failures+=("$adl ($reason)")
     echo "FAIL $adl: $reason" >&2
     if [[ "$reason" == *mismatch ]]; then
-      diff -u "$tmpdir/rust.ev" "$tmpdir/cpp.ev" >"$tmpdir/udiff" || true
+      diff -u "$tmpdir/rust.out" "$tmpdir/cpp.out" >"$tmpdir/udiff" || true
       head -80 "$tmpdir/udiff" >&2 || true
     else
       echo "  rust stderr:" >&2
@@ -126,4 +123,4 @@ if [[ "$ok" -ne "$EXPECTED_PAIRS" ]]; then
   echo "error: expected $EXPECTED_PAIRS passing pairs, got ok=$ok" >&2
   exit 1
 fi
-echo "interp run gate: PASS (event lines byte-for-byte vs Rust smash2; both sides exit 0)"
+echo "interp run gate: PASS (full stdout byte-for-byte vs Rust smash2; both sides exit 0)"

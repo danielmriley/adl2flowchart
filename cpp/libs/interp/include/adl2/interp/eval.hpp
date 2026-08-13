@@ -9,6 +9,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adl2::interp {
@@ -88,11 +89,29 @@ struct RegionResult {
   std::vector<BinOutcome> bins;
 };
 
+/// Outcome of one membership-affecting statement during a traced region
+/// walk (SPEC_EVENT_PIPELINE §2 cutflows). The walk short-circuits, so a
+/// trace covers exactly the statements the event reached.
+struct StepEval {
+  /// Index into the region's `stmts`.
+  std::size_t stmt = 0;
+  /// `true`: survived; `false`: failed (walk stops); nullopt: hard error
+  /// (`err` set) — the event counts as failing here.
+  std::optional<bool> pass;
+  EvalError err;
+};
+
 std::optional<std::size_t> assign_bin(double v, const std::vector<double>& edges);
 double wrap_dphi(double d);
 
 /// smash2 `run` text for one region (`PASS` / `fail` / `ERROR: …` + bins).
 std::string format_region_text(const RegionResult& r);
+
+/// smash2 `run --json` object for one region (`name` / `pass` / `bins` or `error`).
+std::string format_region_json(const RegionResult& r);
+
+/// serde_json/ryu shortest round-trip text for a finite f64 (`3.0`, not `3`).
+std::string json_f64(double v);
 
 class Interp {
  public:
@@ -106,6 +125,11 @@ class Interp {
   const std::string& mass_key() const { return mass_key_; }
 
   std::vector<RegionResult> run_event(const Event& event) const;
+
+  /// `run_event` plus, per region, the per-statement trace of the
+  /// membership walk (cutflow input). Evaluation matches the untraced path.
+  std::pair<std::vector<RegionResult>, std::vector<std::vector<StepEval>>> run_event_traced(
+      const Event& event) const;
 
   /// Two-valued region membership (smash2 run / cutflow). Hard error on
   /// missing event data or out-of-fragment.

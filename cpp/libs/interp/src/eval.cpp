@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
@@ -307,6 +309,8 @@ struct Ev {
   }
 
   BRes region(std::size_t idx);
+  BRes region_traced(std::size_t idx, std::vector<StepEval>& trace);
+  BRes region_walk(std::size_t idx, std::vector<StepEval>* trace);
   BRes truth(const HNode& n, const EventObject* elem);
   NRes num(const HNode& n, const EventObject* elem);
   Tri region3(std::size_t idx);
@@ -339,9 +343,21 @@ struct Ev {
 BRes Ev::region(std::size_t idx) {
   auto itc = region_cache.find(idx);
   if (itc != region_cache.end()) return itc->second;
+  BRes result = region_walk(idx, nullptr);
+  region_cache[idx] = result;
+  return result;
+}
+
+BRes Ev::region_traced(std::size_t idx, std::vector<StepEval>& trace) {
+  BRes result = region_walk(idx, &trace);
+  region_cache[idx] = result;
+  return result;
+}
+
+BRes Ev::region_walk(std::size_t idx, std::vector<StepEval>* trace) {
   const auto& reg = it->hir().regions[idx];
-  BRes result = BRes::ok(true);
-  for (const auto& stmt : reg.stmts) {
+  for (std::size_t i = 0; i < reg.stmts.size(); ++i) {
+    const auto& stmt = reg.stmts[i];
     BRes o;
     switch (stmt.kind) {
       case HirRegionStmt::Kind::Select:
@@ -361,22 +377,24 @@ BRes Ev::region(std::size_t idx) {
         continue;
       case HirRegionStmt::Kind::NonMembership:
         if (!stmt.tag.in_fragment) {
-          o = BRes::err_(oof(stmt.span, "cannot evaluate region: " + stmt.tag.reason));
-          break;
+          return BRes::err_(oof(stmt.span, "cannot evaluate region: " + stmt.tag.reason));
         }
         continue;
     }
-    if (o.hard) {
-      result = o;
-      break;
+    if (trace) {
+      StepEval se;
+      se.stmt = i;
+      if (o.hard) {
+        se.err = o.err;
+      } else {
+        se.pass = o.pass;
+      }
+      trace->push_back(std::move(se));
     }
-    if (!o.pass) {
-      result = BRes::ok(false);
-      break;
-    }
+    if (o.hard) return o;
+    if (!o.pass) return BRes::ok(false);
   }
-  region_cache[idx] = result;
-  return result;
+  return BRes::ok(true);
 }
 
 Tri Ev::region3(std::size_t idx) {
@@ -1489,6 +1507,78 @@ std::optional<std::size_t> assign_bin(double v, const std::vector<double>& edges
   return std::nullopt;
 }
 
+std::string json_f64(double v) {
+  if (!std::isfinite(v)) return "null";
+  if (v == 0.0) return std::signbit(v) ? "-0.0" : "0.0";
+  // Integers in the exact-mantissa range serialize as `N.0` (serde_json/ryu).
+  if (v == std::trunc(v) && std::fabs(v) <= 9007199254740992.0) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.1f", v);
+    return buf;
+  }
+  // Shortest round-trip that `strtod` recovers — same contract as ryu.
+  char buf[64];
+  for (int prec = 1; prec <= 17; ++prec) {
+    std::snprintf(buf, sizeof(buf), "%.*g", prec, v);
+    char* end = nullptr;
+    double back = std::strtod(buf, &end);
+    if (end && *end == '\0' && back == v) {
+      std::string s(buf);
+      if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
+          s.find('E') == std::string::npos) {
+        s += ".0";
+      }
+      return s;
+    }
+  }
+  std::snprintf(buf, sizeof(buf), "%.17g", v);
+  return buf;
+}
+
+namespace {
+std::string json_escape_str(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('"');
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out.push_back(static_cast<char>(c));
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+std::string bin_json(const BinOutcome& b) {
+  std::string s = "{\"kind\":";
+  if (b.kind == BinOutcomeKind::Boundary) {
+    s += "\"boundary\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"value\":";
+    s += b.value ? json_f64(*b.value) : "null";
+    s += ",\"bin\":";
+    s += b.bin ? std::to_string(*b.bin) : "null";
+  } else if (b.kind == BinOutcomeKind::Cond) {
+    s += "\"cond\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"member\":";
+    s += b.member ? "true" : "false";
+  } else {
+    s += "\"error\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"reason\":";
+    s += json_escape_str(b.reason);
+  }
+  s += "}";
+  return s;
+}
+}  // namespace
+
 std::string format_region_text(const RegionResult& r) {
   if (!r.pass) return "ERROR: " + r.error;
   if (!*r.pass) return "fail";
@@ -1504,6 +1594,25 @@ std::string format_region_text(const RegionResult& r) {
       s += " [" + label + ": error " + b.reason + "]";
     }
   }
+  return s;
+}
+
+std::string format_region_json(const RegionResult& r) {
+  std::string s = "{\"name\":" + json_escape_str(r.name);
+  if (!r.pass) {
+    s += ",\"pass\":null,\"error\":" + json_escape_str(r.error) + "}";
+    return s;
+  }
+  if (!*r.pass) {
+    s += ",\"pass\":false}";
+    return s;
+  }
+  s += ",\"pass\":true,\"bins\":[";
+  for (std::size_t i = 0; i < r.bins.size(); ++i) {
+    if (i) s += ",";
+    s += bin_json(r.bins[i]);
+  }
+  s += "]}";
   return s;
 }
 
@@ -1585,13 +1694,21 @@ std::optional<bool> Interp::eval_region_membership_idx(std::size_t idx, const Ev
 }
 
 std::vector<RegionResult> Interp::run_event(const Event& event) const {
+  return run_event_traced(event).first;
+}
+
+std::pair<std::vector<RegionResult>, std::vector<std::vector<StepEval>>> Interp::run_event_traced(
+    const Event& event) const {
   Ev ev{this, &event, {}, {}, {}, {}, {}};
   std::vector<RegionResult> out;
+  std::vector<std::vector<StepEval>> traces;
   out.reserve(hir_->regions.size());
+  traces.reserve(hir_->regions.size());
   for (std::size_t i = 0; i < hir_->regions.size(); ++i) {
+    std::vector<StepEval> steps;
+    auto r = ev.region_traced(i, steps);
     RegionResult rr;
     rr.name = hir_->symbols.display(hir_->regions[i].name);
-    auto r = ev.region(i);
     if (r.hard) {
       rr.error = r.err.reason;
     } else {
@@ -1599,8 +1716,9 @@ std::vector<RegionResult> Interp::run_event(const Event& event) const {
       if (r.pass) rr.bins = ev.region_bins(i);
     }
     out.push_back(std::move(rr));
+    traces.push_back(std::move(steps));
   }
-  return out;
+  return {std::move(out), std::move(traces)};
 }
 
 int module_anchor() { return 3; }

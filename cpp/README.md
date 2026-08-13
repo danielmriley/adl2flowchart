@@ -60,7 +60,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Axiom catalog (19) + emitters | Yes; EPRED/EPRES ported |
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
-| Two-valued `run` event lines vs smash2 | Fail-closed pair list (pinned count) |
+| Two-valued `run` + cutflow tables vs smash2 | Fail-closed pair list (pinned count; full stdout) |
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=30 FAIL=0`) |
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
@@ -138,12 +138,12 @@ allowlists — shrinking or growing the list without bumping the pin fails CI. F
 Do not weaken `smash2` / `oracle-rust` CI.
 
 Bare `smash2_cpp check` always resolves (Rust smash2 parity); stdout is
-empty on success. `smash2_cpp run` prints event lines only (cutflow/histo
-tables not yet ported). `verify` defaults to certify ON.
+empty on success. `smash2_cpp run` prints event lines plus smash2 cutflow
+tables. `verify` defaults to certify ON.
 
 ## Remaining vs smash2 (honest non-parity)
 
-Still to port: cutflow/histo tables; sampling + refute gates; `--cross` /
-reconcile; `--combine` bundles; ROOT `ingest` / `run --profile`; byte-
-identical `verify` JSON/human reports (C++ JSON is a compact subset).
-Native libz3 stays out (ADR-010).
+Still to port: histo accumulation + `--histos` (CSV/SVG/ROOT bridges);
+sampling + refute gates; `--cross` / reconcile; `--combine` bundles;
+ROOT `ingest` / `run --profile`; byte-identical `verify` JSON/human
+reports (C++ JSON is a compact subset). Native libz3 stays out (ADR-010).

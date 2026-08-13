@@ -4,6 +4,7 @@
 /// Parallel to formula after sema. This is the executable semantics oracle.
 
 #include "adl2/interp/eval.hpp"
+#include "adl2/interp/cutflow.hpp"
 #include "adl2/interp/event.hpp"
 
 namespace adl2::interp {}  // namespace adl2::interp

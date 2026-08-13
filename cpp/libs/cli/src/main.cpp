@@ -1,3 +1,4 @@
+#include "adl2/analysis/analysis.hpp"
 #include "adl2/axioms/axioms.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
@@ -19,7 +20,7 @@ namespace {
 
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P4: + adl2_viz DOT)\n"
+      << "smash2_cpp — ADL2 C++ port (P4: solver + viz + verify)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
@@ -27,6 +28,7 @@ void print_help(const char* argv0) {
          "--dump-formula|--dump-axioms] <file.adl>\n"
       << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
+      << "  " << argv0 << " verify [--no-solver] [--dump-verdicts] <file.adl>\n"
       << "\n"
       << "Bare `check` (no dump flag) is parse-only — it does not run name\n"
       << "resolution. Rust `smash2 check` always resolves. This is an\n"
@@ -34,9 +36,11 @@ void print_help(const char* argv0) {
       << "to run sema (+ encode). `run` prints smash2-style event lines only\n"
       << "(no cutflow/histo tables). `dot` resolves via analyze_str; flowchart\n"
       << "DOT (default) or `--ast` to stdout; diagnostics to stderr.\n"
+      << "`verify` is interval + subprocess z3 (no certify/witness); "
+         "--dump-verdicts prints one `A vs B: KIND` line per pair.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
-      << "interp/axioms/viz; no core logic in the executable. Rust smash2 is the\n"
+      << "interp/axioms/viz/analysis; no core logic in the executable. Rust smash2 is the\n"
       << "forever oracle.\n";
 }
 
@@ -182,6 +186,32 @@ int cmd_run(const std::string& adl_path, const std::string& events_path) {
   return 0;
 }
 
+int cmd_verify(const std::string& path, bool no_solver, bool dump_only) {
+  std::string src = read_file(path);
+  if (src.empty() && !std::ifstream(path).good()) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  std::string name = unit_name(path);
+  auto ext = adl2::sema::ExtDecls::legacy();
+  auto hir = adl2::sema::analyze_str(src, name, ext);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot verify — resolve errors\n";
+    return 1;
+  }
+  adl2::analysis::AnalysisOptions opts;
+  opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
+                          : adl2::analysis::SolverChoice::Auto;
+  opts.certify = false;
+  auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  std::cout << adl2::analysis::dump_verdicts(report);
+  if (!dump_only) {
+    std::cerr << name << ": solver=" << report.solver
+              << " pairs=" << report.pairwise.size() << "\n";
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -254,6 +284,30 @@ int main(int argc, char** argv) {
       return 2;
     }
     return cmd_dot(path, ast, verbose);
+  }
+  if (cmd == "verify") {
+    bool no_solver = false;
+    bool dump_only = false;
+    std::string path;
+    for (int i = 2; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--no-solver") {
+        no_solver = true;
+      } else if (arg == "--dump-verdicts") {
+        dump_only = true;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
+      std::cerr << "error: verify requires a file path\n";
+      print_help(argv[0]);
+      return 2;
+    }
+    return cmd_verify(path, no_solver, dump_only);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

@@ -14,10 +14,10 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
-| `adl2_analysis` | `adl-analysis` | stub | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
+| `adl2_analysis` | `adl-analysis` | **filled** (P4; interval + solver pairwise; no certify) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | stub | `adl2_analysis` (PUBLIC, tiny) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
-| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz |
+| `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis |
 | `adl2_util` | _(optional)_ | stub | — |
 
 There is **no** `libadl2_cpp` / monolithic static blob. The CMake `project()`
@@ -38,8 +38,8 @@ viz reads HIR only; cli wires modules.
 4. **certify stays a small trusted kernel** — no parser/analysis sprawl.
 5. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
 6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
-   P3 fills **formula / interp / axioms**. P4 fills **viz**. Solver /
-   analysis / certify remain later phases.
+   P4 fills **solver / viz / analysis (interval+pairwise)** plus region3 and
+   EPRED/EPRES. Certify remains a later phase.
 
 ## Include policy
 

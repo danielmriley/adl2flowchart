@@ -107,6 +107,13 @@ target_compile_options(adl2_analysis_encode PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME adl2_analysis_encode
   COMMAND adl2_analysis_encode)
 
+add_executable(adl2_analysis_solver analysis_solver.cpp)
+target_link_libraries(adl2_analysis_solver PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_solver PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_solver
+  COMMAND adl2_analysis_solver)
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}
@@ -146,3 +153,6 @@ set_tests_properties(adl2_interval_unit PROPERTIES
 
 set_tests_properties(adl2_analysis_encode PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=37 FAIL=0")
+
+set_tests_properties(adl2_analysis_solver PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")

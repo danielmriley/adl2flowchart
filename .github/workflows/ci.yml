@@ -48,11 +48,11 @@ jobs:
       - name: Golden suite + corpus sweep + z3 spike
         run: make -C legacy_parser test
 
-  # P3 C++ syntax + sema + formula/interp/axioms (ADR-010). Stock cmake + g++;
-  # no bison/flex. Dump-diff / run-diff gates build Rust smash2 as forever
-  # oracle (--no-default-features so the job does not need libz3).
+  # P4 C++ syntax + sema + formula/interp/axioms + solver/viz/analysis
+  # (ADR-010). Stock cmake + g++; no bison/flex/libz3. Dump-diff gates
+  # build Rust smash2 as forever oracle (--no-default-features).
   adl2-cpp:
-    name: adl2-cpp (P3 dump-ast + dump-hir + formula + interp + axioms gates)
+    name: adl2-cpp (P4 dump-ast + dump-hir + formula + interp + axioms + dot gates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +60,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ make
+      - name: Install z3 4.12.2 (subprocess solver tests)
+        run: |
+          curl -sSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.12.2/z3-4.12.2-x64-glibc-2.35.zip
+          unzip -q /tmp/z3.zip -d /tmp/z3
+          sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
+          z3 --version
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,6 +86,8 @@ jobs:
         run: SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
       - name: Dump-axioms oracle gate (vs Rust smash2)
         run: SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
+      - name: Dump-dot oracle gate (vs Rust smash2)
+        run: SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 
   # Rust smash2 is the forever oracle for the C++ port (ADR-010).
   # Keep this green alongside adl2-cpp; do not remove or weaken it.

@@ -2,9 +2,10 @@
 
 /// `adl2_analysis` — Verify / pairwise analysis (Rust adl-analysis). Must not parse.
 ///
-/// P4 fills interval fast path, statement-granularity encode, and report
-/// enums. Pairwise here is interval-only (no solver): proven disjoint/empty
-/// where the fast path fires, everything else POSSIBLY.
+/// P4 fills interval fast path, statement-granularity encode, report enums,
+/// and a subprocess-solver pairwise engine. Certify / reconcile / refute /
+/// witness realization are not claimed. Solver-SAT overlap is
+/// CANDIDATE OVERLAPPING (no interpreter re-validation yet).
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
@@ -21,8 +22,8 @@
 
 namespace adl2::analysis {
 
-/// Which solver backend to use. This commit is interval-only: every choice
-/// behaves as `NoSolver` (do not construct `SubprocessSolver` here).
+/// Which solver backend to use. `Native` is accepted but maps to the
+/// subprocess backend (C++ has no libz3 link). `Auto` uses z3 on PATH.
 enum class SolverChoice {
   Auto,
   Native,
@@ -30,8 +31,8 @@ enum class SolverChoice {
   NoSolver,
 };
 
-/// Analysis options. Defaults are the interval-only configuration: no solver,
-/// no certify / reconcile / refute / sample gates.
+/// Analysis options. Default is interval-only (`NoSolver`) so unit tests
+/// that pin POSSIBLY stay stable. CLI `verify` passes `Auto`.
 struct AnalysisOptions {
   SolverChoice solver = SolverChoice::NoSolver;
   std::chrono::milliseconds timeout{10000};
@@ -43,9 +44,9 @@ struct AnalysisOptions {
   bool combine = false;
 };
 
-/// Encode `hir` and run the interval fast path over region pairs. Does not
-/// parse, certify, reconcile, refute, or sample. `src` is the unit text used
-/// for cut line-text; empty falls back to HIR render.
+/// Encode `hir` and run interval + optional solver pairwise. Does not parse,
+/// certify, reconcile, refute, or sample. `src` is the unit text used for
+/// cut line-text; empty falls back to HIR render.
 Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
                    const adl2::sema::ExtDecls& ext, const AnalysisOptions& opts);
 

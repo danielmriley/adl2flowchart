@@ -253,17 +253,33 @@ std::optional<std::int64_t> mag_to_i64(const std::vector<Limb>& v, bool neg) {
   return static_cast<std::int64_t>(mag);
 }
 
+std::vector<Limb> shl_limbs(std::vector<Limb> x, int s) {
+  if (s <= 0) return x;
+  int limb_sh = s / 32;
+  int bit_sh = s % 32;
+  x.insert(x.begin(), static_cast<std::size_t>(limb_sh), 0);
+  if (bit_sh) {
+    Wide carry = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      Wide t = (static_cast<Wide>(x[i]) << bit_sh) | carry;
+      x[i] = static_cast<Limb>(t);
+      carry = t >> 32;
+    }
+    if (carry) x.push_back(static_cast<Limb>(carry));
+  }
+  return x;
+}
+
 double mag_to_f64(const std::vector<Limb>& num, const std::vector<Limb>& den, bool neg) {
   if (mag_empty(num)) return neg ? -0.0 : 0.0;
-  // Convert via high-precision decimal then strtod — lossy by contract.
-  // For values that originated as f64 (from_f64_exact), reconstruct from bits.
-  auto [q, r] = div_mag(num, den);
-  (void)r;
-  // Build a 64-bit mantissa approximation: (num << 64) / den, then scale.
-  // Shift num left until >= den * 2^53, then divide.
-  std::vector<Limb> n = num;
-  int exp2 = 0;
-  // n / d ≈ m * 2^exp2 with m in [1, 2).
+  if (mag_empty(den)) {
+    return neg ? -std::numeric_limits<double>::infinity()
+               : std::numeric_limits<double>::infinity();
+  }
+  // Nearest f64. Encoder::at_edge (F64 mode) is `from_f64_exact(k.to_f64())`,
+  // so a wrong scale here shifts every approximate cut (dPhi/dR/mass/…).
+  // Previous code did ldexp(mant, e - shift) with shift = want - e, i.e.
+  // ldexp(mant, 2e - want): an extra 2^floor(log2(k)) (3.5 → 7, 70 → 4480).
   auto bitlen = [](const std::vector<Limb>& x) -> int {
     if (x.empty()) return 0;
     int bits = static_cast<int>((x.size() - 1) * 32);
@@ -274,55 +290,56 @@ double mag_to_f64(const std::vector<Limb>& num, const std::vector<Limb>& den, bo
     }
     return bits;
   };
-  int nb = bitlen(n);
-  int db = bitlen(den);
-  exp2 = nb - db;
-  // Align so n/d is in [2^52, 2^53).
-  int want = 53;
-  int shift = want - (nb - db);
+  const int want = 52;  // IEEE normal significand in [2^52, 2^53)
+  int e_approx = bitlen(num) - bitlen(den);
+  // bitlen(n)-bitlen(d) can sit 1 above floor(log2(n/d)) (e.g. 2/25=0.08:
+  // guess 2^{-3} but 0.08 < 0.125). Step down while n < d*2^e.
+  auto below_pow2 = [&](int e) {
+    if (e >= 0) return cmp_mag(num, shl_limbs(den, e)) < 0;
+    return cmp_mag(shl_limbs(num, -e), den) < 0;
+  };
+  while (below_pow2(e_approx)) --e_approx;
+  int shift = want - e_approx;
+  std::vector<Limb> n = num;
+  std::vector<Limb> d = den;
+  // Scale the fraction, never right-shift the numerator (that drops bits
+  // needed for rounding). shift>0 → n <<= shift; shift<0 → d <<= -shift.
   if (shift > 0) {
-    int limb_sh = shift / 32;
-    int bit_sh = shift % 32;
-    n.insert(n.begin(), static_cast<std::size_t>(limb_sh), 0);
-    if (bit_sh) {
-      Wide carry = 0;
-      for (std::size_t i = 0; i < n.size(); ++i) {
-        Wide t = (static_cast<Wide>(n[i]) << bit_sh) | carry;
-        n[i] = static_cast<Limb>(t);
-        carry = t >> 32;
-      }
-      if (carry) n.push_back(static_cast<Limb>(carry));
-    }
-    exp2 -= shift;
+    n = shl_limbs(std::move(n), shift);
   } else if (shift < 0) {
-    int s = -shift;
-    int limb_sh = s / 32;
-    int bit_sh = s % 32;
-    if (static_cast<std::size_t>(limb_sh) >= n.size()) n.clear();
-    else n.erase(n.begin(), n.begin() + limb_sh);
-    if (bit_sh && !n.empty()) {
-      Wide acc = 0;
-      for (std::size_t i = n.size(); i-- > 0;) {
-        Wide cur = (acc << 32) | n[i];
-        n[i] = static_cast<Limb>(cur >> bit_sh);
-        acc = cur & ((1ull << bit_sh) - 1);
-      }
-      trim(n);
-    }
-    exp2 += s;
+    d = shl_limbs(std::move(d), -shift);
   }
-  auto [mant_v, rem] = div_mag(n, den);
+  auto [mant_v, rem] = div_mag(n, d);
+  if (!rem.empty()) {
+    auto twice = add_mag(rem, rem);
+    if (cmp_mag(twice, d) >= 0) mant_v = add_mag(mant_v, from_u64(1));
+  }
+  int exp_off = -shift;
+  auto too_wide = [](const std::vector<Limb>& v) {
+    if (v.size() > 2) return true;
+    std::uint64_t m = 0;
+    if (!v.empty()) m = v[0];
+    if (v.size() > 1) m |= static_cast<std::uint64_t>(v[1]) << 32;
+    return m >= (1ull << 53);
+  };
+  while (too_wide(mant_v)) {
+    Wide acc = 0;
+    for (std::size_t i = mant_v.size(); i-- > 0;) {
+      Wide cur = (acc << 32) | mant_v[i];
+      mant_v[i] = static_cast<Limb>(cur >> 1);
+      acc = cur & 1;
+    }
+    trim(mant_v);
+    ++exp_off;
+  }
   std::uint64_t mant = 0;
   if (!mant_v.empty()) mant = mant_v[0];
   if (mant_v.size() > 1) mant |= static_cast<std::uint64_t>(mant_v[1]) << 32;
-  // Round up if remainder * 2 >= den.
-  if (!rem.empty()) {
-    auto twice = add_mag(rem, rem);
-    if (cmp_mag(twice, den) >= 0) ++mant;
+  while (mant != 0 && mant < (1ull << 52)) {
+    mant <<= 1;
+    --exp_off;
   }
-  double m = static_cast<double>(mant);
-  // mant is ~2^52..2^53; scale by 2^exp2.
-  m = std::ldexp(m, exp2);
+  double m = std::ldexp(static_cast<double>(mant), exp_off);
   return neg ? -m : m;
 }
 

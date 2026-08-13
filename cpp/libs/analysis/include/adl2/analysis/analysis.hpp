@@ -14,6 +14,7 @@
 #include "adl2/analysis/encode.hpp"
 #include "adl2/analysis/interval.hpp"
 #include "adl2/analysis/report.hpp"
+#include "adl2/analysis/witness.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
 

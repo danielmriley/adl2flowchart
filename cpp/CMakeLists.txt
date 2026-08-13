@@ -12,8 +12,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Adl2Module)
 
 # --- module targets (spine order) ---
-# syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+# syntax → sema → {interp ‖ formula} → axioms → solver
+#                                    ↘ certify ↗ analysis
 # viz reads HIR only; cli wires modules.
+# certify depends on formula only (Rust adl-certify); analysis calls it.
 add_subdirectory(libs/util)
 add_subdirectory(libs/syntax)
 add_subdirectory(libs/sema)
@@ -21,8 +23,8 @@ add_subdirectory(libs/formula)
 add_subdirectory(libs/interp)
 add_subdirectory(libs/axioms)
 add_subdirectory(libs/solver)
-add_subdirectory(libs/analysis)
 add_subdirectory(libs/certify)
+add_subdirectory(libs/analysis)
 add_subdirectory(libs/viz)
 add_subdirectory(libs/cli)
 

@@ -14,7 +14,8 @@ From-scratch C++ reimplementation of the **smash2 architecture**
 See [`MODULES.md`](MODULES.md) for the full spine and layering rules.
 
 ```
-syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+syntax → sema → {interp ‖ formula} → axioms → solver
+                                    ↘ certify ↗ analysis
 viz reads HIR only; cli wires modules.
 ```
 
@@ -28,13 +29,13 @@ viz reads HIR only; cli wires modules.
 | **`adl2_solver`** | **filled** (P4: SMT-LIB2 subprocess) | `libs/solver/include/adl2/solver/` |
 | **`adl2_analysis`** | **filled** (P4: interval + pairwise) | `libs/analysis/include/adl2/analysis/` |
 | **`adl2_viz`** | **filled** (P4: flowchart/AST DOT) | `libs/viz/include/adl2/viz/` |
-| `adl2_certify`, `adl2_util` | stubs | `libs/<module>/include/adl2/<module>/` |
+| `adl2_certify`, `adl2_util` | certify API locked (P5 fill); util stub | `libs/<module>/include/adl2/<module>/` |
 | `smash2_cpp` (`libs/cli`) | dump/run/dot/verify wiring | — |
 
 Sources live under `libs/<module>/`. Prefer one reviewable PR per module
 boundary when filling stubs. **No layering violations:** analysis must not
-parse; certify stays a small trusted kernel; viz depends on sema (HIR), not
-AST-only meaning.
+parse; certify stays a small trusted kernel over formulas (not analysis);
+viz depends on sema (HIR), not AST-only meaning.
 
 ## Status (P4)
 
@@ -63,7 +64,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (solver-SAT overlap is **candidate**, not proven) |
-| Independent Farkas certify | **Stub** |
+| Independent Farkas certify | **API locked** (replay stub fails closed) |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
 

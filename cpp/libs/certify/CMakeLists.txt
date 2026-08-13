@@ -1,6 +1,6 @@
-# adl2_certify — small trusted certificate kernel (Rust adl-certify). P1: stub.
-# Must stay thin; no parser/analysis sprawl.
-adl2_add_library(adl2_certify STUB
-  SOURCES src/stub.cpp
-  PUBLIC_DEPS adl2_analysis
+# adl2_certify — small trusted certificate kernel (Rust adl-certify).
+# Depends on formula only. Analysis calls this crate; do not invert.
+adl2_add_library(adl2_certify
+  SOURCES src/lib.cpp
+  PUBLIC_DEPS adl2_formula
 )

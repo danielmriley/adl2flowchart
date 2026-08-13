@@ -14,8 +14,8 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
-| `adl2_analysis` | `adl-analysis` | **filled** (P4; interval + solver pairwise; no certify) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
-| `adl2_certify` | `adl-certify` | stub | `adl2_analysis` (PUBLIC, tiny) |
+| `adl2_analysis` | `adl-analysis` | **filled** (P4; interval + solver pairwise; witness stub) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
+| `adl2_certify` | `adl-certify` | API locked (P5 fill) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis |
 | `adl2_util` | _(optional)_ | stub | — |
@@ -26,9 +26,14 @@ name is `adl2`; libraries are the `adl2_*` targets above.
 ## Dependency spine
 
 ```
-syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+syntax → sema → {interp ‖ formula} → axioms → solver
+                                    ↘ certify ↗ analysis
 viz reads HIR only; cli wires modules.
 ```
+
+`adl2_certify` is a leaf over formulas (Rust `adl-certify`). Analysis *calls*
+it; certify must not depend on analysis. The P0 stub edge
+`certify → analysis` was inverted in the P5 API lock.
 
 ### Non-negotiable layering
 
@@ -39,7 +44,8 @@ viz reads HIR only; cli wires modules.
 5. **No string-keyed identity** sneaking across modules (ADR-007 spirit).
 6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
    P4 fills **solver / viz / analysis (interval+pairwise)** plus region3 and
-   EPRED/EPRES. Certify remains a later phase.
+   EPRED/EPRES. P5 fills **certify** (Farkas replay) and **witness**
+   (region3 re-validation).
 
 ## Include policy
 
@@ -60,6 +66,8 @@ workspace-wide `cpp/include/` dump on every target.
   link without inheriting parser includes.
 - ctest `layering_analysis_cannot_include_syntax` compiles a probe against
   `adl2_analysis`’s interface includes and **expects failure**.
+- ctest `layering_certify_cannot_include_analysis` compiles a probe against
+  `adl2_certify`’s interface includes and **expects failure**.
 
 ## Layout
 

@@ -121,6 +121,13 @@ add_test(NAME layering_analysis_cannot_include_syntax
     "-DINCLUDES=$<TARGET_PROPERTY:adl2_analysis,INTERFACE_INCLUDE_DIRECTORIES>"
     -P ${CMAKE_CURRENT_SOURCE_DIR}/layering/expect_compile_fail.cmake)
 
+add_test(NAME layering_certify_cannot_include_analysis
+  COMMAND ${CMAKE_COMMAND}
+    -DCOMPILER=${CMAKE_CXX_COMPILER}
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/layering/cannot_include_analysis.cpp
+    "-DINCLUDES=$<TARGET_PROPERTY:adl2_certify,INTERFACE_INCLUDE_DIRECTORIES>"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/layering/expect_compile_fail.cmake)
+
 set_tests_properties(smash2_cpp_help PROPERTIES
   PASS_REGULAR_EXPRESSION "parse-only")
 

@@ -13,6 +13,8 @@
 /// CLI `verify` turns them on (`64` / true; `--no-refute-gate` disables the
 /// adversarial search). `opts.reconcile` (CLI `--cross`) proves same-base
 /// collection refinements and asserts derived XSUB/XEQ size facts.
+/// `opts.combine` (CLI `--combine`) assembles a replayable `smash2-combine/2`
+/// bundle for every certified PROVEN DISJOINT pair that survives the gates.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver
@@ -53,6 +55,8 @@ struct AnalysisOptions {
   bool certify = false;
   std::size_t sample_gate = 0;
   bool refute_gate = false;
+  /// Portable `smash2-combine/2` bundles for certified PROVEN DISJOINT pairs.
+  /// Off by default (bundling clones the certified formula set per pair).
   bool combine = false;
 };
 

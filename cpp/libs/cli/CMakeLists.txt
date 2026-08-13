@@ -16,6 +16,13 @@ set_target_properties(smash2_cpp PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
+add_executable(smash2_cpp-recheck src/recheck.cpp)
+target_link_libraries(smash2_cpp-recheck PRIVATE adl2_certify)
+target_compile_options(smash2_cpp-recheck PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(smash2_cpp-recheck PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
 # Remaining stub modules stay in the default graph without linking into cli.
 add_custom_target(adl2_module_stubs DEPENDS
   adl2_util

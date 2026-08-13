@@ -11,7 +11,8 @@
 ///   certify depends on formula only — NOT on analysis.
 ///   analysis calls certify. Do not include `adl2/analysis/`.
 ///
-/// Bundles / `smash2-recheck` / SHA-256 are out of this fill.
+/// Bundles (`smash2-combine/2`) and SHA-256 live in `bundle.hpp` / `sha256.hpp`.
+/// `Certificate::replay` remains the trusted kernel; bundle replay calls it.
 
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/rat.hpp"
@@ -40,6 +41,8 @@ struct QRat {
   adl2::sema::Rat value;
   std::string to_repr() const;
   static std::optional<QRat> from_repr(const std::string& s);
+  bool operator==(const QRat& o) const { return value == o.value; }
+  bool operator!=(const QRat& o) const { return !(*this == o); }
 };
 
 struct CertNode {
@@ -65,6 +68,11 @@ struct CertNode {
     n.branches = std::move(br);
     return n;
   }
+
+  bool operator==(const CertNode& o) const {
+    return kind == o.kind && multipliers == o.multipliers && branches == o.branches;
+  }
+  bool operator!=(const CertNode& o) const { return !(*this == o); }
 };
 
 class Certificate {
@@ -78,6 +86,9 @@ class Certificate {
   /// Trusted kernel: exact-rational replay, no search, no solver.
   /// Fail closed (false) on malformed / over-deep / shape-mismatched certs.
   bool replay(const std::vector<adl2::formula::QFormula>& formulas) const;
+
+  bool operator==(const Certificate& o) const { return root_ == o.root_; }
+  bool operator!=(const Certificate& o) const { return !(*this == o); }
 
  private:
   CertNode root_;

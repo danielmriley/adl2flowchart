@@ -1,5 +1,7 @@
 #include "adl2/analysis/analysis.hpp"
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/certify/bundle.hpp"
+#include "adl2/certify/sha256.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
@@ -9,6 +11,8 @@
 #include "adl2/viz/viz.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
@@ -41,7 +45,7 @@ void print_help(const char* argv0) {
          "          [--no-root] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
-         "          [--cross] [--recon=all|related] [--dump-verdicts]\n"
+         "          [--cross] [--combine DIR] [--recon=all|related] [--dump-verdicts]\n"
          "          [--json] [--explain] [--matrix] [--fail-on=KINDS]\n"
          "          <file.adl|dir>...\n"
       << "  " << argv0 << " objects <file.adl>\n"
@@ -60,7 +64,8 @@ void print_help(const char* argv0) {
       << "`--no-certify` skips independent replay. `--no-refute-gate` skips the\n"
       << "adversarial probe search. `--cross` merges all inputs into one identity\n"
       << "space and reconciles same-base filtered collections (XSUB/XEQ).\n"
-      << "`--combine` / smash2-recheck bundles are not ported yet.\n"
+      << "`--combine DIR` writes one smash2-combine/2 bundle per certified\n"
+      << "PROVEN DISJOINT pair; re-check offline with smash2_cpp-recheck.\n"
       << "Default stdout is the human report; `--dump-verdicts` prints one\n"
       << "`A vs B: KIND` line. Directories expand to sorted `*.adl` files.\n"
       << "\n"
@@ -97,6 +102,97 @@ std::string json_escape(const std::string& s) {
     }
   }
   return out;
+}
+
+bool is_combine_bundle_filename(const std::string& name) {
+  if (name.size() < 5 || name.compare(name.size() - 5, 5, ".json") != 0) return false;
+  std::string stem = name.substr(0, name.size() - 5);
+  const auto* b = reinterpret_cast<const unsigned char*>(stem.data());
+  std::size_t n = stem.size();
+  for (std::size_t i = 0; i + 6 < n; ++i) {
+    if (b[i] == '_' && b[i + 1] == '_' && std::isdigit(b[i + 2]) && std::isdigit(b[i + 3]) &&
+        std::isdigit(b[i + 4]) && b[i + 5] == '_' && b[i + 6] == '_' && i > 0) {
+      std::string rest = stem.substr(i + 7);
+      auto j = rest.find("__");
+      if (j != std::string::npos && j > 0 && j + 2 < rest.size()) return true;
+    }
+  }
+  return false;
+}
+
+std::string sane_filename(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (unsigned char c : s) {
+    if (std::isalnum(c) || c == '-' || c == '.') out.push_back(static_cast<char>(c));
+    else out.push_back('_');
+  }
+  return out;
+}
+
+int clean_stale_bundles(const std::string& dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    std::cerr << "error: cannot create " << dir << ": " << ec.message() << "\n";
+    return 2;
+  }
+  std::size_t removed = 0;
+  for (const auto& ent : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      std::cerr << "error: cannot read " << dir << ": " << ec.message() << "\n";
+      return 2;
+    }
+    if (!ent.is_regular_file()) continue;
+    std::string name = ent.path().filename().string();
+    if (!is_combine_bundle_filename(name)) continue;
+    std::filesystem::remove(ent.path(), ec);
+    if (ec) {
+      std::cerr << "error: cannot remove " << ent.path().string() << ": " << ec.message() << "\n";
+      return 2;
+    }
+    ++removed;
+  }
+  std::cerr << "removed " << removed << " stale certificate bundle(s) from " << dir << "\n";
+  return 0;
+}
+
+adl2::certify::BundleInput bundle_input(const std::string& name, const std::string& src) {
+  adl2::certify::BundleInput in;
+  in.name = name;
+  in.sha256 = adl2::certify::sha256_hex(src);
+  return in;
+}
+
+int write_bundles(const std::string& dir, const std::string& unit,
+                  const adl2::analysis::Report& report,
+                  const std::vector<adl2::certify::BundleInput>& inputs) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    std::cerr << "error: cannot create " << dir << ": " << ec.message() << "\n";
+    return 2;
+  }
+  for (std::size_t i = 0; i < report.combine_bundles.size(); ++i) {
+    auto b = report.combine_bundles[i];
+    b.inputs = inputs;
+    std::string idx = std::to_string(i);
+    if (idx.size() < 3) idx.insert(0, 3 - idx.size(), '0');
+    std::string path = (std::filesystem::path(dir) /
+                        (sane_filename(unit) + "__" + idx + "__" + sane_filename(b.region_a) +
+                         "__" + sane_filename(b.region_b) + ".json"))
+                           .string();
+    std::ofstream out(path);
+    if (!out) {
+      std::cerr << "error: cannot write " << path << "\n";
+      return 2;
+    }
+    out << b.to_json();
+  }
+  std::cerr << unit << ": wrote " << report.combine_bundles.size()
+            << " certificate bundle(s) to " << dir
+            << " (re-check offline with smash2_cpp-recheck)\n";
+  return 0;
 }
 
 enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
@@ -445,9 +541,14 @@ std::vector<std::string> unit_labels(const std::vector<std::string>& files) {
 int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::string& name,
                    const adl2::sema::ExtDecls& ext, const adl2::analysis::AnalysisOptions& opts,
                    bool dump_only, bool json, bool explain, bool matrix, bool verbose,
-                   bool no_solver, bool multi, bool first, std::string& json_out) {
+                   bool no_solver, bool multi, bool first, std::string& json_out,
+                   const std::string* combine_dir) {
   auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
   warn_if_no_solver(name, report, no_solver);
+  if (combine_dir) {
+    int w = write_bundles(*combine_dir, name, report, {bundle_input(name, src)});
+    if (w) return w;
+  }
   if (verbose) {
     std::cerr << name << ": solver=" << report.solver << "; regions=" << report.regions.size()
               << "; pairs=" << report.pairwise.size() << "\n";
@@ -485,9 +586,11 @@ int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::stri
 int run_cross(const std::vector<std::string>& files, const std::vector<std::string>& labels,
               const adl2::sema::ExtDecls& ext, adl2::analysis::AnalysisOptions opts, bool dump_only,
               bool json, bool explain, bool matrix, bool verbose, bool no_solver,
-              adl2::analysis::ReconFilter recon_filter) {
+              adl2::analysis::ReconFilter recon_filter, const std::string* combine_dir) {
   std::vector<adl2::sema::Hir> hirs;
   hirs.reserve(files.size());
+  std::vector<adl2::certify::BundleInput> inputs;
+  inputs.reserve(files.size());
   for (std::size_t i = 0; i < files.size(); ++i) {
     std::string src = read_file(files[i]);
     if (src.empty() && !std::ifstream(files[i]).good()) {
@@ -500,6 +603,7 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
       std::cerr << labels[i] << ": analysis did not run (resolve errors above)\n";
       return 1;
     }
+    inputs.push_back(bundle_input(labels[i], src));
     hirs.push_back(std::move(hir));
   }
   std::vector<const adl2::sema::Hir*> refs;
@@ -509,6 +613,10 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
   opts.reconcile = true;
   auto report = adl2::analysis::analyze_hir(merged, "", ext, opts);
   warn_if_no_solver("cross", report, no_solver || opts.solver == adl2::analysis::SolverChoice::NoSolver);
+  if (combine_dir) {
+    int w = write_bundles(*combine_dir, "cross", report, inputs);
+    if (w) return w;
+  }
   if (verbose) {
     std::cerr << "cross: " << files.size() << " units; regions=" << report.regions.size()
               << "; pairs=" << report.pairwise.size() << "\n";
@@ -542,7 +650,7 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
 int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_certify,
                bool no_refute_gate, bool dump_only, bool json, bool explain, bool matrix,
                bool verbose, bool cross, const std::string& fail_on_s,
-               const std::string& recon_s) {
+               const std::string& recon_s, const std::string& combine_dir) {
   bool had_dir = false;
   for (const auto& p : inputs) {
     std::error_code ec;
@@ -580,10 +688,16 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
   opts.sample_gate = 64;
   opts.refute_gate = !no_refute_gate;
   opts.fail_on = fail_on;
+  opts.combine = !combine_dir.empty();
   auto labels = unit_labels(files);
+  const std::string* combine_ptr = combine_dir.empty() ? nullptr : &combine_dir;
+  if (combine_ptr) {
+    int c = clean_stale_bundles(combine_dir);
+    if (c) return c;
+  }
   if (cross) {
     return run_cross(files, labels, ext, opts, dump_only, json, explain, matrix, verbose, no_solver,
-                     recon_filter);
+                     recon_filter, combine_ptr);
   }
   int worst = 0;
   std::vector<std::string> json_reports;
@@ -605,7 +719,7 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
     }
     std::string json_out;
     int code = run_one_verify(hir, src, name, ext, opts, dump_only, json, explain, matrix, verbose,
-                              no_solver, multi, i == 0, json_out);
+                              no_solver, multi, i == 0, json_out, combine_ptr);
     if (json) json_reports.push_back(std::move(json_out));
     worst = std::max(worst, code);
   }
@@ -797,6 +911,7 @@ int main(int argc, char** argv) {
     bool cross = false;
     std::string fail_on;
     std::string recon;
+    std::string combine_dir;
     std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
@@ -808,10 +923,18 @@ int main(int argc, char** argv) {
         no_refute_gate = true;
       } else if (arg == "--cross") {
         cross = true;
-      } else if (arg == "--combine" || arg.compare(0, 10, "--combine=") == 0) {
-        std::cerr << "error: smash2_cpp verify --combine is not ported yet "
-                     "(certificate bundles / smash2-recheck)\n";
-        return 2;
+      } else if (arg == "--combine") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --combine requires a directory\n";
+          return 2;
+        }
+        combine_dir = argv[++i];
+      } else if (arg.compare(0, 10, "--combine=") == 0) {
+        combine_dir = arg.substr(10);
+        if (combine_dir.empty()) {
+          std::cerr << "error: --combine requires a directory\n";
+          return 2;
+        }
       } else if (arg == "--recon") {
         if (i + 1 >= argc) {
           std::cerr << "error: --recon requires a value (all|related)\n";
@@ -850,8 +973,12 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
+    if (!combine_dir.empty() && no_certify) {
+      std::cerr << "error: --combine cannot be used with --no-certify\n";
+      return 2;
+    }
     return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, json, explain, matrix,
-                      verbose, cross, fail_on, recon);
+                      verbose, cross, fail_on, recon, combine_dir);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

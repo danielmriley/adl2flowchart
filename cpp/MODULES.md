@@ -15,9 +15,10 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
 | `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 witness + P6 certify/report) | `adl2_solver`, `adl2_interp`, `adl2_certify` (PUBLIC; **not** parser) |
-| `adl2_certify` | `adl-certify` | **filled** (P5 kernel; P6 called from analysis) | `adl2_formula` (PUBLIC; **not** analysis) |
+| `adl2_certify` | `adl-certify` | **filled** (P5 kernel + P6 bundles / SHA-256) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis |
+| `smash2_cpp-recheck` | `smash2-recheck` | **filled** (`smash2-combine/2` replay) | `adl2_certify` |
 | `adl2_util` | _(optional)_ | stub | — |
 
 There is **no** `libadl2_cpp` / monolithic static blob. The CMake `project()`

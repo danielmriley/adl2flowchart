@@ -3,6 +3,7 @@
 #include "adl2/analysis/reconcile.hpp"
 #include "adl2/analysis/refute.hpp"
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/certify/bundle.hpp"
 #include "adl2/certify/certify.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/formula/lin.hpp"
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -106,6 +108,29 @@ RegionCtx build_ctx(const RegionEnc& r) {
   }
   return ctx;
 }
+
+/// Named formulas + Farkas tree for one certified claim (Rust `CertPayload`).
+struct CertPayload {
+  std::vector<std::pair<AssertName, QFormula>> asserts;
+  adl2::certify::Certificate cert;
+  bool whole = true;
+};
+
+struct Certified {
+  std::optional<bool> flag;
+  std::optional<CertPayload> payload;
+};
+
+/// Accumulator for `--combine` (origins, recon derivation chains, bundles).
+struct CombineAcc {
+  bool enabled = false;
+  const Hir* hir = nullptr;
+  std::map<AssertName, CoreItem> origins;
+  std::map<AssertName, adl2::certify::DerivedFact> recon_chains;
+  std::vector<adl2::certify::CombineBundle> bundles;
+};
+
+std::string size_label(const Hir& hir, QuantityId q);
 
 Presence presence_of(const Hir& hir, QuantityId q) {
   if (!hir.table.may_be_absent(q)) return Presence::total();
@@ -250,10 +275,93 @@ const char* catalog_statement(adl2::axioms::AxiomId id) {
   return "";
 }
 
+const char* catalog_assumption_by_id(const std::string& id) {
+  const auto* cat = adl2::axioms::catalog();
+  int n = adl2::axioms::catalog_size();
+  for (int i = 0; i < n; ++i) {
+    if (adl2::axioms::axiom_id_str(cat[i].id) == id) return cat[i].assumption;
+  }
+  return "";
+}
+
+adl2::certify::AssertSource assert_source(const CombineAcc& acc, const AssertName& name,
+                                          bool whole) {
+  auto it = acc.origins.find(name);
+  if (it == acc.origins.end()) return adl2::certify::AssertSource::unattributed();
+  const CoreItem& c = it->second;
+  if (c.origin == CoreItem::Origin::Cut) {
+    return adl2::certify::AssertSource::cut(c.region, c.line, c.text, whole);
+  }
+  return adl2::certify::AssertSource::axiom(c.id, c.statement, catalog_assumption_by_id(c.id));
+}
+
+std::string query_role(const std::string& name, const std::string& sub, const std::string& sup) {
+  if (name == "QSUBNEG") {
+    return "negation of the under-projection of the " + sup + " element predicate";
+  }
+  return "over-projection of the " + sub + " element predicate (conjunct " + name + ")";
+}
+
+std::string bundle_label(const Hir& hir, QuantityId q) {
+  const Quantity& qq = hir.table.quantity(q);
+  if (qq.kind == QuantityKind::ElemProp && qq.index.kind == ElemIndexKind::FromFront &&
+      qq.index.n == adl2::axioms::GENERIC_INDEX) {
+    return adl2::sema::collection_ref(hir, qq.coll) + "[*]." + hir.table.prop_display(qq.prop) +
+           " (any one element of the collection)";
+  }
+  return size_label(hir, q);
+}
+
+void push_bundle(CombineAcc& acc, const std::string& region_a, const std::string& region_b,
+                 const CertPayload& payload, Report& report) {
+  if (!acc.enabled || !acc.hir) return;
+  std::vector<adl2::certify::BundleAssert> asserts;
+  std::vector<adl2::certify::DerivedFact> derived_facts;
+  asserts.reserve(payload.asserts.size());
+  for (const auto& nf : payload.asserts) {
+    auto it = acc.recon_chains.find(nf.first);
+    adl2::certify::AssertSource src;
+    if (it != acc.recon_chains.end()) {
+      bool seen = false;
+      for (const auto& d : derived_facts) {
+        if (d.name == it->second.name) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) derived_facts.push_back(it->second);
+      src = adl2::certify::AssertSource::derived(it->second.name);
+    } else {
+      src = assert_source(acc, nf.first, payload.whole);
+    }
+    asserts.push_back(adl2::certify::BundleAssert::make(nf.first.value, nf.second, std::move(src)));
+  }
+  const Hir* hir = acc.hir;
+  adl2::certify::BundleParts parts;
+  parts.region_a = region_a;
+  parts.region_b = region_b;
+  parts.asserts = std::move(asserts);
+  parts.derived_facts = std::move(derived_facts);
+  parts.certificate = payload.cert;
+  auto bundle = adl2::certify::CombineBundle::make(std::move(parts), [hir](std::uint32_t q) {
+    return bundle_label(*hir, QuantityId{q});
+  });
+  if (bundle.replay()) {
+    acc.bundles.push_back(std::move(bundle));
+  } else {
+    file_fail_closed(report, "BUNDLE WITHHELD for " + region_a + " vs " + region_b +
+                                 ": the assembled certificate bundle does not replay "
+                                 "(most likely a reconciliation fact used as a given "
+                                 "without an embedded derivation). The verdict stands on "
+                                 "the analysis; the portable artifact does not, so none "
+                                 "was written.");
+  }
+}
+
 /// Interval-path certification. Disagreement is a diagnostic, never a demotion.
 void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& parts,
-                           const RegionCtx& ca, const RegionCtx& cb, bool certify,
-                           Report& report) {
+                           const RegionCtx& ca, const RegionCtx& cb, bool certify, Report& report,
+                           CombineAcc& acc) {
   if (!certify) return;
   if (parts.empty()) {
     file_contradiction(report,
@@ -265,13 +373,12 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
                            "is claimed.");
     return;
   }
-  std::vector<QFormula> whole;
-  std::vector<AssertName> whole_names;
+  std::vector<std::pair<AssertName, QFormula>> whole;
   for (const auto& p : parts) {
     const AssertName& name = p.src();
     bool dup = false;
-    for (const auto& n : whole_names) {
-      if (n == name) {
+    for (const auto& n : whole) {
+      if (n.first == name) {
         dup = true;
         break;
       }
@@ -289,16 +396,22 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
                              "certification is claimed.");
       return;
     }
-    whole_names.push_back(name);
-    whole.push_back(*f);
+    whole.emplace_back(name, *f);
   }
-  if (auto cert = adl2::certify::certify_bounds(whole)) {
+  std::vector<QFormula> whole_fs;
+  whole_fs.reserve(whole.size());
+  for (const auto& w : whole) whole_fs.push_back(w.second);
+  if (auto cert = adl2::certify::certify_bounds(whole_fs)) {
     pr.certified = true;
     pr.certificate_size = whole.size();
-    (void)cert;
+    CertPayload payload;
+    payload.asserts = std::move(whole);
+    payload.cert = std::move(*cert);
+    payload.whole = true;
+    push_bundle(acc, pr.a, pr.b, payload, report);
     return;
   }
-  std::vector<QFormula> lean;
+  std::vector<std::pair<AssertName, QFormula>> lean;
   for (const auto& p : parts) {
     if (p.kind == RefutingPart::Kind::Whole) {
       file_contradiction(report,
@@ -311,12 +424,19 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
                              "certification is claimed.");
       return;
     }
-    lean.push_back(QFormula::of_atom(p.atom));
+    lean.emplace_back(p.src(), QFormula::of_atom(p.atom));
   }
-  if (auto cert = adl2::certify::certify_bounds(lean)) {
+  std::vector<QFormula> lean_fs;
+  lean_fs.reserve(lean.size());
+  for (const auto& w : lean) lean_fs.push_back(w.second);
+  if (auto cert = adl2::certify::certify_bounds(lean_fs)) {
     pr.certified = true;
     pr.certificate_size = lean.size();
-    (void)cert;
+    CertPayload payload;
+    payload.asserts = std::move(lean);
+    payload.cert = std::move(*cert);
+    payload.whole = false;
+    push_bundle(acc, pr.a, pr.b, payload, report);
     return;
   }
   file_contradiction(report,
@@ -329,13 +449,17 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
 }
 
 /// `None` = certify off; `Some(false)` = fail closed (empty/unknown core).
-std::pair<std::optional<bool>, std::optional<std::size_t>> certify_named_formulas(
-    bool certify, const std::optional<std::vector<AssertName>>& core,
-    const std::vector<std::pair<AssertName, QFormula>>& extra,
-    const adl2::axioms::AxiomSet* axioms,
-    const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
-  if (!certify) return {std::nullopt, std::nullopt};
-  if (!core || core->empty()) return {false, std::nullopt};
+Certified certify_named_formulas(bool certify, const std::optional<std::vector<AssertName>>& core,
+                                 const std::vector<std::pair<AssertName, QFormula>>& extra,
+                                 const adl2::axioms::AxiomSet* axioms,
+                                 const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
+                                 bool keep_payload) {
+  Certified out;
+  if (!certify) return out;
+  if (!core || core->empty()) {
+    out.flag = false;
+    return out;
+  }
   std::map<AssertName, QFormula> fmap;
   for (const auto& e : extra) fmap[e.first] = e.second;
   if (axioms) {
@@ -346,16 +470,33 @@ std::pair<std::optional<bool>, std::optional<std::size_t>> certify_named_formula
   if (recon_facts) {
     for (const auto& e : *recon_facts) fmap[e.first] = e.second;
   }
-  std::vector<QFormula> formulas;
-  formulas.reserve(core->size());
+  std::vector<std::pair<AssertName, QFormula>> named;
+  named.reserve(core->size());
   for (const auto& n : *core) {
     auto it = fmap.find(n);
-    if (it == fmap.end()) return {false, std::nullopt};
-    formulas.push_back(it->second);
+    if (it == fmap.end()) {
+      out.flag = false;
+      return out;
+    }
+    named.emplace_back(n, it->second);
   }
+  std::vector<QFormula> formulas;
+  formulas.reserve(named.size());
+  for (const auto& nf : named) formulas.push_back(nf.second);
   auto r = adl2::certify::certify_unsat(formulas, adl2::certify::Budget::with_defaults());
-  if (r.is_certified()) return {true, formulas.size()};
-  return {false, std::nullopt};
+  if (r.is_certified()) {
+    out.flag = true;
+    if (keep_payload) {
+      CertPayload payload;
+      payload.asserts = std::move(named);
+      payload.cert = std::move(r.certificate);
+      payload.whole = true;
+      out.payload = std::move(payload);
+    }
+    return out;
+  }
+  out.flag = false;
+  return out;
 }
 
 PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& ext,
@@ -363,7 +504,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
                                    const RegionCtx& ca, const RegionCtx& cb, Solver* solver,
                                    std::chrono::milliseconds timeout, Report& report, bool certify,
                                    const adl2::axioms::AxiomSet* axioms,
-                                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
+                                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
+                                   CombineAcc& acc) {
   PairReport pr;
   pr.a = ra.name;
   pr.b = rb.name;
@@ -381,7 +523,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
        << " requires " << d->b.human();
     pr.reason = os.str();
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, d->parts, ca, cb, certify, report);
+    certify_interval_pair(pr, d->parts, ca, cb, certify, report, acc);
     return pr;
   }
   if (auto empty_a = ca.intervals.self_empty()) {
@@ -389,7 +531,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + ra.name + " provably selects no events (" + empty_a->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, empty_a->parts(), ca, cb, certify, report);
+    certify_interval_pair(pr, empty_a->parts(), ca, cb, certify, report, acc);
     return pr;
   }
   if (auto empty_b = cb.intervals.self_empty()) {
@@ -397,7 +539,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + rb.name + " provably selects no events (" + empty_b->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, empty_b->parts(), ca, cb, certify, report);
+    certify_interval_pair(pr, empty_b->parts(), ca, cb, certify, report, acc);
     return pr;
   }
 
@@ -427,23 +569,30 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     std::vector<std::pair<AssertName, QFormula>> extra;
     for (const auto& p : c1.overs) extra.emplace_back(p.first, p.second.qformula());
     for (const auto& p : c2.overs) extra.emplace_back(p.first, p.second.qformula());
-    auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts);
-    pr.certified = cert.first;
-    if (cert.first == true) pr.certificate_size = cert.second;
+    auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts,
+                                      acc.enabled);
+    pr.certified = cert.flag;
+    if (cert.flag == true && core_names) pr.certificate_size = core_names->size();
     if (core) {
       for (const auto& n : *core) {
-        CoreItem item;
-        item.id = n.value;
-        item.text = n.value;
-        if (n.value.size() >= 2 && n.value[0] == 'A' && n.value[1] == 'X') {
-          item.origin = CoreItem::Origin::Axiom;
+        auto it = acc.origins.find(n);
+        if (it != acc.origins.end()) {
+          pr.core.push_back(it->second);
         } else {
-          item.origin = CoreItem::Origin::Cut;
+          CoreItem item;
+          item.id = n.value;
+          item.text = n.value;
+          if (n.value.size() >= 2 && n.value[0] == 'A' && n.value[1] == 'X') {
+            item.origin = CoreItem::Origin::Axiom;
+          } else {
+            item.origin = CoreItem::Origin::Cut;
+          }
+          pr.core.push_back(std::move(item));
         }
-        pr.core.push_back(std::move(item));
       }
     }
-    if (cert.first == false) {
+    if (cert.payload) push_bundle(acc, pr.a, pr.b, *cert.payload, report);
+    if (cert.flag == false) {
       pr.kind = VerdictKind::CandidateDisjoint;
       pr.reason =
           "solver reported UNSAT but the proof could not be independently "
@@ -842,11 +991,11 @@ bool frame_sat(Solver& s, const adl2::formula::Formula& phi_a,
 
 /// Returns (holds, certified_chain). `holds` is true when UNSAT and not
 /// `Some(false)` from certify. Chain is present only when certified.
-std::pair<bool, bool> subset_proof(Solver& s, const adl2::formula::Over& sub_over,
-                                   const adl2::formula::Under& sup_under, bool certify,
-                                   std::chrono::milliseconds timeout, Report& report,
-                                   const adl2::axioms::AxiomSet* axioms,
-                                   const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
+std::pair<bool, std::optional<CertPayload>> subset_proof(
+    Solver& s, const adl2::formula::Over& sub_over, const adl2::formula::Under& sup_under,
+    bool certify, std::chrono::milliseconds timeout, Report& report,
+    const adl2::axioms::AxiomSet* axioms,
+    const std::vector<std::pair<AssertName, QFormula>>* recon_facts) {
   s.push();
   AssertName qsub = AssertName::make("QSUB0");
   AssertName qneg = AssertName::make("QSUBNEG");
@@ -861,21 +1010,20 @@ std::pair<bool, bool> subset_proof(Solver& s, const adl2::formula::Over& sub_ove
     if (auto core = s.unsat_core()) core_names = *core;
   }
   s.pop();
-  if (!r.is_unsat()) return {false, false};
+  if (!r.is_unsat()) return {false, std::nullopt};
   std::vector<std::pair<AssertName, QFormula>> extra;
   extra.emplace_back(qsub, over_f);
   extra.emplace_back(qneg, neg);
-  auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts);
-  bool holds = cert.first != false;
-  bool chain = cert.first == true;
-  return {holds, chain};
+  auto cert = certify_named_formulas(certify, core_names, extra, axioms, recon_facts, true);
+  bool holds = cert.flag != false;
+  return {holds, std::move(cert.payload)};
 }
 
 struct PredImplies {
   bool a_in_b = false;
   bool b_in_a = false;
-  bool a_chain = false;
-  bool b_chain = false;
+  std::optional<CertPayload> a_chain;
+  std::optional<CertPayload> b_chain;
 };
 
 PredImplies prove_pred_implies(Solver& s, const adl2::formula::Formula& phi_a,
@@ -890,9 +1038,9 @@ PredImplies prove_pred_implies(Solver& s, const adl2::formula::Formula& phi_a,
   auto b = subset_proof(s, phi_b.over(), phi_a.under(), certify, timeout, report, axioms,
                         recon_facts);
   out.a_in_b = a.first;
-  out.a_chain = a.second;
+  out.a_chain = std::move(a.second);
   out.b_in_a = b.first;
-  out.b_chain = b.second;
+  out.b_chain = std::move(b.second);
   return out;
 }
 
@@ -905,7 +1053,7 @@ struct ReconRun {
 
 ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool certify,
                          std::chrono::milliseconds timeout, Report& report,
-                         const adl2::axioms::AxiomSet& axioms, ReconEnc recon) {
+                         const adl2::axioms::AxiomSet& axioms, ReconEnc recon, CombineAcc& acc) {
   ReconRun run;
   for (const auto& s : recon.skipped) {
     ReconReport row;
@@ -955,16 +1103,20 @@ ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool cer
       QuantityId sub;
       QuantityId sup;
       adl2::axioms::AxiomId id;
-      bool chain;
+      const CertPayload* chain;
     };
     std::vector<Fact> facts;
     if (pi.a_in_b && pi.b_in_a) {
-      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xeq, pi.a_chain});
-      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xeq, pi.b_chain});
+      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xeq,
+                       pi.a_chain ? &*pi.a_chain : nullptr});
+      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xeq,
+                       pi.b_chain ? &*pi.b_chain : nullptr});
     } else if (pi.a_in_b) {
-      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xsub, pi.a_chain});
+      facts.push_back({cand.size_a, cand.size_b, adl2::axioms::AxiomId::Xsub,
+                       pi.a_chain ? &*pi.a_chain : nullptr});
     } else if (pi.b_in_a) {
-      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xsub, pi.b_chain});
+      facts.push_back({cand.size_b, cand.size_a, adl2::axioms::AxiomId::Xsub,
+                       pi.b_chain ? &*pi.b_chain : nullptr});
     }
     for (const auto& f : facts) {
       if (f.sub == f.sup || existing.count({f.sub, f.sup})) continue;
@@ -978,11 +1130,35 @@ ReconRun apply_reconcile(Hir& hir, const UnitEnc& unit, Solver* solver, bool cer
       }
       QFormula fact = adl2::axioms::derived_size_le(f.sub, f.sup);
       AssertName name = AssertName::make("XR" + std::to_string(k));
-      std::string statement =
-          size_label(hir, f.sub) + " <= " + size_label(hir, f.sup);
+      std::string statement = size_label(hir, f.sub) + " <= " + size_label(hir, f.sup);
       solver->assert_formula(fact, name);
       run.facts.emplace_back(name, fact);
-      (void)statement;
+      if (f.chain) {
+        bool sub_first = f.sub == cand.size_a;
+        const std::string& from = sub_first ? label_a : label_b;
+        const std::string& to = sub_first ? label_b : label_a;
+        std::vector<adl2::certify::BundleAssert> premises;
+        premises.reserve(f.chain->asserts.size());
+        for (const auto& nf : f.chain->asserts) {
+          premises.push_back(adl2::certify::BundleAssert::make(
+              nf.first.value, nf.second, adl2::certify::AssertSource::query(query_role(nf.first.value, from, to))));
+        }
+        adl2::certify::Derivation der;
+        der.claim = "every element passing the cuts of " + from + " also passes those of " + to +
+                    ", so " + from + " is a subset of " + to +
+                    " element-wise: UNSAT(over(" + from + ") AND NOT under(" + to +
+                    ")) over one shared generic element";
+        der.premises = std::move(premises);
+        der.certificate = f.chain->cert;
+        acc.recon_chains.insert(
+            {name, adl2::certify::DerivedFact::make(name.value, adl2::axioms::axiom_id_str(f.id),
+                                                    statement, fact, {std::move(der)})});
+      }
+      CoreItem origin;
+      origin.origin = CoreItem::Origin::Axiom;
+      origin.id = adl2::axioms::axiom_id_str(f.id);
+      origin.statement = statement;
+      acc.origins[name] = std::move(origin);
       run.counts[adl2::axioms::axiom_id_str(f.id)]++;
       ++k;
     }
@@ -1024,10 +1200,31 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   report.solver = solver_label;
   report.certification = opts.certify;
 
+  CombineAcc acc;
+  acc.enabled = opts.combine;
+  acc.hir = &hir;
+  for (const auto& r : unit.regions) {
+    for (const auto& s : r.stmts) {
+      CoreItem item;
+      item.origin = CoreItem::Origin::Cut;
+      item.region = r.name;
+      item.line = s.line;
+      item.text = s.text;
+      acc.origins[s.name] = std::move(item);
+    }
+  }
+  for (std::size_t i = 0; i < axioms.instances.size(); ++i) {
+    CoreItem item;
+    item.origin = CoreItem::Origin::Axiom;
+    item.id = adl2::axioms::axiom_id_str(axioms.instances[i].id);
+    item.statement = axioms.instances[i].description;
+    acc.origins[AssertName::make("AX" + std::to_string(i))] = std::move(item);
+  }
+
   ReconRun recon_run;
   if (recon) {
     recon_run = apply_reconcile(hir, unit, solver, opts.certify, opts.timeout, report, axioms,
-                                std::move(*recon));
+                                std::move(*recon), acc);
   }
 
   std::vector<RegionCtx> ctxs;
@@ -1070,7 +1267,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
         PairReport dummy;
         dummy.a = r.name;
         dummy.b = r.name;
-        certify_interval_pair(dummy, empty->parts(), ctxs[i], ctxs[i], true, report);
+        CombineAcc no_bundle;
+        certify_interval_pair(dummy, empty->parts(), ctxs[i], ctxs[i], true, report, no_bundle);
       }
     } else if (solver) {
       solver->push();
@@ -1086,8 +1284,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
         std::vector<std::pair<AssertName, QFormula>> extra;
         for (const auto& p : ctxs[i].overs) extra.emplace_back(p.first, p.second.qformula());
         auto cert = certify_named_formulas(opts.certify, core_names, extra, &axioms,
-                                           &recon_run.facts);
-        rr.empty = (cert.first == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
+                                           &recon_run.facts, false);
+        rr.empty = (cert.flag == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
         rr.empty_proof = ProofPath::SolverCore;
       } else {
         rr.empty = EmptyStatus::NotProven;
@@ -1114,7 +1312,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
       PairReport pr = interval_or_solver_pair(
           hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
-          opts.timeout, report, opts.certify, solver ? &axioms : nullptr, &recon_run.facts);
+          opts.timeout, report, opts.certify, solver ? &axioms : nullptr, &recon_run.facts, acc);
       gate_pair(pr, unit.regions[i].idx, unit.regions[j].idx, interp, gate_events, refute_probes,
                 report, gate_refutations, refute_refutations);
       report.pairwise.push_back(std::move(pr));
@@ -1162,6 +1360,20 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
 
   report.reconciliations = std::move(recon_run.ledger);
   report.recon_near_misses = std::move(recon_run.near_misses);
+
+  acc.bundles.erase(
+      std::remove_if(acc.bundles.begin(), acc.bundles.end(),
+                     [&](const adl2::certify::CombineBundle& b) {
+                       for (const auto& p : report.pairwise) {
+                         if (p.kind == VerdictKind::ProvenDisjoint && p.a == b.region_a &&
+                             p.b == b.region_b) {
+                           return false;
+                         }
+                       }
+                       return true;
+                     }),
+      acc.bundles.end());
+  report.combine_bundles = std::move(acc.bundles);
 
   return report;
 }

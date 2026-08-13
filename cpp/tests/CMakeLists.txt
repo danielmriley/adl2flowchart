@@ -176,7 +176,7 @@ set_tests_properties(adl2_analysis_solver PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
 
 set_tests_properties(adl2_certify_unit PROPERTIES
-  PASS_REGULAR_EXPRESSION "PASS=64 FAIL=0")
+  PASS_REGULAR_EXPRESSION "PASS=79 FAIL=0")
 
 set_tests_properties(adl2_witness PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
@@ -270,3 +270,16 @@ add_test(NAME adl2_analysis_cross
 
 set_tests_properties(adl2_analysis_cross PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_analysis_combine analysis_combine.cpp)
+target_link_libraries(adl2_analysis_combine PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_combine PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_combine
+  COMMAND adl2_analysis_combine)
+
+set_tests_properties(adl2_analysis_combine PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=53 FAIL=0")
+
+add_test(NAME smash2_cpp_recheck_usage
+  COMMAND bash -c "$<TARGET_FILE:smash2_cpp-recheck>; test $? -eq 2")

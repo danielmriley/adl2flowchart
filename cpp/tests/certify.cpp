@@ -1,4 +1,6 @@
+#include "adl2/certify/bundle.hpp"
 #include "adl2/certify/certify.hpp"
+#include "adl2/certify/sha256.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/formula/lin.hpp"
 #include "adl2/sema/quantity.hpp"
@@ -236,6 +238,66 @@ void test_qrat() {
   CHECK(!QRat::from_repr("x").has_value());
 }
 
+void test_sha256() {
+  using adl2::certify::sha256_hex;
+  CHECK(sha256_hex(std::string{}) ==
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(sha256_hex(std::string("abc")) ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(sha256_hex(std::string("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) ==
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+}
+
+adl2::certify::BundleAssert cut_assert(const char* name, const QFormula& f) {
+  return adl2::certify::BundleAssert::make(
+      name, f, adl2::certify::AssertSource::cut("SR", 1, name, true));
+}
+
+void test_bundle_roundtrip() {
+  using adl2::certify::BundleParts;
+  using adl2::certify::CombineBundle;
+  std::vector<QFormula> forms = {
+      a(0, Rel::Gt, 2),
+      QFormula::of_or({a(0, Rel::Lt, 1), a(0, Rel::Lt, 0)}),
+  };
+  auto r = certify(forms);
+  CHECK(r.is_certified());
+  BundleParts parts;
+  parts.region_a = "A.SR";
+  parts.region_b = "B.CR";
+  parts.asserts = {cut_assert("cut_a", forms[0]), cut_assert("cut_b", forms[1])};
+  parts.certificate = r.certificate;
+  auto b = CombineBundle::make(std::move(parts), [](std::uint32_t q) { return "q" + std::to_string(q); });
+  CHECK(b.replay());
+  CHECK(b.quantities.size() == 1);
+  CHECK(b.producer.tool == std::string(adl2::certify::PRODUCER_TOOL));
+
+  std::string js = b.to_json();
+  auto back = CombineBundle::from_json(js);
+  CHECK(back.has_value());
+  if (back) {
+    CHECK(*back == b);
+    CHECK(back->replay());
+    CHECK(back->formulas() == forms);
+  }
+
+  auto tampered = b;
+  tampered.asserts[0].formula.k = *QRat::from_repr("0");
+  CHECK(!tampered.replay());
+
+  auto wrong = b;
+  wrong.schema = "smash2-combine/999";
+  CHECK(!wrong.replay());
+
+  auto gutted = b;
+  gutted.quantities.clear();
+  CHECK(!gutted.replay());
+
+  auto relabelled = b;
+  relabelled.quantities[0] = "definitely not what this is";
+  CHECK(relabelled.replay());
+}
+
 }  // namespace
 
 int main() {
@@ -245,6 +307,8 @@ int main() {
   test_tamper();
   test_budget_prefixes();
   test_qrat();
+  test_sha256();
+  test_bundle_roundtrip();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

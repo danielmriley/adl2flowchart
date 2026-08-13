@@ -8,5 +8,7 @@ adl2_add_library(adl2_certify
     src/fm.cpp
     src/search.cpp
     src/direct.cpp
+    src/bundle.cpp
+    src/sha256.cpp
   PUBLIC_DEPS adl2_formula
 )

@@ -4,6 +4,8 @@
 /// enums, compact pairwise dump, default human rendering, and versioned JSON
 /// (schema v4, serde `snake_case` field/enum names).
 
+#include "adl2/certify/bundle.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -224,6 +226,9 @@ struct Report {
   std::vector<AxiomUse> axioms_used;
   std::vector<std::string> internal_diagnostics;
   std::vector<Diagnostic> diagnostics;
+  /// Portable certificate bundles (`--combine`). Not serialized in
+  /// `verify --json` (Rust `#[serde(skip)]`).
+  std::vector<adl2::certify::CombineBundle> combine_bundles;
 
   std::vector<std::string> findings(const FailOn& fail_on) const;
   int exit_code(const FailOn& fail_on) const;

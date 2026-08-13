@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# P3 axiom dump gate: byte-for-byte diff of
-#   smash2_cpp check --dump-axioms  vs  smash2 check --dump-axioms
-# over the fail-closed allowlist in cpp/tests/axioms_gate_files.txt.
+# object_table dump gate: byte-for-byte diff of
+#   smash2_cpp objects  vs  smash2 objects
+# over the fail-closed allowlist in cpp/tests/objects_gate_files.txt.
 #
-# Both dump commands must exit 0 and emit a dump starting with `unit:`.
+# Both commands must exit 0 and emit a dump starting with `== objects ==`.
 # A crash, usage error, empty dump, or mismatch fails the gate.
 #
 # Usage (from repo root):
-#   cpp/scripts/dump_axioms_corpus_gate.sh
-#   COUNT_ONLY=1 cpp/scripts/dump_axioms_corpus_gate.sh
+#   cpp/scripts/dump_objects_corpus_gate.sh
+#   COUNT_ONLY=1 cpp/scripts/dump_objects_corpus_gate.sh
 set -euo pipefail
 
-EXPECTED_FILES=108
+EXPECTED_FILES=171
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-LIST="$ROOT/cpp/tests/axioms_gate_files.txt"
+LIST="$ROOT/cpp/tests/objects_gate_files.txt"
 SMASH2_CPP="${SMASH2_CPP:-$ROOT/cpp/build/smash2_cpp}"
 SMASH2_RUST="${SMASH2_RUST:-$ROOT/reimplementation/adl2/target/release/smash2}"
 
@@ -30,7 +30,7 @@ if [[ "${#FILES[@]}" -ne "$EXPECTED_FILES" ]]; then
 fi
 
 if [[ "${COUNT_ONLY:-0}" == "1" ]]; then
-  echo "axioms allowlist count: ${#FILES[@]} (pinned $EXPECTED_FILES)"
+  echo "objects allowlist count: ${#FILES[@]} (pinned $EXPECTED_FILES)"
   exit 0
 fi
 
@@ -62,11 +62,10 @@ failures=()
 dump_ok() {
   local dump=$1
   [[ -s "$dump" ]] || return 1
-  [[ "$(head -n 1 "$dump")" == unit:* ]] || return 1
-  grep -q '^axioms ' "$dump" || return 1
+  [[ "$(head -n 1 "$dump")" == "== objects ==" ]] || return 1
 }
 
-echo "==> axiom dump-diff ${#FILES[@]} files (Rust oracle vs smash2_cpp)"
+echo "==> objects dump-diff ${#FILES[@]} files (Rust oracle vs smash2_cpp)"
 for rel in "${FILES[@]}"; do
   f="$ROOT/$rel"
   if [[ ! -f "$f" ]]; then
@@ -76,21 +75,21 @@ for rel in "${FILES[@]}"; do
     continue
   fi
   set +e
-  "$SMASH2_RUST" check --dump-axioms "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
+  "$SMASH2_RUST" objects "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
   rc_rust=$?
-  "$SMASH2_CPP" check --dump-axioms "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
+  "$SMASH2_CPP" objects "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
   set -e
 
   reason=""
   if [[ "$rc_rust" -ne 0 ]]; then
-    reason="rust smash2 --dump-axioms exited $rc_rust"
+    reason="rust smash2 objects exited $rc_rust"
   elif [[ "$rc_cpp" -ne 0 ]]; then
-    reason="smash2_cpp --dump-axioms exited $rc_cpp"
+    reason="smash2_cpp objects exited $rc_cpp"
   elif ! dump_ok "$tmpdir/rust.dump"; then
-    reason="rust dump missing or does not start with unit:/axioms"
+    reason="rust objects dump missing or does not start with == objects =="
   elif ! dump_ok "$tmpdir/cpp.dump"; then
-    reason="cpp dump missing or does not start with unit:/axioms"
+    reason="cpp objects dump missing or does not start with == objects =="
   elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
     reason="dump mismatch"
   fi
@@ -103,7 +102,7 @@ for rel in "${FILES[@]}"; do
     echo "FAIL $rel: $reason" >&2
     if [[ "$reason" == *mismatch ]]; then
       diff -u "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >"$tmpdir/udiff" || true
-      head -80 "$tmpdir/udiff" >&2 || true
+      head -60 "$tmpdir/udiff" >&2 || true
     else
       echo "  rust stderr:" >&2
       head -20 "$tmpdir/rust.err" >&2 || true
@@ -114,7 +113,7 @@ for rel in "${FILES[@]}"; do
 done
 
 total=$((ok + fail))
-echo "dump-axioms corpus gate: OK=$ok FAIL=$fail TOTAL=$total (allowlist ${#FILES[@]})"
+echo "dump-objects corpus gate: OK=$ok FAIL=$fail TOTAL=$total (allowlist ${#FILES[@]})"
 if [[ "$fail" -ne 0 ]]; then
   echo "failed files:" >&2
   printf '  %s\n' "${failures[@]}" >&2
@@ -124,4 +123,4 @@ if [[ "$ok" -ne "$EXPECTED_FILES" ]]; then
   echo "error: expected $EXPECTED_FILES passing dumps, got ok=$ok" >&2
   exit 1
 fi
-echo "dump-axioms corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"
+echo "dump-objects corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"

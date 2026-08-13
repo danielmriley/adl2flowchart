@@ -22,10 +22,9 @@
 #   COUNT_ONLY=1 only assert the allowlist length (no binaries / no diffs)
 set -euo pipefail
 
-# Pinned claimed-set size. Bump this only when intentionally expanding
-# (or shrinking) the HIR dump-diff allowlist, in the same commit as the
-# list change. 14 tutorials + 24 goldens.
-EXPECTED_FILES=38
+# 171 files: formula allowlist minus CMS-SUS-16-047_Delphes.adl
+# (intern-order drift on that one file).
+EXPECTED_FILES=171
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"

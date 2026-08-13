@@ -27,10 +27,11 @@ viz reads HIR only; cli wires modules.
 | **`adl2_interp`** | **filled** (P3 run + P4 Kleene `region3`) | `libs/interp/include/adl2/interp/` |
 | **`adl2_axioms`** | **filled** (P3 catalog + P4 EPRED/EPRES) | `libs/axioms/include/adl2/axioms/` |
 | **`adl2_solver`** | **filled** (P4: SMT-LIB2 subprocess) | `libs/solver/include/adl2/solver/` |
-| **`adl2_analysis`** | **filled** (P4: interval + pairwise) | `libs/analysis/include/adl2/analysis/` |
+| **`adl2_analysis`** | **filled** (P4 pairwise + P5 witness + P6 certify/report) | `libs/analysis/include/adl2/analysis/` |
 | **`adl2_viz`** | **filled** (P4: flowchart/AST DOT) | `libs/viz/include/adl2/viz/` |
-| `adl2_certify`, `adl2_util` | certify API locked (P5 fill); util stub | `libs/<module>/include/adl2/<module>/` |
-| `smash2_cpp` (`libs/cli`) | dump/run/dot/verify wiring | — |
+| **`adl2_certify`** | **filled** (P5 kernel; P6 wired from analysis) | `libs/certify/include/adl2/certify/` |
+| `adl2_util` | stub | `libs/util/include/adl2/util/` |
+| `smash2_cpp` (`libs/cli`) | check/run/dot/verify/objects | — |
 
 Sources live under `libs/<module>/`. Prefer one reviewable PR per module
 boundary when filling stubs. **No layering violations:** analysis must not
@@ -50,12 +51,12 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Hand-written RD (`grammar.ebnf` → `parse_X`) in `adl2_syntax` | Yes |
 | Canonical AST dump | Yes — byte-for-byte **146 / 146** |
 | Interned Quantity/Collection identity | Yes |
-| CLI `--dump-hir` / `--dump-quantities` | Yes (P2 allowlist **38 files × 2**) |
+| CLI `--dump-hir` / `--dump-quantities` | Yes (allowlist **171 files × 2**) |
 | Identity unit battery (`adl2_sema_identity`) | Yes (`PASS=128 FAIL=0`) |
 | Polarity-aware Formula IR (`Over`/`Under` as types) | Yes |
 | HIR → Formula encoder | Yes |
 | CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned **172**) |
-| CLI `--dump-axioms` vs smash2 | Fail-closed allowlist (pinned **9**) |
+| CLI `--dump-axioms` vs smash2 | Fail-closed allowlist (pinned **108**) |
 | Axiom catalog (19) + emitters | Yes; EPRED/EPRES ported |
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
@@ -64,7 +65,9 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3) |
-| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **not wired** into verify |
+| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=64); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. |
+| Human verify report | Default stdout of `verify` (trust / findings / regions / matrix / pairwise). Not claimed byte-identical to smash2 (sampling/refute/recon absent). |
+| `objects` | `adl2::sema::object_table` + CLI `objects` (allowlist **171**) |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
 
@@ -79,6 +82,7 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`scripts/dump_hir_corpus_gate.sh`](scripts/dump_hir_corpus_gate.sh) | Allowlisted HIR/quantity dump-diff |
 | [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dump-diff |
 | [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dump-diff |
+| [`scripts/dump_objects_corpus_gate.sh`](scripts/dump_objects_corpus_gate.sh) | Allowlisted objects dump-diff |
 | [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` event-line diff |
 | [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dump-diff |
 
@@ -105,6 +109,8 @@ Some images default `CXX` to clang without libstdc++; prefer `CXX=g++`.
 ./cpp/build/smash2_cpp dot examples/tutorials/ex00_helloworld.adl
 ./cpp/build/smash2_cpp dot --ast examples/tutorials/ex00_helloworld.adl
 ./cpp/build/smash2_cpp verify --dump-verdicts examples/tutorials/ex01_selection.adl
+./cpp/build/smash2_cpp verify examples/tutorials/ex01_selection.adl
+./cpp/build/smash2_cpp objects examples/tutorials/ex01_selection.adl
 ```
 
 With a dump flag, stdout is the canonical dump only, matching Rust
@@ -117,29 +123,27 @@ cpp/scripts/dump_ast_corpus_gate.sh
 cpp/scripts/dump_hir_corpus_gate.sh
 cpp/scripts/dump_formula_corpus_gate.sh
 cpp/scripts/dump_axioms_corpus_gate.sh
+cpp/scripts/dump_objects_corpus_gate.sh
 cpp/scripts/interp_run_gate.sh
 cpp/scripts/dump_dot_corpus_gate.sh
 # or, if both binaries already exist:
 SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 ```
 
-AST gate: **146 / 146**. HIR gate: **38 files × 2** dumps. DOT gate: **39
+AST gate: **146 / 146**. HIR gate: **171 files × 2** dumps. DOT gate: **39
 files × 2** (flowchart + AST). Formula gate: **172** files (fail-closed;
-`bad_syntax.adl` excluded — both sides exit 1). Interp gates are fail-closed
+`bad_syntax.adl` excluded — both sides exit 1). Axiom gate: **108**.
+Objects gate: **171**. Interp gates are fail-closed
 allowlists — shrinking or growing the list without bumping the pin fails CI. Files not on a list are **not claimed**.
 Do not weaken `smash2` / `oracle-rust` CI.
 
-Bare `smash2_cpp check` (no dump flag) is **parse-only**. It is not Rust
-`smash2 check`. `smash2_cpp run` prints event lines only (cutflow/histo
-tables deferred).
+Bare `smash2_cpp check` always resolves (Rust smash2 parity); stdout is
+empty on success. `smash2_cpp run` prints event lines only (cutflow/histo
+tables not yet ported). `verify` defaults to certify ON.
 
-## What’s in / out of P4
+## Remaining vs smash2 (honest non-parity)
 
-**In:** `adl2_solver` (subprocess + classify); `adl2_viz` (HIR DOT);
-`adl2_analysis` (interval + solver pairwise); Kleene `region3`; EPRED/EPRES;
-CLI `dot` / `verify`; retained P1–P3 gates.
-
-**Out:** Certify not wired into `analyze_hir`; cross-file reconciliation;
-sampling/refute gates; cutflow/histo tables; byte-identical `smash2 verify`
-reports. `refined_model` interior tightening and OPEN-2 twin-pair SAT cap
-are not ported.
+Still to port: cutflow/histo tables; sampling + refute gates; `--cross` /
+reconcile; `--combine` bundles; ROOT `ingest` / `run --profile`; byte-
+identical `verify` JSON/human reports (C++ JSON is a compact subset).
+Native libz3 stays out (ADR-010).

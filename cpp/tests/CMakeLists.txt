@@ -23,8 +23,8 @@ add_test(NAME smash2_cpp_check_tiny
 add_test(NAME smash2_cpp_check_bins_and_path
   COMMAND ${SMASH2_CPP} check ${FIXTURE_BINS})
 
-add_test(NAME smash2_cpp_bare_check_parse_only_note
-  COMMAND ${SMASH2_CPP} check ${FIXTURE_TINY})
+add_test(NAME smash2_cpp_check_stdout_empty
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/check_silent.sh ${SMASH2_CPP} ${FIXTURE_TINY})
 
 add_test(NAME hir_gate_allowlist_count
   COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_hir_corpus_gate.sh)
@@ -63,6 +63,12 @@ set_property(TEST interp_gate_pair_count PROPERTY ENVIRONMENT
 add_test(NAME axioms_gate_allowlist_count
   COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_axioms_corpus_gate.sh)
 set_property(TEST axioms_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
+add_test(NAME objects_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_objects_corpus_gate.sh)
+set_property(TEST objects_gate_allowlist_count PROPERTY ENVIRONMENT
   "COUNT_ONLY=1"
   "SKIP_BUILD=1")
 
@@ -136,16 +142,7 @@ add_test(NAME layering_certify_cannot_include_analysis
     -P ${CMAKE_CURRENT_SOURCE_DIR}/layering/expect_compile_fail.cmake)
 
 set_tests_properties(smash2_cpp_help PROPERTIES
-  PASS_REGULAR_EXPRESSION "parse-only")
-
-set_tests_properties(smash2_cpp_check_tiny PROPERTIES
-  PASS_REGULAR_EXPRESSION "check: ok")
-
-set_tests_properties(smash2_cpp_check_bins_and_path PROPERTIES
-  PASS_REGULAR_EXPRESSION "check: ok")
-
-set_tests_properties(smash2_cpp_bare_check_parse_only_note PROPERTIES
-  PASS_REGULAR_EXPRESSION "parse-only")
+  PASS_REGULAR_EXPRESSION "objects")
 
 set_tests_properties(adl2_sema_identity PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=128 FAIL=0")
@@ -183,3 +180,13 @@ set_tests_properties(adl2_certify_unit PROPERTIES
 
 set_tests_properties(adl2_witness PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_objects_unit objects.cpp)
+target_link_libraries(adl2_objects_unit PRIVATE adl2_sema adl2_syntax)
+target_compile_options(adl2_objects_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_objects_unit
+  COMMAND adl2_objects_unit)
+
+set_tests_properties(adl2_objects_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=9 FAIL=0")

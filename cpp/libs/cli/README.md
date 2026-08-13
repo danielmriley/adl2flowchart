@@ -2,16 +2,16 @@
 
 Wires libraries into the `smash2_cpp` binary. **Does not own core logic.**
 
-P4: `check [--dump-ast|--dump-hir|--dump-quantities|--dump-formula|--dump-axioms]`,
-`run <adl> <jsonl>`, `dot [--ast]`, `verify [--no-solver] [--dump-verdicts]`.
-Links syntax + sema + formula + interp + axioms + viz + analysis.
+Commands: `check`, `run`, `dot`, `verify`, `objects`. `ingest` exits 2
+(not ported: no ROOT). Links syntax + sema + formula + interp + axioms +
+viz + analysis (certify is PUBLIC through analysis).
 
-**Bare `check` (no dump flag) is parse-only.** It does not run name
-resolution. Rust `smash2 check` always resolves. This is an intentional
-contract, not silent under-parity: help text and a stderr note say so.
-`--dump-ast` is also parse-only so a sema bug cannot break the P1 corpus
-gate. `--dump-hir` / `--dump-quantities` run sema. `--dump-formula` /
-`--dump-axioms` run sema + encode/emit. `run` prints smash2-style event
-lines only (no cutflow/histo tables). `dot` emits HIR flowchart/AST DOT.
-`verify` is interval + subprocess z3; it is **not** byte-identical to
-Rust `smash2 verify` (no certify / sampling / full report).
+Bare `check` always resolves (Rust smash2 parity). stdout is empty on
+success; diagnostics go to stderr. `--dump-ast` prints the AST dump then
+still resolves. `--dump-hir` / `--dump-quantities` / `--dump-formula` /
+`--dump-axioms` print the corresponding dump. `run` prints smash2-style
+event lines (cutflow/histo tables not yet ported). `dot` emits HIR
+flowchart/AST DOT. `objects` prints `adl2::sema::object_table`. `verify`
+defaults to solver + certify on; `--no-certify` skips Farkas replay;
+`--dump-verdicts` is the compact `A vs B: KIND` form; default stdout is
+the human report (`--json` / `--explain` / `--matrix` / `--fail-on`).

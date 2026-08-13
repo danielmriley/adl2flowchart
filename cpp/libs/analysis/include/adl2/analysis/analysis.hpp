@@ -5,8 +5,11 @@
 /// P4 fills interval fast path, statement-granularity encode, report enums,
 /// and a subprocess-solver pairwise engine. P5 fills SAT-side witness
 /// realization: PROVEN OVERLAPPING only after Kleene `region3` accepts the
-/// realized event in both regions. Certify / reconcile / refute are not
-/// claimed here.
+/// realized event in both regions. P6 wires `adl2_certify`: solver-UNSAT
+/// whose core cannot be independently replayed is CANDIDATE DISJOINT, never
+/// PROVEN. Library default `certify=false` keeps encode/interval unit pins
+/// stable; CLI `verify` passes `certify=true` (Rust default). Reconcile /
+/// refute / sampling gates are not claimed here.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver
@@ -35,12 +38,15 @@ enum class SolverChoice {
 };
 
 /// Analysis options. Default is interval-only (`NoSolver`) so unit tests
-/// that pin POSSIBLY stay stable. CLI `verify` passes `Auto`.
+/// that pin POSSIBLY stay stable. CLI `verify` passes `Auto` and
+/// `certify=true`.
 struct AnalysisOptions {
   SolverChoice solver = SolverChoice::NoSolver;
   std::chrono::milliseconds timeout{10000};
   FailOn fail_on;
   bool reconcile = false;
+  /// Independent Farkas replay of UNSAT-side claims. Off by default in the
+  /// library (encode/interval pins); CLI `verify` turns it on.
   bool certify = false;
   std::size_t sample_gate = 0;
   bool refute_gate = false;
@@ -48,8 +54,10 @@ struct AnalysisOptions {
 };
 
 /// Encode `hir` and run interval + optional solver pairwise. Does not parse,
-/// certify, reconcile, refute, or sample. `src` is the unit text used for
-/// cut line-text; empty falls back to HIR render.
+/// reconcile, refute, or sample. When `opts.certify` is true, solver-UNSAT
+/// disjointness/emptiness is independently replayed; `Some(false)` demotes
+/// the claim to CANDIDATE. Interval-path disagreements are diagnostics, not
+/// demotions. `src` is the unit text used for cut line-text.
 Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
                    const adl2::sema::ExtDecls& ext, const AnalysisOptions& opts);
 

@@ -19,6 +19,5 @@ set_target_properties(smash2_cpp PROPERTIES
 # Remaining stub modules stay in the default graph without linking into cli.
 add_custom_target(adl2_module_stubs DEPENDS
   adl2_util
-  adl2_certify
 )
 add_dependencies(smash2_cpp adl2_module_stubs)

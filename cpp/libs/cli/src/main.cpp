@@ -8,36 +8,44 @@
 #include "adl2/syntax/parser.hpp"
 #include "adl2/viz/viz.hpp"
 
+#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
 
+bool stdout_color() {
+  return isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
+}
+
 void print_help(const char* argv0) {
   std::cout
-      << "smash2_cpp — ADL2 C++ port (P4: solver + viz + verify)\n"
+      << "smash2_cpp — ADL2 C++ port (P6: certify + objects + verify report)\n"
       << "\n"
       << "Usage:\n"
       << "  " << argv0 << " --help\n"
       << "  " << argv0 << " check [--dump-ast|--dump-hir|--dump-quantities|"
-         "--dump-formula|--dump-axioms] <file.adl>\n"
+         "--dump-formula|--dump-axioms] [--json] <file.adl>\n"
       << "  " << argv0 << " run <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
-      << "  " << argv0 << " verify [--no-solver] [--dump-verdicts] <file.adl>\n"
+      << "  " << argv0 << " verify [--no-solver] [--no-certify] [--dump-verdicts]\n"
+         "          [--json] [--explain] [--matrix] [--fail-on=KINDS] <file.adl>\n"
+      << "  " << argv0 << " objects <file.adl>\n"
+      << "  " << argv0 << " ingest  (not ported: no ROOT / adl-ingest)\n"
       << "\n"
-      << "Bare `check` (no dump flag) is parse-only — it does not run name\n"
-      << "resolution. Rust `smash2 check` always resolves. This is an\n"
-      << "intentional contract, not dump parity. Use --dump-hir / --dump-formula\n"
-      << "to run sema (+ encode). `run` prints smash2-style event lines only\n"
-      << "(no cutflow/histo tables). `dot` resolves via analyze_str; flowchart\n"
-      << "DOT (default) or `--ast` to stdout; diagnostics to stderr.\n"
-      << "`verify` is interval + subprocess z3 (no certify/witness); "
-         "--dump-verdicts prints one `A vs B: KIND` line per pair.\n"
+      << "Bare `check` always resolves (like smash2). stdout is empty on success;\n"
+      << "diagnostics go to stderr. `--dump-ast` still prints the AST dump to stdout.\n"
+      << "`run` prints smash2-style event lines (cutflow/histo tables not yet ported).\n"
+      << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
+      << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
+      << "region3 witness. `--no-certify` skips independent replay. Default stdout\n"
+      << "is the human report; `--dump-verdicts` prints one `A vs B: KIND` line.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
       << "interp/axioms/viz/analysis; no core logic in the executable. Rust smash2 is the\n"
@@ -58,63 +66,23 @@ std::string unit_name(const std::string& path) {
   return path.substr(slash + 1);
 }
 
-enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
-
-int cmd_check(const std::string& path, DumpKind dump) {
-  std::string src = read_file(path);
-  if (src.empty() && !std::ifstream(path).good()) {
-    std::cerr << "error: cannot read file: " << path << "\n";
-    return 2;
-  }
-
-  if (dump == DumpKind::Ast) {
-    auto result = adl2::syntax::parse_source(src);
-    std::cout << adl2::syntax::dump_ast(src, result.file);
-    if (!result.diags.diagnostics().empty()) {
-      std::cerr << result.diags.format_all();
+std::string json_escape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out += static_cast<char>(c);
     }
-    return result.diags.has_errors() ? 1 : 0;
   }
-
-  if (dump == DumpKind::Hir || dump == DumpKind::Quantities || dump == DumpKind::Formula ||
-      dump == DumpKind::Axioms) {
-    auto hir = adl2::sema::analyze_str(src, unit_name(path), adl2::sema::ExtDecls::legacy());
-    if (dump == DumpKind::Hir) {
-      std::cout << adl2::sema::hir_dump(hir);
-    } else if (dump == DumpKind::Quantities) {
-      std::cout << adl2::sema::quantity_table_dump(hir);
-    } else if (dump == DumpKind::Formula) {
-      auto regions = adl2::formula::encode_regions(hir);
-      std::cout << adl2::formula::dump_encoded(hir, regions);
-    } else {
-      auto regions = adl2::formula::encode_regions(hir);
-      (void)regions;
-      std::set<adl2::sema::QuantityId> qs;
-      for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
-        qs.insert(adl2::sema::QuantityId{i});
-      }
-      auto set = adl2::axioms::emit_axioms(hir, adl2::sema::ExtDecls::legacy(), qs);
-      std::cout << adl2::axioms::dump_axioms(hir, set);
-    }
-    return adl2::sema::has_errors(hir.diags) ? 1 : 0;
-  }
-
-  std::cerr
-      << "note: smash2_cpp check is parse-only; it does not resolve. "
-      << "Rust smash2 check always runs sema. Use --dump-hir to resolve.\n";
-  auto result = adl2::syntax::parse_source(src);
-  std::cout << "check: " << path << "\n";
-  std::cout << "sections: " << result.file.sections.size() << "\n";
-  if (!result.diags.diagnostics().empty()) {
-    std::cerr << result.diags.format_all();
-  }
-  if (result.diags.has_errors()) {
-    std::cerr << "check: completed with errors\n";
-    return 1;
-  }
-  std::cout << "check: ok\n";
-  return 0;
+  return out;
 }
+
+enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
 
 void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
   for (const auto& d : diags) {
@@ -124,6 +92,65 @@ void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
       std::cerr << "  help: " << d.help << "\n";
     }
   }
+}
+
+int cmd_check(const std::string& path, DumpKind dump, bool json) {
+  std::string src = read_file(path);
+  if (src.empty() && !std::ifstream(path).good()) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  std::string name = unit_name(path);
+
+  if (dump == DumpKind::Ast) {
+    auto result = adl2::syntax::parse_source(src);
+    std::cout << adl2::syntax::dump_ast(src, result.file);
+  }
+
+  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
+
+  if (json) {
+    std::cout << "[";
+    for (std::size_t i = 0; i < hir.diags.size(); ++i) {
+      const auto& d = hir.diags[i];
+      if (i) std::cout << ",";
+      std::cout << "{\"file\":\"" << json_escape(name) << "\",\"severity\":\""
+                << adl2::sema::severity_str(d.severity) << "\",\"line\":" << d.span.line
+                << ",\"col\":" << d.span.column << ",\"start\":" << d.span.start
+                << ",\"end\":" << d.span.end << ",\"message\":\"" << json_escape(d.message)
+                << "\",\"label\":null,\"help\":"
+                << (d.help.empty() ? "null" : ("\"" + json_escape(d.help) + "\"")) << "}";
+    }
+    std::cout << "]\n";
+    return adl2::sema::has_errors(hir.diags) ? 1 : 0;
+  }
+
+  if (dump == DumpKind::Hir) {
+    std::cout << adl2::sema::hir_dump(hir);
+  } else if (dump == DumpKind::Quantities) {
+    std::cout << adl2::sema::quantity_table_dump(hir);
+  } else if (dump == DumpKind::Formula) {
+    auto regions = adl2::formula::encode_regions(hir);
+    std::cout << adl2::formula::dump_encoded(hir, regions);
+  } else if (dump == DumpKind::Axioms) {
+    auto regions = adl2::formula::encode_regions(hir);
+    (void)regions;
+    std::set<adl2::sema::QuantityId> qs;
+    for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+      qs.insert(adl2::sema::QuantityId{i});
+    }
+    auto set = adl2::axioms::emit_axioms(hir, adl2::sema::ExtDecls::legacy(), qs);
+    std::cout << adl2::axioms::dump_axioms(hir, set);
+  }
+
+  if (!hir.diags.empty()) {
+    print_sema_diags(hir.diags);
+  }
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": FAILED\n";
+    return 1;
+  }
+  return 0;
 }
 
 int cmd_dot(const std::string& path, bool ast, bool verbose) {
@@ -161,11 +188,12 @@ int cmd_run(const std::string& adl_path, const std::string& events_path) {
   std::string jsonl = read_file(events_path);
   if (jsonl.empty() && !std::ifstream(events_path).good()) {
     std::cerr << "error: cannot read file: " << events_path << "\n";
-    return 2;
+    return 1;
   }
   auto ext = adl2::sema::ExtDecls::legacy();
   auto hir = adl2::sema::analyze_str(src, unit_name(adl_path), ext);
   if (adl2::sema::has_errors(hir.diags)) {
+    print_sema_diags(hir.diags);
     std::cerr << unit_name(adl_path) << ": cannot run — resolve errors\n";
     return 1;
   }
@@ -186,7 +214,28 @@ int cmd_run(const std::string& adl_path, const std::string& events_path) {
   return 0;
 }
 
-int cmd_verify(const std::string& path, bool no_solver, bool dump_only) {
+int cmd_objects(const std::string& path, bool verbose) {
+  std::string src = read_file(path);
+  if (src.empty() && !std::ifstream(path).good()) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  std::string name = unit_name(path);
+  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
+  if (!hir.diags.empty()) print_sema_diags(hir.diags);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot summarize objects — resolve errors above\n";
+    return 1;
+  }
+  std::cout << adl2::sema::object_table(hir, stdout_color());
+  if (verbose) {
+    std::cerr << name << ": " << hir.table.collections().size() << " collections\n";
+  }
+  return 0;
+}
+
+int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool dump_only,
+               bool json, bool explain, bool matrix, const std::string& fail_on_s) {
   std::string src = read_file(path);
   if (src.empty() && !std::ifstream(path).good()) {
     std::cerr << "error: cannot read file: " << path << "\n";
@@ -196,20 +245,39 @@ int cmd_verify(const std::string& path, bool no_solver, bool dump_only) {
   auto ext = adl2::sema::ExtDecls::legacy();
   auto hir = adl2::sema::analyze_str(src, name, ext);
   if (adl2::sema::has_errors(hir.diags)) {
+    print_sema_diags(hir.diags);
     std::cerr << name << ": cannot verify — resolve errors\n";
     return 1;
+  }
+  adl2::analysis::FailOn fail_on;
+  if (!fail_on_s.empty()) {
+    std::string err;
+    if (!adl2::analysis::FailOn::parse(fail_on_s, fail_on, err)) {
+      std::cerr << "error: " << err << "\n";
+      return 2;
+    }
   }
   adl2::analysis::AnalysisOptions opts;
   opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
                           : adl2::analysis::SolverChoice::Auto;
-  opts.certify = false;
+  opts.certify = !no_certify;
+  opts.fail_on = fail_on;
   auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
-  std::cout << adl2::analysis::dump_verdicts(report);
-  if (!dump_only) {
-    std::cerr << name << ": solver=" << report.solver
-              << " pairs=" << report.pairwise.size() << "\n";
+  if (dump_only) {
+    std::cout << adl2::analysis::dump_verdicts(report);
+  } else if (json) {
+    std::cout << report.to_json();
+  } else {
+    adl2::analysis::RenderOptions ropts;
+    ropts.color = stdout_color();
+    ropts.force_matrix = matrix;
+    if (explain) {
+      std::cout << report.render_explain(ropts);
+    } else {
+      std::cout << report.render_default(ropts);
+    }
   }
-  return 0;
+  return report.exit_code(fail_on);
 }
 
 }  // namespace
@@ -224,12 +292,25 @@ int main(int argc, char** argv) {
     print_help(argv[0]);
     return 0;
   }
+  bool verbose = false;
+  if (cmd == "--verbose" || cmd == "-v") {
+    verbose = true;
+    if (argc < 3) {
+      print_help(argv[0]);
+      return 2;
+    }
+    cmd = argv[2];
+  }
+  int arg0 = verbose ? 3 : 2;
   if (cmd == "check") {
     DumpKind dump = DumpKind::None;
+    bool json = false;
     std::string path;
-    for (int i = 2; i < argc; ++i) {
+    for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
-      if (arg == "--dump-ast") {
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--dump-ast") {
         dump = DumpKind::Ast;
       } else if (arg == "--dump-hir") {
         dump = DumpKind::Hir;
@@ -239,6 +320,8 @@ int main(int argc, char** argv) {
         dump = DumpKind::Formula;
       } else if (arg == "--dump-axioms") {
         dump = DumpKind::Axioms;
+      } else if (arg == "--json") {
+        json = true;
       } else if (path.empty()) {
         path = arg;
       } else {
@@ -251,21 +334,23 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
-    return cmd_check(path, dump);
+    return cmd_check(path, dump, json);
   }
   if (cmd == "run") {
-    if (argc != 4) {
+    if (argc - arg0 + 2 != 4 && argc != (verbose ? 5 : 4)) {
+      // accept run <adl> <jsonl>
+    }
+    if (argc < arg0 + 2) {
       std::cerr << "error: run requires <file.adl> <events.jsonl>\n";
       print_help(argv[0]);
       return 2;
     }
-    return cmd_run(argv[2], argv[3]);
+    return cmd_run(argv[arg0], argv[arg0 + 1]);
   }
   if (cmd == "dot") {
     bool ast = false;
-    bool verbose = false;
     std::string path;
-    for (int i = 2; i < argc; ++i) {
+    for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--ast") {
         ast = true;
@@ -285,16 +370,63 @@ int main(int argc, char** argv) {
     }
     return cmd_dot(path, ast, verbose);
   }
+  if (cmd == "objects") {
+    std::string path;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
+      std::cerr << "error: objects requires a file path\n";
+      print_help(argv[0]);
+      return 2;
+    }
+    return cmd_objects(path, verbose);
+  }
+  if (cmd == "ingest") {
+    std::cerr << "error: smash2_cpp ingest is not ported (no ROOT / adl-ingest)\n";
+    return 2;
+  }
   if (cmd == "verify") {
     bool no_solver = false;
+    bool no_certify = false;
     bool dump_only = false;
+    bool json = false;
+    bool explain = false;
+    bool matrix = false;
+    std::string fail_on;
     std::string path;
-    for (int i = 2; i < argc; ++i) {
+    for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--no-solver") {
         no_solver = true;
+      } else if (arg == "--no-certify") {
+        no_certify = true;
       } else if (arg == "--dump-verdicts") {
         dump_only = true;
+      } else if (arg == "--json") {
+        json = true;
+      } else if (arg == "--explain") {
+        explain = true;
+      } else if (arg == "--matrix") {
+        matrix = true;
+      } else if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg.compare(0, 10, "--fail-on=") == 0) {
+        fail_on = arg.substr(10);
+      } else if (arg == "--fail-on") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --fail-on requires a value\n";
+          return 2;
+        }
+        fail_on = argv[++i];
       } else if (path.empty()) {
         path = arg;
       } else {
@@ -307,7 +439,8 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
-    return cmd_verify(path, no_solver, dump_only);
+    (void)verbose;
+    return cmd_verify(path, no_solver, no_certify, dump_only, json, explain, matrix, fail_on);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

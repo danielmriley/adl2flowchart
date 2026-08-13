@@ -1,7 +1,7 @@
 #pragma once
 
 /// Report data model (SPEC_ANALYSIS §6). Port of Rust `adl-analysis::report`
-/// enums and the compact pairwise dump. Full human/JSON rendering is deferred.
+/// enums, compact pairwise dump, default human rendering, and a compact JSON.
 
 #include <cstdint>
 #include <optional>
@@ -125,6 +125,23 @@ struct AxiomUse {
   std::size_t instances = 0;
 };
 
+/// CI gating flags (SPEC_ANALYSIS §6).
+struct FailOn {
+  bool overlap = false;
+  bool gap = false;
+  bool empty = false;
+  bool non_exact = false;
+  bool unknown = false;
+
+  static bool parse(const std::string& s, FailOn& out, std::string& err);
+};
+
+/// Presentation flags for the human report (`--matrix`, color).
+struct RenderOptions {
+  bool color = false;
+  bool force_matrix = false;
+};
+
 struct Report {
   std::uint32_t schema_version = SCHEMA_VERSION;
   std::string unit;
@@ -138,18 +155,36 @@ struct Report {
   std::vector<AxiomUse> axioms_used;
   std::vector<std::string> internal_diagnostics;
   std::vector<Diagnostic> diagnostics;
+
+  std::vector<std::string> findings(const FailOn& fail_on) const;
+  int exit_code(const FailOn& fail_on) const;
+  std::string to_json() const;
+  std::string render_default(const RenderOptions& opts) const;
+  std::string render_explain(const RenderOptions& opts) const;
 };
 
-/// CI gating flags (SPEC_ANALYSIS §6).
-struct FailOn {
-  bool overlap = false;
-  bool gap = false;
-  bool empty = false;
-  bool non_exact = false;
-  bool unknown = false;
+/// Counts behind the trust summary block.
+struct TrustStats {
+  std::size_t proven_disjoint = 0;
+  std::size_t candidate_disjoint = 0;
+  std::size_t proven_overlapping = 0;
+  std::size_t candidate_overlapping = 0;
+  std::size_t possibly = 0;
+  std::size_t unknown = 0;
+  std::size_t certified = 0;
+  std::size_t witness_validated = 0;
+  std::size_t proven_subsets = 0;
+  std::size_t proven_empty = 0;
+  std::size_t candidate_empty = 0;
 
-  static bool parse(const std::string& s, FailOn& out, std::string& err);
+  std::optional<std::size_t> certified_pct() const {
+    if (proven_disjoint == 0) return std::nullopt;
+    return certified * 100 / proven_disjoint;
+  }
 };
+
+TrustStats trust_stats(const Report& r);
+std::vector<std::string> assumption_clauses(const Report& r);
 
 /// One line per pair: `A vs B: KIND` (KIND is the human token).
 std::string dump_verdicts(const Report& r);

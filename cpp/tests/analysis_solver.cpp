@@ -67,6 +67,7 @@ void test_solver_disjoint_and_overlap() {
   if (hl) {
     CHECK(hl->kind == VerdictKind::ProvenDisjoint);
     CHECK(hl->proof_path.has_value());
+    CHECK(!hl->certified.has_value());  // library default certify=false
   }
 
   const PairReport* hm = find_pair(r, "High", "Mid");
@@ -79,10 +80,43 @@ void test_solver_disjoint_and_overlap() {
   }
 }
 
+void test_certify_interval_pair() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (certify path)\n";
+    CHECK(true);
+    return;
+  }
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kSrc, "jets.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  Report r = adl2::analysis::analyze_hir(hir, kSrc, ext, opts);
+  CHECK(r.certification);
+  const PairReport* hl = find_pair(r, "High", "Low");
+  CHECK(hl != nullptr);
+  if (hl) {
+    CHECK(hl->kind == VerdictKind::ProvenDisjoint);
+    CHECK(hl->certified.has_value() && *hl->certified);
+    CHECK(hl->certificate_size.has_value());
+  }
+  const PairReport* hm = find_pair(r, "High", "Mid");
+  CHECK(hm != nullptr);
+  if (hm) {
+    CHECK(hm->kind == VerdictKind::ProvenOverlapping);
+  }
+  std::string human = r.render_default(adl2::analysis::RenderOptions{});
+  CHECK(human.find("== trust ==") != std::string::npos);
+  CHECK(human.find("certification on") != std::string::npos);
+  CHECK(human.find("PROVEN DISJOINT") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
   test_solver_disjoint_and_overlap();
+  test_certify_interval_pair();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

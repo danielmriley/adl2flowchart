@@ -1,6 +1,7 @@
 #include "adl2/analysis/analysis.hpp"
 
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/certify/certify.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/formula/lin.hpp"
 #include "adl2/interp/interp.hpp"
@@ -193,10 +194,149 @@ void note_failure(Report& report, const SatResult& r) {
   }
 }
 
+void file_contradiction(Report& report, std::string msg) {
+  Diagnostic d;
+  d.class_ = DiagnosticClass::Contradiction;
+  d.message = std::move(msg);
+  report.diagnostics.push_back(std::move(d));
+  report.internal_diagnostics.push_back(report.diagnostics.back().message);
+}
+
+std::optional<QFormula> over_of(const std::vector<std::pair<AssertName, adl2::formula::Over>>& overs,
+                                const AssertName& n) {
+  for (const auto& p : overs) {
+    if (p.first == n) return p.second.qformula();
+  }
+  return std::nullopt;
+}
+
+const char* catalog_assumption(adl2::axioms::AxiomId id) {
+  const auto* cat = adl2::axioms::catalog();
+  int n = adl2::axioms::catalog_size();
+  for (int i = 0; i < n; ++i) {
+    if (cat[i].id == id) return cat[i].assumption;
+  }
+  return "none";
+}
+
+const char* catalog_statement(adl2::axioms::AxiomId id) {
+  const auto* cat = adl2::axioms::catalog();
+  int n = adl2::axioms::catalog_size();
+  for (int i = 0; i < n; ++i) {
+    if (cat[i].id == id) return cat[i].statement;
+  }
+  return "";
+}
+
+/// Interval-path certification. Disagreement is a diagnostic, never a demotion.
+void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& parts,
+                           const RegionCtx& ca, const RegionCtx& cb, bool certify,
+                           Report& report) {
+  if (!certify) return;
+  if (parts.empty()) {
+    file_contradiction(report,
+                       "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
+                           " vs " + pr.b +
+                           ": the interval layer reported no refuting atoms. The "
+                           "interval layer and the replay kernel disagree — one of them "
+                           "is wrong; the verdict is left as it was and no certification "
+                           "is claimed.");
+    return;
+  }
+  std::vector<QFormula> whole;
+  std::vector<AssertName> whole_names;
+  for (const auto& p : parts) {
+    const AssertName& name = p.src();
+    bool dup = false;
+    for (const auto& n : whole_names) {
+      if (n == name) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+    auto f = over_of(ca.overs, name);
+    if (!f) f = over_of(cb.overs, name);
+    if (!f) {
+      file_contradiction(report,
+                         "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
+                             " vs " + pr.b + ": no over-projection recorded for assert " +
+                             name.value +
+                             ". The interval layer and the replay kernel disagree — one "
+                             "of them is wrong; the verdict is left as it was and no "
+                             "certification is claimed.");
+      return;
+    }
+    whole_names.push_back(name);
+    whole.push_back(*f);
+  }
+  if (auto cert = adl2::certify::certify_bounds(whole)) {
+    pr.certified = true;
+    pr.certificate_size = whole.size();
+    (void)cert;
+    return;
+  }
+  std::vector<QFormula> lean;
+  for (const auto& p : parts) {
+    if (p.kind == RefutingPart::Kind::Whole) {
+      file_contradiction(report,
+                         "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
+                             " vs " + pr.b +
+                             ": the kernel did not accept the constant-false cut " +
+                             p.src().value +
+                             ". The interval layer and the replay kernel disagree — one "
+                             "of them is wrong; the verdict is left as it was and no "
+                             "certification is claimed.");
+      return;
+    }
+    lean.push_back(QFormula::of_atom(p.atom));
+  }
+  if (auto cert = adl2::certify::certify_bounds(lean)) {
+    pr.certified = true;
+    pr.certificate_size = lean.size();
+    (void)cert;
+    return;
+  }
+  file_contradiction(report,
+                     "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
+                         " vs " + pr.b +
+                         ": the replay kernel did not accept the bound pair the "
+                         "interval layer refuted on. The interval layer and the replay "
+                         "kernel disagree — one of them is wrong; the verdict is left "
+                         "as it was and no certification is claimed.");
+}
+
+/// `None` = certify off; `Some(false)` = fail closed (empty/unknown core).
+std::pair<std::optional<bool>, std::optional<std::size_t>> certify_named_formulas(
+    bool certify, const std::optional<std::vector<AssertName>>& core,
+    const std::vector<std::pair<AssertName, QFormula>>& extra,
+    const adl2::axioms::AxiomSet* axioms) {
+  if (!certify) return {std::nullopt, std::nullopt};
+  if (!core || core->empty()) return {false, std::nullopt};
+  std::map<AssertName, QFormula> fmap;
+  for (const auto& e : extra) fmap[e.first] = e.second;
+  if (axioms) {
+    for (std::size_t i = 0; i < axioms->instances.size(); ++i) {
+      fmap[AssertName::make("AX" + std::to_string(i))] = axioms->instances[i].formula;
+    }
+  }
+  std::vector<QFormula> formulas;
+  formulas.reserve(core->size());
+  for (const auto& n : *core) {
+    auto it = fmap.find(n);
+    if (it == fmap.end()) return {false, std::nullopt};
+    formulas.push_back(it->second);
+  }
+  auto r = adl2::certify::certify_unsat(formulas, adl2::certify::Budget::with_defaults());
+  if (r.is_certified()) return {true, formulas.size()};
+  return {false, std::nullopt};
+}
+
 PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& ext,
                                    const Interp& interp, const RegionEnc& ra, const RegionEnc& rb,
                                    const RegionCtx& ca, const RegionCtx& cb, Solver* solver,
-                                   std::chrono::milliseconds timeout, Report& report) {
+                                   std::chrono::milliseconds timeout, Report& report, bool certify,
+                                   const adl2::axioms::AxiomSet* axioms) {
   PairReport pr;
   pr.a = ra.name;
   pr.b = rb.name;
@@ -214,6 +354,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
        << " requires " << d->b.human();
     pr.reason = os.str();
     pr.proof_path = ProofPath::Interval;
+    certify_interval_pair(pr, d->parts, ca, cb, certify, report);
     return pr;
   }
   if (auto empty_a = ca.intervals.self_empty()) {
@@ -221,6 +362,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + ra.name + " provably selects no events (" + empty_a->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
+    certify_interval_pair(pr, empty_a->parts(), ca, cb, certify, report);
     return pr;
   }
   if (auto empty_b = cb.intervals.self_empty()) {
@@ -228,6 +370,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + rb.name + " provably selects no events (" + empty_b->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
+    certify_interval_pair(pr, empty_b->parts(), ca, cb, certify, report);
     return pr;
   }
 
@@ -251,16 +394,38 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
   if (disjoint.is_unsat()) {
     auto core = solver->unsat_core();
     solver->pop();
-    pr.kind = VerdictKind::ProvenDisjoint;
     pr.proof_path = ProofPath::SolverCore;
-    pr.reason = core && !core->empty() ? "solver unsat core" : "solver unsat";
+    std::optional<std::vector<AssertName>> core_names;
+    if (core) core_names = *core;
+    std::vector<std::pair<AssertName, QFormula>> extra;
+    for (const auto& p : c1.overs) extra.emplace_back(p.first, p.second.qformula());
+    for (const auto& p : c2.overs) extra.emplace_back(p.first, p.second.qformula());
+    auto cert = certify_named_formulas(certify, core_names, extra, axioms);
+    pr.certified = cert.first;
+    if (cert.first == true) pr.certificate_size = cert.second;
     if (core) {
       for (const auto& n : *core) {
         CoreItem item;
         item.id = n.value;
         item.text = n.value;
+        if (n.value.size() >= 2 && n.value[0] == 'A' && n.value[1] == 'X') {
+          item.origin = CoreItem::Origin::Axiom;
+        } else {
+          item.origin = CoreItem::Origin::Cut;
+        }
         pr.core.push_back(std::move(item));
       }
+    }
+    if (cert.first == false) {
+      pr.kind = VerdictKind::CandidateDisjoint;
+      pr.reason =
+          "solver reported UNSAT but the proof could not be independently "
+          "certified (budget, shape, or an integrality-only refutation); "
+          "candidate, not a claim — ";
+      pr.reason += (core && !core->empty()) ? "solver unsat core" : "solver unsat";
+    } else {
+      pr.kind = VerdictKind::ProvenDisjoint;
+      pr.reason = core && !core->empty() ? "solver unsat core" : "solver unsat";
     }
     return pr;
   }
@@ -415,7 +580,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   report.schema_version = SCHEMA_VERSION;
   report.unit = hir.unit;
   report.solver = solver_label;
-  report.certification = false;
+  report.certification = opts.certify;
 
   for (std::size_t i = 0; i < unit.regions.size(); ++i) {
     const RegionEnc& r = unit.regions[i];
@@ -435,14 +600,27 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     if (auto empty = ctxs[i].intervals.self_empty()) {
       rr.empty = EmptyStatus::Proven;
       rr.empty_proof = ProofPath::Interval;
+      if (opts.certify) {
+        PairReport dummy;
+        dummy.a = r.name;
+        dummy.b = r.name;
+        certify_interval_pair(dummy, empty->parts(), ctxs[i], ctxs[i], true, report);
+      }
     } else if (solver) {
       solver->push();
       assert_overs(*solver, ctxs[i]);
       SatResult er = solver->check(opts.timeout);
       note_failure(report, er);
+      std::optional<std::vector<AssertName>> core_names;
+      if (er.is_unsat()) {
+        if (auto core = solver->unsat_core()) core_names = *core;
+      }
       solver->pop();
       if (er.is_unsat()) {
-        rr.empty = EmptyStatus::Proven;
+        std::vector<std::pair<AssertName, QFormula>> extra;
+        for (const auto& p : ctxs[i].overs) extra.emplace_back(p.first, p.second.qformula());
+        auto cert = certify_named_formulas(opts.certify, core_names, extra, &axioms);
+        rr.empty = (cert.first == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
         rr.empty_proof = ProofPath::SolverCore;
       } else {
         rr.empty = EmptyStatus::NotProven;
@@ -457,7 +635,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
       report.pairwise.push_back(interval_or_solver_pair(
           hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
-          opts.timeout, report));
+          opts.timeout, report, opts.certify, solver ? &axioms : nullptr));
     }
   }
 
@@ -468,17 +646,19 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   }
 
   if (!axioms.instances.empty()) {
-    std::map<std::string, AxiomUse> used;
-    for (const auto& inst : axioms.instances) {
-      std::string id = adl2::axioms::axiom_id_str(inst.id);
-      auto& u = used[id];
-      if (u.id.empty()) {
-        u.id = id;
-        u.statement = inst.description;
-      }
-      u.instances++;
+    std::map<adl2::axioms::AxiomId, std::size_t> counts;
+    for (const auto& inst : axioms.instances) counts[inst.id]++;
+    const auto* ids = adl2::axioms::axiom_id_all();
+    for (int i = 0; i < adl2::axioms::AXIOM_COUNT; ++i) {
+      auto it = counts.find(ids[i]);
+      if (it == counts.end()) continue;
+      AxiomUse u;
+      u.id = adl2::axioms::axiom_id_str(ids[i]);
+      u.statement = catalog_statement(ids[i]);
+      u.assumption = catalog_assumption(ids[i]);
+      u.instances = it->second;
+      report.axioms_used.push_back(std::move(u));
     }
-    for (auto& kv : used) report.axioms_used.push_back(std::move(kv.second));
   }
 
   return report;

@@ -14,8 +14,8 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
 | `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
-| `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 region3 witness) | `adl2_solver`, `adl2_interp` (PUBLIC; **not** parser) |
-| `adl2_certify` | `adl-certify` | API locked (P5 fill) | `adl2_formula` (PUBLIC; **not** analysis) |
+| `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 witness + P6 certify/report) | `adl2_solver`, `adl2_interp`, `adl2_certify` (PUBLIC; **not** parser) |
+| `adl2_certify` | `adl-certify` | **filled** (P5 kernel; P6 called from analysis) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `smash2_cpp` / alias `adl2_cli` | `adl-cli` | wiring only | syntax + sema + formula + interp + axioms + viz + analysis |
 | `adl2_util` | _(optional)_ | stub | — |
@@ -45,7 +45,8 @@ it; certify must not depend on analysis. The P0 stub edge
 6. Prefer **one reviewable PR/phase per module boundary** when filling stubs.
    P4 fills **solver / viz / analysis (interval+pairwise)** plus region3 and
    EPRED/EPRES. P5 fills **certify** (Farkas replay) and **witness**
-   (region3 re-validation).
+   (region3 re-validation). P6 wires certify into `analyze_hir` and ports
+   the default verify report + `objects`.
 
 ## Include policy
 

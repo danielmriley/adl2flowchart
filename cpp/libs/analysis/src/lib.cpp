@@ -1362,8 +1362,10 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
                                            &recon_run.facts, false);
         rr.empty = (cert.flag == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
         rr.empty_proof = ProofPath::SolverCore;
-      } else {
+      } else if (er.is_sat()) {
         rr.empty = EmptyStatus::NotProven;
+      } else {
+        rr.empty = EmptyStatus::Unknown;
       }
     } else {
       rr.empty = EmptyStatus::Unknown;

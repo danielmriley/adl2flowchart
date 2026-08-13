@@ -8,6 +8,7 @@
 #include <string>
 
 using adl2::analysis::AnalysisOptions;
+using adl2::analysis::EmptyStatus;
 using adl2::analysis::PairReport;
 using adl2::analysis::Report;
 using adl2::analysis::SolverChoice;
@@ -290,6 +291,71 @@ void test_oriented_twins_cap_sat_direction() {
   }
 }
 
+void test_integrality_only_is_candidate_not_proven() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (integrality candidate)\n";
+    CHECK(true);
+    return;
+  }
+  // size>1 ∧ size<2 is int-empty but real-feasible at 1.5. Certify-on must
+  // not sell that as PROVEN (smash2 certification_tiers_*).
+  const char* pair_src =
+      "object jets\n"
+      "  take Jet\n"
+      "region RA\n"
+      "  select size(jets) > 1\n"
+      "region RB\n"
+      "  select size(jets) < 2\n";
+  const char* empty_src =
+      "object jets\n"
+      "  take Jet\n"
+      "region DEAD\n"
+      "  select size(jets) > 1\n"
+      "  select size(jets) < 2\n";
+  ExtDecls ext = ExtDecls::legacy();
+
+  AnalysisOptions on;
+  on.solver = SolverChoice::SubprocessZ3;
+  on.certify = true;
+  Hir hir = analyze_str(pair_src, "i.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  Report r = adl2::analysis::analyze_hir(hir, pair_src, ext, on);
+  const PairReport* p = find_pair(r, "RA", "RB");
+  CHECK(p != nullptr);
+  if (p) {
+    CHECK(p->kind == VerdictKind::CandidateDisjoint);
+    CHECK(p->certified.has_value() && *p->certified == false);
+    CHECK(p->kind != VerdictKind::ProvenDisjoint);
+    CHECK(p->kind != VerdictKind::ProvenOverlapping);
+  }
+
+  AnalysisOptions off;
+  off.solver = SolverChoice::SubprocessZ3;
+  off.certify = false;
+  Hir hir_off = analyze_str(pair_src, "i.adl", ext);
+  Report r_off = adl2::analysis::analyze_hir(hir_off, pair_src, ext, off);
+  const PairReport* p_off = find_pair(r_off, "RA", "RB");
+  CHECK(p_off != nullptr);
+  if (p_off) {
+    CHECK(p_off->kind == VerdictKind::ProvenDisjoint);
+    CHECK(!p_off->certified.has_value());
+  }
+
+  Hir dead = analyze_str(empty_src, "empty_i.adl", ext);
+  CHECK(!adl2::sema::has_errors(dead.diags));
+  Report r_dead = adl2::analysis::analyze_hir(dead, empty_src, ext, on);
+  CHECK(!r_dead.regions.empty());
+  if (!r_dead.regions.empty()) {
+    CHECK(r_dead.regions[0].name == "DEAD");
+    CHECK(r_dead.regions[0].empty == EmptyStatus::Candidate);
+  }
+  Hir dead_off = analyze_str(empty_src, "empty_i.adl", ext);
+  Report r_dead_off = adl2::analysis::analyze_hir(dead_off, empty_src, ext, off);
+  if (!r_dead_off.regions.empty()) {
+    CHECK(r_dead_off.regions[0].empty == EmptyStatus::Proven);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -300,6 +366,7 @@ int main() {
   test_certify_on_keeps_single_cut_subset();
   test_overlap_non_sat_taxonomy();
   test_oriented_twins_cap_sat_direction();
+  test_integrality_only_is_candidate_not_proven();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

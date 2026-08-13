@@ -161,5 +161,15 @@ set_tests_properties(adl2_interval_unit PROPERTIES
 set_tests_properties(adl2_analysis_encode PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=37 FAIL=0")
 
+add_executable(adl2_certify_unit certify.cpp)
+target_link_libraries(adl2_certify_unit PRIVATE adl2_certify)
+target_compile_options(adl2_certify_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_certify_unit
+  COMMAND adl2_certify_unit)
+
 set_tests_properties(adl2_analysis_solver PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+set_tests_properties(adl2_certify_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=64 FAIL=0")

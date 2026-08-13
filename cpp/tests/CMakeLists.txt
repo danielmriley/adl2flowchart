@@ -1,4 +1,4 @@
-# P2 tests — no external test framework required.
+# P4 tests — no external test framework required.
 # Requires CMake ≥ 3.20 (ctest --test-dir in CI).
 # dump-ast corpus gate: cpp/scripts/dump_ast_corpus_gate.sh
 # dump-hir oracle gate: cpp/scripts/dump_hir_corpus_gate.sh
@@ -79,6 +79,34 @@ set_property(TEST dot_gate_allowlist_count PROPERTY ENVIRONMENT
   "COUNT_ONLY=1"
   "SKIP_BUILD=1")
 
+add_executable(adl2_solver_test solver.cpp)
+target_link_libraries(adl2_solver_test PRIVATE adl2_solver)
+target_compile_options(adl2_solver_test PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_solver_test
+  COMMAND adl2_solver_test)
+
+add_executable(adl2_region3 region3.cpp)
+target_link_libraries(adl2_region3 PRIVATE adl2_sema adl2_syntax adl2_interp)
+target_compile_options(adl2_region3 PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_region3
+  COMMAND adl2_region3)
+
+add_executable(adl2_interval_unit interval.cpp)
+target_link_libraries(adl2_interval_unit PRIVATE adl2_analysis)
+target_compile_options(adl2_interval_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_interval_unit
+  COMMAND adl2_interval_unit)
+
+add_executable(adl2_analysis_encode analysis_encode.cpp)
+target_link_libraries(adl2_analysis_encode PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_encode PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_encode
+  COMMAND adl2_analysis_encode)
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}
@@ -104,15 +132,17 @@ set_tests_properties(adl2_sema_identity PROPERTIES
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")
 
-<<<<<<< HEAD
-add_executable(adl2_solver_test solver.cpp)
-target_link_libraries(adl2_solver_test PRIVATE adl2_solver)
-target_compile_options(adl2_solver_test PRIVATE -Wall -Wextra -Wpedantic)
-
-add_test(NAME adl2_solver_test
-  COMMAND adl2_solver_test)
-set_tests_properties(adl2_solver_test PROPERTIES
-=======
 set_tests_properties(adl2_viz_unit PROPERTIES
->>>>>>> cursor/p4-viz-impl-32f3
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+set_tests_properties(adl2_solver_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+set_tests_properties(adl2_region3 PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=30 FAIL=0")
+
+set_tests_properties(adl2_interval_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=46 FAIL=0")
+
+set_tests_properties(adl2_analysis_encode PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=37 FAIL=0")

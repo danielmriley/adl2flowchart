@@ -37,3 +37,6 @@ docs/PRESENTATION_PLAN_2026-07.md
 
 # C++ P0 harness build tree (ADR-010)
 /cpp/build/
+
+# isolated agent worktrees (landing discipline)
+.claude/worktrees/

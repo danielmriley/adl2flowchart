@@ -1,19 +1,25 @@
 #include "adl2/analysis/analysis.hpp"
 
+#include "adl2/analysis/refute.hpp"
 #include "adl2/axioms/axioms.hpp"
 #include "adl2/certify/certify.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/formula/lin.hpp"
 #include "adl2/interp/interp.hpp"
+#include "adl2/interp/sample.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/solver/solver.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -23,6 +29,8 @@ namespace {
 using adl2::formula::LinAtom;
 using adl2::formula::QFormula;
 using adl2::formula::Rel;
+using adl2::interp::Event;
+using adl2::interp::EvalError;
 using adl2::interp::Interp;
 using adl2::sema::ElemIndexKind;
 using adl2::sema::Hir;
@@ -550,6 +558,181 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
   return pr;
 }
 
+void collect_nums(const adl2::sema::HNode& node, std::vector<double>& out) {
+  if (node.kind == adl2::sema::HNode::Kind::Num) {
+    try {
+      std::size_t idx = 0;
+      double v = std::stod(node.text, &idx);
+      if (idx == node.text.size() && std::isfinite(v)) out.push_back(v);
+    } catch (...) {
+    }
+    return;
+  }
+  for (const adl2::sema::HNode* c : node.children()) collect_nums(*c, out);
+}
+
+std::vector<double> cut_constants(const Hir& hir) {
+  std::vector<double> vals;
+  for (const auto& region : hir.regions) {
+    for (const auto& stmt : region.stmts) {
+      using SK = adl2::sema::HirRegionStmt::Kind;
+      switch (stmt.kind) {
+        case SK::Select:
+        case SK::Reject:
+        case SK::Trigger:
+          collect_nums(stmt.node, vals);
+          break;
+        case SK::Bin:
+          collect_nums(stmt.node, vals);
+          for (const auto& e : stmt.edges) {
+            try {
+              std::size_t idx = 0;
+              double v = std::stod(e, &idx);
+              if (idx == e.size() && std::isfinite(v)) vals.push_back(v);
+            } catch (...) {
+            }
+          }
+          break;
+        case SK::BinCond:
+          collect_nums(stmt.node, vals);
+          break;
+        case SK::Inherit:
+        case SK::NonMembership:
+          break;
+      }
+    }
+  }
+  for (const auto& def : hir.defines) collect_nums(def.body, vals);
+  for (const auto& pred : hir.elem_preds) collect_nums(pred.node, vals);
+  auto total_lt = [](double a, double b) {
+    auto bits = [](double x) -> std::uint64_t {
+      std::uint64_t u = 0;
+      std::memcpy(&u, &x, sizeof(u));
+      return u;
+    };
+    auto xform = [&](double x) -> std::int64_t {
+      std::int64_t v = static_cast<std::int64_t>(bits(x));
+      std::uint64_t mask = (v < 0) ? 0x7FFFFFFFFFFFFFFFULL : 0;
+      return v ^ static_cast<std::int64_t>(mask);
+    };
+    return xform(a) < xform(b);
+  };
+  std::sort(vals.begin(), vals.end(), total_lt);
+  vals.erase(std::unique(vals.begin(), vals.end(),
+                         [](double a, double b) {
+                           std::uint64_t ua = 0, ub = 0;
+                           std::memcpy(&ua, &a, sizeof(ua));
+                           std::memcpy(&ub, &b, sizeof(ub));
+                           return ua == ub;
+                         }),
+             vals.end());
+  if (vals.size() > adl2::interp::MAX_CUT_CONSTANTS) vals.resize(adl2::interp::MAX_CUT_CONSTANTS);
+  return vals;
+}
+
+std::optional<bool> memb(const Interp& interp, std::size_t idx, const Event& e) {
+  EvalError err;
+  return interp.eval_region_membership_idx(idx, e, err);
+}
+
+void demote_disjoint(PairReport& report, const char* gate, const char* kind_word) {
+  report.kind = VerdictKind::PossiblyOverlapping;
+  report.reason = std::string("the ") + gate + " gate refuted a disjointness proof "
+                                               "(internal contradiction, reported as a bug); capped "
+                                               "at POSSIBLY";
+  (void)kind_word;
+  report.core.clear();
+  report.certified = std::nullopt;
+  report.proof_path = std::nullopt;
+  report.certificate_size = std::nullopt;
+}
+
+void gate_pair(PairReport& report, std::size_t ia, std::size_t ib, const Interp& interp,
+               const std::vector<Event>& gate_events, const std::vector<Event>& refute_probes,
+               Report& diag, std::size_t& sample_refutations, std::size_t& refute_refutations) {
+  if (report.kind == VerdictKind::ProvenDisjoint && !gate_events.empty()) {
+    for (const auto& e : gate_events) {
+      if (memb(interp, ia, e) == true && memb(interp, ib, e) == true) {
+        ++sample_refutations;
+        file_contradiction(diag, "SAMPLING GATE refuted PROVEN DISJOINT for " + report.a + " vs " +
+                                     report.b +
+                                     ": a sampled event passes both regions — an encoder/axiom "
+                                     "fact is false on a real event; verdict demoted");
+        demote_disjoint(report, "sampling", "disjointness");
+        break;
+      }
+    }
+  }
+  if (report.kind == VerdictKind::ProvenDisjoint &&
+      search_shared_membership(interp, ia, ib, refute_probes)) {
+    ++refute_refutations;
+    file_contradiction(diag, "REFUTE GATE refuted PROVEN DISJOINT for " + report.a + " vs " +
+                                 report.b +
+                                 ": an adversarial probe event passes both regions — an "
+                                 "encoder/axiom fact is false on a real event; verdict demoted");
+    demote_disjoint(report, "refute", "disjointness");
+  }
+  auto sample_subset = [&](std::size_t sub, std::size_t sup, bool& flag, const char* label) {
+    if (!flag || gate_events.empty()) return;
+    for (const auto& e : gate_events) {
+      if (memb(interp, sub, e) == true && memb(interp, sup, e) == false) {
+        ++sample_refutations;
+        flag = false;
+        file_contradiction(diag, std::string("SAMPLING GATE refuted PROVEN SUBSET (") + label +
+                                     ") for " + report.a + " vs " + report.b +
+                                     ": a sampled event is in the subset region but not the "
+                                     "superset; claim withdrawn");
+        break;
+      }
+    }
+  };
+  auto refute_subset = [&](std::size_t sub, std::size_t sup, bool& flag, const char* label) {
+    if (!flag) return;
+    if (search_subset_counterexample(interp, sub, sup, refute_probes)) {
+      ++refute_refutations;
+      flag = false;
+      file_contradiction(diag, std::string("REFUTE GATE refuted PROVEN SUBSET (") + label +
+                                   ") for " + report.a + " vs " + report.b +
+                                   ": an adversarial probe is in the subset region but not the "
+                                   "superset; claim withdrawn");
+    }
+  };
+  bool a_in_b = report.subset_a_in_b;
+  bool b_in_a = report.subset_b_in_a;
+  sample_subset(ia, ib, a_in_b, "a within b");
+  sample_subset(ib, ia, b_in_a, "b within a");
+  refute_subset(ia, ib, a_in_b, "a within b");
+  refute_subset(ib, ia, b_in_a, "b within a");
+  report.subset_a_in_b = a_in_b;
+  report.subset_b_in_a = b_in_a;
+}
+
+bool gate_empty(std::size_t idx, const std::string& name, const Interp& interp,
+                const std::vector<Event>& gate_events, Report& diag, std::size_t& refutations) {
+  for (const auto& e : gate_events) {
+    if (memb(interp, idx, e) == true) {
+      ++refutations;
+      file_contradiction(diag, "SAMPLING GATE refuted REGION EMPTY for " + name +
+                                   ": a sampled event is a member — an encoder/axiom fact is "
+                                   "false on a real event; claim withdrawn");
+      return true;
+    }
+  }
+  return false;
+}
+
+bool refute_empty(std::size_t idx, const std::string& name, const Interp& interp,
+                  const std::vector<Event>& refute_probes, Report& diag, std::size_t& refutations) {
+  if (search_membership(interp, idx, refute_probes)) {
+    ++refutations;
+    file_contradiction(diag, "REFUTE GATE refuted REGION EMPTY for " + name +
+                                 ": an adversarial probe is a member — an encoder/axiom fact is "
+                                 "false on a real event; claim withdrawn");
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls& ext,
@@ -575,6 +758,18 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
   for (const auto& r : unit.regions) ctxs.push_back(build_ctx(r));
 
   Interp interp(hir, ext);
+
+  std::vector<double> cuts = cut_constants(hir);
+  std::vector<Event> gate_events;
+  if (opts.sample_gate > 0) {
+    gate_events = adl2::interp::battery_with_cuts(ext, opts.sample_gate, cuts);
+  }
+  std::vector<Event> refute_probes;
+  if (opts.refute_gate) {
+    refute_probes = probe_events(ext, cuts);
+  }
+  std::size_t gate_refutations = 0;
+  std::size_t refute_refutations = 0;
 
   Report report;
   report.schema_version = SCHEMA_VERSION;
@@ -628,15 +823,43 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     } else {
       rr.empty = EmptyStatus::Unknown;
     }
+    if ((rr.empty == EmptyStatus::Proven || rr.empty == EmptyStatus::Candidate) &&
+        gate_empty(r.idx, r.name, interp, gate_events, report, gate_refutations)) {
+      rr.empty = EmptyStatus::NotProven;
+      rr.empty_core.clear();
+      rr.empty_proof = std::nullopt;
+    }
+    if ((rr.empty == EmptyStatus::Proven || rr.empty == EmptyStatus::Candidate) &&
+        refute_empty(r.idx, r.name, interp, refute_probes, report, refute_refutations)) {
+      rr.empty = EmptyStatus::NotProven;
+      rr.empty_core.clear();
+      rr.empty_proof = std::nullopt;
+    }
     report.regions.push_back(std::move(rr));
   }
 
   for (std::size_t i = 0; i < unit.regions.size(); ++i) {
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
-      report.pairwise.push_back(interval_or_solver_pair(
+      PairReport pr = interval_or_solver_pair(
           hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
-          opts.timeout, report, opts.certify, solver ? &axioms : nullptr));
+          opts.timeout, report, opts.certify, solver ? &axioms : nullptr);
+      gate_pair(pr, unit.regions[i].idx, unit.regions[j].idx, interp, gate_events, refute_probes,
+                report, gate_refutations, refute_refutations);
+      report.pairwise.push_back(std::move(pr));
     }
+  }
+
+  if (!gate_events.empty()) {
+    SamplingInfo si;
+    si.events = gate_events.size();
+    si.refutations = gate_refutations;
+    report.sampling = si;
+  }
+  if (opts.refute_gate) {
+    RefuteInfo ri;
+    ri.probes = refute_probes.size();
+    ri.refutations = refute_refutations;
+    report.refute = ri;
   }
 
   if (report.solver_failures) {

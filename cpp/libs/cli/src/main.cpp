@@ -35,8 +35,9 @@ void print_help(const char* argv0) {
          "--dump-formula|--dump-axioms] [--json] <file.adl>\n"
       << "  " << argv0 << " run [--json] [--histos DIR] <file.adl> <events.jsonl>\n"
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
-      << "  " << argv0 << " verify [--no-solver] [--no-certify] [--dump-verdicts]\n"
-         "          [--json] [--explain] [--matrix] [--fail-on=KINDS] <file.adl>\n"
+      << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
+         "          [--dump-verdicts] [--json] [--explain] [--matrix]\n"
+         "          [--fail-on=KINDS] <file.adl>\n"
       << "  " << argv0 << " objects <file.adl>\n"
       << "  " << argv0 << " ingest  (not ported: no ROOT / adl-ingest)\n"
       << "\n"
@@ -48,8 +49,11 @@ void print_help(const char* argv0) {
       << "histos.json + cutflow.json; ROOT bridges / out.root / --profile are not ported.\n"
       << "`dot` resolves via analyze_str; flowchart DOT (default) or `--ast`.\n"
       << "`verify` is interval + subprocess z3 + Farkas certify (default on) +\n"
-      << "region3 witness. `--no-certify` skips independent replay. Default stdout\n"
-      << "is the human report; `--dump-verdicts` prints one `A vs B: KIND` line.\n"
+      << "region3 witness + sampling/refute gates (sampling 64 events; refute on).\n"
+      << "`--no-certify` skips independent replay. `--no-refute-gate` skips the\n"
+      << "adversarial probe search. `--cross` / `--combine` are not ported yet.\n"
+      << "Default stdout is the human report; `--dump-verdicts` prints one\n"
+      << "`A vs B: KIND` line.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
       << "interp/axioms/viz/analysis; no core logic in the executable. Rust smash2 is the\n"
@@ -293,8 +297,8 @@ int cmd_objects(const std::string& path, bool verbose) {
   return 0;
 }
 
-int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool dump_only,
-               bool json, bool explain, bool matrix, const std::string& fail_on_s) {
+int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool no_refute_gate,
+               bool dump_only, bool json, bool explain, bool matrix, const std::string& fail_on_s) {
   std::string src = read_file(path);
   if (src.empty() && !std::ifstream(path).good()) {
     std::cerr << "error: cannot read file: " << path << "\n";
@@ -320,6 +324,8 @@ int cmd_verify(const std::string& path, bool no_solver, bool no_certify, bool du
   opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
                           : adl2::analysis::SolverChoice::Auto;
   opts.certify = !no_certify;
+  opts.sample_gate = 64;
+  opts.refute_gate = !no_refute_gate;
   opts.fail_on = fail_on;
   auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
   if (dump_only) {
@@ -492,6 +498,7 @@ int main(int argc, char** argv) {
   if (cmd == "verify") {
     bool no_solver = false;
     bool no_certify = false;
+    bool no_refute_gate = false;
     bool dump_only = false;
     bool json = false;
     bool explain = false;
@@ -504,6 +511,13 @@ int main(int argc, char** argv) {
         no_solver = true;
       } else if (arg == "--no-certify") {
         no_certify = true;
+      } else if (arg == "--no-refute-gate") {
+        no_refute_gate = true;
+      } else if (arg == "--cross" || arg == "--combine" || arg.compare(0, 10, "--combine=") == 0 ||
+                 arg.compare(0, 8, "--recon=") == 0 || arg == "--recon") {
+        std::cerr << "error: smash2_cpp verify " << arg
+                  << " is not ported yet (--cross/--combine/--recon)\n";
+        return 2;
       } else if (arg == "--dump-verdicts") {
         dump_only = true;
       } else if (arg == "--json") {
@@ -535,7 +549,8 @@ int main(int argc, char** argv) {
       return 2;
     }
     (void)verbose;
-    return cmd_verify(path, no_solver, no_certify, dump_only, json, explain, matrix, fail_on);
+    return cmd_verify(path, no_solver, no_certify, no_refute_gate, dump_only, json, explain, matrix,
+                      fail_on);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

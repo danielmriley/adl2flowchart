@@ -125,6 +125,18 @@ struct AxiomUse {
   std::size_t instances = 0;
 };
 
+/// Sampling-gate accounting (see `Report::sampling`).
+struct SamplingInfo {
+  std::size_t events = 0;
+  std::size_t refutations = 0;
+};
+
+/// Adversarial refute-gate accounting (see `Report::refute`).
+struct RefuteInfo {
+  std::size_t probes = 0;
+  std::size_t refutations = 0;
+};
+
 /// CI gating flags (SPEC_ANALYSIS §6).
 struct FailOn {
   bool overlap = false;
@@ -149,6 +161,8 @@ struct Report {
   std::optional<std::string> solver_degraded;
   std::optional<SolverFailures> solver_failures;
   bool certification = false;
+  std::optional<SamplingInfo> sampling;
+  std::optional<RefuteInfo> refute;
   std::vector<RegionReport> regions;
   std::vector<PairReport> pairwise;
   std::vector<BinCheckReport> bin_checks;

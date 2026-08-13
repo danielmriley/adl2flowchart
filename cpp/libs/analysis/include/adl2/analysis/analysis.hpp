@@ -8,8 +8,10 @@
 /// realized event in both regions. P6 wires `adl2_certify`: solver-UNSAT
 /// whose core cannot be independently replayed is CANDIDATE DISJOINT, never
 /// PROVEN. Library default `certify=false` keeps encode/interval unit pins
-/// stable; CLI `verify` passes `certify=true` (Rust default). Reconcile /
-/// refute / sampling gates are not claimed here.
+/// stable; CLI `verify` passes `certify=true` (Rust default). Sampling /
+/// refute gates are off in the library (`sample_gate=0`, `refute_gate=false`);
+/// CLI `verify` turns them on (`64` / true; `--no-refute-gate` disables the
+/// adversarial search). Reconcile (`--cross`) is not claimed here.
 ///
 /// Dependency spine (do not invert):
 ///   syntax → sema → {interp ‖ formula} → axioms → solver
@@ -53,8 +55,10 @@ struct AnalysisOptions {
   bool combine = false;
 };
 
-/// Encode `hir` and run interval + optional solver pairwise. Does not parse,
-/// reconcile, refute, or sample. When `opts.certify` is true, solver-UNSAT
+/// Encode `hir` and run interval + optional solver pairwise. Does not parse
+/// or reconcile. When `opts.sample_gate > 0` / `opts.refute_gate`, UNSAT-side
+/// PROVEN claims are checked through the interpreter and demoted on hit.
+/// When `opts.certify` is true, solver-UNSAT
 /// disjointness/emptiness is independently replayed; `Some(false)` demotes
 /// the claim to CANDIDATE. Interval-path disagreements are diagnostics, not
 /// demotions. `src` is the unit text used for cut line-text.

@@ -10,5 +10,6 @@ adl2_add_library(adl2_analysis
     src/render.cpp
     src/lib.cpp
     src/witness.cpp
+    src/refute.cpp
   PUBLIC_DEPS adl2_solver adl2_interp adl2_certify
 )

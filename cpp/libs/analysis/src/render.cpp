@@ -69,7 +69,17 @@ struct Style {
   }
 };
 
-std::vector<std::string> gate_segments(const Report&) { return {}; }
+std::vector<std::string> gate_segments(const Report& report) {
+  std::vector<std::string> v;
+  if (report.sampling) {
+    v.push_back("gate " + std::to_string(report.sampling->events) + "/" +
+                std::to_string(report.sampling->events));
+  }
+  if (report.refute) {
+    v.push_back("probes " + std::to_string(report.refute->probes));
+  }
+  return v;
+}
 
 const char* certificate_segment(const Report& report, const std::optional<bool>& certified) {
   if (certified == true) return "certified";
@@ -168,8 +178,16 @@ void render_trust(const Report& report, const Style& st, std::ostringstream& s) 
   s << "\n" << st.head("== trust ==") << "\n";
   std::vector<std::string> nets;
   nets.push_back(std::string("certification ") + (report.certification ? "on" : "OFF"));
-  nets.push_back("sampling gate OFF");
-  nets.push_back("refute gate OFF");
+  if (report.sampling) {
+    nets.push_back("sampling gate " + std::to_string(report.sampling->events) + " events");
+  } else {
+    nets.push_back("sampling gate OFF");
+  }
+  if (report.refute) {
+    nets.push_back("refute gate " + std::to_string(report.refute->probes) + " probes");
+  } else {
+    nets.push_back("refute gate OFF");
+  }
   s << "  solver        " << report.solver << "\n";
   s << "  nets          ";
   for (std::size_t i = 0; i < nets.size(); ++i) {
@@ -210,7 +228,9 @@ void render_trust(const Report& report, const Style& st, std::ostringstream& s) 
   push(std::to_string(t.possibly) + " possibly");
   push(std::to_string(t.unknown) + " unknown");
   s << "\n";
-  s << "  refutations   0 sampling · 0 adversarial\n";
+  s << "  refutations   " << (report.sampling ? report.sampling->refutations : 0)
+    << " sampling · " << (report.refute ? report.refute->refutations : 0)
+    << " adversarial\n";
   auto assumes = assumption_clauses(report);
   s << "  assumes       ";
   if (assumes.empty()) {
@@ -595,6 +615,10 @@ const char* subset_note(bool a_in_b, bool b_in_a) {
   return nullptr;
 }
 
+std::optional<std::string> subset_trust_tag(const Report& report) {
+  return bracket(gate_segments(report));
+}
+
 std::string group_members(const Report& report, const std::vector<std::size_t>& members) {
   std::vector<std::pair<std::string, std::string>> pairs;
   for (auto k : members) pairs.push_back({report.pairwise[k].a, report.pairwise[k].b});
@@ -731,16 +755,22 @@ void render_pairwise(const Report& report, const Style& st,
       << st.verdict(VerdictKind::ProvenDisjoint, "PROVEN DISJOINT")
       << " (trivially: one side selects no events)\n";
   }
+  auto subset_tag_opt = subset_trust_tag(report);
+  std::string subset_tag = subset_tag_opt ? (" " + *subset_tag_opt) : "";
   for (const auto& g : groups) {
     std::string verdict = st.verdict(g.kind, verdict_kind_human(g.kind));
     if (g.trust) verdict += " " + *g.trust;
     const char* note = subset_note(g.subset_a, g.subset_b);
+    const char* sub_tag =
+        (g.kind == VerdictKind::ProvenDisjoint || g.kind == VerdictKind::CandidateDisjoint)
+            ? ""
+            : subset_tag.c_str();
     if (g.members.size() == 1) {
       const auto& p = report.pairwise[g.members[0]];
       std::string reason = replace_all(replace_all(g.signature, "§A", p.a), "§B", p.b);
       std::string line = "  " + p.a + " vs " + p.b + ": " + verdict + " — " + reason;
       if (note) {
-        line += "; " + replace_all(replace_all(std::string(note), "§A", p.a), "§B", p.b);
+        line += "; " + replace_all(replace_all(std::string(note), "§A", p.a), "§B", p.b) + sub_tag;
       }
       s << line << "\n";
     } else {
@@ -749,7 +779,7 @@ void render_pairwise(const Report& report, const Style& st,
                          " — " + reason;
       if (note) {
         line += "; " + replace_all(replace_all(std::string(note), "§A", "first"), "§B", "second") +
-                " (in every pair)";
+                " (in every pair)" + sub_tag;
       }
       s << line << "\n";
       s << "    " << group_members(report, g.members) << "\n";
@@ -777,6 +807,10 @@ std::string Report::render_default(const RenderOptions& opts) const {
     s << st.verdict(VerdictKind::ProvenOverlapping, "SOLVER FAILED:") << " "
       << (solver_failures->spawn + solver_failures->errors)
       << " solver check(s) produced no usable answer — verdicts below are floors, not results\n";
+  }
+  if (refute && refute->refutations > 0) {
+    s << "refute gate: " << refute->probes << " probes, " << refute->refutations
+      << " refutation(s)\n";
   }
   std::vector<std::string> empty_regions;
   std::set<std::string> empty_set;
@@ -844,7 +878,16 @@ std::string Report::render_default(const RenderOptions& opts) const {
 }
 
 std::string Report::render_explain(const RenderOptions& opts) const {
-  std::string out = render_default(opts);
+  std::ostringstream head;
+  if (sampling) {
+    head << "sampling gate: " << sampling->events << " events, " << sampling->refutations
+         << " refutation(s)\n";
+  }
+  if (refute) {
+    head << "refute gate: " << refute->probes << " probes, " << refute->refutations
+         << " refutation(s)\n";
+  }
+  std::string out = head.str() + render_default(opts);
   out += "\n== explain ==\n";
   for (const auto& p : pairwise) {
     out += "  " + p.a + " vs " + p.b + ": " + verdict_kind_human(p.kind) + "\n";

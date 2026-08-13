@@ -210,3 +210,33 @@ add_test(NAME adl2_histo_unit
 
 set_tests_properties(adl2_histo_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=34 FAIL=0")
+
+add_executable(adl2_sample_unit sample.cpp)
+target_link_libraries(adl2_sample_unit PRIVATE adl2_interp adl2_sema adl2_syntax)
+target_compile_options(adl2_sample_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_sample_unit
+  COMMAND adl2_sample_unit)
+
+set_tests_properties(adl2_sample_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_refute_unit refute.cpp)
+target_link_libraries(adl2_refute_unit PRIVATE adl2_analysis)
+target_compile_options(adl2_refute_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_refute_unit
+  COMMAND adl2_refute_unit)
+
+set_tests_properties(adl2_refute_unit PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")
+
+add_executable(adl2_analysis_gates analysis_gates.cpp)
+target_link_libraries(adl2_analysis_gates PRIVATE adl2_analysis)
+target_compile_options(adl2_analysis_gates PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_analysis_gates
+  COMMAND adl2_analysis_gates)
+
+set_tests_properties(adl2_analysis_gates PROPERTIES
+  PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")

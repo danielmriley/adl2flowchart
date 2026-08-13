@@ -236,6 +236,14 @@ std::string Report::to_json() const {
   os << "  \"unit\": \"" << json_escape(unit) << "\",\n";
   os << "  \"solver\": \"" << json_escape(solver) << "\",\n";
   os << "  \"certification\": " << (certification ? "true" : "false") << ",\n";
+  if (sampling) {
+    os << "  \"sampling\": {\"events\": " << sampling->events
+       << ", \"refutations\": " << sampling->refutations << "},\n";
+  }
+  if (refute) {
+    os << "  \"refute\": {\"probes\": " << refute->probes
+       << ", \"refutations\": " << refute->refutations << "},\n";
+  }
   os << "  \"regions\": [\n";
   for (std::size_t i = 0; i < regions.size(); ++i) {
     const auto& rr = regions[i];

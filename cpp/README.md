@@ -25,7 +25,8 @@ viz reads HIR only; cli wires modules.
 | **`adl2_formula`** | **filled** (P3: Formula/Over/Under + encoder) | `libs/formula/include/adl2/formula/` |
 | **`adl2_interp`** | **filled** (P3: JSONL + two-valued run) | `libs/interp/include/adl2/interp/` |
 | **`adl2_axioms`** | **filled** (P3: 19-entry catalog + emitters) | `libs/axioms/include/adl2/axioms/` |
-| `adl2_solver` … `adl2_viz`, `adl2_util` | stubs | `libs/<module>/include/adl2/<module>/` |
+| **`adl2_viz`** | **filled** (P4: flowchart/AST DOT) | `libs/viz/include/adl2/viz/` |
+| `adl2_solver` … `adl2_certify`, `adl2_util` | stubs | `libs/<module>/include/adl2/<module>/` |
 | `smash2_cpp` (`libs/cli`) | dump/run wiring only | — |
 
 Sources live under `libs/<module>/`. Prefer one reviewable PR per module
@@ -55,7 +56,8 @@ P1 filled **`adl2_syntax`**. P2 filled **`adl2_sema`**. P3 fills
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=116 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
 | Two-valued `run` event lines vs smash2 | Fail-closed pair list (pinned count) |
-| Solver / analysis / certify / viz | Stub targets only |
+| CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (pinned count) |
+| Solver / analysis / certify | Stub targets only |
 
 Unsupported constructs still emit honest diagnostics (no silent accept).
 
@@ -71,6 +73,7 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dump-diff |
 | [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dump-diff |
 | [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` event-line diff |
+| [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dump-diff |
 
 ## Build
 
@@ -91,6 +94,8 @@ Some images default `CXX` to clang without libstdc++; prefer `CXX=g++`.
 ./cpp/build/smash2_cpp check --dump-hir examples/tutorials/ex00_helloworld.adl
 ./cpp/build/smash2_cpp check --dump-formula examples/tutorials/ex00_helloworld.adl
 ./cpp/build/smash2_cpp run examples/tutorials/ex00_helloworld.adl cpp/tests/fixtures/ex00_events.jsonl
+./cpp/build/smash2_cpp dot examples/tutorials/ex00_helloworld.adl
+./cpp/build/smash2_cpp dot --ast examples/tutorials/ex00_helloworld.adl
 ```
 
 With a dump flag, stdout is the canonical dump only, matching Rust
@@ -103,13 +108,14 @@ cpp/scripts/dump_ast_corpus_gate.sh
 cpp/scripts/dump_hir_corpus_gate.sh
 cpp/scripts/dump_formula_corpus_gate.sh
 cpp/scripts/interp_run_gate.sh
+cpp/scripts/dump_dot_corpus_gate.sh
 # or, if both binaries already exist:
-SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
+SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 ```
 
-AST gate: **146 / 146**. HIR gate: **38 files × 2** dumps. Formula and
-interp gates are fail-closed allowlists — shrinking or growing the list
-without bumping the pin fails CI. Files not on a list are **not claimed**.
+AST gate: **146 / 146**. HIR gate: **38 files × 2** dumps. DOT gate: **39
+files × 2** (flowchart + AST). Formula and interp gates are fail-closed
+allowlists — shrinking or growing the list without bumping the pin fails CI. Files not on a list are **not claimed**.
 Do not weaken `smash2` / `oracle-rust` CI.
 
 Bare `smash2_cpp check` (no dump flag) is **parse-only**. It is not Rust
@@ -123,6 +129,6 @@ emitters); `adl2_interp` (JSONL + two-valued run); CLI dumps/`run`; P3
 unit tests; allowlisted formula and interp oracle gates; P1 dump-ast and
 P2 dump-hir/identity kept green.
 
-**Out:** Filling solver/analysis/certify/viz; Kleene `region3` membership;
+**Out:** Filling solver/analysis/certify; Kleene `region3` membership;
 cutflow/histo tables; full 146-file formula dump; complete EPRED/EPRES
 emitters. Each later module behind its own phase/PR against the Rust oracle.

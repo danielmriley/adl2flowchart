@@ -66,6 +66,19 @@ set_property(TEST axioms_gate_allowlist_count PROPERTY ENVIRONMENT
   "COUNT_ONLY=1"
   "SKIP_BUILD=1")
 
+add_executable(adl2_viz_unit viz.cpp)
+target_link_libraries(adl2_viz_unit PRIVATE adl2_viz adl2_sema)
+target_compile_options(adl2_viz_unit PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME adl2_viz_unit
+  COMMAND adl2_viz_unit)
+
+add_test(NAME dot_gate_allowlist_count
+  COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/dump_dot_corpus_gate.sh)
+set_property(TEST dot_gate_allowlist_count PROPERTY ENVIRONMENT
+  "COUNT_ONLY=1"
+  "SKIP_BUILD=1")
+
 add_test(NAME layering_analysis_cannot_include_syntax
   COMMAND ${CMAKE_COMMAND}
     -DCOMPILER=${CMAKE_CXX_COMPILER}
@@ -91,6 +104,7 @@ set_tests_properties(adl2_sema_identity PROPERTIES
 set_tests_properties(adl2_p3_unit PROPERTIES
   PASS_REGULAR_EXPRESSION "PASS=116 FAIL=0")
 
+<<<<<<< HEAD
 add_executable(adl2_solver_test solver.cpp)
 target_link_libraries(adl2_solver_test PRIVATE adl2_solver)
 target_compile_options(adl2_solver_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -98,4 +112,7 @@ target_compile_options(adl2_solver_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME adl2_solver_test
   COMMAND adl2_solver_test)
 set_tests_properties(adl2_solver_test PROPERTIES
+=======
+set_tests_properties(adl2_viz_unit PROPERTIES
+>>>>>>> cursor/p4-viz-impl-32f3
   PASS_REGULAR_EXPRESSION "PASS=.* FAIL=0")

@@ -559,6 +559,43 @@ void test_size_hard_filter_is_not_a_subset_of_tautology() {
   }
 }
 
+void test_ternary_onz_offz_proven_disjoint() {
+  // reject (g ? a) ≡ g ∧ ¬a when else is missing. Mixed-filter size must
+  // stay Never so offZ+ is that exact complement, not a Dual plus with p<1.
+  const char* src =
+      "object leptons\n"
+      "  take Electron\n"
+      "  select pt > 10\n"
+      "  select DO < 0.5\n"
+      "composite OSdileptons\n"
+      "  take leptons l1, l2\n"
+      "  select l1.pdgID + l2.pdgID == 0\n"
+      "region onZ\n"
+      "  select size(OSdileptons) > 0 ? m(OSdileptons.l1 + OSdileptons.l2) [] 76 106\n"
+      "region offZ\n"
+      "  reject size(OSdileptons) > 0 ? m(OSdileptons.l1 + OSdileptons.l2) [] 76 106\n";
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (ternary onZ/offZ)\n";
+    CHECK(true);
+    return;
+  }
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "ternary_onz.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  opts.certify = true;
+  opts.sample_gate = 64;
+  opts.refute_gate = true;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  const PairReport* p = find_pair(r, "onZ", "offZ");
+  CHECK(p != nullptr);
+  if (p) {
+    CHECK(p->kind == VerdictKind::ProvenDisjoint);
+    CHECK(p->certified.has_value() && *p->certified);
+  }
+}
+
 void test_reject_size_hard_filter_is_not_a_subset() {
   const char* src =
       "object jets\n"
@@ -1083,6 +1120,7 @@ int main() {
   test_bin_partition_and_gap();
   test_size_hard_filter_is_not_a_subset_of_tautology();
   test_reject_size_hard_filter_is_not_a_subset();
+  test_ternary_onz_offz_proven_disjoint();
   test_solver_core_reason_names_source_spans();
   test_short_human_vocab();
   test_tightened_size_and_present_stay_exact();

@@ -188,6 +188,62 @@ void test_size_hard_filter_presence_guard() {
   CHECK(formula_mentions_present(unit.regions[1].stmts[0].formula, hir.table));
 }
 
+bool has_negate_presence_dual(const UnitEnc& unit) {
+  for (const auto& r : unit.regions) {
+    for (const auto& s : r.stmts) {
+      for (const auto& d : s.diags.entries()) {
+        if (d.reason.find("negation over an event-level datum") != std::string::npos) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void test_mixed_filter_size_is_not_hard() {
+  // In-fragment conjuncts can decide False, so size is obtainable. A
+  // presence guard here would De-Morgan `p<1` into reject-OVER (Delphes
+  // onZ/offZ completeness hole).
+  const char* src =
+      "object electrons\n"
+      "  take Electron\n"
+      "  select pt > 10\n"
+      "  select DO < 0.5\n"
+      "region A\n"
+      "  select size(electrons) >= 1\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "mixed_size.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  UnitEnc unit = adl2::analysis::encode_unit(hir, src);
+  CHECK(unit.regions.size() == 1);
+  CHECK(unit.regions[0].stmts.size() == 1);
+  CHECK(unit.regions[0].stmts[0].formula.is_exact());
+  CHECK(!formula_mentions_present(unit.regions[0].stmts[0].formula, hir.table));
+}
+
+const char* kTernaryOnOffZ =
+    "object leptons\n"
+    "  take Electron\n"
+    "  select pt > 10\n"
+    "  select DO < 0.5\n"
+    "composite OSdileptons\n"
+    "  take leptons l1, l2\n"
+    "  select l1.pdgID + l2.pdgID == 0\n"
+    "region onZ\n"
+    "  select size(OSdileptons) > 0 ? m(OSdileptons.l1 + OSdileptons.l2) [] 76 106\n"
+    "region offZ\n"
+    "  reject size(OSdileptons) > 0 ? m(OSdileptons.l1 + OSdileptons.l2) [] 76 106\n";
+
+void test_ternary_reject_has_no_negate_presence_dual() {
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kTernaryOnOffZ, "ternary_onz.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  UnitEnc unit = adl2::analysis::encode_unit(hir, kTernaryOnOffZ);
+  CHECK(unit.regions.size() == 2);
+  CHECK(!has_negate_presence_dual(unit));
+}
+
 void test_duplicate_region_names_are_disambiguated() {
   const char* src =
       "object jets\n"
@@ -282,6 +338,8 @@ int main() {
   test_encode_statement_granularity();
   test_inherit_flattens_like_paste();
   test_size_hard_filter_presence_guard();
+  test_mixed_filter_size_is_not_hard();
+  test_ternary_reject_has_no_negate_presence_dual();
   test_duplicate_region_names_are_disambiguated();
   test_unknown_call_arg_names_the_identifier();
   test_unknown_call_arg_suggests_near_name();

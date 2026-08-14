@@ -406,12 +406,45 @@ struct Encoder {
   std::vector<std::size_t> stack;
 
   /// SOUNDNESS_PROOF §8 1b: `QuantityTable::absence(Size)` is `Never`, but
-  /// materializing a collection whose filter (or combination cut) is out of
-  /// fragment is a hard interpreter error. Size of that collection is then
-  /// Hard here — encoder-local, so SZ0 on in-fragment collections is unchanged.
+  /// materializing a collection whose filter cannot decide without an
+  /// out-of-fragment leaf is a hard interpreter error. Size of *that*
+  /// collection is Hard here — encoder-local, so SZ0 on in-fragment
+  /// collections is unchanged.
+  ///
+  /// `has_unsupported()` is the wrong predicate. A mixed And such as
+  /// `pt > 10 and DO < 0.5` can still reject via the in-fragment conjunct
+  /// (`truth()` returns False without reading the unsupported leaf), so
+  /// size is obtainable. Treating those sizes as Hard put a presence
+  /// guard on `size(OSdileptons) > 0`; `negate` of `p≥1 ∧ Dual` then has
+  /// `forced_by_falsity = {}` (Dual) and De-Morgans `p<1` into the OVER —
+  /// a completeness hole (CMS-SUS-16-041_Delphes onZ vs offZ). smash2
+  /// keeps Size as Never; the Hard override applies only when every
+  /// boolean path is out of fragment (`select bdt > 0.5`).
+  static bool pred_unavoidably_hard(const HNode& node) {
+    switch (node.kind) {
+      case HNode::Kind::And:
+      case HNode::Kind::Or: {
+        if (node.items.empty()) return false;
+        for (const auto& p : node.items) {
+          if (!pred_unavoidably_hard(p)) return false;
+        }
+        return true;
+      }
+      case HNode::Kind::Not:
+        return node.a && pred_unavoidably_hard(*node.a);
+      case HNode::Kind::Ternary: {
+        bool g = node.a && pred_unavoidably_hard(*node.a);
+        bool t = node.b && pred_unavoidably_hard(*node.b);
+        bool e = node.c && pred_unavoidably_hard(*node.c);
+        return g || (t && e);
+      }
+      default:
+        return node.has_unsupported();
+    }
+  }
   bool pred_hard(ElemPredId id) const {
     if (!elem_preds || id.id >= elem_preds->size()) return false;
-    return (*elem_preds)[id.id].node.has_unsupported();
+    return pred_unavoidably_hard((*elem_preds)[id.id].node);
   }
   bool coll_hard(CollectionId c) const {
     const Collection& col = table->collection(c);

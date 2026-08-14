@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -1670,7 +1671,52 @@ std::optional<bool> tri_to_opt(const Tri& t, EvalError& err) {
   }
   return t.kind == TriKind::True;
 }
+
+NumOutcome num_outcome(const NRes& r, EvalError& err) {
+  NumOutcome o;
+  if (r.k == NR::Err) {
+    err = r.err;
+    o.kind = NumOutcomeKind::NonValue;
+    return o;
+  }
+  if (r.k == NR::NV) {
+    o.kind = NumOutcomeKind::NonValue;
+    o.nv = r.nv;
+  } else {
+    o.kind = NumOutcomeKind::Value;
+    o.value = r.val.to_f64();
+  }
+  return o;
+}
 }  // namespace
+
+struct Interp::EventEval::Impl {
+  Ev ev;
+};
+
+Interp::EventEval::EventEval(const Interp& interp, const Event& event)
+    : impl_(std::make_unique<Impl>(Impl{Ev{&interp, &event, {}, {}, {}, {}, {}}})) {}
+
+Interp::EventEval::EventEval(EventEval&&) noexcept = default;
+Interp::EventEval& Interp::EventEval::operator=(EventEval&&) noexcept = default;
+Interp::EventEval::~EventEval() = default;
+
+std::optional<bool> Interp::EventEval::region_membership(std::size_t idx, EvalError& err) {
+  if (idx >= impl_->ev.it->hir().regions.size()) {
+    err = mkerr(Span{}, "region index " + std::to_string(idx) + " out of range");
+    return std::nullopt;
+  }
+  return tri_to_opt(impl_->ev.region3(idx), err);
+}
+
+std::optional<NumOutcome> Interp::EventEval::quantity(QuantityId q, EvalError& err) {
+  auto r = impl_->ev.quantity(q, Span{}, nullptr);
+  if (r.k == NR::Err) {
+    err = r.err;
+    return std::nullopt;
+  }
+  return num_outcome(r, err);
+}
 
 std::optional<bool> Interp::eval_region_membership(const std::string& name, const Event& event,
                                                    EvalError& err) const {
@@ -1690,18 +1736,14 @@ std::optional<bool> Interp::eval_region_membership(const std::string& name, cons
     err = mkerr(Span{}, "no region named `" + name + "`");
     return std::nullopt;
   }
-  Ev ev{this, &event, {}, {}, {}, {}, {}};
-  return tri_to_opt(ev.region3(*idx), err);
+  EventEval ev(*this, event);
+  return ev.region_membership(*idx, err);
 }
 
 std::optional<bool> Interp::eval_region_membership_idx(std::size_t idx, const Event& event,
                                                        EvalError& err) const {
-  if (idx >= hir_->regions.size()) {
-    err = mkerr(Span{}, "region index " + std::to_string(idx) + " out of range");
-    return std::nullopt;
-  }
-  Ev ev{this, &event, {}, {}, {}, {}, {}};
-  return tri_to_opt(ev.region3(idx), err);
+  EventEval ev(*this, event);
+  return ev.region_membership(idx, err);
 }
 
 std::optional<NumOutcome> Interp::eval_num(const HNode& node, const Event& event,
@@ -1725,21 +1767,8 @@ std::optional<NumOutcome> Interp::eval_num(const HNode& node, const Event& event
 
 std::optional<NumOutcome> Interp::eval_quantity(QuantityId q, const Event& event,
                                                 EvalError& err) const {
-  Ev ev{this, &event, {}, {}, {}, {}, {}};
-  auto r = ev.quantity(q, Span{}, nullptr);
-  if (r.k == NR::Err) {
-    err = r.err;
-    return std::nullopt;
-  }
-  NumOutcome o;
-  if (r.k == NR::NV) {
-    o.kind = NumOutcomeKind::NonValue;
-    o.nv = r.nv;
-  } else {
-    o.kind = NumOutcomeKind::Value;
-    o.value = r.val.to_f64();
-  }
-  return o;
+  EventEval ev(*this, event);
+  return ev.quantity(q, err);
 }
 
 std::vector<RegionResult> Interp::run_event(const Event& event) const {

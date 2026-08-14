@@ -5,6 +5,6 @@ adl2_add_library(adl2_solver
     src/classify.cpp
     src/sexp.cpp
     src/subprocess.cpp
-  PUBLIC_DEPS adl2_axioms
+  PUBLIC_DEPS adl2_formula
 )
 target_link_libraries(adl2_solver PUBLIC Threads::Threads)

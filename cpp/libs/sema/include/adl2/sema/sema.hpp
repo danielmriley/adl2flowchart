@@ -17,6 +17,7 @@
 #include "adl2/sema/quantity.hpp"
 #include "adl2/sema/rat.hpp"
 #include "adl2/sema/resolve.hpp"
+#include "adl2/sema/source.hpp"
 
 namespace adl2::sema {
 

@@ -1,4 +1,5 @@
 #include "adl2/analysis/analysis.hpp"
+#include "adl2/analysis/witness.hpp"
 #include "adl2/interp/event.hpp"
 #include "adl2/interp/interp.hpp"
 #include "adl2/sema/sema.hpp"

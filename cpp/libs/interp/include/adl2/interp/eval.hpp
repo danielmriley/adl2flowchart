@@ -7,6 +7,7 @@
 #include "adl2/sema/hir.hpp"
 #include "adl2/sema/num.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -154,6 +155,25 @@ class Interp {
   /// validated event, not the pre-sort solver model.
   std::optional<NumOutcome> eval_quantity(adl2::sema::QuantityId q, const Event& event,
                                           EvalError& err) const;
+
+  /// One event, one materialize/region cache. Gate and witness paths must
+  /// reuse this instead of constructing a fresh evaluator per probe.
+  class EventEval {
+   public:
+    EventEval(const Interp& interp, const Event& event);
+    EventEval(EventEval&&) noexcept;
+    EventEval& operator=(EventEval&&) noexcept;
+    ~EventEval();
+    EventEval(const EventEval&) = delete;
+    EventEval& operator=(const EventEval&) = delete;
+
+    std::optional<bool> region_membership(std::size_t idx, EvalError& err);
+    std::optional<NumOutcome> quantity(adl2::sema::QuantityId q, EvalError& err);
+
+   private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+  };
 
  private:
   const adl2::sema::Hir* hir_;

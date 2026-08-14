@@ -7,9 +7,10 @@
 
 #include "adl2/formula/encode.hpp"
 #include "adl2/sema/hir.hpp"
-#include "adl2/solver/solver.hpp"
+#include "adl2/solver/assert_name.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -24,9 +25,16 @@ struct StmtEnc {
   std::string text;
   adl2::formula::Formula formula;
   adl2::formula::DiagTable diags;
+  /// Filled at encode time so `build_ctx` / certify do not re-walk Dual.
+  std::optional<adl2::formula::Over> cached_over;
+  std::optional<adl2::formula::Under> cached_under;
 
-  adl2::formula::Over over() const { return formula.over(); }
-  adl2::formula::Under under() const { return formula.under(); }
+  adl2::formula::Over over() const {
+    return cached_over ? *cached_over : formula.over();
+  }
+  adl2::formula::Under under() const {
+    return cached_under ? *cached_under : formula.under();
+  }
 };
 
 /// One region, encoded at statement granularity.
@@ -54,6 +62,8 @@ struct BinSetEnc {
   std::size_t region_idx = 0;
   std::string variable;
   std::vector<adl2::formula::Formula> bins;
+  std::vector<adl2::formula::Over> overs;
+  std::vector<adl2::formula::Under> unders;
 };
 
 /// The encoded analysis unit.

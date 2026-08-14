@@ -82,8 +82,8 @@ void print_help(const char* argv0) {
       << "sorted `*.adl` files.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
-      << "interp/axioms/viz/analysis/rootfile/ingest; no core logic in the executable. Rust smash2 is the\n"
-      << "forever oracle.\n";
+      << "interp/axioms/viz/analysis/rootfile/ingest; no core logic in the executable.\n"
+      << "smash2_cpp is a standalone toolchain (z3 on PATH for verify).\n";
 }
 
 std::string read_file(const std::string& path) {
@@ -284,8 +284,6 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool json) {
       auto regions = adl2::formula::encode_regions(hir);
       std::cout << adl2::formula::dump_encoded(hir, regions);
     } else if (dump == DumpKind::Axioms) {
-      auto regions = adl2::formula::encode_regions(hir);
-      (void)regions;
       std::set<adl2::sema::QuantityId> qs;
       for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
         qs.insert(adl2::sema::QuantityId{i});

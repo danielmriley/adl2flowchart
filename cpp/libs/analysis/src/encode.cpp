@@ -2,6 +2,7 @@
 
 #include "adl2/sema/dump.hpp"
 #include "adl2/sema/ops.hpp"
+#include "adl2/sema/source.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -41,36 +42,7 @@ std::string region_report_name(const Hir& hir, std::size_t ridx,
   return name;
 }
 
-/// Byte-offset → line map. Local copy of syntax LineMap so analysis never
-/// includes parser headers.
-struct LineMap {
-  std::vector<std::size_t> line_starts;
-
-  explicit LineMap(const std::string& src) {
-    line_starts.push_back(0);
-    for (std::size_t i = 0; i < src.size(); ++i) {
-      if (src[i] == '\n') line_starts.push_back(i + 1);
-    }
-  }
-
-  std::pair<std::uint32_t, std::uint32_t> line_col(std::size_t offset) const {
-    auto it = std::upper_bound(line_starts.begin(), line_starts.end(), offset);
-    std::size_t line = static_cast<std::size_t>(it - line_starts.begin());
-    if (line == 0) line = 1;
-    --line;
-    std::uint32_t col = static_cast<std::uint32_t>(offset - line_starts[line] + 1);
-    return {static_cast<std::uint32_t>(line + 1), col};
-  }
-
-  std::string line_text(const std::string& src, std::size_t offset) const {
-    auto lc = line_col(offset);
-    std::size_t start = line_starts[lc.first - 1];
-    std::size_t end = (lc.first < line_starts.size()) ? line_starts[lc.first] : src.size();
-    std::string s = src.substr(start, end - start);
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-    return s;
-  }
-};
+using adl2::sema::LineMap;
 
 std::string trim(std::string s) {
   auto not_space = [](unsigned char c) { return !std::isspace(c); };
@@ -115,17 +87,7 @@ void retag_node(const Hir& hir, HNode& node) {
 }
 
 EncodedRegion encode_synthetic(Hir& hir, std::vector<HirRegionStmt> stmts, Span span) {
-  HirRegion syn;
-  syn.name = hir.symbols.intern("__adl2_synth__");
-  syn.stmts = std::move(stmts);
-  syn.span = span;
-  hir.regions.push_back(std::move(syn));
-  hir.region_name_order.push_back(hir.regions.back().name);
-  std::size_t idx = hir.regions.size() - 1;
-  EncodedRegion enc = adl2::formula::encode_region(hir, idx);
-  hir.regions.pop_back();
-  hir.region_name_order.pop_back();
-  return enc;
+  return adl2::formula::encode_region_stmts(hir, stmts, span);
 }
 
 HirRegionStmt opaque_stmt(Span span, const char* reason) {
@@ -209,6 +171,22 @@ bool is_presence_atom(const QuantityTable& table, const Formula& f) {
   return table.quantity(f.atom.terms()[0].second).kind == QuantityKind::Present;
 }
 
+void cache_projections(StmtEnc& se) {
+  se.cached_over = se.formula.over();
+  se.cached_under = se.formula.under();
+}
+
+void cache_bin_projections(BinSetEnc& set) {
+  set.overs.clear();
+  set.unders.clear();
+  set.overs.reserve(set.bins.size());
+  set.unders.reserve(set.bins.size());
+  for (const auto& f : set.bins) {
+    set.overs.push_back(f.over());
+    set.unders.push_back(f.under());
+  }
+}
+
 void coverage(const QuantityTable& table, const Formula& f, const DiagTable& diags,
               RegionEnc& out, const LineMap& map) {
   switch (f.kind) {
@@ -287,6 +265,7 @@ std::optional<BinSetEnc> encode_boundary_bins(Hir& hir, std::size_t region_idx,
     EncodedRegion e = encode_synthetic(hir, std::move(stmts), span);
     set.bins.push_back(std::move(e.formula));
   }
+  cache_bin_projections(set);
   return set;
 }
 
@@ -384,6 +363,7 @@ UnitEnc encode_unit(Hir& hir, const std::string& src) {
         se.text = std::move(text);
         se.formula = std::move(e.formula);
         se.diags = std::move(e.diags);
+        cache_projections(se);
         enc.stmts.push_back(std::move(se));
       } else if (stmt.kind == HirRegionStmt::Kind::Bin) {
         if (auto set = encode_boundary_bins(hir, ridx, stmt.node, stmt.edges, span, src)) {
@@ -403,6 +383,7 @@ UnitEnc encode_unit(Hir& hir, const std::string& src) {
       set.region_idx = ridx;
       set.variable = "boolean bins";
       set.bins = std::move(cond_bins);
+      cache_bin_projections(set);
       unit.bin_sets.push_back(std::move(set));
     }
     unit.regions.push_back(std::move(enc));

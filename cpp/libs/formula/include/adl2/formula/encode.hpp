@@ -25,6 +25,13 @@ struct EncodedRegion {
 };
 
 EncodedRegion encode_region(adl2::sema::Hir& hir, std::size_t region);
+/// Encode an explicit statement list without pushing a synthetic region
+/// onto `hir.regions`. Same formula as `encode_region` on a one-off
+/// region (smash2 still push/pops `__adl2_synth__`); Inherit still walks
+/// the real region table. Interns the dump name for symbol-table parity.
+EncodedRegion encode_region_stmts(adl2::sema::Hir& hir,
+                                  const std::vector<adl2::sema::HirRegionStmt>& stmts,
+                                  adl2::sema::Span span);
 std::vector<EncodedRegion> encode_regions(adl2::sema::Hir& hir);
 
 }  // namespace adl2::formula

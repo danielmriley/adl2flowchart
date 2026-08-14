@@ -46,13 +46,15 @@
 #include "adl2/analysis/encode.hpp"
 #include "adl2/analysis/interval.hpp"
 #include "adl2/analysis/report.hpp"
-#include "adl2/analysis/witness.hpp"
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
 #include "adl2/solver/solver.hpp"
+// Witness Validation lives in witness.hpp (pulls interp). Do not include
+// it here — analysis.hpp must stay free of eval/cutflow/histo/sample.
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -147,6 +149,12 @@ void classify_overlap_non_sat(PairReport& pr, const adl2::solver::SatResult& ove
 /// Interior-model ε (2⁻²⁰). Dyadic so tightened bounds stay f64-exact.
 /// Smash2 `WITNESS_EPS`.
 inline constexpr double WITNESS_EPS = 9.5367431640625e-7;
+
+/// Largest collection the realizer will materialize (smash2 `MAX_REALIZED`).
+/// Lives here so `analysis.hpp` need not include `witness.hpp`.
+inline constexpr std::uint64_t MAX_REALIZED = 64;
+/// Same cap as an `f64`, for `refined_model` size hints.
+inline constexpr double MAX_REALIZED_F = 64.0;
 
 /// ε-tightened under-formula (smash2 `Engine::tightened`). Inequalities
 /// move `WITNESS_EPS` inside the bound; `≠` becomes a two-sided gap.

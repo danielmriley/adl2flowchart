@@ -305,9 +305,19 @@ struct SubprocessSolver::Impl {
   std::vector<std::size_t> sent_counts;
   std::map<QuantityId, QSort> sent_decls;
   std::string last_sent;
+  /// Serialized SMT-LIB prefix for SAT `check()` when decls/frames are
+  /// unchanged. `check()` still `(reset)`s; this only avoids rebuilding
+  /// the same script on the witness ladder. Not incremental SAT.
+  mutable std::string cached_script;
+  mutable bool script_valid = false;
 
   Impl() { frames.emplace_back(); }
   ~Impl() { recycle(); }
+
+  void invalidate_script() {
+    script_valid = false;
+    cached_script.clear();
+  }
 
   void invalidate_incremental() {
     incremental_live = false;
@@ -319,6 +329,7 @@ struct SubprocessSolver::Impl {
   void recycle() {
     child.reset();
     invalidate_incremental();
+    invalidate_script();
   }
 
   bool ensure_live(std::string& err) {
@@ -410,6 +421,7 @@ struct SubprocessSolver::Impl {
   }
 
   std::string script() const {
+    if (script_valid) return cached_script;
     std::ostringstream s;
     s << "(set-option :produce-models true)\n";
     s << "(set-option :produce-unsat-cores true)\n";
@@ -429,7 +441,9 @@ struct SubprocessSolver::Impl {
         }
       }
     }
-    return s.str();
+    cached_script = s.str();
+    script_valid = true;
+    return cached_script;
   }
 
   std::string check_query(std::chrono::milliseconds timeout) const {
@@ -720,6 +734,7 @@ SubprocessSolver::~SubprocessSolver() = default;
 
 void SubprocessSolver::declare(QuantityId q, QSort sort) {
   impl_->decls.emplace(q, sort);
+  impl_->invalidate_script();
   if (impl_->incremental_live &&
       impl_->sent_decls.find(q) == impl_->sent_decls.end()) {
     std::string cmd = std::string("(declare-const q") + std::to_string(q.id) +
@@ -732,6 +747,7 @@ void SubprocessSolver::declare(QuantityId q, QSort sort) {
 void SubprocessSolver::push() {
   impl_->frames.emplace_back();
   impl_->last = LastCheck::None;
+  impl_->invalidate_script();
   // Depth-only deltas cannot see pop-then-push (same depth, new frame).
   // While the incremental session is live, emit SMT-LIB scopes immediately.
   if (impl_->incremental_live) {
@@ -744,6 +760,7 @@ void SubprocessSolver::push() {
 void SubprocessSolver::pop() {
   if (impl_->frames.size() > 1) impl_->frames.pop_back();
   impl_->last = LastCheck::None;
+  impl_->invalidate_script();
   if (impl_->incremental_live && impl_->sent_depth > 1) {
     if (!impl_->send_now("(pop)")) return;
     impl_->sent_depth--;
@@ -773,6 +790,7 @@ void SubprocessSolver::assert_formula(
       if (!impl_->send_now(preamble)) {
         impl_->frames.back().items.push_back(std::move(item));
         impl_->last = LastCheck::None;
+        impl_->invalidate_script();
         return;
       }
       impl_->sent_decls = impl_->decls;
@@ -780,6 +798,7 @@ void SubprocessSolver::assert_formula(
     if (!impl_->send_now(Impl::item_line(item))) {
       impl_->frames.back().items.push_back(std::move(item));
       impl_->last = LastCheck::None;
+      impl_->invalidate_script();
       return;
     }
     if (impl_->sent_counts.size() < impl_->frames.size()) {
@@ -789,6 +808,7 @@ void SubprocessSolver::assert_formula(
   }
   impl_->frames.back().items.push_back(std::move(item));
   impl_->last = LastCheck::None;
+  impl_->invalidate_script();
 }
 
 SatResult SubprocessSolver::check(std::chrono::milliseconds timeout) {
@@ -888,6 +908,7 @@ void SubprocessSolver::inject_raw(std::string smt) {
   if (impl_->incremental_live) impl_->invalidate_incremental();
   impl_->frames.back().items.push_back(std::move(item));
   impl_->last = LastCheck::None;
+  impl_->invalidate_script();
 }
 
 bool SubprocessSolver::kill_child_for_test() {

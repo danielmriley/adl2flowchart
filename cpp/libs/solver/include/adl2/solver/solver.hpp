@@ -14,6 +14,7 @@
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/sema/rat.hpp"
+#include "adl2/solver/assert_name.hpp"
 
 #include <chrono>
 #include <map>
@@ -37,20 +38,6 @@ inline constexpr const char* UNSUPPORTED =
 inline constexpr const char* NO_ANSWER = "no check-sat answer in solver output";
 inline constexpr const char* ANSWERED_UNKNOWN = "solver answered unknown";
 inline constexpr const char* TIMEOUT = "solver timeout";
-
-/// Name attached to an assertion so unsat cores map back to source spans /
-/// axiom catalog entries.
-struct AssertName {
-  std::string value;
-  static AssertName make(std::string s) {
-    AssertName n;
-    n.value = std::move(s);
-    return n;
-  }
-  bool operator==(const AssertName& o) const { return value == o.value; }
-  bool operator!=(const AssertName& o) const { return !(*this == o); }
-  bool operator<(const AssertName& o) const { return value < o.value; }
-};
 
 /// Outcome of one `check` call. `Unknown` carries a human-readable reason
 /// and can only weaken a verdict to POSSIBLY, never flip it to PROVEN.

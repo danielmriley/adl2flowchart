@@ -8,7 +8,7 @@
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/sema/rat.hpp"
-#include "adl2/solver/solver.hpp"
+#include "adl2/solver/assert_name.hpp"
 
 #include <map>
 #include <optional>

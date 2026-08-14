@@ -1,5 +1,6 @@
 #include "adl2/analysis/refute.hpp"
 
+#include "adl2/interp/eval.hpp"
 #include "adl2/interp/sample.hpp"
 
 #include <cmath>
@@ -94,9 +95,9 @@ void push_event(const ExtDecls& ext, std::vector<Event>& events, std::string lin
   events.push_back(must_parse(line, ext, "refute-gate probe failed the loader"));
 }
 
-std::optional<bool> memb(const Interp& interp, std::size_t idx, const Event& e) {
+std::optional<bool> memb(Interp::EventEval& ev, std::size_t idx) {
   EvalError err;
-  return interp.eval_region_membership_idx(idx, e, err);
+  return ev.region_membership(idx, err);
 }
 
 }  // namespace
@@ -148,8 +149,9 @@ std::vector<Event> probe_events(const ExtDecls& ext, const std::vector<double>& 
 std::optional<Event> search_shared_membership(const Interp& interp, std::size_t ia, std::size_t ib,
                                               const std::vector<Event>& probes) {
   for (const auto& e : probes) {
-    auto a = memb(interp, ia, e);
-    auto b = memb(interp, ib, e);
+    Interp::EventEval ev(interp, e);
+    auto a = memb(ev, ia);
+    auto b = memb(ev, ib);
     if (a == true && b == true) return e;
   }
   return std::nullopt;
@@ -158,7 +160,8 @@ std::optional<Event> search_shared_membership(const Interp& interp, std::size_t 
 std::optional<Event> search_membership(const Interp& interp, std::size_t idx,
                                        const std::vector<Event>& probes) {
   for (const auto& e : probes) {
-    if (memb(interp, idx, e) == true) return e;
+    Interp::EventEval ev(interp, e);
+    if (memb(ev, idx) == true) return e;
   }
   return std::nullopt;
 }
@@ -166,8 +169,9 @@ std::optional<Event> search_membership(const Interp& interp, std::size_t idx,
 std::optional<Event> search_subset_counterexample(const Interp& interp, std::size_t sub, std::size_t sup,
                                                   const std::vector<Event>& probes) {
   for (const auto& e : probes) {
-    auto a = memb(interp, sub, e);
-    auto b = memb(interp, sup, e);
+    Interp::EventEval ev(interp, e);
+    auto a = memb(ev, sub);
+    auto b = memb(ev, sup);
     // Subset is In(sub) ⇒ In(sup). Unknown on the superset is a counterexample;
     // demanding Out (Some(false)) cannot see SOUNDNESS_PROOF §8 1b.
     if (a == true && b != true) return e;

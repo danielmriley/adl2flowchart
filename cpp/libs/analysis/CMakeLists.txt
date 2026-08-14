@@ -9,8 +9,11 @@ adl2_add_library(adl2_analysis
     src/report.cpp
     src/render.cpp
     src/lib.cpp
+    src/engine.cpp
+    src/certify_bridge.cpp
+    src/model_refine.cpp
     src/witness.cpp
     src/refute.cpp
     src/reconcile.cpp
-  PUBLIC_DEPS adl2_solver adl2_interp adl2_certify
+  PUBLIC_DEPS adl2_solver adl2_interp adl2_certify adl2_axioms
 )

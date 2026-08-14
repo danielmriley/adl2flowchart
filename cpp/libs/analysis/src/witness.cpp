@@ -1,5 +1,7 @@
 #include "adl2/analysis/witness.hpp"
+#include "adl2/analysis/analysis.hpp"
 
+#include "adl2/interp/eval.hpp"
 #include "adl2/interp/event.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/ops.hpp"
@@ -1071,13 +1073,14 @@ Validation validate_witness(const adl2::sema::Hir& hir, const adl2::sema::ExtDec
     std::optional<std::string> opaque;
     bool missing = false;
     std::size_t idxs[2] = {region_a, region_b};
+    adl2::interp::Interp::EventEval ev(interp, event);
     for (std::size_t k = 0; k < 2; ++k) {
       std::size_t idx = idxs[k];
       std::string name = idx < hir.regions.size()
                              ? hir.symbols.display(hir.regions[idx].name)
                              : ("#" + std::to_string(idx));
       EvalError err;
-      auto mem = interp.eval_region_membership_idx(idx, event, err);
+      auto mem = ev.region_membership(idx, err);
       if (mem && *mem) {
         continue;
       }

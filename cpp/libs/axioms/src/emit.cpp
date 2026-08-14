@@ -574,9 +574,18 @@ std::string quantity_label(const Hir& hir, QuantityId q) {
   return q.to_string();
 }
 
+struct AxiomKey {
+  AxiomId id;
+  QFormula formula;
+  bool operator<(const AxiomKey& o) const {
+    if (id != o.id) return static_cast<int>(id) < static_cast<int>(o.id);
+    return formula < o.formula;
+  }
+};
+
 AxiomSet emit_axioms(Hir& hir, const ExtDecls& ext, const std::set<QuantityId>& quantities) {
   std::set<QuantityId> qs = quantities;
-  std::set<std::string> seen;
+  std::set<AxiomKey> seen;
   std::vector<AxiomInstance> instances;
   for (int round = 0; round < 32; ++round) {
     std::vector<QuantityId> snap(qs.begin(), qs.end());
@@ -604,8 +613,8 @@ AxiomSet emit_axioms(Hir& hir, const ExtDecls& ext, const std::set<QuantityId>& 
     em.pdef(snap);
     bool grew = false;
     for (auto& inst : em.out) {
-      std::string key = std::string(axiom_id_str(inst.id)) + "|" + dump_qf(inst.formula);
-      if (!seen.insert(key).second) continue;
+      AxiomKey key{inst.id, inst.formula};
+      if (!seen.insert(std::move(key)).second) continue;
       collect_qs(inst.formula, qs);
       grew = true;
       instances.push_back(std::move(inst));

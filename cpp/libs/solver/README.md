@@ -4,7 +4,9 @@ P4 fills the **subprocess** backend only (`z3 -in` on PATH). There is no
 native libz3 link.
 
 SAT/model `check` is `(reset)` + the whole script + `(check-sat)` — z3's
-incremental core returns different models. UNSAT `check_unsat` holds
+incremental core returns different models. The serialized script is
+cached while decls/frames are unchanged (witness ladder); that is not
+incremental SAT. UNSAT `check_unsat` holds
 decls/axioms and sends frame deltas (`push` / assert / `check-sat` / `pop`).
 Immediate send recycles on `(error …)` / `unsupported`. Unknown does not
 commit `sent_*` (the next query bootstraps). `inject_raw` invalidates the

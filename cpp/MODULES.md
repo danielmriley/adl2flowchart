@@ -13,8 +13,8 @@ tree under `libs/<module>/include/adl2/<module>/`.
 | `adl2_formula` | `adl-formula` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_interp` | `adl-interp` | **filled** (P3) | `adl2_sema` (PUBLIC) |
 | `adl2_axioms` | `adl-axioms` | **filled** (P3) | `adl2_formula` (PUBLIC) |
-| `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_axioms` (PUBLIC) |
-| `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 witness + P6 certify/report) | `adl2_solver`, `adl2_interp`, `adl2_certify` (PUBLIC; **not** parser) |
+| `adl2_solver` | `adl-solver` | **filled** (P4; subprocess only) | `adl2_formula` (PUBLIC; not axioms) |
+| `adl2_analysis` | `adl-analysis` | **filled** (P4 pairwise + P5 witness + P6 certify/report) | `adl2_solver`, `adl2_interp`, `adl2_certify`, `adl2_axioms` (PUBLIC; **not** parser) |
 | `adl2_certify` | `adl-certify` | **filled** (P5 kernel + P6 bundles / SHA-256) | `adl2_formula` (PUBLIC; **not** analysis) |
 | `adl2_viz` | `adl-viz` | **filled** (P4: flowchart/AST DOT) | `adl2_sema` (PUBLIC; HIR only) |
 | `adl2_rootfile` | `rootfile` | **filled** (P6: native `out.root`) | — |

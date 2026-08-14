@@ -18,6 +18,11 @@
 
 namespace adl2::analysis {
 
+/// Largest collection the realizer will materialize (smash2 `MAX_REALIZED`).
+inline constexpr std::uint64_t MAX_REALIZED = 64;
+/// Same cap as an `f64`, for `refined_model` size hints.
+inline constexpr double MAX_REALIZED_F = 64.0;
+
 enum class ValidationKind { Validated, Candidate, Rejected };
 
 struct Validation {

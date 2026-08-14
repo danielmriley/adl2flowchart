@@ -59,9 +59,6 @@ Rat rat_f64(double v) {
   return r ? *r : Rat::zero();
 }
 
-/// Largest collection the realizer will materialize.
-constexpr std::uint64_t MAX_REALIZED = 64;
-
 struct CollPlan {
   std::vector<std::pair<CollectionId, std::uint64_t>> family;
 };

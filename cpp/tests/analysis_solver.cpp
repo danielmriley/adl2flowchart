@@ -1,10 +1,16 @@
 #include "adl2/analysis/analysis.hpp"
 #include "adl2/analysis/refute.hpp"
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/formula/formula.hpp"
+#include "adl2/formula/lin.hpp"
 #include "adl2/interp/interp.hpp"
+#include "adl2/sema/quantity.hpp"
+#include "adl2/sema/rat.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/solver/solver.hpp"
 
+#include <chrono>
+#include <cmath>
 #include <iostream>
 #include <set>
 #include <string>
@@ -12,14 +18,29 @@
 using adl2::analysis::AnalysisOptions;
 using adl2::analysis::CoverageStatus;
 using adl2::analysis::EmptyStatus;
+using adl2::analysis::MAX_REALIZED_F;
 using adl2::analysis::PairReport;
 using adl2::analysis::Report;
 using adl2::analysis::SolverChoice;
+using adl2::analysis::WITNESS_EPS;
 using adl2::analysis::VerdictKind;
 using adl2::analysis::classify_overlap_non_sat;
+using adl2::analysis::refined_model;
+using adl2::analysis::tightened;
+using adl2::formula::LinAtom;
+using adl2::formula::QFormula;
+using adl2::formula::Rel;
+using adl2::sema::AngKind;
+using adl2::sema::ElemIndexKind;
 using adl2::sema::ExtDecls;
 using adl2::sema::Hir;
+using adl2::sema::Quantity;
+using adl2::sema::QuantityId;
+using adl2::sema::QuantityKind;
+using adl2::sema::Rat;
 using adl2::sema::analyze_str;
+using adl2::solver::QSort;
+using adl2::solver::SubprocessSolver;
 
 namespace {
 
@@ -589,6 +610,210 @@ void test_solver_core_reason_names_source_spans() {
   CHECK(def.find("core:") != std::string::npos);
 }
 
+QuantityId find_jets0_pt(const Hir& hir, const ExtDecls& ext) {
+  auto jets = hir.collection_of("jets");
+  std::string pt = ext.prop_canon("pt").first;
+  const auto& qs = hir.table.quantities();
+  for (std::uint32_t i = 0; i < qs.size(); ++i) {
+    const auto& q = qs[i];
+    if (q.kind == QuantityKind::ElemProp && jets && q.coll == *jets &&
+        q.index.kind == ElemIndexKind::FromFront && q.index.n == 0 &&
+        hir.table.prop_key(q.prop) == pt) {
+      return QuantityId{i};
+    }
+  }
+  return QuantityId{0xFFFFFFFFu};
+}
+
+QuantityId find_first_dphi(const Hir& hir) {
+  const auto& qs = hir.table.quantities();
+  for (std::uint32_t i = 0; i < qs.size(); ++i) {
+    if (qs[i].kind == QuantityKind::AngularSep && qs[i].ang == AngKind::DPhi) {
+      return QuantityId{i};
+    }
+  }
+  return QuantityId{0xFFFFFFFFu};
+}
+
+void test_tightened_size_and_present_stay_exact() {
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "region A\n"
+      "  select jets[0].pt > 0\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "tight.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  QuantityId pt = find_jets0_pt(hir, ext);
+  CHECK(pt.id != 0xFFFFFFFFu);
+  if (pt.id == 0xFFFFFFFFu) return;
+  auto jets = hir.collection_of("jets");
+  CHECK(jets.has_value());
+  if (!jets) return;
+  QuantityId sz = hir.table.intern_quantity(Quantity::size(*jets));
+  QuantityId pres = hir.table.intern_quantity(Quantity::present(pt));
+
+  QFormula size_le = QFormula::of_atom(LinAtom::single(sz, Rel::Le, Rat::one()));
+  CHECK(tightened(hir, size_le) == size_le);
+
+  QFormula size_gt = QFormula::of_atom(LinAtom::single(sz, Rel::Gt, Rat::zero()));
+  CHECK(tightened(hir, size_gt) == size_gt);
+
+  QFormula pge = QFormula::of_atom(LinAtom::single(pres, Rel::Ge, Rat::one()));
+  CHECK(tightened(hir, pge) == pge);
+
+  QFormula ple = QFormula::of_atom(LinAtom::single(pres, Rel::Le, Rat::one()));
+  CHECK(tightened(hir, ple) == ple);
+
+  CHECK(tightened(hir, QFormula::ttrue()) == QFormula::ttrue());
+  CHECK(tightened(hir, QFormula::ffalse()) == QFormula::ffalse());
+}
+
+void test_tightened_inequality_ne_eq() {
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "region A\n"
+      "  select jets[0].pt > 0\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "tight2.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  QuantityId pt = find_jets0_pt(hir, ext);
+  CHECK(pt.id != 0xFFFFFFFFu);
+  if (pt.id == 0xFFFFFFFFu) return;
+  auto jets = hir.collection_of("jets");
+  if (!jets) return;
+  QuantityId sz = hir.table.intern_quantity(Quantity::size(*jets));
+  auto eps = Rat::from_decimal_f64(WITNESS_EPS);
+  CHECK(eps.has_value());
+  if (!eps) return;
+
+  QFormula gt = QFormula::of_atom(LinAtom::single(pt, Rel::Gt, Rat::zero()));
+  QFormula t_gt = tightened(hir, gt);
+  CHECK(t_gt.kind == QFormula::Kind::Atom);
+  CHECK(t_gt.atom.rel() == Rel::Gt);
+  CHECK(t_gt.atom.constant() == *eps);
+
+  QFormula le = QFormula::of_atom(LinAtom::single(pt, Rel::Le, Rat::from_i64(100)));
+  QFormula t_le = tightened(hir, le);
+  CHECK(t_le.kind == QFormula::Kind::Atom);
+  CHECK(t_le.atom.rel() == Rel::Le);
+  CHECK(t_le.atom.constant() == Rat::from_i64(100) - *eps);
+
+  QFormula eq = QFormula::of_atom(LinAtom::single(pt, Rel::Eq, Rat::from_i64(5)));
+  CHECK(tightened(hir, eq) == eq);
+
+  QFormula ne = QFormula::of_atom(LinAtom::single(pt, Rel::Ne, Rat::from_i64(5)));
+  QFormula t_ne = tightened(hir, ne);
+  CHECK(t_ne.kind == QFormula::Kind::Or);
+  CHECK(t_ne.items.size() == 2);
+  if (t_ne.items.size() == 2) {
+    CHECK(t_ne.items[0].kind == QFormula::Kind::Atom);
+    CHECK(t_ne.items[0].atom.rel() == Rel::Le);
+    CHECK(t_ne.items[0].atom.constant() == Rat::from_i64(5) - *eps);
+    CHECK(t_ne.items[1].kind == QFormula::Kind::Atom);
+    CHECK(t_ne.items[1].atom.rel() == Rel::Ge);
+    CHECK(t_ne.items[1].atom.constant() == Rat::from_i64(5) + *eps);
+  }
+
+  QFormula size_le = QFormula::of_atom(LinAtom::single(sz, Rel::Le, Rat::one()));
+  QFormula mixed = QFormula::of_and({gt, size_le});
+  QFormula t_mixed = tightened(hir, mixed);
+  CHECK(t_mixed.kind == QFormula::Kind::And);
+  CHECK(t_mixed.items.size() == 2);
+  if (t_mixed.items.size() == 2) {
+    CHECK(t_mixed.items[0] == t_gt);
+    CHECK(t_mixed.items[1] == size_le);
+  }
+}
+
+void test_refined_model_dphi_zero_and_size_cap() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (refined_model)\n";
+    CHECK(true);
+    return;
+  }
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "region A\n"
+      "  select jets[0].pt > 50\n"
+      "  select dPhi(jets[0], jets[1]) < 3\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "refine.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  QuantityId pt = find_jets0_pt(hir, ext);
+  QuantityId dphi = find_first_dphi(hir);
+  CHECK(pt.id != 0xFFFFFFFFu);
+  CHECK(dphi.id != 0xFFFFFFFFu);
+  if (pt.id == 0xFFFFFFFFu || dphi.id == 0xFFFFFFFFu) return;
+  auto jets = hir.collection_of("jets");
+  CHECK(jets.has_value());
+  if (!jets) return;
+  QuantityId sz = hir.table.intern_quantity(Quantity::size(*jets));
+
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(pt, QSort::Real);
+  s.declare(dphi, QSort::Real);
+  s.declare(sz, QSort::Int);
+  s.assert_formula(QFormula::of_atom(LinAtom::single(pt, Rel::Gt, Rat::from_i64(50))),
+                   std::nullopt);
+  s.assert_formula(QFormula::of_atom(LinAtom::single(dphi, Rel::Lt, Rat::from_i64(3))),
+                   std::nullopt);
+  auto sat = s.check(std::chrono::milliseconds{10000});
+  CHECK(sat.is_sat());
+  if (!sat.is_sat()) return;
+
+  std::set<QuantityId> mentioned{pt, dphi, sz};
+  auto model = refined_model(s, hir, mentioned, {}, std::chrono::milliseconds{10000}, nullptr);
+  CHECK(model.has_value());
+  if (!model) return;
+  auto dv = model->get(dphi);
+  CHECK(dv.has_value());
+  if (dv) CHECK(*dv == Rat::zero());
+  auto sv = model->get(sz);
+  CHECK(sv.has_value());
+  if (sv) {
+    auto cap = Rat::from_decimal_f64(MAX_REALIZED_F);
+    CHECK(cap.has_value());
+    if (cap) CHECK(*sv <= *cap);
+    // jets[1] requires size > 1
+    CHECK(*sv > Rat::one());
+  }
+}
+
+void test_refined_overlap_still_proven() {
+  if (!adl2::solver::subprocess_available("z3")) {
+    std::cerr << "SKIP: no z3 on PATH (refined overlap)\n";
+    CHECK(true);
+    return;
+  }
+  // Presence-bearing jets[0].pt + an exact size bound. Tightening Size/Present
+  // would UNSAT the interior wish; the pair must still prove overlap.
+  const char* src =
+      "object jets\n"
+      "  take Jet\n"
+      "region High\n"
+      "  select size(jets) >= 1\n"
+      "  select size(jets) <= 1\n"
+      "  select jets[0].pt > 100\n"
+      "region Mid\n"
+      "  select size(jets) >= 1\n"
+      "  select jets[0].pt > 30\n";
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(src, "refine_ov.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::SubprocessZ3;
+  Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+  const PairReport* hm = find_pair(r, "High", "Mid");
+  CHECK(hm != nullptr);
+  if (hm) {
+    CHECK(hm->kind == VerdictKind::ProvenOverlapping);
+    CHECK(hm->witness_validated.has_value() && *hm->witness_validated);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -605,6 +830,10 @@ int main() {
   test_size_hard_filter_is_not_a_subset_of_tautology();
   test_reject_size_hard_filter_is_not_a_subset();
   test_solver_core_reason_names_source_spans();
+  test_tightened_size_and_present_stay_exact();
+  test_tightened_inequality_ne_eq();
+  test_refined_model_dphi_zero_and_size_cap();
+  test_refined_overlap_still_proven();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

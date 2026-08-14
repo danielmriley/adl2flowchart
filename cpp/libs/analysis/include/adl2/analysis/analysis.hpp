@@ -23,7 +23,10 @@
 /// rows read back from the validated event (pT-sort can permute model
 /// indices). Dual-encoding Over/Under polarity is the production contract —
 /// do not collapse it. `assert_overs` / `assert_unders` / `region_subset`
-/// take the projection vectors (ADR-004). Size of a collection whose filter
+/// take the projection vectors (ADR-004). SAT-side overlap uses smash2
+/// `tightened` + `refined_model` (ε-interior / dPhi=0 / size-cap wishes)
+/// before witness re-validation; a failed refine falls back to the raw
+/// model and cannot fabricate PROVEN DISJOINT. Size of a collection whose filter
 /// (or combination cut) is out of fragment is Hard in the encoder
 /// (SOUNDNESS_PROOF §8 1b): a tautology such as `size(weird) >= 0` must not
 /// discharge a subset proof. Subset sample/refute treats not-In (Out *or*
@@ -40,12 +43,16 @@
 #include "adl2/analysis/interval.hpp"
 #include "adl2/analysis/report.hpp"
 #include "adl2/analysis/witness.hpp"
+#include "adl2/formula/formula.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
 #include "adl2/solver/solver.hpp"
 
 #include <chrono>
+#include <optional>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace adl2::analysis {
 
@@ -95,6 +102,29 @@ Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
 /// unknown with a decided disjoint query is POSSIBLY.
 void classify_overlap_non_sat(PairReport& pr, const adl2::solver::SatResult& overlap,
                               const adl2::solver::SatResult& disjoint);
+
+/// Interior-model ε (2⁻²⁰). Dyadic so tightened bounds stay f64-exact.
+/// Smash2 `WITNESS_EPS`.
+inline constexpr double WITNESS_EPS = 9.5367431640625e-7;
+
+/// ε-tightened under-formula (smash2 `Engine::tightened`). Inequalities
+/// move `WITNESS_EPS` inside the bound; `≠` becomes a two-sided gap.
+/// Size and Present atoms stay exact — tightening `p ≥ 1` to `p ≥ 1+ε`
+/// UNSATs the interior wish against PRES `p ≤ 1`. Any model of the result
+/// satisfies the original.
+adl2::formula::QFormula tightened(const adl2::sema::Hir& hir,
+                                  const adl2::formula::QFormula& f);
+
+/// Layered SAT-side model selection (smash2 `Engine::refined_model`).
+/// Wishes: dPhi=0, ε-interior, size > max mentioned front index,
+/// size ≤ `MAX_REALIZED`, dPhi in ±3.140625, `reduce.*` collections at cap.
+/// Each layer is dropped on UNSAT/Unknown; the raw model is the floor.
+/// Spawn/error checks are counted on `failures` when non-null.
+std::optional<adl2::solver::Model> refined_model(
+    adl2::solver::Solver& solver, const adl2::sema::Hir& hir,
+    const std::set<adl2::sema::QuantityId>& mentioned,
+    const std::vector<adl2::formula::QFormula>& interior,
+    std::chrono::milliseconds timeout, Report* failures = nullptr);
 
 inline Report analyze_hir(adl2::sema::Hir& hir, const adl2::sema::ExtDecls& ext,
                           const AnalysisOptions& opts) {

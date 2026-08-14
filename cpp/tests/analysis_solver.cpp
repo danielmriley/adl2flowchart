@@ -25,6 +25,9 @@ using adl2::analysis::SolverChoice;
 using adl2::analysis::WITNESS_EPS;
 using adl2::analysis::VerdictKind;
 using adl2::analysis::classify_overlap_non_sat;
+using adl2::analysis::verdict_kind_human;
+using adl2::analysis::verdict_kind_json;
+using adl2::analysis::verdict_kind_short;
 using adl2::analysis::refined_model;
 using adl2::analysis::tightened;
 using adl2::formula::LinAtom;
@@ -635,6 +638,38 @@ QuantityId find_first_dphi(const Hir& hir) {
   return QuantityId{0xFFFFFFFFu};
 }
 
+void test_short_human_vocab() {
+  CHECK(std::string(verdict_kind_short(VerdictKind::ProvenDisjoint)) == "DISJOINT");
+  CHECK(std::string(verdict_kind_short(VerdictKind::ProvenOverlapping)) == "OVERLAPS");
+  CHECK(std::string(verdict_kind_short(VerdictKind::CandidateOverlapping)) == "NOT PROVED");
+  CHECK(std::string(verdict_kind_short(VerdictKind::CandidateDisjoint)) == "NOT PROVED");
+  CHECK(std::string(verdict_kind_short(VerdictKind::PossiblyOverlapping)) == "NOT PROVED");
+  CHECK(std::string(verdict_kind_short(VerdictKind::Unknown)) == "NOT PROVED");
+  CHECK(std::string(verdict_kind_human(VerdictKind::ProvenDisjoint)) == "PROVEN DISJOINT");
+  CHECK(std::string(verdict_kind_json(VerdictKind::ProvenDisjoint)) == "proven_disjoint");
+  CHECK(std::string(verdict_kind_json(VerdictKind::PossiblyOverlapping)) ==
+        "possibly_overlapping");
+
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kSrc, "jets.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::NoSolver;
+  Report r = adl2::analysis::analyze_hir(hir, kSrc, ext, opts);
+  adl2::analysis::RenderOptions full;
+  std::string human = r.render_default(full);
+  CHECK(human.find("PROVEN DISJOINT") != std::string::npos);
+  CHECK(human.find("\n  DISJOINT") == std::string::npos);
+  adl2::analysis::RenderOptions brief;
+  brief.short_human = true;
+  std::string short_h = r.render_default(brief);
+  CHECK(short_h.find("DISJOINT") != std::string::npos);
+  CHECK(short_h.find("PROVEN DISJOINT") == std::string::npos);
+  std::string js = r.to_json();
+  CHECK(js.find("proven_disjoint") != std::string::npos);
+  CHECK(js.find("\"DISJOINT\"") == std::string::npos);
+}
+
 void test_tightened_size_and_present_stay_exact() {
   const char* src =
       "object jets\n"
@@ -830,6 +865,7 @@ int main() {
   test_size_hard_filter_is_not_a_subset_of_tautology();
   test_reject_size_hard_filter_is_not_a_subset();
   test_solver_core_reason_names_source_spans();
+  test_short_human_vocab();
   test_tightened_size_and_present_stay_exact();
   test_tightened_inequality_ne_eq();
   test_refined_model_dphi_zero_and_size_cap();

@@ -51,8 +51,8 @@ void print_help(const char* argv0) {
       << "  " << argv0 << " dot [--ast] [--verbose] <file.adl>\n"
       << "  " << argv0 << " verify [--no-solver] [--no-certify] [--no-refute-gate]\n"
          "          [--cross] [--combine DIR] [--recon=all|related] [--dump-verdicts]\n"
-         "          [--json] [--explain] [--matrix] [--fail-on=KINDS]\n"
-         "          <file.adl|dir>...\n"
+         "          [--json] [--explain] [--matrix] [--human=full|short]\n"
+         "          [--fail-on=KINDS] <file.adl|dir>...\n"
       << "  " << argv0 << " objects <file.adl>\n"
       << "  " << argv0 << " ingest --profile NAME [-o events.jsonl] [--emit-script DIR] [events.root]\n"
       << "\n"
@@ -74,7 +74,10 @@ void print_help(const char* argv0) {
       << "`--combine DIR` writes one smash2-combine/2 bundle per certified\n"
       << "PROVEN DISJOINT pair; re-check offline with smash2_cpp-recheck.\n"
       << "Default stdout is the human report; `--dump-verdicts` prints one\n"
-      << "`A vs B: KIND` line. Directories expand to sorted `*.adl` files.\n"
+      << "`A vs B: KIND` line. `--human=short` prints DISJOINT / OVERLAPS /\n"
+      << "NOT PROVED; JSON `kind` and `--fail-on` stay the six-word lattice.\n"
+      << "`--explain` always uses the six-word words. Directories expand to\n"
+      << "sorted `*.adl` files.\n"
       << "\n"
       << "Modular libs (see cpp/MODULES.md): cli wires syntax/sema/formula/\n"
       << "interp/axioms/viz/analysis/rootfile/ingest; no core logic in the executable. Rust smash2 is the\n"
@@ -755,7 +758,8 @@ std::vector<std::string> unit_labels(const std::vector<std::string>& files) {
 
 int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::string& name,
                    const adl2::sema::ExtDecls& ext, const adl2::analysis::AnalysisOptions& opts,
-                   bool dump_only, bool json, bool explain, bool matrix, bool verbose,
+                   bool dump_only, bool json, bool explain, bool matrix, bool short_human,
+                   bool verbose,
                    bool no_solver, bool multi, bool first, std::string& json_out,
                    const std::string* combine_dir) {
   auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
@@ -784,6 +788,7 @@ int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::stri
     adl2::analysis::RenderOptions ropts;
     ropts.color = stdout_color();
     ropts.force_matrix = matrix;
+    ropts.short_human = short_human && !explain;
     if (explain) {
       std::cout << report.render_explain(ropts);
     } else {
@@ -800,7 +805,7 @@ int run_one_verify(adl2::sema::Hir& hir, const std::string& src, const std::stri
 
 int run_cross(const std::vector<std::string>& files, const std::vector<std::string>& labels,
               const adl2::sema::ExtDecls& ext, adl2::analysis::AnalysisOptions opts, bool dump_only,
-              bool json, bool explain, bool matrix, bool verbose, bool no_solver,
+              bool json, bool explain, bool matrix, bool short_human, bool verbose, bool no_solver,
               adl2::analysis::ReconFilter recon_filter, const std::string* combine_dir) {
   std::vector<adl2::sema::Hir> hirs;
   hirs.reserve(files.size());
@@ -848,6 +853,7 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
     ropts.color = stdout_color();
     ropts.force_matrix = matrix;
     ropts.recon = recon_filter;
+    ropts.short_human = short_human && !explain;
     if (explain) {
       std::cout << report.render_explain(ropts);
     } else {
@@ -864,7 +870,7 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
 
 int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_certify,
                bool no_refute_gate, bool dump_only, bool json, bool explain, bool matrix,
-               bool verbose, bool cross, const std::string& fail_on_s,
+               bool short_human, bool verbose, bool cross, const std::string& fail_on_s,
                const std::string& recon_s, const std::string& combine_dir) {
   bool had_dir = false;
   for (const auto& p : inputs) {
@@ -911,8 +917,8 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
     if (c) return c;
   }
   if (cross) {
-    return run_cross(files, labels, ext, opts, dump_only, json, explain, matrix, verbose, no_solver,
-                     recon_filter, combine_ptr);
+    return run_cross(files, labels, ext, opts, dump_only, json, explain, matrix, short_human,
+                     verbose, no_solver, recon_filter, combine_ptr);
   }
   int worst = 0;
   std::vector<std::string> json_reports;
@@ -933,8 +939,9 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
       continue;
     }
     std::string json_out;
-    int code = run_one_verify(hir, src, name, ext, opts, dump_only, json, explain, matrix, verbose,
-                              no_solver, multi, i == 0, json_out, combine_ptr);
+    int code = run_one_verify(hir, src, name, ext, opts, dump_only, json, explain, matrix,
+                              short_human, verbose, no_solver, multi, i == 0, json_out,
+                              combine_ptr);
     if (json) json_reports.push_back(std::move(json_out));
     worst = std::max(worst, code);
   }
@@ -1231,6 +1238,7 @@ int main(int argc, char** argv) {
     bool json = false;
     bool explain = false;
     bool matrix = false;
+    bool short_human = false;
     bool cross = false;
     std::string fail_on;
     std::string recon;
@@ -1274,6 +1282,25 @@ int main(int argc, char** argv) {
         explain = true;
       } else if (arg == "--matrix") {
         matrix = true;
+      } else if (arg == "--human" || arg.compare(0, 8, "--human=") == 0) {
+        std::string val;
+        if (arg == "--human") {
+          if (i + 1 >= argc) {
+            std::cerr << "error: --human requires full or short\n";
+            return 2;
+          }
+          val = argv[++i];
+        } else {
+          val = arg.substr(8);
+        }
+        if (val == "short") {
+          short_human = true;
+        } else if (val == "full") {
+          short_human = false;
+        } else {
+          std::cerr << "error: --human must be full or short\n";
+          return 2;
+        }
       } else if (arg == "--verbose" || arg == "-v") {
         verbose = true;
       } else if (arg.compare(0, 10, "--fail-on=") == 0) {
@@ -1301,7 +1328,7 @@ int main(int argc, char** argv) {
       return 2;
     }
     return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, json, explain, matrix,
-                      verbose, cross, fail_on, recon, combine_dir);
+                      short_human, verbose, cross, fail_on, recon, combine_dir);
   }
   std::cerr << "error: unknown command '" << cmd << "'\n";
   print_help(argv[0]);

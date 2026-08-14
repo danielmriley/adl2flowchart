@@ -59,6 +59,8 @@ enum class VerdictKind {
 };
 
 const char* verdict_kind_human(VerdictKind k);
+/// Three-class display: DISJOINT / OVERLAPS / NOT PROVED.
+const char* verdict_kind_short(VerdictKind k);
 /// serde `snake_case` (`proven_disjoint`, …).
 const char* verdict_kind_json(VerdictKind k);
 
@@ -208,6 +210,10 @@ struct RenderOptions {
   bool color = false;
   bool force_matrix = false;
   ReconFilter recon = ReconFilter::All;
+  /// Collapse the six-word lattice to DISJOINT / OVERLAPS / NOT PROVED
+  /// (`--human=short`). JSON `kind` and `--fail-on` stay the six-word
+  /// values. Default is smash2-compatible full words.
+  bool short_human = false;
 };
 
 struct Report {

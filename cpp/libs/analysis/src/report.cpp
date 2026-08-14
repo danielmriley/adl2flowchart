@@ -51,6 +51,21 @@ const char* verdict_kind_human(VerdictKind k) {
   return "?";
 }
 
+const char* verdict_kind_short(VerdictKind k) {
+  switch (k) {
+    case VerdictKind::ProvenDisjoint:
+      return "DISJOINT";
+    case VerdictKind::ProvenOverlapping:
+      return "OVERLAPS";
+    case VerdictKind::CandidateOverlapping:
+    case VerdictKind::CandidateDisjoint:
+    case VerdictKind::PossiblyOverlapping:
+    case VerdictKind::Unknown:
+      return "NOT PROVED";
+  }
+  return "NOT PROVED";
+}
+
 const char* verdict_kind_json(VerdictKind k) {
   switch (k) {
     case VerdictKind::ProvenDisjoint:

@@ -19,5 +19,7 @@ flowchart/AST DOT. `objects` prints `adl2::sema::object_table`. `verify`
 defaults to solver + certify on; `--no-certify` skips Farkas replay
 (uncertified solver-UNSAT is CANDIDATE, not PROVEN); `--dump-verdicts` is
 the compact `A vs B: KIND` form; default stdout is the human report
-(`--json` / `--explain` / `--matrix` / `--fail-on`). `ingest --profile`
+(`--json` / `--explain` / `--matrix` / `--human=short` / `--fail-on`).
+`--human=short` prints DISJOINT / OVERLAPS / NOT PROVED; JSON is unchanged.
+`ingest --profile`
 writes JSONL and/or `to_jsonl.py`.

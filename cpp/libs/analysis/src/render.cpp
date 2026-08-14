@@ -706,7 +706,11 @@ struct Group {
   std::vector<std::size_t> members;
 };
 
-void render_pairwise(const Report& report, const Style& st,
+const char* display_kind(VerdictKind k, bool short_human) {
+  return short_human ? verdict_kind_short(k) : verdict_kind_human(k);
+}
+
+void render_pairwise(const Report& report, const Style& st, bool short_human,
                      const std::set<std::string>& empty_set, std::ostringstream& s) {
   std::vector<std::size_t> trivial;
   std::vector<Group> groups;
@@ -753,13 +757,14 @@ void render_pairwise(const Report& report, const Style& st,
     std::string quant = trivial.size() == report.pairwise.size() ? "all " : "";
     s << "  " << quant << trivial.size() << " pair" << (trivial.size() == 1 ? "" : "s")
       << " involving a provably-empty region — "
-      << st.verdict(VerdictKind::ProvenDisjoint, "PROVEN DISJOINT")
+      << st.verdict(VerdictKind::ProvenDisjoint,
+                    display_kind(VerdictKind::ProvenDisjoint, short_human))
       << " (trivially: one side selects no events)\n";
   }
   auto subset_tag_opt = subset_trust_tag(report);
   std::string subset_tag = subset_tag_opt ? (" " + *subset_tag_opt) : "";
   for (const auto& g : groups) {
-    std::string verdict = st.verdict(g.kind, verdict_kind_human(g.kind));
+    std::string verdict = st.verdict(g.kind, display_kind(g.kind, short_human));
     if (g.trust) verdict += " " + *g.trust;
     const char* note = subset_note(g.subset_a, g.subset_b);
     const char* sub_tag =
@@ -920,7 +925,7 @@ std::string Report::render_default(const RenderOptions& opts) const {
   render_findings(*this, st, empty_regions, s);
   render_regions(*this, st, s);
   render_matrix(*this, st, empty_set, opts.force_matrix, s);
-  render_pairwise(*this, st, empty_set, s);
+  render_pairwise(*this, st, opts.short_human, empty_set, s);
   render_bins(*this, st, s);
   render_reconciliation(*this, st, opts.recon, s);
 

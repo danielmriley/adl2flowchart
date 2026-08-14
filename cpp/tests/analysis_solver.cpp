@@ -11,7 +11,10 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <set>
 #include <string>
 
@@ -20,10 +23,12 @@ using adl2::analysis::CoverageStatus;
 using adl2::analysis::EmptyStatus;
 using adl2::analysis::MAX_REALIZED_F;
 using adl2::analysis::PairReport;
+using adl2::analysis::ProofPath;
 using adl2::analysis::Report;
 using adl2::analysis::SolverChoice;
 using adl2::analysis::WITNESS_EPS;
 using adl2::analysis::VerdictKind;
+using adl2::analysis::apply_interval_certify_demotion;
 using adl2::analysis::classify_overlap_non_sat;
 using adl2::analysis::verdict_kind_human;
 using adl2::analysis::verdict_kind_json;
@@ -668,6 +673,10 @@ void test_short_human_vocab() {
   std::string js = r.to_json();
   CHECK(js.find("proven_disjoint") != std::string::npos);
   CHECK(js.find("\"DISJOINT\"") == std::string::npos);
+  adl2::analysis::RenderOptions expl;
+  expl.short_human = true;
+  std::string explained = r.render_explain(expl);
+  CHECK(explained.find("PROVEN DISJOINT") != std::string::npos);
 }
 
 void test_tightened_size_and_present_stay_exact() {
@@ -849,6 +858,139 @@ void test_refined_overlap_still_proven() {
   }
 }
 
+void test_interval_certify_demotion_policy() {
+  CHECK(AnalysisOptions{}.demote_uncertified_interval == false);
+
+  PairReport pr;
+  pr.a = "High";
+  pr.b = "Low";
+  pr.kind = VerdictKind::ProvenDisjoint;
+  pr.proof_path = ProofPath::Interval;
+  pr.reason = "intervals cannot intersect";
+  CHECK(!apply_interval_certify_demotion(pr, false));
+  CHECK(pr.kind == VerdictKind::ProvenDisjoint);
+  CHECK(!pr.certified.has_value());
+
+  CHECK(apply_interval_certify_demotion(pr, true));
+  CHECK(pr.kind == VerdictKind::CandidateDisjoint);
+  CHECK(pr.certified.has_value() && *pr.certified == false);
+  CHECK(pr.proof_path.has_value() && *pr.proof_path == ProofPath::Interval);
+  CHECK(pr.reason.find("candidate, not a claim") != std::string::npos);
+  CHECK(!apply_interval_certify_demotion(pr, true));
+
+  PairReport certified;
+  certified.kind = VerdictKind::ProvenDisjoint;
+  certified.proof_path = ProofPath::Interval;
+  certified.certified = true;
+  CHECK(!apply_interval_certify_demotion(certified, true));
+  CHECK(certified.kind == VerdictKind::ProvenDisjoint);
+
+  PairReport solver_pd;
+  solver_pd.kind = VerdictKind::ProvenDisjoint;
+  solver_pd.proof_path = ProofPath::SolverCore;
+  CHECK(!apply_interval_certify_demotion(solver_pd, true));
+  CHECK(solver_pd.kind == VerdictKind::ProvenDisjoint);
+
+  PairReport overlap;
+  overlap.kind = VerdictKind::ProvenOverlapping;
+  overlap.proof_path = ProofPath::Interval;
+  CHECK(!apply_interval_certify_demotion(overlap, true));
+  CHECK(overlap.kind == VerdictKind::ProvenOverlapping);
+}
+
+void test_interval_certify_demotion_default_keeps_pd() {
+  ExtDecls ext = ExtDecls::legacy();
+  Hir hir = analyze_str(kSrc, "jets.adl", ext);
+  CHECK(!adl2::sema::has_errors(hir.diags));
+
+  AnalysisOptions off;
+  off.solver = SolverChoice::NoSolver;
+  off.certify = true;
+  CHECK(off.demote_uncertified_interval == false);
+  Report r_off = adl2::analysis::analyze_hir(hir, kSrc, ext, off);
+  const PairReport* hl_off = find_pair(r_off, "High", "Low");
+  CHECK(hl_off != nullptr);
+  if (hl_off) {
+    CHECK(hl_off->kind == VerdictKind::ProvenDisjoint);
+    CHECK(hl_off->proof_path.has_value() && *hl_off->proof_path == ProofPath::Interval);
+    CHECK(hl_off->certified.has_value() && *hl_off->certified);
+  }
+
+  Hir hir2 = analyze_str(kSrc, "jets.adl", ext);
+  AnalysisOptions on;
+  on.solver = SolverChoice::NoSolver;
+  on.certify = true;
+  on.demote_uncertified_interval = true;
+  Report r_on = adl2::analysis::analyze_hir(hir2, kSrc, ext, on);
+  const PairReport* hl_on = find_pair(r_on, "High", "Low");
+  CHECK(hl_on != nullptr);
+  if (hl_on) {
+    CHECK(hl_on->kind == VerdictKind::ProvenDisjoint);
+    CHECK(hl_on->certified.has_value() && *hl_on->certified);
+  }
+
+  std::size_t interval_pd = 0;
+  std::size_t would_drop = 0;
+  for (const auto& p : r_off.pairwise) {
+    if (p.kind != VerdictKind::ProvenDisjoint) continue;
+    if (!p.proof_path || *p.proof_path != ProofPath::Interval) continue;
+    ++interval_pd;
+    if (p.certified != true) ++would_drop;
+  }
+  CHECK(interval_pd >= 1);
+  CHECK(would_drop == 0);
+}
+
+void measure_interval_certify_corpus() {
+  auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+  auto examples = root / "examples";
+  if (!std::filesystem::exists(examples)) {
+    std::cerr << "SKIP: examples/ not found for interval-certify measure\n";
+    CHECK(true);
+    return;
+  }
+  ExtDecls ext = ExtDecls::legacy();
+  AnalysisOptions opts;
+  opts.solver = SolverChoice::NoSolver;
+  opts.certify = true;
+  opts.sample_gate = 0;
+  opts.refute_gate = false;
+  std::size_t files = 0;
+  std::size_t skipped = 0;
+  std::size_t interval_pd = 0;
+  std::size_t certified = 0;
+  std::size_t would_drop = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(examples)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".adl") continue;
+    std::ifstream in(entry.path());
+    std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Hir hir = analyze_str(src, entry.path().filename().string(), ext);
+    if (adl2::sema::has_errors(hir.diags)) {
+      ++skipped;
+      continue;
+    }
+    ++files;
+    Report r = adl2::analysis::analyze_hir(hir, src, ext, opts);
+    for (const auto& p : r.pairwise) {
+      if (p.kind != VerdictKind::ProvenDisjoint) continue;
+      if (!p.proof_path || *p.proof_path != ProofPath::Interval) continue;
+      ++interval_pd;
+      if (p.certified == true) {
+        ++certified;
+      } else {
+        ++would_drop;
+        std::cerr << "interval-uncertified: " << entry.path().lexically_relative(root).string()
+                  << " " << p.a << " vs " << p.b << "\n";
+      }
+    }
+  }
+  std::cerr << "interval-certify measure (examples/**/*.adl, no-solver): files=" << files
+            << " skipped=" << skipped << " interval_pd=" << interval_pd
+            << " certified=" << certified << " would_drop=" << would_drop << "\n";
+  CHECK(files > 0);
+  CHECK(would_drop == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -870,6 +1012,9 @@ int main() {
   test_tightened_inequality_ne_eq();
   test_refined_model_dphi_zero_and_size_cap();
   test_refined_overlap_still_proven();
+  test_interval_certify_demotion_policy();
+  test_interval_certify_demotion_default_keeps_pd();
+  measure_interval_certify_corpus();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";
   return g_fails == 0 ? 0 : 1;
 }

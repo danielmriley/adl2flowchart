@@ -538,19 +538,25 @@ void push_bundle(CombineAcc& acc, const std::string& region_a, const std::string
   }
 }
 
-/// Interval-path certification. Disagreement is a diagnostic, never a demotion.
+/// Interval-path certification. Disagreement is a diagnostic; demotion
+/// happens only when `demote` is set (smash2 default: leave the verdict).
 void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& parts,
-                           const RegionCtx& ca, const RegionCtx& cb, bool certify, Report& report,
-                           CombineAcc& acc) {
+                           const RegionCtx& ca, const RegionCtx& cb, bool certify, bool demote,
+                           Report& report, CombineAcc& acc) {
   if (!certify) return;
+  const char* remainder =
+      demote ? "the pair is demoted to CANDIDATE DISJOINT."
+             : "the verdict is left as it was and no certification is claimed.";
+  auto fail = [&](const std::string& why) {
+    file_contradiction(report, "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
+                                   " vs " + pr.b + ": " + why +
+                                   ". The interval layer and the replay kernel disagree — one "
+                                   "of them is wrong; " +
+                                   remainder);
+    apply_interval_certify_demotion(pr, demote);
+  };
   if (parts.empty()) {
-    file_contradiction(report,
-                       "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
-                           " vs " + pr.b +
-                           ": the interval layer reported no refuting atoms. The "
-                           "interval layer and the replay kernel disagree — one of them "
-                           "is wrong; the verdict is left as it was and no certification "
-                           "is claimed.");
+    fail("the interval layer reported no refuting atoms");
     return;
   }
   std::vector<std::pair<AssertName, QFormula>> whole;
@@ -567,13 +573,7 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
     auto f = over_of(ca.overs, name);
     if (!f) f = over_of(cb.overs, name);
     if (!f) {
-      file_contradiction(report,
-                         "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
-                             " vs " + pr.b + ": no over-projection recorded for assert " +
-                             name.value +
-                             ". The interval layer and the replay kernel disagree — one "
-                             "of them is wrong; the verdict is left as it was and no "
-                             "certification is claimed.");
+      fail("no over-projection recorded for assert " + name.value);
       return;
     }
     whole.emplace_back(name, *f);
@@ -594,14 +594,7 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
   std::vector<std::pair<AssertName, QFormula>> lean;
   for (const auto& p : parts) {
     if (p.kind == RefutingPart::Kind::Whole) {
-      file_contradiction(report,
-                         "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
-                             " vs " + pr.b +
-                             ": the kernel did not accept the constant-false cut " +
-                             p.src().value +
-                             ". The interval layer and the replay kernel disagree — one "
-                             "of them is wrong; the verdict is left as it was and no "
-                             "certification is claimed.");
+      fail("the kernel did not accept the constant-false cut " + p.src().value);
       return;
     }
     lean.emplace_back(p.src(), QFormula::of_atom(p.atom));
@@ -619,13 +612,7 @@ void certify_interval_pair(PairReport& pr, const std::vector<RefutingPart>& part
     push_bundle(acc, pr.a, pr.b, payload, report);
     return;
   }
-  file_contradiction(report,
-                     "INTERVAL CERTIFICATE unavailable for PROVEN DISJOINT " + pr.a +
-                         " vs " + pr.b +
-                         ": the replay kernel did not accept the bound pair the "
-                         "interval layer refuted on. The interval layer and the replay "
-                         "kernel disagree — one of them is wrong; the verdict is left "
-                         "as it was and no certification is claimed.");
+  fail("the replay kernel did not accept the bound pair the interval layer refuted on");
 }
 
 /// `None` = certify off; `Some(false)` = fail closed (empty/unknown core).
@@ -683,6 +670,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
                                    const Interp& interp, const RegionEnc& ra, const RegionEnc& rb,
                                    const RegionCtx& ca, const RegionCtx& cb, Solver* solver,
                                    std::chrono::milliseconds timeout, Report& report, bool certify,
+                                   bool demote_uncertified_interval,
                                    const adl2::axioms::AxiomSet* axioms,
                                    const std::vector<std::pair<AssertName, QFormula>>* recon_facts,
                                    CombineAcc& acc) {
@@ -703,7 +691,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
        << " requires " << d->b.human();
     pr.reason = os.str();
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, d->parts, ca, cb, certify, report, acc);
+    certify_interval_pair(pr, d->parts, ca, cb, certify, demote_uncertified_interval, report, acc);
     return pr;
   }
   if (auto empty_a = ca.intervals.self_empty()) {
@@ -711,7 +699,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + ra.name + " provably selects no events (" + empty_a->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, empty_a->parts(), ca, cb, certify, report, acc);
+    certify_interval_pair(pr, empty_a->parts(), ca, cb, certify, demote_uncertified_interval, report,
+                          acc);
     return pr;
   }
   if (auto empty_b = cb.intervals.self_empty()) {
@@ -719,7 +708,8 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
     pr.reason = "region " + rb.name + " provably selects no events (" + empty_b->human() +
                 "), so the pair cannot intersect";
     pr.proof_path = ProofPath::Interval;
-    certify_interval_pair(pr, empty_b->parts(), ca, cb, certify, report, acc);
+    certify_interval_pair(pr, empty_b->parts(), ca, cb, certify, demote_uncertified_interval, report,
+                          acc);
     return pr;
   }
 
@@ -1701,7 +1691,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
         dummy.a = r.name;
         dummy.b = r.name;
         CombineAcc no_bundle;
-        certify_interval_pair(dummy, empty->parts(), ctxs[i], ctxs[i], true, report, no_bundle);
+        certify_interval_pair(dummy, empty->parts(), ctxs[i], ctxs[i], true, false, report,
+                              no_bundle);
       }
     } else if (solver) {
       solver->push();
@@ -1747,7 +1738,8 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     for (std::size_t j = i + 1; j < unit.regions.size(); ++j) {
       PairReport pr = interval_or_solver_pair(
           hir, ext, interp, unit.regions[i], unit.regions[j], ctxs[i], ctxs[j], solver,
-          opts.timeout, report, opts.certify, solver ? &axioms : nullptr, &recon_run.facts, acc);
+          opts.timeout, report, opts.certify, opts.demote_uncertified_interval,
+          solver ? &axioms : nullptr, &recon_run.facts, acc);
       gate_pair(pr, unit.regions[i].idx, unit.regions[j].idx, interp, gate_events, refute_probes,
                 report, gate_refutations, refute_refutations);
       report.pairwise.push_back(std::move(pr));

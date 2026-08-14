@@ -85,6 +85,12 @@ struct AnalysisOptions {
   /// Portable `smash2-combine/2` bundles for certified PROVEN DISJOINT pairs.
   /// Off by default (bundling clones the certified formula set per pair).
   bool combine = false;
+  /// Opt-in only. When true AND `certify` is on, an interval-path PROVEN
+  /// DISJOINT whose Farkas replay fails is rewritten to CANDIDATE DISJOINT.
+  /// Default false matches smash2: the disagreement is a diagnostic and the
+  /// interval verdict stands. CLI `--demote-uncertified-interval`. Cannot
+  /// invent PROVEN DISJOINT. Bin-disjoint and empty-status stay diagnostic.
+  bool demote_uncertified_interval = false;
 };
 
 /// Encode `hir` and run interval + optional solver pairwise. Does not parse.
@@ -95,10 +101,35 @@ struct AnalysisOptions {
 /// disjointness/emptiness is independently replayed; `Some(false)` demotes
 /// the claim to CANDIDATE. Pairwise subset flags are `UNSAT(Ax ∧ A⁺ ∧ ¬(B⁻))`
 /// with `¬(B⁻)` one Or of NNF negations (smash2 `negated_under`); uncertified
-/// solver-UNSAT is not a subset claim. Interval-path disagreements are diagnostics, not
-/// demotions. `src` is the unit text used for cut line-text.
+/// solver-UNSAT is not a subset claim. Interval-path disagreements are
+/// diagnostics, not demotions, unless `demote_uncertified_interval` is set.
+/// `src` is the unit text used for cut line-text.
 Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
                    const adl2::sema::ExtDecls& ext, const AnalysisOptions& opts);
+
+/// Policy hook for the opt-in interval-certify demotion path.
+/// When `demote` is true and `pr` is an interval-path PROVEN DISJOINT that
+/// is not `certified == true`, rewrite to CANDIDATE DISJOINT. No-op when
+/// `demote` is false, the pair is already certified, or the path is not
+/// interval. Cannot invent PROVEN DISJOINT. Call after an interval certify
+/// attempt — certify-off leaves `certified` unset and this still no-ops
+/// unless the caller passes `demote` (the AnalysisOptions flag is false
+/// by default).
+inline bool apply_interval_certify_demotion(PairReport& pr, bool demote) {
+  if (!demote) return false;
+  if (pr.kind != VerdictKind::ProvenDisjoint) return false;
+  if (!pr.proof_path || *pr.proof_path != ProofPath::Interval) return false;
+  if (pr.certified == true) return false;
+  pr.kind = VerdictKind::CandidateDisjoint;
+  pr.certified = false;
+  static const char kNote[] =
+      "interval layer reported disjoint but the replay kernel did not certify "
+      "the bound pair; candidate, not a claim — ";
+  if (pr.reason.find("candidate, not a claim") == std::string::npos) {
+    pr.reason = std::string(kNote) + pr.reason;
+  }
+  return true;
+}
 
 /// Smash2 overlap-query remainder: a non-SAT overlap check is never a PROVEN
 /// claim. UNKNOWN only when *both* disjoint and overlap queries were

@@ -66,7 +66,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3). OPEN-2 oriented twins cap SAT-direction at POSSIBLY. UNKNOWN only if the solver is inconclusive in **both** directions; uncertified solver-UNSAT is **CANDIDATE DISJOINT**. |
-| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=79); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. Pairwise subset uses smash2 `negated_under` + certify fail-closed. |
+| Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=79); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. Interval-path disagreements stay diagnostic unless `--demote-uncertified-interval` (default off, smash2 parity). Pairwise subset uses smash2 `negated_under` + certify fail-closed. |
 | Human verify report | Default stdout of `verify` (trust / findings / regions / matrix / pairwise / recon). Not claimed byte-identical to smash2. `--json` is smash2 schema v4 snake_case. |
 | `--cross` | `merge_hirs` + XSUB/XEQ reconcile; `--recon=all\|related` |
 | `objects` | `adl2::sema::object_table` + CLI `objects` (allowlist **171**) |

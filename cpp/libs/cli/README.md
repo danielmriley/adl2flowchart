@@ -21,5 +21,7 @@ defaults to solver + certify on; `--no-certify` skips Farkas replay
 the compact `A vs B: KIND` form; default stdout is the human report
 (`--json` / `--explain` / `--matrix` / `--human=short` / `--fail-on`).
 `--human=short` prints DISJOINT / OVERLAPS / NOT PROVED; JSON is unchanged.
+`--demote-uncertified-interval` is opt-in (default off): interval PD that
+fails Farkas becomes CANDIDATE DISJOINT.
 `ingest --profile`
 writes JSONL and/or `to_jsonl.py`.

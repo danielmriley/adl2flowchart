@@ -301,7 +301,7 @@ add_executable(adl2_ingest_unit ingest.cpp)
 target_link_libraries(adl2_ingest_unit PRIVATE adl2_ingest)
 target_compile_options(adl2_ingest_unit PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(adl2_ingest_unit PRIVATE
-  INGEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/../reimplementation/adl2/crates/adl-ingest/fixtures")
+  INGEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/libs/ingest/fixtures")
 
 add_test(NAME adl2_ingest_unit
   COMMAND adl2_ingest_unit)

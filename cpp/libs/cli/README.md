@@ -6,7 +6,7 @@ Commands: `check`, `run`, `dot`, `verify`, `objects`, `ingest`. Links
 syntax + sema + formula + interp + axioms + viz + analysis + rootfile +
 ingest (certify is PUBLIC through analysis). Recheck is `smash2_cpp-recheck`.
 
-Bare `check` always resolves (Rust smash2 parity). stdout is empty on
+Bare `check` always resolves. stdout is empty on
 success; diagnostics go to stderr. `--dump-ast` prints the AST dump then
 still resolves. `--dump-hir` / `--dump-quantities` / `--dump-formula` /
 `--dump-axioms` print the corresponding dump. `run` prints smash2-style

@@ -1,12 +1,15 @@
-# ADL2 C++ port (`cpp/`) — P4 solver / viz / analysis
+# ADL2 C++ port (`cpp/`) — standalone `smash2_cpp`
 
-From-scratch C++ reimplementation of the **smash2 architecture**
-(ADR-010). This directory is the home for that port.
+From-scratch C++ toolchain for the **smash2 architecture** (ADR-010).
+`smash2_cpp` builds, tests, and runs on its own: stock cmake + g++, a
+`z3` binary on PATH for `verify`. It does **not** require the Rust
+`smash2` tree, cargo, or libz3.
 
-| Not this | That lives in |
-|---|---|
-| Active / forever-oracle tool | [`reimplementation/adl2`](../reimplementation/adl2) (`smash2`, Rust) |
-| Legacy flex/bison tool | [`legacy_parser/`](../legacy_parser/) (transitional secondary oracle only) |
+A sibling Rust implementation lives at
+[`reimplementation/adl2`](../reimplementation/adl2). Byte-diff against
+it is an **optional** `CROSS_ORACLE=1` check, not a build or test
+dependency. The legacy flex/bison tool is
+[`legacy_parser/`](../legacy_parser/).
 
 ## Module layout (locked)
 
@@ -55,15 +58,15 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Identity unit battery (`adl2_sema_identity`) | Yes (`PASS=128 FAIL=0`) |
 | Polarity-aware Formula IR (`Over`/`Under` as types) | Yes |
 | HIR → Formula encoder | Yes |
-| CLI `--dump-formula` vs smash2 | Fail-closed allowlist (pinned **172**) |
-| CLI `--dump-axioms` vs smash2 | Fail-closed allowlist (pinned **108**) |
+| CLI `--dump-formula` | Fail-closed allowlist (pinned **172**); optional smash2 byte-diff |
+| CLI `--dump-axioms` | Fail-closed allowlist (pinned **108**); optional smash2 byte-diff |
 | Axiom catalog (19) + emitters | Yes; EPRED/EPRES ported |
 | Prohibited-axiom tests (TAG exact-name + no existence-from-mention) | Yes (`adl2_p3_unit`, `PASS=123 FAIL=0`) |
 | JSONL Event loader (pT-order + NNEG/TAG domain) | Yes |
-| Two-valued `run` + cutflow tables vs smash2 | Fail-closed pair list (pinned count; full stdout) |
+| Two-valued `run` + cutflow tables | Fail-closed pair list (pinned count; full stdout); optional smash2 byte-diff |
 | Histogram accumulation (`HistoSet`) | Yes (`adl2_histo_unit` PASS=34); `--histos DIR` writes JSON + `make_histos.C`/`to_root.py` + native `out.root` |
 | Kleene `region3` membership | Yes (`adl2_region3`, `PASS=80 FAIL=0`; empty-product `dR` matches smash2 `+∞` sentinel) |
-| CLI `dot` / `dot --ast` vs smash2 | Fail-closed allowlist (**39 files × 2**) |
+| CLI `dot` / `dot --ast` | Fail-closed allowlist (**39 files × 2**); optional smash2 byte-diff |
 | SMT-LIB2 subprocess solver (`classify` Bug-5) | Yes |
 | Interval fast path + pairwise `verify` | Yes (SAT overlap is **PROVEN OVERLAPPING** only after region3). OPEN-2 oriented twins cap SAT-direction at POSSIBLY. UNKNOWN only if the solver is inconclusive in **both** directions; uncertified solver-UNSAT is **CANDIDATE DISJOINT**. |
 | Independent Farkas certify | Kernel filled (`adl2_certify_unit` PASS=79); **wired** into `analyze_hir` (CLI `verify` defaults certify ON; `--no-certify` skips). Uncertified solver-UNSAT is **CANDIDATE DISJOINT**. Interval-path disagreements stay diagnostic unless `--demote-uncertified-interval` (default off, smash2 parity). Pairwise subset uses smash2 `negated_under` + certify fail-closed. |
@@ -80,13 +83,14 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`MODULES.md`](MODULES.md) | Crate/CMake map + dependency spine |
 | [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF for `adl2_syntax` |
 | [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison” → `parse_X` |
-| [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | 146-file AST dump-diff vs smash2 |
-| [`scripts/dump_hir_corpus_gate.sh`](scripts/dump_hir_corpus_gate.sh) | Allowlisted HIR/quantity dump-diff |
-| [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dump-diff |
-| [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dump-diff |
-| [`scripts/dump_objects_corpus_gate.sh`](scripts/dump_objects_corpus_gate.sh) | Allowlisted objects dump-diff |
-| [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` full-stdout diff |
-| [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dump-diff |
+| [`scripts/gate_common.sh`](scripts/gate_common.sh) | Shared C++-only setup; `CROSS_ORACLE=1` opts into smash2 |
+| [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | 146-file AST well-formedness (optional smash2 byte-diff) |
+| [`scripts/dump_hir_corpus_gate.sh`](scripts/dump_hir_corpus_gate.sh) | Allowlisted HIR/quantity dumps |
+| [`scripts/dump_formula_corpus_gate.sh`](scripts/dump_formula_corpus_gate.sh) | Allowlisted formula dumps |
+| [`scripts/dump_axioms_corpus_gate.sh`](scripts/dump_axioms_corpus_gate.sh) | Allowlisted axiom dumps |
+| [`scripts/dump_objects_corpus_gate.sh`](scripts/dump_objects_corpus_gate.sh) | Allowlisted objects dumps |
+| [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` stdout |
+| [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dumps |
 
 ## Build
 
@@ -115,10 +119,12 @@ Some images default `CXX` to clang without libstdc++; prefer `CXX=g++`.
 ./cpp/build/smash2_cpp objects examples/tutorials/ex01_selection.adl
 ```
 
-With a dump flag, stdout is the canonical dump only, matching Rust
-`smash2 check --dump-*`.
+With a dump flag, stdout is the canonical dump only.
 
-## Corpus dump-diff gates (forever oracle)
+## Corpus gates (C++-only by default)
+
+Default: build `smash2_cpp` and check that each dump is well-formed and
+exits 0. No Rust binary is built or required.
 
 ```bash
 cpp/scripts/dump_ast_corpus_gate.sh
@@ -128,8 +134,14 @@ cpp/scripts/dump_axioms_corpus_gate.sh
 cpp/scripts/dump_objects_corpus_gate.sh
 cpp/scripts/interp_run_gate.sh
 cpp/scripts/dump_dot_corpus_gate.sh
-# or, if both binaries already exist:
+# already-built binary:
 SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
+```
+
+Optional smash2 byte-diff (sibling tool; not a C++ dependency):
+
+```bash
+CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_ast_corpus_gate.sh
 ```
 
 AST gate: **146 / 146**. HIR gate: **171 files × 2** dumps. DOT gate: **39
@@ -137,11 +149,10 @@ files × 2** (flowchart + AST). Formula gate: **172** files (fail-closed;
 `bad_syntax.adl` excluded — both sides exit 1). Axiom gate: **108**.
 Objects gate: **171**. Interp gates are fail-closed
 allowlists — shrinking or growing the list without bumping the pin fails CI. Files not on a list are **not claimed**.
-Do not weaken `smash2` / `oracle-rust` CI.
 
-Bare `smash2_cpp check` always resolves (Rust smash2 parity); stdout is
-empty on success. `smash2_cpp run` prints event lines plus smash2 cutflow
-tables. `verify` defaults to certify ON.
+Bare `smash2_cpp check` always resolves; stdout is empty on success.
+`smash2_cpp run` prints event lines plus cutflow tables. `verify`
+defaults to certify ON.
 
 ## Remaining vs smash2 (honest non-parity)
 
@@ -154,5 +165,5 @@ snake_case kinds (not claimed byte-identical on every field).
 Not claimed identical: dump-axioms allowlist **108** (not 172); `--jobs`
 accepted and ignored; histos.json numbers may use a different shortest
 round-trip than smash2 ryu. Native libz3 stays out (ADR-010). C++ has no
-`prop_encoder_vs_interp` battery — PROVEN still rests on smash2 dump-diff
-plus C++ unit pins.
+`prop_encoder_vs_interp` battery — PROVEN rests on C++ certify + unit
+pins. `CROSS_ORACLE=1` dump-diff is an optional sibling check.

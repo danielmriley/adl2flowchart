@@ -21,7 +21,7 @@ docs/*.log
 docs/*.out
 docs/*.toc
 
-# scratch ingest samples (committed fixtures live in reimplementation/adl2/crates/adl-ingest/fixtures)
+# scratch ingest samples (committed fixtures live in cpp/libs/ingest/fixtures and reimplementation/adl2/crates/adl-ingest/fixtures)
 /samples/
 
 # generic analyze-adl outputs (regenerable; keep them out of commits)

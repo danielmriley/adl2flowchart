@@ -48,11 +48,11 @@ jobs:
       - name: Golden suite + corpus sweep + z3 spike
         run: make -C legacy_parser test
 
-  # P4 C++ syntax + sema + formula/interp/axioms + solver/viz/analysis
-  # (ADR-010). Stock cmake + g++; no bison/flex/libz3. Dump-diff gates
-  # build Rust smash2 as forever oracle (--no-default-features).
+  # Standalone C++ toolchain (ADR-010). Stock cmake + g++; no bison/flex,
+  # no libz3, no Rust/cargo. Dump scripts check C++ well-formedness.
+  # Optional smash2 byte-diff is CROSS_ORACLE=1 (job adl2-cpp-cross).
   adl2-cpp:
-    name: adl2-cpp (P4–P6 dump-ast + dump-hir + formula + interp + axioms + objects + dot gates)
+    name: adl2-cpp (standalone build + ctest + corpus dumps)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,36 +66,66 @@ jobs:
           unzip -q /tmp/z3.zip -d /tmp/z3
           sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
           z3 --version
+      - name: Configure C++
+        run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+        env:
+          CXX: g++
+      - name: Build C++
+        run: cmake --build cpp/build -j$(nproc)
+      - name: C++ unit/smoke tests
+        run: ctest --test-dir cpp/build --output-on-failure
+      - name: Dump-ast corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_ast_corpus_gate.sh
+      - name: Dump-hir/quantities corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_hir_corpus_gate.sh
+      - name: Dump-formula corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
+      - name: Interpreter run corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
+      - name: Dump-axioms corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
+      - name: Dump-objects corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_objects_corpus_gate.sh
+      - name: Dump-dot corpus (C++ well-formed)
+        run: SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
+
+  # Optional sibling byte-diff: smash2 vs smash2_cpp. Not required to
+  # build or test the C++ toolchain.
+  adl2-cpp-cross:
+    name: adl2-cpp-cross (optional smash2 dump-diff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: reimplementation/adl2
       - name: Configure C++
         run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-      - name: Build C++
-        run: cmake --build cpp/build -j$(nproc)
-      - name: C++ unit/smoke tests
-        run: ctest --test-dir cpp/build --output-on-failure
-      - name: Dump-ast corpus gate (vs Rust smash2)
-        run: cpp/scripts/dump_ast_corpus_gate.sh
-      - name: Dump-hir/quantities oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/dump_hir_corpus_gate.sh
-      - name: Dump-formula oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
-      - name: Interpreter run oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
-      - name: Dump-axioms oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
-      - name: Dump-objects oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/dump_objects_corpus_gate.sh
-      - name: Dump-dot oracle gate (vs Rust smash2)
-        run: SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
+        env:
+          CXX: g++
+      - name: Cross-oracle dump-ast
+        run: CROSS_ORACLE=1 cpp/scripts/dump_ast_corpus_gate.sh
+      - name: Cross-oracle dump-hir
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_hir_corpus_gate.sh
+      - name: Cross-oracle dump-formula
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_formula_corpus_gate.sh
+      - name: Cross-oracle interp run
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/interp_run_gate.sh
+      - name: Cross-oracle dump-axioms
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
+      - name: Cross-oracle dump-objects
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_objects_corpus_gate.sh
+      - name: Cross-oracle dump-dot
+        run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 
-  # Rust smash2 is the forever oracle for the C++ port (ADR-010).
-  # Keep this green alongside adl2-cpp; do not remove or weaken it.
-  # Does not replace the full `smash2` workspace job.
+  # Rust smash2 CLI smoke (does not replace the full smash2 workspace job).
   oracle-rust:
-    name: oracle-rust (smash2 forever-oracle)
+    name: smash2 CLI smoke
     runs-on: ubuntu-latest
     defaults:
       run:

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# P4 DOT dump gate: byte-for-byte diff of
-#   smash2_cpp dot FILE            vs  smash2 dot FILE            (flowchart)
-#   smash2_cpp dot --ast FILE      vs  smash2 dot --ast FILE      (AST)
-# over the fail-closed allowlist in cpp/tests/dot_gate_files.txt.
+# P4 DOT dump gate over cpp/tests/dot_gate_files.txt (flowchart + AST).
+# Default: C++ well-formedness. CROSS_ORACLE=1 byte-diffs smash2.
 #
 # Both dump commands must exit 0 and emit a dump starting with `digraph `.
 # A crash, usage error, empty dump, or mismatch fails the gate.
@@ -35,23 +33,9 @@ if [[ "${COUNT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  if [[ -z "${CXX:-}" ]] && command -v g++ >/dev/null 2>&1; then
-    export CXX=g++
-  fi
-  echo "==> building smash2_cpp"
-  cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-  cmake --build cpp/build -j"$(nproc)"
-
-  echo "==> building Rust smash2 (forever oracle; no native z3)"
-  (
-    cd reimplementation/adl2
-    cargo build --release -p adl-cli --no-default-features
-  )
-fi
-
-test -x "$SMASH2_CPP" || { echo "missing smash2_cpp at $SMASH2_CPP" >&2; exit 2; }
-test -x "$SMASH2_RUST" || { echo "missing smash2 at $SMASH2_RUST" >&2; exit 2; }
+# shellcheck source=gate_common.sh
+source "$ROOT/cpp/scripts/gate_common.sh"
+gate_prepare
 echo "==> smash2_cpp=$SMASH2_CPP"
 
 tmpdir="$(mktemp -d)"
@@ -85,23 +69,28 @@ compare_one() {
   cpp_args+=("$f")
 
   set +e
-  "$SMASH2_RUST" "${rust_args[@]}" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
-  rc_rust=$?
   "$SMASH2_CPP" "${cpp_args[@]}" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
+  rc_rust=0
+  if [[ "$GATE_ORACLE" == "1" ]]; then
+    "$SMASH2_RUST" "${rust_args[@]}" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
+    rc_rust=$?
+  fi
   set -e
 
   local reason=""
-  if [[ "$rc_rust" -ne 0 ]]; then
-    reason="rust smash2 $kind exited $rc_rust"
-  elif [[ "$rc_cpp" -ne 0 ]]; then
+  if [[ "$rc_cpp" -ne 0 ]]; then
     reason="smash2_cpp $kind exited $rc_cpp"
-  elif ! dump_ok "$tmpdir/rust.dump"; then
-    reason="rust $kind dump missing or does not start with 'digraph '"
   elif ! dump_ok "$tmpdir/cpp.dump"; then
     reason="cpp $kind dump missing or does not start with 'digraph '"
-  elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
-    reason="$kind dump mismatch"
+  elif [[ "$GATE_ORACLE" == "1" ]]; then
+    if [[ "$rc_rust" -ne 0 ]]; then
+      reason="rust smash2 $kind exited $rc_rust"
+    elif ! dump_ok "$tmpdir/rust.dump"; then
+      reason="rust $kind dump missing or does not start with 'digraph '"
+    elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
+      reason="$kind dump mismatch"
+    fi
   fi
 
   if [[ -z "$reason" ]]; then
@@ -121,7 +110,11 @@ compare_one() {
   return 1
 }
 
-echo "==> DOT dump-diff ${#FILES[@]} files (flowchart + AST; Rust oracle vs smash2_cpp)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "==> DOT dump-diff ${#FILES[@]} files (flowchart + AST; optional smash2 cross-check)"
+else
+  echo "==> DOT dump ${#FILES[@]} files (flowchart + AST; C++-only; CROSS_ORACLE=1 for smash2 diff)"
+fi
 for rel in "${FILES[@]}"; do
   f="$ROOT/$rel"
   if [[ ! -f "$f" ]]; then
@@ -159,4 +152,8 @@ if [[ "$ok" -ne "$EXPECTED_FILES" ]]; then
   echo "error: expected $EXPECTED_FILES passing dumps, got ok=$ok" >&2
   exit 1
 fi
-echo "dump-dot corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "dump-dot corpus gate: PASS (byte-for-byte vs smash2; both sides exit 0)"
+else
+  echo "dump-dot corpus gate: PASS (C++ dumps well-formed; CROSS_ORACLE=1 for smash2 diff)"
+fi

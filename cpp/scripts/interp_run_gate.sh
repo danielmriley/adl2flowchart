@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# P3 interpreter run gate: compare smash2_cpp `run` vs smash2 `run`
-# on pinned (adl, jsonl) pairs. Full stdout (event lines + cutflow tables).
+# P3 interpreter run gate on pinned (adl, jsonl) pairs.
+# Default: C++ well-formedness. CROSS_ORACLE=1 byte-diffs smash2 stdout.
 #
 # Both commands must exit 0. A crash, usage error, or stdout mismatch
 # fails the gate.
@@ -33,23 +33,9 @@ if [[ "${COUNT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  if [[ -z "${CXX:-}" ]] && command -v g++ >/dev/null 2>&1; then
-    export CXX=g++
-  fi
-  echo "==> building smash2_cpp"
-  cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-  cmake --build cpp/build -j"$(nproc)"
-
-  echo "==> building Rust smash2 (forever oracle; no native z3)"
-  (
-    cd reimplementation/adl2
-    cargo build --release -p adl-cli --no-default-features
-  )
-fi
-
-test -x "$SMASH2_CPP" || { echo "missing smash2_cpp at $SMASH2_CPP" >&2; exit 2; }
-test -x "$SMASH2_RUST" || { echo "missing smash2 at $SMASH2_RUST" >&2; exit 2; }
+# shellcheck source=gate_common.sh
+source "$ROOT/cpp/scripts/gate_common.sh"
+gate_prepare
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -58,7 +44,11 @@ ok=0
 fail=0
 failures=()
 
-echo "==> interp run-diff ${#PAIRS[@]} pairs (full stdout; Rust oracle vs smash2_cpp)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "==> interp run-diff ${#PAIRS[@]} pairs (full stdout; optional smash2 cross-check)"
+else
+  echo "==> interp run ${#PAIRS[@]} pairs (C++-only; CROSS_ORACLE=1 for smash2 diff)"
+fi
 for pair in "${PAIRS[@]}"; do
   adl="${pair%% *}"
   jsonl="${pair#* }"
@@ -77,21 +67,28 @@ for pair in "${PAIRS[@]}"; do
     continue
   fi
   set +e
-  "$SMASH2_RUST" run "$ROOT/$adl" "$ROOT/$jsonl" >"$tmpdir/rust.out" 2>"$tmpdir/rust.err"
-  rc_rust=$?
   "$SMASH2_CPP" run "$ROOT/$adl" "$ROOT/$jsonl" >"$tmpdir/cpp.out" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
+  rc_rust=0
+  if [[ "$GATE_ORACLE" == "1" ]]; then
+    "$SMASH2_RUST" run "$ROOT/$adl" "$ROOT/$jsonl" >"$tmpdir/rust.out" 2>"$tmpdir/rust.err"
+    rc_rust=$?
+  fi
   set -e
 
   reason=""
-  if [[ "$rc_rust" -ne 0 ]]; then
-    reason="rust smash2 run exited $rc_rust"
-  elif [[ "$rc_cpp" -ne 0 ]]; then
+  if [[ "$rc_cpp" -ne 0 ]]; then
     reason="smash2_cpp run exited $rc_cpp"
-  elif [[ ! -s "$tmpdir/rust.out" ]]; then
-    reason="rust run produced empty stdout"
-  elif ! diff -q "$tmpdir/rust.out" "$tmpdir/cpp.out" >/dev/null; then
-    reason="stdout mismatch"
+  elif [[ ! -s "$tmpdir/cpp.out" ]]; then
+    reason="smash2_cpp run produced empty stdout"
+  elif [[ "$GATE_ORACLE" == "1" ]]; then
+    if [[ "$rc_rust" -ne 0 ]]; then
+      reason="rust smash2 run exited $rc_rust"
+    elif [[ ! -s "$tmpdir/rust.out" ]]; then
+      reason="rust run produced empty stdout"
+    elif ! diff -q "$tmpdir/rust.out" "$tmpdir/cpp.out" >/dev/null; then
+      reason="stdout mismatch"
+    fi
   fi
 
   if [[ -z "$reason" ]]; then
@@ -123,4 +120,8 @@ if [[ "$ok" -ne "$EXPECTED_PAIRS" ]]; then
   echo "error: expected $EXPECTED_PAIRS passing pairs, got ok=$ok" >&2
   exit 1
 fi
-echo "interp run gate: PASS (full stdout byte-for-byte vs Rust smash2; both sides exit 0)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "interp run gate: PASS (full stdout byte-for-byte vs smash2; both sides exit 0)"
+else
+  echo "interp run gate: PASS (C++ run well-formed; CROSS_ORACLE=1 for smash2 diff)"
+fi

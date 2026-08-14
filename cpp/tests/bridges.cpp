@@ -122,8 +122,8 @@ void test_flow_bins() {
 void test_ex02_snapshots() {
   auto root = repo_root();
   auto adl_path = root / "examples/tutorials/ex02_histograms.adl";
-  auto events_path = root / "reimplementation/adl2/crates/adl-difftest/tests/fixtures/ex02_events.jsonl";
-  auto snap = root / "reimplementation/adl2/crates/adl-cli/tests/snapshots";
+  auto events_path = root / "cpp/tests/fixtures/ex02_events.jsonl";
+  auto snap = root / "cpp/tests/fixtures/bridges";
   if (!std::filesystem::exists(adl_path) || !std::filesystem::exists(events_path)) {
     std::cerr << "SKIP: ex02 fixtures not found\n";
     CHECK(true);

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# P2 HIR / quantity-table dump gate: byte-for-byte diff of
-#   smash2_cpp check --dump-hir         vs  smash2 check --dump-hir
-#   smash2_cpp check --dump-quantities  vs  smash2 check --dump-quantities
-# over the fail-closed allowlist in cpp/tests/hir_gate_files.txt.
+# P2 HIR / quantity-table dump gate over cpp/tests/hir_gate_files.txt.
+# Default: C++ well-formedness. CROSS_ORACLE=1 byte-diffs smash2.
 #
 # Both dump commands must exit 0 and emit a dump starting with `unit:`.
 # A crash, usage error, empty dump, or mismatch fails the gate.
@@ -47,24 +45,9 @@ if [[ "${COUNT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  # Some images default CXX to clang without libstdc++; prefer g++ when unset.
-  if [[ -z "${CXX:-}" ]] && command -v g++ >/dev/null 2>&1; then
-    export CXX=g++
-  fi
-  echo "==> building smash2_cpp"
-  cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-  cmake --build cpp/build -j"$(nproc)"
-
-  echo "==> building Rust smash2 (forever oracle; no native z3)"
-  (
-    cd reimplementation/adl2
-    cargo build --release -p adl-cli --no-default-features
-  )
-fi
-
-test -x "$SMASH2_CPP" || { echo "missing smash2_cpp at $SMASH2_CPP" >&2; exit 2; }
-test -x "$SMASH2_RUST" || { echo "missing smash2 at $SMASH2_RUST" >&2; exit 2; }
+# shellcheck source=gate_common.sh
+source "$ROOT/cpp/scripts/gate_common.sh"
+gate_prepare
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -84,23 +67,28 @@ diff_one() {
   local f=$2
   local rel=$3
   set +e
-  "$SMASH2_RUST" check "$flag" "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
-  rc_rust=$?
   "$SMASH2_CPP" check "$flag" "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
+  rc_rust=0
+  if [[ "$GATE_ORACLE" == "1" ]]; then
+    "$SMASH2_RUST" check "$flag" "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
+    rc_rust=$?
+  fi
   set -e
 
   local reason=""
-  if [[ "$rc_rust" -ne 0 ]]; then
-    reason="rust smash2 $flag exited $rc_rust"
-  elif [[ "$rc_cpp" -ne 0 ]]; then
+  if [[ "$rc_cpp" -ne 0 ]]; then
     reason="smash2_cpp $flag exited $rc_cpp"
-  elif ! dump_ok "$tmpdir/rust.dump"; then
-    reason="rust $flag dump missing or does not start with unit:"
   elif ! dump_ok "$tmpdir/cpp.dump"; then
     reason="cpp $flag dump missing or does not start with unit:"
-  elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
-    reason="$flag dump mismatch"
+  elif [[ "$GATE_ORACLE" == "1" ]]; then
+    if [[ "$rc_rust" -ne 0 ]]; then
+      reason="rust smash2 $flag exited $rc_rust"
+    elif ! dump_ok "$tmpdir/rust.dump"; then
+      reason="rust $flag dump missing or does not start with unit:"
+    elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
+      reason="$flag dump mismatch"
+    fi
   fi
 
   if [[ -z "$reason" ]]; then
@@ -121,7 +109,11 @@ diff_one() {
   fi
 }
 
-echo "==> HIR/quantity dump-diff ${#FILES[@]} files × 2 dumps (Rust oracle vs smash2_cpp)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "==> HIR/quantity dump-diff ${#FILES[@]} files × 2 dumps (optional smash2 cross-check)"
+else
+  echo "==> HIR/quantity dump ${#FILES[@]} files × 2 (C++-only; CROSS_ORACLE=1 for smash2 diff)"
+fi
 for rel in "${FILES[@]}"; do
   f="$ROOT/$rel"
   if [[ ! -f "$f" ]]; then
@@ -146,4 +138,8 @@ if [[ "$ok" -ne "$expected_dumps" ]]; then
   echo "error: expected $expected_dumps passing dumps, got ok=$ok" >&2
   exit 1
 fi
-echo "dump-hir corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "dump-hir corpus gate: PASS (byte-for-byte vs smash2; both sides exit 0)"
+else
+  echo "dump-hir corpus gate: PASS (C++ dumps well-formed; CROSS_ORACLE=1 for smash2 diff)"
+fi

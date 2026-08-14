@@ -378,7 +378,7 @@ bool region_subset(Solver& s, const std::vector<std::pair<AssertName, Over>>& su
   QFormula neg = negated_under(sup_unders);
   s.assert_formula(neg, neg_name);
   extra.emplace_back(neg_name, std::move(neg));
-  SatResult r = s.check(timeout);
+  SatResult r = s.check_unsat(timeout);
   note_failure(report, r);
   std::optional<std::vector<AssertName>> core_names;
   if (r.is_unsat()) {
@@ -738,7 +738,7 @@ PairReport interval_or_solver_pair(const Hir& hir, const adl2::sema::ExtDecls& e
   solver->push();
   assert_overs(*solver, c1.overs);
   assert_overs(*solver, c2.overs);
-  SatResult disjoint = solver->check(timeout);
+  SatResult disjoint = solver->check_unsat(timeout);
   note_failure(report, disjoint);
   if (disjoint.is_unsat()) {
     auto core = solver->unsat_core();
@@ -1209,7 +1209,7 @@ std::pair<bool, std::optional<CertPayload>> subset_proof(
   QFormula neg = sup_under.qformula().qnot();
   s.assert_formula(over_f, qsub);
   s.assert_formula(neg, qneg);
-  SatResult r = s.check(timeout);
+  SatResult r = s.check_unsat(timeout);
   note_failure(report, r);
   std::optional<std::vector<AssertName>> core_names;
   if (r.is_unsat()) {
@@ -1453,7 +1453,7 @@ bool bins_disjoint(Solver* solver, std::chrono::milliseconds timeout, bool certi
     QFormula bj_f = bj.qformula();
     solver->assert_formula(bi_f, bi_name);
     solver->assert_formula(bj_f, bj_name);
-    SatResult r = solver->check(timeout);
+    SatResult r = solver->check_unsat(timeout);
     note_failure(report, r);
     std::optional<std::vector<AssertName>> core;
     if (r.is_unsat()) {
@@ -1706,7 +1706,7 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
     } else if (solver) {
       solver->push();
       assert_overs(*solver, ctxs[i].overs);
-      SatResult er = solver->check(opts.timeout);
+      SatResult er = solver->check_unsat(opts.timeout);
       note_failure(report, er);
       std::optional<std::vector<AssertName>> core_names;
       if (er.is_unsat()) {

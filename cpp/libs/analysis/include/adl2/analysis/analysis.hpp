@@ -26,7 +26,11 @@
 /// take the projection vectors (ADR-004). SAT-side overlap uses smash2
 /// `tightened` + `refined_model` (ε-interior / dPhi=0 / size-cap wishes)
 /// before witness re-validation; a failed refine falls back to the raw
-/// model and cannot fabricate PROVEN DISJOINT. Size of a collection whose filter
+/// model and cannot fabricate PROVEN DISJOINT. UNSAT-direction queries
+/// (empty / disjoint / subset / bin-disjoint) call `check_unsat` so the
+/// subprocess backend can hold axioms; SAT/model queries (overlap,
+/// `refined_model`, witness retry, bin-coverage gap) keep `check` / `(reset)`.
+/// Size of a collection whose filter
 /// (or combination cut) is out of fragment is Hard in the encoder
 /// (SOUNDNESS_PROOF §8 1b): a tautology such as `size(weird) >= 0` must not
 /// discharge a subset proof. Subset sample/refute treats not-In (Out *or*

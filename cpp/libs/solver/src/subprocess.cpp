@@ -297,11 +297,26 @@ struct SubprocessSolver::Impl {
   std::chrono::milliseconds last_timeout{10000};
   std::unique_ptr<Live> child;
   std::uint64_t sync_seq = 0;
+  bool incremental_live = false;
+  std::size_t sent_depth = 0;
+  std::vector<std::size_t> sent_counts;
+  std::map<QuantityId, QSort> sent_decls;
+  std::string last_sent;
 
   Impl() { frames.emplace_back(); }
   ~Impl() { recycle(); }
 
-  void recycle() { child.reset(); }
+  void invalidate_incremental() {
+    incremental_live = false;
+    sent_depth = 0;
+    sent_counts.clear();
+    sent_decls.clear();
+  }
+
+  void recycle() {
+    child.reset();
+    invalidate_incremental();
+  }
 
   bool ensure_live(std::string& err) {
     if (!child) {
@@ -423,6 +438,92 @@ struct SubprocessSolver::Impl {
     return q.str();
   }
 
+  static std::string item_line(const Item& item) {
+    if (item.kind == ItemKind::Raw) return item.smt;
+    if (!item.internal) return "(assert " + item.smt + ")";
+    return "(assert (! " + item.smt + " :named " + *item.internal + "))";
+  }
+
+  std::string bootstrap_unsat_query(std::chrono::milliseconds timeout) const {
+    std::ostringstream q;
+    q << "(reset)\n";
+    q << "(set-option :timeout " << timeout_ms(timeout) << ")\n";
+    q << "(set-option :produce-models true)\n";
+    q << "(set-option :produce-unsat-cores true)\n";
+    for (const auto& kv : decls) {
+      q << "(declare-const q" << kv.first.id << " " << sort_name(kv.second)
+        << ")\n";
+    }
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      if (i > 0) q << "(push)\n";
+      for (const auto& item : frames[i].items) q << item_line(item) << "\n";
+    }
+    q << "(check-sat)";
+    return q.str();
+  }
+
+  std::string delta_unsat_query(std::chrono::milliseconds timeout,
+                                std::size_t& out_depth,
+                                std::vector<std::size_t>& out_counts,
+                                std::map<QuantityId, QSort>& out_decls) const {
+    out_depth = sent_depth;
+    out_counts = sent_counts;
+    out_decls = decls;
+    std::ostringstream q;
+    for (const auto& kv : decls) {
+      if (sent_decls.find(kv.first) != sent_decls.end()) continue;
+      q << "(declare-const q" << kv.first.id << " " << sort_name(kv.second)
+        << ")\n";
+    }
+    while (out_depth > frames.size()) {
+      q << "(pop)\n";
+      --out_depth;
+      if (!out_counts.empty()) out_counts.pop_back();
+    }
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      if (i >= out_depth) {
+        q << "(push)\n";
+        ++out_depth;
+        out_counts.push_back(0);
+      }
+      std::size_t already = (i < out_counts.size()) ? out_counts[i] : 0;
+      for (std::size_t j = already; j < frames[i].items.size(); ++j) {
+        q << item_line(frames[i].items[j]) << "\n";
+      }
+      if (i < out_counts.size())
+        out_counts[i] = frames[i].items.size();
+      else
+        out_counts.push_back(frames[i].items.size());
+    }
+    q << "(set-option :timeout " << timeout_ms(timeout) << ")\n";
+    q << "(check-sat)";
+    return q.str();
+  }
+
+  void mark_incremental_synced() {
+    incremental_live = true;
+    sent_depth = frames.size();
+    sent_counts.resize(frames.size());
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      sent_counts[i] = frames[i].items.size();
+    }
+    sent_decls = decls;
+  }
+
+  bool send_now(const std::string& cmds) {
+    if (!child) {
+      invalidate_incremental();
+      return false;
+    }
+    std::string reply;
+    Fail fail;
+    if (!transact(cmds, kGetterBudget, reply, fail)) {
+      recycle();
+      return false;
+    }
+    return true;
+  }
+
   // Ok: reply string. Err: Fail.
   bool transact(const std::string& cmds, std::chrono::milliseconds budget,
                 std::string& reply, Fail& fail) {
@@ -504,10 +605,8 @@ struct SubprocessSolver::Impl {
     return true;
   }
 
-  SatResult run_check(std::chrono::milliseconds timeout) {
-    std::string err;
-    if (!ensure_live(err)) return SatResult::unknown(std::move(err));
-    const std::string query = check_query(timeout);
+  SatResult finish_check(const std::string& query, std::chrono::milliseconds timeout) {
+    last_sent = query;
     std::string reply;
     Fail fail;
     auto budget = timeout + kWatchdogGrace;
@@ -525,6 +624,37 @@ struct SubprocessSolver::Impl {
     }
     recycle();
     return SatResult::unknown(std::move(fail.reason));
+  }
+
+  SatResult run_check(std::chrono::milliseconds timeout) {
+    std::string err;
+    if (!ensure_live(err)) return SatResult::unknown(std::move(err));
+    // SAT/model path: always reset so z3 uses the non-incremental tactic.
+    invalidate_incremental();
+    return finish_check(check_query(timeout), timeout);
+  }
+
+  SatResult run_unsat_check(std::chrono::milliseconds timeout) {
+    std::string err;
+    if (!ensure_live(err)) return SatResult::unknown(std::move(err));
+    if (!incremental_live || sent_depth == 0) {
+      SatResult verdict = finish_check(bootstrap_unsat_query(timeout), timeout);
+      if (child) mark_incremental_synced();
+      return verdict;
+    }
+    std::size_t new_depth = 0;
+    std::vector<std::size_t> new_counts;
+    std::map<QuantityId, QSort> new_decls;
+    std::string query =
+        delta_unsat_query(timeout, new_depth, new_counts, new_decls);
+    SatResult verdict = finish_check(query, timeout);
+    if (child) {
+      sent_depth = new_depth;
+      sent_counts = std::move(new_counts);
+      sent_decls = std::move(new_decls);
+      incremental_live = true;
+    }
+    return verdict;
   }
 
   std::optional<std::string> getter(const std::string& gcmd) {
@@ -569,16 +699,35 @@ SubprocessSolver::~SubprocessSolver() = default;
 
 void SubprocessSolver::declare(QuantityId q, QSort sort) {
   impl_->decls.emplace(q, sort);
+  if (impl_->incremental_live &&
+      impl_->sent_decls.find(q) == impl_->sent_decls.end()) {
+    std::string cmd = std::string("(declare-const q") + std::to_string(q.id) +
+                      " " + sort_name(sort) + ")";
+    if (!impl_->send_now(cmd)) return;
+    impl_->sent_decls.emplace(q, sort);
+  }
 }
 
 void SubprocessSolver::push() {
   impl_->frames.emplace_back();
   impl_->last = LastCheck::None;
+  // Depth-only deltas cannot see pop-then-push (same depth, new frame).
+  // While the incremental session is live, emit SMT-LIB scopes immediately.
+  if (impl_->incremental_live) {
+    if (!impl_->send_now("(push)")) return;
+    impl_->sent_depth++;
+    impl_->sent_counts.push_back(0);
+  }
 }
 
 void SubprocessSolver::pop() {
   if (impl_->frames.size() > 1) impl_->frames.pop_back();
   impl_->last = LastCheck::None;
+  if (impl_->incremental_live && impl_->sent_depth > 1) {
+    if (!impl_->send_now("(pop)")) return;
+    impl_->sent_depth--;
+    if (!impl_->sent_counts.empty()) impl_->sent_counts.pop_back();
+  }
 }
 
 void SubprocessSolver::assert_formula(
@@ -591,6 +740,32 @@ void SubprocessSolver::assert_formula(
     item.internal = "n" + std::to_string(impl_->name_seq);
     item.user = *name;
   }
+  if (impl_->incremental_live) {
+    std::ostringstream decls;
+    for (const auto& kv : impl_->decls) {
+      if (impl_->sent_decls.find(kv.first) != impl_->sent_decls.end()) continue;
+      decls << "(declare-const q" << kv.first.id << " "
+            << sort_name(kv.second) << ")\n";
+    }
+    std::string preamble = decls.str();
+    if (!preamble.empty()) {
+      if (!impl_->send_now(preamble)) {
+        impl_->frames.back().items.push_back(std::move(item));
+        impl_->last = LastCheck::None;
+        return;
+      }
+      impl_->sent_decls = impl_->decls;
+    }
+    if (!impl_->send_now(Impl::item_line(item))) {
+      impl_->frames.back().items.push_back(std::move(item));
+      impl_->last = LastCheck::None;
+      return;
+    }
+    if (impl_->sent_counts.size() < impl_->frames.size()) {
+      impl_->sent_counts.resize(impl_->frames.size(), 0);
+    }
+    if (!impl_->sent_counts.empty()) impl_->sent_counts.back()++;
+  }
   impl_->frames.back().items.push_back(std::move(item));
   impl_->last = LastCheck::None;
 }
@@ -598,6 +773,18 @@ void SubprocessSolver::assert_formula(
 SatResult SubprocessSolver::check(std::chrono::milliseconds timeout) {
   impl_->last_timeout = timeout;
   SatResult result = impl_->run_check(timeout);
+  if (result.is_sat())
+    impl_->last = LastCheck::Sat;
+  else if (result.is_unsat())
+    impl_->last = LastCheck::Unsat;
+  else
+    impl_->last = LastCheck::Unknown;
+  return result;
+}
+
+SatResult SubprocessSolver::check_unsat(std::chrono::milliseconds timeout) {
+  impl_->last_timeout = timeout;
+  SatResult result = impl_->run_unsat_check(timeout);
   if (result.is_sat())
     impl_->last = LastCheck::Sat;
   else if (result.is_unsat())
@@ -667,6 +854,14 @@ void SubprocessSolver::inject_raw(std::string smt) {
   Item item;
   item.kind = ItemKind::Raw;
   item.smt = std::move(smt);
+  if (impl_->incremental_live) {
+    if (!impl_->send_now(Impl::item_line(item))) {
+      impl_->frames.back().items.push_back(std::move(item));
+      impl_->last = LastCheck::None;
+      return;
+    }
+    if (!impl_->sent_counts.empty()) impl_->sent_counts.back()++;
+  }
   impl_->frames.back().items.push_back(std::move(item));
   impl_->last = LastCheck::None;
 }
@@ -687,5 +882,12 @@ std::string SubprocessSolver::check_query(
     std::chrono::milliseconds timeout) const {
   return impl_->check_query(timeout);
 }
+
+std::string SubprocessSolver::unsat_bootstrap_query(
+    std::chrono::milliseconds timeout) const {
+  return impl_->bootstrap_unsat_query(timeout);
+}
+
+std::string SubprocessSolver::last_query() const { return impl_->last_sent; }
 
 }  // namespace adl2::solver

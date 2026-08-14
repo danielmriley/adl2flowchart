@@ -137,7 +137,15 @@ class Solver {
   virtual void pop() = 0;
   virtual void assert_formula(const adl2::formula::QFormula& f,
                               const std::optional<AssertName>& name) = 0;
+  /// SAT/model path. Subprocess backend always `(reset)`s so the model is
+  /// the non-incremental tactic's, not the incremental core's.
   virtual SatResult check(std::chrono::milliseconds timeout) = 0;
+  /// UNSAT-direction path (disjoint / subset / empty / bin-disjoint).
+  /// Default is `check`. The subprocess backend may hold axioms and send
+  /// only frame deltas; sat/unsat is what matters, not which model.
+  virtual SatResult check_unsat(std::chrono::milliseconds timeout) {
+    return check(timeout);
+  }
   virtual std::optional<Model> model() = 0;
   virtual std::optional<std::vector<AssertName>> unsat_core() = 0;
   virtual const char* backend_name() const = 0;
@@ -153,11 +161,13 @@ bool subprocess_available(const std::string& cmd);
 
 /// SMT-LIB2 solver over one persistent child process (`<cmd> -in`).
 ///
-/// Every query is `(reset)` + the whole script + `(check-sat)` — not
-/// incremental push/pop at the solver, because z3's incremental core
-/// returns different models (measured PROVEN OVERLAPPING demotions).
-/// Process reuse is the performance win; the frame stack is the state
-/// of record.
+/// Split protocol (smash2 measured this): SAT/model `check` is always
+/// `(reset)` + the whole script, because z3's incremental core returns
+/// different models (14 PROVEN OVERLAPPING demotions on CMS-SUS-16-033).
+/// UNSAT `check_unsat` holds decls/axioms on the live process and sends
+/// only `(push)` / new asserts / `(check-sat)` / `(pop)` deltas. The
+/// frame stack is still the state of record; a reset-mode check invalidates
+/// the incremental session.
 class SubprocessSolver : public Solver {
  public:
   static SubprocessSolver z3();
@@ -174,6 +184,7 @@ class SubprocessSolver : public Solver {
   void assert_formula(const adl2::formula::QFormula& f,
                       const std::optional<AssertName>& name) override;
   SatResult check(std::chrono::milliseconds timeout) override;
+  SatResult check_unsat(std::chrono::milliseconds timeout) override;
   std::optional<Model> model() override;
   std::optional<std::vector<AssertName>> unsat_core() override;
   const char* backend_name() const override;
@@ -183,9 +194,14 @@ class SubprocessSolver : public Solver {
   /// TEST HOOK: kill the child while leaving the handle, so the next
   /// query meets death mid-round-trip.
   bool kill_child_for_test();
-  /// The exact `(reset)`+script+`(check-sat)` text of a check. Stable
-  /// across calls; used by the reset-script pin test.
+  /// The exact `(reset)`+script+`(check-sat)` text of a SAT-path check.
+  /// Stable across calls; used by the reset-script pin test. No `(push)`.
   std::string check_query(std::chrono::milliseconds timeout) const;
+  /// First incremental UNSAT query: `(reset)` + decls + `(push)` between
+  /// frames + `(check-sat)`. Later `check_unsat` calls send only a delta.
+  std::string unsat_bootstrap_query(std::chrono::milliseconds timeout) const;
+  /// Commands actually sent on the last `check` / `check_unsat` (not a getter).
+  std::string last_query() const;
 
  private:
   struct Impl;

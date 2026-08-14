@@ -129,6 +129,22 @@ void test_check_query_pin() {
       "(check-sat)";
   CHECK(query == expected);
   CHECK(query == s.check_query(std::chrono::seconds(5)));
+  CHECK(query.find("(push)") == std::string::npos);
+
+  auto unsat_boot = s.unsat_bootstrap_query(std::chrono::seconds(5));
+  const char* unsat_expected =
+      "(reset)\n"
+      "(set-option :timeout 5000)\n"
+      "(set-option :produce-models true)\n"
+      "(set-option :produce-unsat-cores true)\n"
+      "(declare-const q0 Real)\n"
+      "(declare-const q1 Int)\n"
+      "(declare-const q2 Real)\n"
+      "(assert (! (> q0 1.0) :named n1))\n"
+      "(push)\n"
+      "(assert (< q2 3.0))\n"
+      "(check-sat)";
+  CHECK(unsat_boot == unsat_expected);
 
   s.pop();
   auto after = s.check_query(std::chrono::seconds(5));
@@ -306,6 +322,77 @@ void test_child_death() {
   s.pop();
 }
 
+void test_incremental_unsat_delta_then_sat_resets() {
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(atom(0, Rel::Ge, 0.0), name("ax"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  std::string first = s.last_query();
+  CHECK(first.find("(reset)") == 0);
+  CHECK(first.find("(push)") != std::string::npos);
+  auto core = s.unsat_core();
+  CHECK(core.has_value());
+  CHECK(core_has(*core, "hi"));
+  CHECK(core_has(*core, "lo"));
+  s.pop();
+
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi2"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo2"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  std::string second = s.last_query();
+  CHECK(second.find("(reset)") == std::string::npos);
+  CHECK(second.find("(check-sat)") != std::string::npos);
+  auto core2 = s.unsat_core();
+  CHECK(core2.has_value());
+  CHECK(core_has(*core2, "hi2"));
+  CHECK(core_has(*core2, "lo2"));
+  s.pop();
+
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), std::nullopt);
+  s.assert_formula(atom(0, Rel::Lt, 3.0), std::nullopt);
+  CHECK(s.check(T) == SatResult::sat());
+  std::string satq = s.last_query();
+  CHECK(satq.find("(reset)") == 0);
+  CHECK(satq.find("(push)") == std::string::npos);
+  auto m = s.model();
+  CHECK(m.has_value());
+  auto v = m->get(q(0));
+  CHECK(v.has_value());
+  CHECK(*v > r(1.0) && *v < r(3.0));
+  s.pop();
+}
+
+void test_base_assert_survives_later_pop() {
+  // Recon facts are asserted on frame 0 while an incremental session is
+  // live. They must stay on the base scope across a later push/pop.
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(atom(0, Rel::Ge, 0.0), name("ax"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  s.pop();
+  s.assert_formula(atom(0, Rel::Lt, 0.0), name("neg"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), std::nullopt);
+  s.assert_formula(atom(0, Rel::Lt, 3.0), std::nullopt);
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  s.pop();
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), std::nullopt);
+  s.assert_formula(atom(0, Rel::Lt, 3.0), std::nullopt);
+  // Inner frame is SAT alone. UNSAT here means the base `ax`/`neg`
+  // pair survived the previous pop (the recon-fact kill case).
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  s.pop();
+}
+
 void test_decls_survive_pop() {
   SubprocessSolver s = SubprocessSolver::z3();
   s.push();
@@ -344,6 +431,8 @@ int main() {
     }
     test_sticky_error();
     test_child_death();
+    test_incremental_unsat_delta_then_sat_resets();
+    test_base_assert_survives_later_pop();
     test_decls_survive_pop();
   }
 

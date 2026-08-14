@@ -162,6 +162,10 @@ native `out.root`, provenance (`tool` is `smash2_cpp 0.1.0`, not `smash2`).
 `to_root.py` bridges are ported. `verify --json` uses smash2 schema v4
 snake_case kinds (not claimed byte-identical on every field).
 
+`--dump-axioms` still runs `encode_regions` first (smash2 does too): the
+formulas are unused, but OPEN-1 intern is the quantity-id identity for
+the axiom dump.
+
 Not claimed identical: dump-axioms allowlist **108** (not 172); `--jobs`
 accepted and ignored; histos.json numbers may use a different shortest
 round-trip than smash2 ryu. Native libz3 stays out (ADR-010). C++ has no

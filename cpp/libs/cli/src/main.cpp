@@ -284,6 +284,10 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool json) {
       auto regions = adl2::formula::encode_regions(hir);
       std::cout << adl2::formula::dump_encoded(hir, regions);
     } else if (dump == DumpKind::Axioms) {
+      // Smash2 `check --dump-axioms` still runs encode_regions first. The
+      // EncodedRegion vector is unused, but OPEN-1 intern mutates the
+      // quantity table; skipping it shifts QuantityIds and the axiom dump.
+      (void)adl2::formula::encode_regions(hir);
       std::set<adl2::sema::QuantityId> qs;
       for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
         qs.insert(adl2::sema::QuantityId{i});

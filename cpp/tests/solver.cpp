@@ -393,6 +393,44 @@ void test_base_assert_survives_later_pop() {
   s.pop();
 }
 
+void test_check_unsat_sat_after_pop() {
+  // Leftover incremental asserts after pop must not make the next
+  // check_unsat report UNSAT. Using check() here would (reset) and hide
+  // the bug (the previous pin did that).
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(atom(0, Rel::Ge, 0.0), name("ax"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  auto core = s.unsat_core();
+  CHECK(core.has_value());
+  CHECK(core_has(*core, "hi"));
+  CHECK(core_has(*core, "lo"));
+  s.pop();
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), name("mid_lo"));
+  s.assert_formula(atom(0, Rel::Lt, 3.0), name("mid_hi"));
+  CHECK(s.check_unsat(T) == SatResult::sat());
+  CHECK(s.last_query().find("(reset)") == std::string::npos);
+  CHECK(!s.unsat_core().has_value());
+  s.pop();
+}
+
+void test_unnamed_false_empty_core() {
+  // Z3's incremental core on an unnamed `false` plus a named SAT cut
+  // returns (). That must stay Some([]) so certify-on fail-closes.
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(QFormula::ffalse(), std::nullopt);
+  s.assert_formula(atom(0, Rel::Gt, 1.0), name("cut"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  auto core = s.unsat_core();
+  CHECK(core.has_value());
+  CHECK(core->empty());
+}
+
 void test_decls_survive_pop() {
   SubprocessSolver s = SubprocessSolver::z3();
   s.push();
@@ -432,6 +470,8 @@ int main() {
     test_sticky_error();
     test_child_death();
     test_incremental_unsat_delta_then_sat_resets();
+    test_check_unsat_sat_after_pop();
+    test_unnamed_false_empty_core();
     test_base_assert_survives_later_pop();
     test_decls_survive_pop();
   }

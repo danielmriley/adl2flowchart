@@ -830,16 +830,23 @@ std::optional<std::vector<AssertName>> SubprocessSolver::unsat_core() {
   if (!reply) return std::nullopt;
   auto internals = parse_symbol_list(*reply);
   if (!internals) return std::nullopt;
-  std::vector<AssertName> names;
+  std::map<std::string, AssertName> by_internal;
   for (const auto& frame : impl_->frames) {
     for (const auto& item : frame.items) {
       if (item.kind == ItemKind::Assert && item.internal && item.user) {
-        if (std::find(internals->begin(), internals->end(), *item.internal) !=
-            internals->end()) {
-          names.push_back(*item.user);
-        }
+        by_internal.emplace(*item.internal, *item.user);
       }
     }
+  }
+  std::vector<AssertName> names;
+  for (const auto& n : *internals) {
+    auto it = by_internal.find(n);
+    if (it == by_internal.end()) {
+      // Stale or unmapped `:named` symbol. A truncated Some would let
+      // certify replay a weaker subset and still ship PROVEN. Fail closed.
+      return std::nullopt;
+    }
+    names.push_back(it->second);
   }
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());

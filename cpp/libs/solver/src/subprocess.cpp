@@ -298,6 +298,9 @@ struct SubprocessSolver::Impl {
   std::unique_ptr<Live> child;
   std::uint64_t sync_seq = 0;
   bool incremental_live = false;
+  /// Last `check` / `check_unsat` shape. Survives `recycle` so a getter
+  /// after a dead incremental UNSAT cannot reset-replay a flat script.
+  bool last_unsat_incremental = false;
   std::size_t sent_depth = 0;
   std::vector<std::size_t> sent_counts;
   std::map<QuantityId, QSort> sent_decls;
@@ -521,6 +524,13 @@ struct SubprocessSolver::Impl {
       recycle();
       return false;
     }
+    // Echo arrival is not "applied". An ignored `(error "pop")` would
+    // leave the child holding asserts the host already dropped.
+    SatResult r = classify(reply);
+    if (r.is_solver_error() || r.reason == UNSUPPORTED) {
+      recycle();
+      return false;
+    }
     return true;
   }
 
@@ -631,15 +641,21 @@ struct SubprocessSolver::Impl {
     if (!ensure_live(err)) return SatResult::unknown(std::move(err));
     // SAT/model path: always reset so z3 uses the non-incremental tactic.
     invalidate_incremental();
+    last_unsat_incremental = false;
     return finish_check(check_query(timeout), timeout);
   }
 
   SatResult run_unsat_check(std::chrono::milliseconds timeout) {
     std::string err;
     if (!ensure_live(err)) return SatResult::unknown(std::move(err));
+    last_unsat_incremental = true;
     if (!incremental_live || sent_depth == 0) {
       SatResult verdict = finish_check(bootstrap_unsat_query(timeout), timeout);
-      if (child) mark_incremental_synced();
+      if (child && (verdict.is_sat() || verdict.is_unsat())) {
+        mark_incremental_synced();
+      } else {
+        recycle();
+      }
       return verdict;
     }
     std::size_t new_depth = 0;
@@ -648,17 +664,22 @@ struct SubprocessSolver::Impl {
     std::string query =
         delta_unsat_query(timeout, new_depth, new_counts, new_decls);
     SatResult verdict = finish_check(query, timeout);
-    if (child) {
+    if (child && (verdict.is_sat() || verdict.is_unsat())) {
       sent_depth = new_depth;
       sent_counts = std::move(new_counts);
       sent_decls = std::move(new_decls);
       incremental_live = true;
+    } else {
+      recycle();
     }
     return verdict;
   }
 
   std::optional<std::string> getter(const std::string& gcmd) {
     if (!child) {
+      // Incremental UNSAT left a scoped session. A flat `(reset)` replay
+      // is a different query; do not rebuild a core/model from it.
+      if (last_unsat_incremental) return std::nullopt;
       std::string err;
       if (!ensure_live(err)) return std::nullopt;
       std::string reply;
@@ -861,14 +882,10 @@ void SubprocessSolver::inject_raw(std::string smt) {
   Item item;
   item.kind = ItemKind::Raw;
   item.smt = std::move(smt);
-  if (impl_->incremental_live) {
-    if (!impl_->send_now(Impl::item_line(item))) {
-      impl_->frames.back().items.push_back(std::move(item));
-      impl_->last = LastCheck::None;
-      return;
-    }
-    if (!impl_->sent_counts.empty()) impl_->sent_counts.back()++;
-  }
+  // Raw SMT is not a frame item z3 will apply the same way as an assert.
+  // Smash2 only appends; the next `(reset)` replay makes errors sticky.
+  // Sending into a live incremental session is a scope/option oracle.
+  if (impl_->incremental_live) impl_->invalidate_incremental();
   impl_->frames.back().items.push_back(std::move(item));
   impl_->last = LastCheck::None;
 }

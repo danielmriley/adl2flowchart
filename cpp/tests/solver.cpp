@@ -431,6 +431,71 @@ void test_unnamed_false_empty_core() {
   CHECK(core->empty());
 }
 
+void test_inject_raw_false_does_not_survive_pop() {
+  // inject_raw must not send into a live incremental session. A leftover
+  // `(assert false)` on the child after the host pops would fabricate UNSAT.
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(atom(0, Rel::Ge, 0.0), name("ax"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  s.inject_raw("(assert false)");
+  s.pop();
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), name("mid_lo"));
+  s.assert_formula(atom(0, Rel::Lt, 3.0), name("mid_hi"));
+  CHECK(s.check_unsat(T) == SatResult::sat());
+  CHECK(s.last_query().find("(reset)") == 0);
+  s.pop();
+}
+
+void test_inject_raw_error_sticky_on_check_unsat() {
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.assert_formula(atom(0, Rel::Ge, 0.0), std::nullopt);
+  CHECK(s.check_unsat(T) == SatResult::sat());
+  s.inject_raw("(assert (this_is_not_a_function q0))");
+  auto r = s.check_unsat(T);
+  CHECK(r.is_unknown());
+  CHECK(r.is_solver_error());
+  auto r2 = s.check_unsat(T);
+  CHECK(r2.is_unknown());
+  CHECK(r2.is_solver_error());
+}
+
+void test_unknown_does_not_commit_incremental() {
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.assert_formula(atom(0, Rel::Ge, 0.0), std::nullopt);
+  CHECK(s.check_unsat(T) == SatResult::sat());
+  s.inject_raw("(assert (this_is_not_a_function q0))");
+  CHECK(s.check_unsat(T).is_unknown());
+  CHECK(s.last_query().find("(reset)") == 0);
+  CHECK(s.check_unsat(T).is_unknown());
+  CHECK(s.last_query().find("(reset)") == 0);
+}
+
+void test_unsat_core_none_after_incremental_child_death() {
+  SubprocessSolver s = SubprocessSolver::z3();
+  s.declare(q(0), QSort::Real);
+  s.assert_formula(atom(0, Rel::Ge, 0.0), name("ax"));
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 3.0), name("hi"));
+  s.assert_formula(atom(0, Rel::Lt, 1.0), name("lo"));
+  CHECK(s.check_unsat(T) == SatResult::unsat());
+  CHECK(s.unsat_core().has_value());
+  CHECK(s.kill_child_for_test());
+  s.declare(q(9), QSort::Real);  // send_now fails → recycle; last stays Unsat
+  CHECK(!s.unsat_core().has_value());
+  s.pop();
+  s.push();
+  s.assert_formula(atom(0, Rel::Gt, 1.0), std::nullopt);
+  s.assert_formula(atom(0, Rel::Lt, 3.0), std::nullopt);
+  CHECK(s.check_unsat(T) == SatResult::sat());
+  CHECK(s.last_query().find("(reset)") == 0);
+  s.pop();
+}
+
 void test_decls_survive_pop() {
   SubprocessSolver s = SubprocessSolver::z3();
   s.push();
@@ -472,6 +537,10 @@ int main() {
     test_incremental_unsat_delta_then_sat_resets();
     test_check_unsat_sat_after_pop();
     test_unnamed_false_empty_core();
+    test_inject_raw_false_does_not_survive_pop();
+    test_inject_raw_error_sticky_on_check_unsat();
+    test_unknown_does_not_commit_incremental();
+    test_unsat_core_none_after_incremental_child_death();
     test_base_assert_survives_later_pop();
     test_decls_survive_pop();
   }

@@ -165,9 +165,14 @@ bool subprocess_available(const std::string& cmd);
 /// `(reset)` + the whole script, because z3's incremental core returns
 /// different models (14 PROVEN OVERLAPPING demotions on CMS-SUS-16-033).
 /// UNSAT `check_unsat` holds decls/axioms on the live process and sends
-/// only `(push)` / new asserts / `(check-sat)` / `(pop)` deltas. The
-/// frame stack is still the state of record; a reset-mode check invalidates
-/// the incremental session.
+/// only `(push)` / new asserts / `(check-sat)` / `(pop)` deltas. Immediate
+/// send recycles the child on `(error …)` / `unsupported` (echo is not
+/// "applied"). `sent_*` commits only on sat/unsat; Unknown recycles so a
+/// later delta cannot inherit a leftover frame. `inject_raw` invalidates
+/// the session (smash2: append + next reset). A getter after a dead
+/// incremental UNSAT returns no core — it does not reset-replay a flat
+/// script. The frame stack is still the state of record; a reset-mode
+/// check invalidates the incremental session.
 class SubprocessSolver : public Solver {
  public:
   static SubprocessSolver z3();

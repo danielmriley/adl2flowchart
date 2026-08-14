@@ -1999,6 +1999,24 @@ std::optional<Model> refined_model(Solver& solver, const Hir& hir,
   return base;
 }
 
+void drive_interval_certify_fail(PairReport& pr, IntervalCertifyFailKind kind,
+                                 bool certify, bool demote, Report& report) {
+  RegionCtx ca;
+  RegionCtx cb;
+  CombineAcc acc;
+  std::vector<RefutingPart> parts;
+  if (kind == IntervalCertifyFailKind::MissingOver) {
+    parts.push_back(RefutingPart::whole(adl2::solver::AssertName::make("QMISSING")));
+  } else if (kind == IntervalCertifyFailKind::WholeReject) {
+    adl2::formula::LinAtom atom = adl2::formula::LinAtom::single(
+        adl2::sema::QuantityId{0}, adl2::formula::Rel::Gt, adl2::sema::Rat::from_i64(0));
+    adl2::solver::AssertName n = adl2::solver::AssertName::make("Q1");
+    ca.overs.emplace_back(n, adl2::formula::Formula::of_atom(atom).over());
+    parts.push_back(RefutingPart::whole(n));
+  }
+  certify_interval_pair(pr, parts, ca, cb, certify, demote, report, acc);
+}
+
 int module_anchor() { return 4; }
 
 }  // namespace adl2::analysis

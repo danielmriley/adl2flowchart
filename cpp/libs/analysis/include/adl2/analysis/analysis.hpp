@@ -115,6 +115,12 @@ Report analyze_hir(adl2::sema::Hir& hir, const std::string& src,
 /// attempt — certify-off leaves `certified` unset and this still no-ops
 /// unless the caller passes `demote` (the AnalysisOptions flag is false
 /// by default).
+/// TEST HOOK: drive `certify_interval_pair`'s `fail()` lambda (empty parts,
+/// missing over, Whole reject) without a new `examples/*.adl`.
+enum class IntervalCertifyFailKind { EmptyParts, MissingOver, WholeReject };
+void drive_interval_certify_fail(PairReport& pr, IntervalCertifyFailKind kind,
+                                 bool certify, bool demote, Report& report);
+
 inline bool apply_interval_certify_demotion(PairReport& pr, bool demote) {
   if (!demote) return false;
   if (pr.kind != VerdictKind::ProvenDisjoint) return false;

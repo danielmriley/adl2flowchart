@@ -28,7 +28,10 @@ using adl2::analysis::Report;
 using adl2::analysis::SolverChoice;
 using adl2::analysis::WITNESS_EPS;
 using adl2::analysis::VerdictKind;
+using adl2::analysis::DiagnosticClass;
+using adl2::analysis::IntervalCertifyFailKind;
 using adl2::analysis::apply_interval_certify_demotion;
+using adl2::analysis::drive_interval_certify_fail;
 using adl2::analysis::classify_overlap_non_sat;
 using adl2::analysis::verdict_kind_human;
 using adl2::analysis::verdict_kind_json;
@@ -898,6 +901,77 @@ void test_interval_certify_demotion_policy() {
   CHECK(overlap.kind == VerdictKind::ProvenOverlapping);
 }
 
+PairReport interval_pd_seed() {
+  PairReport pr;
+  pr.a = "A";
+  pr.b = "B";
+  pr.kind = VerdictKind::ProvenDisjoint;
+  pr.proof_path = ProofPath::Interval;
+  pr.reason = "intervals cannot intersect";
+  return pr;
+}
+
+bool has_contradiction(const Report& r, const char* needle) {
+  for (const auto& d : r.diagnostics) {
+    if (d.class_ == DiagnosticClass::Contradiction &&
+        d.message.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void test_interval_certify_fail_wiring() {
+  {
+    PairReport pr = interval_pd_seed();
+    Report report;
+    drive_interval_certify_fail(pr, IntervalCertifyFailKind::EmptyParts, false, true,
+                                report);
+    CHECK(pr.kind == VerdictKind::ProvenDisjoint);
+    CHECK(!pr.certified.has_value());
+    CHECK(report.diagnostics.empty());
+  }
+  {
+    PairReport pr = interval_pd_seed();
+    Report report;
+    drive_interval_certify_fail(pr, IntervalCertifyFailKind::EmptyParts, true, false,
+                                report);
+    CHECK(pr.kind == VerdictKind::ProvenDisjoint);
+    CHECK(!pr.certified.has_value());
+    CHECK(has_contradiction(report, "no refuting atoms"));
+    CHECK(has_contradiction(report, "the verdict is left as it was"));
+    CHECK(!has_contradiction(report, "demoted to CANDIDATE DISJOINT"));
+  }
+  {
+    PairReport pr = interval_pd_seed();
+    Report report;
+    drive_interval_certify_fail(pr, IntervalCertifyFailKind::EmptyParts, true, true,
+                                report);
+    CHECK(pr.kind == VerdictKind::CandidateDisjoint);
+    CHECK(pr.certified.has_value() && *pr.certified == false);
+    CHECK(pr.proof_path.has_value() && *pr.proof_path == ProofPath::Interval);
+    CHECK(has_contradiction(report, "no refuting atoms"));
+    CHECK(has_contradiction(report, "demoted to CANDIDATE DISJOINT"));
+    CHECK(pr.reason.find("candidate, not a claim") != std::string::npos);
+  }
+  {
+    PairReport pr = interval_pd_seed();
+    Report report;
+    drive_interval_certify_fail(pr, IntervalCertifyFailKind::MissingOver, true, true,
+                                report);
+    CHECK(pr.kind == VerdictKind::CandidateDisjoint);
+    CHECK(has_contradiction(report, "no over-projection"));
+  }
+  {
+    PairReport pr = interval_pd_seed();
+    Report report;
+    drive_interval_certify_fail(pr, IntervalCertifyFailKind::WholeReject, true, true,
+                                report);
+    CHECK(pr.kind == VerdictKind::CandidateDisjoint);
+    CHECK(has_contradiction(report, "constant-false cut"));
+  }
+}
+
 void test_interval_certify_demotion_default_keeps_pd() {
   ExtDecls ext = ExtDecls::legacy();
   Hir hir = analyze_str(kSrc, "jets.adl", ext);
@@ -987,7 +1061,10 @@ void measure_interval_certify_corpus() {
   std::cerr << "interval-certify measure (examples/**/*.adl, no-solver): files=" << files
             << " skipped=" << skipped << " interval_pd=" << interval_pd
             << " certified=" << certified << " would_drop=" << would_drop << "\n";
-  CHECK(files > 0);
+  CHECK(files == 146);
+  CHECK(skipped == 0);
+  CHECK(interval_pd == 569);
+  CHECK(certified == 569);
   CHECK(would_drop == 0);
 }
 
@@ -1013,6 +1090,7 @@ int main() {
   test_refined_model_dphi_zero_and_size_cap();
   test_refined_overlap_still_proven();
   test_interval_certify_demotion_policy();
+  test_interval_certify_fail_wiring();
   test_interval_certify_demotion_default_keeps_pd();
   measure_interval_certify_corpus();
   std::cout << "PASS=" << g_pass << " FAIL=" << g_fails << "\n";

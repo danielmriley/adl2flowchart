@@ -17,7 +17,7 @@ it. Do not blob resolve/HIR into syntax or analysis.
 | `quantity.hpp` | interned `Collection` / `Quantity` / `QuantityTable` (no string keys) |
 | `intern.hpp` | case-insensitive `Symbol` / `SymbolTable` |
 | `ext.hpp` | `ExtDecls::legacy()` (embedded `legacy_parser/adl/*.txt`) |
-| `dump.hpp` | `hir_dump` / `quantity_table_dump` (Rust Debug format) |
+| `dump.hpp` | `hir_dump` / `quantity_table_dump` / `object_table` |
 | `ops.hpp` / `diag.hpp` | ops + diagnostics copied so HIR does not include syntax |
 | `rat.hpp` / `num.hpp` | exact `Rat` / `NumVal` (P3; formula + interp) |
 | `sema.hpp` | umbrella |
@@ -50,9 +50,7 @@ Logic lives here; cli only wires the flags.
 - ctest `adl2_sema_identity` — port of `adl-sema/tests/identity.rs`
 - `cpp/scripts/dump_hir_corpus_gate.sh` — live dump-diff vs smash2 over
   the fail-closed allowlist in `cpp/tests/hir_gate_files.txt`
-  (tutorials + key goldens; **38 files pinned**). Remaining `examples/`
-  HIR dumps are P2b. Bare `smash2_cpp check` is parse-only (not a sema
-  check); use `--dump-hir` / `--dump-quantities`.
+  (**171 files pinned**; one CMS file excluded for intern-order drift).
 
 ## CMake
 

@@ -11,11 +11,13 @@
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
 #include "adl2/sema/intern.hpp"
+#include "adl2/sema/merge.hpp"
 #include "adl2/sema/num.hpp"
 #include "adl2/sema/ops.hpp"
 #include "adl2/sema/quantity.hpp"
 #include "adl2/sema/rat.hpp"
 #include "adl2/sema/resolve.hpp"
+#include "adl2/sema/source.hpp"
 
 namespace adl2::sema {
 

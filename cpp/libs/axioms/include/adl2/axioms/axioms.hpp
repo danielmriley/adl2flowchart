@@ -6,10 +6,13 @@
 #include "adl2/formula/formula.hpp"
 #include "adl2/sema/ext.hpp"
 #include "adl2/sema/hir.hpp"
+#include "adl2/sema/quantity.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adl2::axioms {
@@ -100,6 +103,12 @@ struct AxiomSet {
 std::string collection_label(const adl2::sema::Hir& hir, adl2::sema::CollectionId c);
 std::string quantity_label(const adl2::sema::Hir& hir, adl2::sema::QuantityId q);
 
+/// Oriented twin pairs (same oriented kind, reversed arguments) inside `qs`.
+/// Pairs whose combined quantities contain such a twin cap the SAT direction
+/// at POSSIBLY until OPEN-2 is resolved (smash2 `twin_pairs`, SPEC_ANALYSIS §4).
+std::vector<std::pair<adl2::sema::QuantityId, adl2::sema::QuantityId>> twin_pairs(
+    const adl2::sema::QuantityTable& table, const std::set<adl2::sema::QuantityId>& qs);
+
 /// Emit axiom instances over `quantities` to a fixpoint (helper quantities
 /// interned by one round get their own facts in the next).
 AxiomSet emit_axioms(adl2::sema::Hir& hir, const adl2::sema::ExtDecls& ext,
@@ -107,6 +116,27 @@ AxiomSet emit_axioms(adl2::sema::Hir& hir, const adl2::sema::ExtDecls& ext,
 
 /// Canonical dump of emitted instances (id + description + formula).
 std::string dump_axioms(const adl2::sema::Hir& hir, const AxiomSet& set);
+
+/// Reserved element index used ONLY by cross-collection reconciliation.
+/// Unreachable from source: every resolver path clamps to
+/// `MAX_SOURCE_ELEM_INDEX` (strictly below).
+inline constexpr std::uint32_t GENERIC_INDEX = 0xFFFFFFFFu;
+static_assert(GENERIC_INDEX > adl2::sema::MAX_SOURCE_ELEM_INDEX,
+              "generic-element sentinel must sit above every source index");
+
+/// Canonical `size(sub) <= size(sup)` encoding shared by SUB and XSUB.
+/// `sub` and `sup` MUST be distinct `Quantity::Size` ids.
+adl2::formula::QFormula derived_size_le(adl2::sema::QuantityId sub,
+                                        adl2::sema::QuantityId sup);
+
+/// Encode a filter predicate onto `base[index]` (pass `GENERIC_INDEX`) as an
+/// EXACT three-valued Formula. Opaque leaves become Unknown — never dropped.
+/// Returns nullopt if the predicate references a binder/reduce or a concrete
+/// peer element (fail-closed: the whole reconciliation pair is NO-RELATION).
+std::optional<adl2::formula::Formula> encode_elem_pred_generic(
+    adl2::sema::QuantityTable& table, const adl2::sema::HNode& node,
+    adl2::sema::CollectionId base, std::uint32_t index,
+    adl2::formula::DiagTable& diags);
 
 int module_anchor();
 

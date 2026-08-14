@@ -1,6 +1,8 @@
 #include "adl2/syntax/lexer.hpp"
 
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace adl2::syntax {
@@ -12,6 +14,13 @@ std::string to_lower(std::string s) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
   return s;
+}
+
+/// Smash2 `elide`: keep diagnostic messages bounded for 10k-digit numerals.
+std::string elide(const std::string& s) {
+  constexpr std::size_t keep = 24;
+  if (s.size() <= keep * 2 + 5) return s;
+  return s.substr(0, keep) + "..." + s.substr(s.size() - keep);
 }
 
 }  // namespace
@@ -273,6 +282,18 @@ Token Lexer::next() {
         text.push_back(src_[i_]);
         ++i_;
         ++col_;
+      }
+      // Smash2: a nonzero subnormal f64 is a lexical error. Analyzer atoms
+      // are exact rationals; the interpreter is f64; they diverge only here.
+      // C++ Real tokens carry text only, so recover by rewriting to "0"
+      // (smash2 recovers the token's f64 slot to 0.0 and keeps the spelling).
+      double value = std::strtod(text.c_str(), nullptr);
+      if (value != 0.0 && std::fpclassify(value) == FP_SUBNORMAL) {
+        diags_.error(Span::at(begin, line, column, text.size()),
+                     "subnormal literal `" + elide(text) + "` is not supported",
+                     "magnitude is below the smallest normal f64; use a "
+                     "representable magnitude (>= 2.3e-308) or 0");
+        text = "0";
       }
       return make(TokKind::Real, begin, line, column, text);
     }

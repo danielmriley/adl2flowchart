@@ -4,11 +4,14 @@ Reference interpreter: Event → bool/values (Rust `adl-interp`, SPEC_LANGUAGE �
 
 JSONL loader enforces pT-descending collections and the NNEG/TAG domain
 the axioms assume. Two-valued `run_event` matches smash2 `run` event lines
-(`PASS` / `fail` / `ERROR:` + bins). Kleene three-valued membership
-(`region3`) is deferred to a later phase (witness validation).
+(`PASS` / `fail` / `ERROR:` + bins). `run_event_traced` + `CutflowSet`
+emit smash2 cutflow tables (step / raw / abs% / rel% / errors / sumw ± err).
+`HistoSet` accumulates `histo` statements (TH1/Sumw2; histos.json v2).
+Kleene three-valued membership (`region3` / `eval_region_membership`)
+prefers a decidable False over Unknown and is the witness-validation entry
+point.
 
 Headers: `libs/interp/include/adl2/interp/`
 
-Oracle: `smash2_cpp run` vs `smash2 run` on pinned pairs
-(`cpp/tests/interp_gate_pairs.txt`); compared lines start with `event `
-(cutflow/histo tables deferred).
+Oracle: `smash2_cpp run` vs smash2 `run` on pinned pairs
+(`cpp/tests/interp_gate_pairs.txt`); full stdout (event lines + cutflow).

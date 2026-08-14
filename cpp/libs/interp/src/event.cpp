@@ -3,7 +3,9 @@
 #include "adl2/sema/intern.hpp"
 
 #include <cctype>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -137,7 +139,19 @@ class Parser {
     }
     Json j;
     j.kind = Json::Kind::Num;
-    j.n = std::stod(text.substr(start, i - start));
+    // strtod, not stod: libstdc++ stod throws out_of_range on ERANGE, and
+    // glibc sets ERANGE for subnormal underflow (e.g. 5e-324 = next_up(0)),
+    // which serde_json accepts. Underflow to 0/denormal is a valid JSON
+    // number; only overflow to ±inf is rejected.
+    errno = 0;
+    char* end = nullptr;
+    j.n = std::strtod(text.c_str() + start, &end);
+    if (end != text.c_str() + i) {
+      throw std::runtime_error("invalid JSON number");
+    }
+    if (!std::isfinite(j.n)) {
+      throw std::runtime_error("non-finite JSON number");
+    }
     return j;
   }
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# P1 dump-ast corpus gate: byte-for-byte diff of
-#   smash2_cpp check --dump-ast  vs  smash2 check --dump-ast
-# over the same 146-file examples/ corpus as Rust adl-syntax corpus_gate.
+# P1 dump-ast corpus gate over the 146-file examples/ corpus.
+# Default: C++ well-formedness. CROSS_ORACLE=1 byte-diffs smash2.
 #
 # Both dump commands must exit 0 and emit a dump starting with `File`.
 # A crash, usage error, empty dump, or mismatch fails the gate.
@@ -12,37 +11,19 @@
 #
 # Env:
 #   SMASH2_CPP   path to C++ binary (default: cpp/build/smash2_cpp)
-#   SMASH2_RUST  path to Rust smash2 (default: reimplementation/adl2/target/release/smash2)
+#   SMASH2_RUST  path to Rust smash2 (only when CROSS_ORACLE=1)
 #   SKIP_BUILD=1 skip cmake/cargo build steps
+#   CROSS_ORACLE=1  optional smash2 byte-diff (C++ stands alone by default)
 #   CORPUS_ROOT  override examples/ root
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=gate_common.sh
+source "$ROOT/cpp/scripts/gate_common.sh"
+gate_prepare
 
 CORPUS_ROOT="${CORPUS_ROOT:-$ROOT/examples}"
-SMASH2_CPP="${SMASH2_CPP:-$ROOT/cpp/build/smash2_cpp}"
-SMASH2_RUST="${SMASH2_RUST:-$ROOT/reimplementation/adl2/target/release/smash2}"
-
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  # Some images default CXX to clang without libstdc++; prefer g++ when unset.
-  if [[ -z "${CXX:-}" ]] && command -v g++ >/dev/null 2>&1; then
-    export CXX=g++
-  fi
-  echo "==> building smash2_cpp"
-  cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-  cmake --build cpp/build -j"$(nproc)"
-
-  echo "==> building Rust smash2 (forever oracle; no native z3)"
-  (
-    cd reimplementation/adl2
-    # --no-default-features: works on hosts without libz3; dump-ast is syntax-only.
-    cargo build --release -p adl-cli --no-default-features
-  )
-fi
-
-test -x "$SMASH2_CPP" || { echo "missing smash2_cpp at $SMASH2_CPP" >&2; exit 2; }
-test -x "$SMASH2_RUST" || { echo "missing smash2 at $SMASH2_RUST" >&2; exit 2; }
 test -d "$CORPUS_ROOT" || { echo "missing corpus at $CORPUS_ROOT" >&2; exit 2; }
 
 mapfile -t FILES < <(find "$CORPUS_ROOT" -name '*.adl' | sort)
@@ -65,27 +46,36 @@ dump_ok() {
   [[ "$(head -n 1 "$dump")" == "File" ]] || return 1
 }
 
-echo "==> dump-diff ${#FILES[@]} files (Rust oracle vs smash2_cpp)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "==> dump-diff ${#FILES[@]} files (optional smash2 cross-check vs smash2_cpp)"
+else
+  echo "==> dump-ast ${#FILES[@]} files (C++-only; CROSS_ORACLE=1 for smash2 diff)"
+fi
 for f in "${FILES[@]}"; do
   rel="${f#"$CORPUS_ROOT"/}"
   set +e
-  "$SMASH2_RUST" check --dump-ast "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
-  rc_rust=$?
   "$SMASH2_CPP" check --dump-ast "$f" >"$tmpdir/cpp.dump" 2>"$tmpdir/cpp.err"
   rc_cpp=$?
+  rc_rust=0
+  if [[ "$GATE_ORACLE" == "1" ]]; then
+    "$SMASH2_RUST" check --dump-ast "$f" >"$tmpdir/rust.dump" 2>"$tmpdir/rust.err"
+    rc_rust=$?
+  fi
   set -e
 
   reason=""
-  if [[ "$rc_rust" -ne 0 ]]; then
-    reason="rust smash2 exited $rc_rust"
-  elif [[ "$rc_cpp" -ne 0 ]]; then
+  if [[ "$rc_cpp" -ne 0 ]]; then
     reason="smash2_cpp exited $rc_cpp"
-  elif ! dump_ok "$tmpdir/rust.dump"; then
-    reason="rust dump missing or does not start with File"
   elif ! dump_ok "$tmpdir/cpp.dump"; then
     reason="cpp dump missing or does not start with File"
-  elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
-    reason="dump mismatch"
+  elif [[ "$GATE_ORACLE" == "1" ]]; then
+    if [[ "$rc_rust" -ne 0 ]]; then
+      reason="rust smash2 exited $rc_rust"
+    elif ! dump_ok "$tmpdir/rust.dump"; then
+      reason="rust dump missing or does not start with File"
+    elif ! diff -q "$tmpdir/rust.dump" "$tmpdir/cpp.dump" >/dev/null; then
+      reason="dump mismatch"
+    fi
   fi
 
   if [[ -z "$reason" ]]; then
@@ -113,4 +103,8 @@ if [[ "$fail" -ne 0 ]]; then
   printf '  %s\n' "${failures[@]}" >&2
   exit 1
 fi
-echo "dump-ast corpus gate: PASS (byte-for-byte vs Rust smash2; both sides exit 0)"
+if [[ "$GATE_ORACLE" == "1" ]]; then
+  echo "dump-ast corpus gate: PASS (byte-for-byte vs smash2; both sides exit 0)"
+else
+  echo "dump-ast corpus gate: PASS (C++ dumps well-formed; CROSS_ORACLE=1 for smash2 diff)"
+fi

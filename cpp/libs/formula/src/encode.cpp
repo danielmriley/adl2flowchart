@@ -2,12 +2,14 @@
 
 #include "adl2/sema/num.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace adl2::formula {
 namespace {
@@ -83,10 +85,14 @@ struct LinErr {
   }
 };
 
+/// Sparse linear combination. Terms stay sorted by QuantityId so dump
+/// order matches the old `std::map` / smash2 `BTreeMap`. Zero coefficients
+/// are kept (smash2 `combine`); `LinAtom::make` drops them.
 struct LinExpr {
-  std::map<QuantityId, Rat> terms;
+  std::vector<std::pair<QuantityId, Rat>> terms;
   Rat k;
   std::set<QuantityId> mentioned;
+
   static LinExpr constant(Rat c) {
     LinExpr e;
     e.k = std::move(c);
@@ -94,17 +100,26 @@ struct LinExpr {
   }
   static LinExpr quantity(QuantityId q) {
     LinExpr e;
-    e.terms.emplace(q, Rat::one());
+    e.terms.emplace_back(q, Rat::one());
     e.mentioned.insert(q);
     return e;
+  }
+  void add_term(QuantityId q, Rat c) {
+    auto it = std::lower_bound(terms.begin(), terms.end(), q,
+                               [](const std::pair<QuantityId, Rat>& t, QuantityId id) {
+                                 return t.first < id;
+                               });
+    if (it != terms.end() && it->first == q) {
+      it->second = it->second + c;
+    } else {
+      terms.insert(it, {q, std::move(c)});
+    }
   }
   LinExpr combine(const LinExpr& o, bool negate) const {
     LinExpr out = *this;
     for (const auto& kv : o.terms) {
       Rat c = negate ? -kv.second : kv.second;
-      auto it = out.terms.find(kv.first);
-      if (it == out.terms.end()) out.terms.emplace(kv.first, std::move(c));
-      else it->second = it->second + c;
+      out.add_term(kv.first, std::move(c));
     }
     out.k = negate ? (out.k - o.k) : (out.k + o.k);
     out.mentioned.insert(o.mentioned.begin(), o.mentioned.end());
@@ -115,7 +130,8 @@ struct LinExpr {
     LinExpr out;
     out.k = k * c;
     out.mentioned = mentioned;
-    for (const auto& kv : terms) out.terms.emplace(kv.first, kv.second * c);
+    out.terms.reserve(terms.size());
+    for (const auto& kv : terms) out.terms.emplace_back(kv.first, kv.second * c);
     return out;
   }
 };
@@ -401,9 +417,89 @@ struct Encoder {
   QuantityTable* table;
   const std::vector<adl2::sema::HirRegion>* regions;
   SymbolTable* symbols;
-  const std::vector<adl2::sema::ElemPred>* elem_preds;
+  const std::vector<adl2::sema::ElemPred>* elem_preds = nullptr;
   DiagTable diags;
   std::vector<std::size_t> stack;
+
+  /// SOUNDNESS_PROOF §8 1b: `QuantityTable::absence(Size)` is `Never`, but
+  /// materializing a collection whose filter cannot decide without an
+  /// out-of-fragment leaf is a hard interpreter error. Size of *that*
+  /// collection is Hard here — encoder-local, so SZ0 on in-fragment
+  /// collections is unchanged.
+  ///
+  /// `has_unsupported()` is the wrong predicate. A mixed And such as
+  /// `pt > 10 and DO < 0.5` can still reject via the in-fragment conjunct
+  /// (`truth()` returns False without reading the unsupported leaf), so
+  /// size is obtainable. Treating those sizes as Hard put a presence
+  /// guard on `size(OSdileptons) > 0`; `negate` of `p≥1 ∧ Dual` then has
+  /// `forced_by_falsity = {}` (Dual) and De-Morgans `p<1` into the OVER —
+  /// a completeness hole (CMS-SUS-16-041_Delphes onZ vs offZ). smash2
+  /// keeps Size as Never; the Hard override applies only when every
+  /// boolean path is out of fragment (`select bdt > 0.5`).
+  static bool pred_unavoidably_hard(const HNode& node) {
+    switch (node.kind) {
+      case HNode::Kind::And:
+      case HNode::Kind::Or: {
+        if (node.items.empty()) return false;
+        for (const auto& p : node.items) {
+          if (!pred_unavoidably_hard(p)) return false;
+        }
+        return true;
+      }
+      case HNode::Kind::Not:
+        return node.a && pred_unavoidably_hard(*node.a);
+      case HNode::Kind::Ternary: {
+        bool g = node.a && pred_unavoidably_hard(*node.a);
+        bool t = node.b && pred_unavoidably_hard(*node.b);
+        bool e = node.c && pred_unavoidably_hard(*node.c);
+        return g || (t && e);
+      }
+      default:
+        return node.has_unsupported();
+    }
+  }
+  bool pred_hard(ElemPredId id) const {
+    if (!elem_preds || id.id >= elem_preds->size()) return false;
+    return pred_unavoidably_hard((*elem_preds)[id.id].node);
+  }
+  bool coll_hard(CollectionId c) const {
+    const Collection& col = table->collection(c);
+    switch (col.kind) {
+      case CollectionKind::Base:
+        return false;
+      case CollectionKind::Filtered:
+        return pred_hard(col.pred) || coll_hard(col.parent);
+      case CollectionKind::Slice:
+      case CollectionKind::Sorted:
+        return coll_hard(col.parent);
+      case CollectionKind::Union: {
+        for (auto p : col.parts) {
+          if (coll_hard(p)) return true;
+        }
+        return false;
+      }
+      case CollectionKind::Combination: {
+        for (auto p : col.parts) {
+          if (coll_hard(p)) return true;
+        }
+        for (auto cut : col.cuts) {
+          if (pred_hard(cut)) return true;
+        }
+        return false;
+      }
+      case CollectionKind::CombProject:
+        return coll_hard(col.parent);
+    }
+    return false;
+  }
+  Absence absence_of(QuantityId q) const {
+    const Quantity& qq = table->quantity(q);
+    if (qq.kind == QuantityKind::Size && coll_hard(qq.coll)) return Absence::Hard;
+    return table->absence(q);
+  }
+  bool may_be_absent_of(QuantityId q) const {
+    return adl2::sema::absence_possible(absence_of(q));
+  }
 
   Formula unknown(Span span, std::string reason) {
     return Formula::unknown(diags.push(span, std::move(reason)));
@@ -420,7 +516,7 @@ struct Encoder {
     if (!inner.is_exact()) return inner;
     std::vector<QuantityId> needed;
     for (auto q : quants) {
-      if (table->may_be_absent(q)) needed.push_back(q);
+      if (may_be_absent_of(q)) needed.push_back(q);
     }
     if (needed.empty()) return inner;
     std::vector<Formula> parts;
@@ -445,7 +541,7 @@ struct Encoder {
         break;
       case Formula::Kind::Atom:
         for (const auto& t : f.atom.terms()) {
-          if (table->absence(t.second) == Absence::Hard) out.insert(t.second);
+          if (absence_of(t.second) == Absence::Hard) out.insert(t.second);
         }
         break;
       case Formula::Kind::And:
@@ -495,7 +591,7 @@ struct Encoder {
     switch (f.kind) {
       case Formula::Kind::Atom: {
         for (const auto& t : f.atom.terms()) {
-          if (table->absence(t.second) == Absence::Soft) return {};
+          if (absence_of(t.second) == Absence::Soft) return {};
         }
         std::set<QuantityId> s;
         for (const auto& t : f.atom.terms()) s.insert(t.second);
@@ -599,7 +695,7 @@ struct Encoder {
                Span span);
   Formula lin_err(const LinErr& e, const std::string& what, Span span);
   static Rat at_edge(Edge mode, Rat k);
-  Formula atom_of(std::map<QuantityId, Rat> terms, Rel rel, Rat k);
+  Formula atom_of(std::vector<std::pair<QuantityId, Rat>> terms, Rel rel, Rat k);
   std::optional<QuantityId> intern_reduce(ReduceKind kind, CollectionId coll, const HNode& body,
                                           bool has_slice, std::uint32_t start,
                                           const std::optional<std::uint32_t>& end);
@@ -607,8 +703,8 @@ struct Encoder {
   std::optional<LinExpr> lin(const HNode& node, LinErr& err);
   std::optional<LinExpr> lin_or_opaque(const HNode& node, LinErr& err);
   std::optional<LinExpr> lin_binary(ArithOp op, const HNode& lhs, const HNode& rhs, LinErr& err);
-  std::optional<Formula> try_comb_existence(const std::map<QuantityId, Rat>& terms, Rel rel,
-                                            const Rat& k, Span span);
+  std::optional<Formula> try_comb_existence(
+      const std::vector<std::pair<QuantityId, Rat>>& terms, Rel rel, const Rat& k, Span span);
   std::vector<std::vector<std::uint32_t>> binder_index_tuples(
       const std::vector<CollectionId>& parts, CombKind kind);
   Formula encode_tuple_cuts(const std::vector<ElemPredId>& cuts,
@@ -1109,8 +1205,8 @@ Formula Encoder::pattern(const HNode& side, Rel rel, Rat c, const std::string& w
 Formula Encoder::opaque_atom(const HNode& side, Rel rel, Rat c, const std::string& why,
                              Span span) {
   if (auto q = intern_opaque_scalar(side)) {
-    std::map<QuantityId, Rat> terms;
-    terms.emplace(*q, Rat::one());
+    std::vector<std::pair<QuantityId, Rat>> terms;
+    terms.emplace_back(*q, Rat::one());
     auto a = atom_of(std::move(terms), rel, std::move(c));
     return guard_presence({*q}, std::move(a));
   }
@@ -1250,7 +1346,7 @@ Rat Encoder::at_edge(Edge mode, Rat k) {
   return k;
 }
 
-Formula Encoder::atom_of(std::map<QuantityId, Rat> terms, Rel rel, Rat k) {
+Formula Encoder::atom_of(std::vector<std::pair<QuantityId, Rat>> terms, Rel rel, Rat k) {
   if (terms.empty()) {
     return rel_eval(rel, Rat::zero(), k) ? Formula::ttrue() : Formula::ffalse();
   }
@@ -1466,12 +1562,11 @@ std::optional<LinExpr> Encoder::lin_binary(ArithOp op, const HNode& lhs, const H
   return std::nullopt;
 }
 
-std::optional<Formula> Encoder::try_comb_existence(const std::map<QuantityId, Rat>& terms,
-                                                   Rel rel, const Rat& k, Span span) {
+std::optional<Formula> Encoder::try_comb_existence(
+    const std::vector<std::pair<QuantityId, Rat>>& terms, Rel rel, const Rat& k, Span span) {
   if (terms.size() != 1) return std::nullopt;
-  auto it = terms.begin();
-  if (!it->second.is_one()) return std::nullopt;
-  QuantityId q = it->first;
+  if (!terms[0].second.is_one()) return std::nullopt;
+  QuantityId q = terms[0].first;
   bool forces = false;
   if (rel == Rel::Ge) forces = k >= Rat::one();
   else if (rel == Rel::Gt) forces = k >= Rat::zero();
@@ -1652,6 +1747,15 @@ QuantityId Encoder::subst_binder_quantity(QuantityId q,
   return q;
 }
 
+Encoder make_encoder(Hir& hir) {
+  Encoder enc;
+  enc.table = &hir.table;
+  enc.regions = &hir.regions;
+  enc.symbols = &hir.symbols;
+  enc.elem_preds = &hir.elem_preds;
+  return enc;
+}
+
 }  // namespace
 
 EncodedRegion encode_region(Hir& hir, std::size_t region) {
@@ -1661,17 +1765,29 @@ EncodedRegion encode_region(Hir& hir, std::size_t region) {
     name = hir.symbols.display(hir.regions[region].name);
     span = hir.regions[region].span;
   }
-  Encoder enc;
-  enc.table = &hir.table;
-  enc.regions = &hir.regions;
-  enc.symbols = &hir.symbols;
-  enc.elem_preds = &hir.elem_preds;
+  Encoder enc = make_encoder(hir);
   auto formula = enc.region(region, span);
   EncodedRegion out;
   out.region = region;
   out.name = std::move(name);
   out.formula = std::move(formula);
   out.diags = std::move(enc.diags);
+  return out;
+}
+
+EncodedRegion encode_region_stmts(Hir& hir, const std::vector<HirRegionStmt>& stmts,
+                                  Span span) {
+  Encoder enc = make_encoder(hir);
+  std::vector<Formula> parts;
+  parts.reserve(stmts.size());
+  for (const auto& st : stmts) {
+    if (auto f = enc.stmt(st)) parts.push_back(std::move(*f));
+  }
+  EncodedRegion out;
+  out.name = hir.symbols.display(hir.symbols.intern("__adl2_synth__"));
+  out.formula = fand(std::move(parts));
+  out.diags = std::move(enc.diags);
+  (void)span;
   return out;
 }
 

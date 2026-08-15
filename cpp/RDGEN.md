@@ -1,0 +1,182 @@
+# `adl2_rdgen` — EBNF → recursive-descent C++
+
+Compile-time host tool that reads the frozen collaborator grammar
+([`grammar.ebnf`](grammar.ebnf)) and emits `parse_X` method bodies for
+`adl2_syntax`. **Not Bison. Not Flex.** Generated code stays the same
+hand-auditable recursive-descent style as today’s `parser.cpp`
+(`adl2::syntax::Parser`, `peek` / `advance` / token vector). ADR-002’s
+rejection of LALR still holds; ADR-011 records this amendment.
+
+This file is the plan. Usage and CLI live in
+[`tools/rdgen/README.md`](tools/rdgen/README.md). The EBNF ↔ `parse_X`
+table is [`tools/rdgen/method_map.txt`](tools/rdgen/method_map.txt).
+
+## Do I need a second full tool?
+
+**A host compiler, not a second smash2.** Collaborators still type
+
+```bash
+CXX=g++ cmake -S cpp -B cpp/build
+cmake --build cpp/build
+```
+
+CMake builds `adl2_rdgen` first (small C++17 executable, **no**
+`adl2_*` libraries, **no** z3, **no** Python/flex/bison). A
+`add_custom_command` then runs it with `grammar.ebnf` as an explicit
+`DEPENDS`. Changing the EBNF rebuilds the generated include and then
+`adl2_syntax`. Users of `smash2_cpp` never invoke the generator.
+
+That *is* a secondary binary — the same niche bison would have occupied —
+but it is a **build-time** tool, not a product CLI. Writing it in C++
+keeps the published toolchain “stock cmake + g++”.
+
+## Why a custom emitter (and not bison)
+
+Legacy LALR hid 87 conflicts, a `NOT` token the lexer never produced,
+hyphen-eating identifiers, and signed-literal lexing (ADR-002). A stock
+`.y` also cannot state the things this grammar actually needs:
+
+| Constraint | Why a table generator loses |
+|---|---|
+| Indent-only `object-define` | Layout, not a token |
+| Contextual `bins` | Ident, not a keyword; bare-line vs `bin-stmt` |
+| `path-token` | Arg-position only; greedy lex swallows exprs |
+| Particle-list juxtaposition | `pT(jets[0] jets[1])` — two postfix, no comma |
+| NEWLINE as a token | Statement recovery / `nl_before` |
+| No signed-literal lex | Sign is grammatical (`signed-num`, `unary`) |
+| Case-insensitive keywords | Lexer policy, not a production |
+| dump-ast 146-file pin | AST shape is load-bearing |
+
+So the generator **emits recursive-descent `parse_X`**, and leaves a
+named **hook** wherever the EBNF is intentionally incomplete.
+
+## Name and layout
+
+| Item | Choice |
+|---|---|
+| CMake target / binary | `adl2_rdgen` |
+| Namespace | `adl2::rdgen` (host tool only; **not** linked into smash2) |
+| Sources | `cpp/tools/rdgen/` |
+| Input grammar | `cpp/grammar.ebnf` (explicit CMake `DEPENDS`) |
+| Input map | `cpp/tools/rdgen/method_map.txt` |
+| Generated output | `${build}/libs/syntax/rdgen/parser_expr.inc.hpp` |
+| Committed golden | `cpp/libs/syntax/generated/parser_expr.inc.hpp` (review + ctest) |
+
+`parser.hpp` stays the class declaration (methods + private helpers).
+The generator fills **method bodies**, not the class shape, until a later
+phase proves we can emit declarations without fighting hooks.
+
+## How CMake wires it
+
+```
+adl2_rdgen (host exe)
+    ↓  --check --emit-expr
+grammar.ebnf + method_map.txt + parser.hpp
+    ↓
+parser_expr.inc.hpp     (build tree)
+    ↓  #include
+parser.cpp  →  adl2_syntax  →  smash2_cpp
+```
+
+- `add_subdirectory(tools/rdgen)` **before** `libs/syntax` so the
+  custom command can `DEPENDS adl2_rdgen`.
+- `OBJECT_DEPENDS` on `parser.cpp` so a grammar edit rebuilds the TU.
+- Generated sources live in the **build** directory. A committed golden
+  is diffed by `ctest` (`adl2_rdgen_expr_golden`) so PRs show the C++
+  we emit without making the golden the compile input (no stale-in-tree
+  bootstrap).
+
+## Shape-checked emission (fail closed)
+
+The tool parses our EBNF dialect (`(* *)` comments, hyphenated names,
+`{ }`, `[ ]`, `"literals"`) and classifies each production:
+
+| Shape | EBNF pattern | First-slice emit? |
+|---|---|---|
+| **Alias** | `A = B` | yes — `parse_condition` |
+| **LeftAssoc** | `A = B { (op\|op) B }` | yes — `or` / `and` / `+−` / `*/^` |
+| **PrefixUnary** | `A = (op) A \| B` | yes — `not-expr`, `unary` |
+| **OptionalSuffix** | `A = B [ "?" … ]` | yes — `ternary` |
+| **KeywordSeq** | `"reject" condition` | yes — reject / trigger / cut |
+| **Choice** | `A = B \| C \| …` | later — dispatchers |
+| **TokenClass** | `cmp-op = ">" \| …` | no — `peek_cmp_op` |
+| **Hook / Other** | indent, bins, path, … | never from EBNF alone |
+
+A production marked `generate` in `method_map.txt` **must** classify as
+a known emit shape; otherwise the build fails. Changing `or-expr` to
+something the emitter does not understand fails closed instead of
+emitting a wrong AST.
+
+Operator literals map to existing `TokKind` / `BinOp` / `UnaryOp`
+values. Same-op groups (`or` / `||`) become a `while (check A \|\| check B)`
+loop; mixed-op groups (`+` / `-`) become the current `for (;;)` switch.
+That matches today’s dump-ast-pinned construction.
+
+## Small grammar edits (no C++)
+
+A **word** literal added to an existing alternation inherits the first
+known sibling keyword’s `TokKind` (and `BinOp` / `UnaryOp` if any):
+
+```
+or-expr = and-expr { ("or"|"||"|"xor") and-expr } ;
+cut-stmt = ("select"|"cut"|"cmd"|"command"|"sel") condition ;
+```
+
+`adl2_rdgen` writes `keyword_synonyms.inc.hpp`; the hand-written lexer
+includes it. `xor` lexes as `KwOr` and the generated `or-expr` parser
+builds `Binary op=or`. `sel` lexes as `KwSelect` and the generated cut
+parser builds `Cut kw=select`. The grammar author does not edit
+`lexer.cpp` or `parser.cpp`.
+
+New *symbolic* operators (`@@`) and new AST node kinds (`BinOp::Xor`)
+still fail closed — those need a token / enum in C++ once. Synonyms of
+existing constructs do not.
+
+`ctest` `adl2_rdgen_mutate_parse` rebuilds the lexer keyword table from
+a copy of `grammar.ebnf` with the two edits above and checks the AST.
+
+## What stays hand-written (hooks)
+
+These are named in the map and **must** exist on `Parser`. The generator
+never invents their bodies from the EBNF comment.
+
+- **Layout:** `parse_object_define` (`at_column_one`), section/stmt
+  recovery (`synchronize_statement`, `nl_before`)
+- **Contextual `bins`:** `parse_region_stmt` + `is_ident_text("bins")`
+- **`path-token`:** `parse_path_token` (arg position, deprecation)
+- **Particle lists:** `extend_particle_list`
+- **Comparison extras:** chain-to-`and`, OPEN-4 `~=` warning,
+  `parse_band_suffix`
+- **Postfix extras:** `->` member (not in EBNF), `nl_before` index,
+  trailing `_`
+- **`sort-stmt`:** absorb to end of statement
+- **`parse_derived_candidate`:** not in the EBNF (object-block extra)
+- **Lexer:** stays hand-written. Do not start a lexer generator.
+
+## Phases
+
+0. Host tool + checker + expression ladder.
+1. **Done.** Ternary, reject / trigger / cut, keyword-synonym table,
+   mutation test (`xor` / `sel`).
+2. Dispatchers (`section`, `region-stmt`) that only call hooks.
+3. **Stop.** Do not generate indent / bins / path / particle-list /
+   comparison-chain. Those stay hooks.
+
+`parser.hpp` emission (declarations) is a later optional step. The
+class’s private helpers are not grammar.
+
+## Acceptance
+
+- `adl2_rdgen --check` is part of the `adl2_syntax` build graph.
+- `ctest` includes `adl2_rdgen_unit` and `adl2_rdgen_expr_golden`.
+- `smash2_cpp_dump_ast_tiny` / `bins_and_path` stay green.
+- Corpus dump-ast (146) stays well-formed; `CROSS_ORACLE=1` byte-diff
+  is unchanged when that job runs.
+- No flex, bison, Python, or Rust added to the `adl2-cpp` CI job.
+- No new `examples/*.adl`.
+
+## What this is not
+
+- Not a replacement for [`BISON_MAP.md`](BISON_MAP.md) (onboarding).
+- Not a rewrite of ADR-010 (C++ port, smash2 forever-oracle).
+- Not permission to copy `legacy_parser/`’s `.y` into this tree.

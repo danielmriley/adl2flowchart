@@ -4,11 +4,12 @@
  *   docs/archive/specs/SPEC_LANGUAGE.md §3 Grammar (EBNF)
  * Decision record: docs/archive/specs/DECISIONS.md ADR-002 + ADR-010
  *
- * Contract: one hand-written parse_<nonterminal> function per production
- * below (see libs/syntax/include/adl2/syntax/parser.hpp, libs/syntax/, BISON_MAP.md).
+ * Contract: one parse_<nonterminal> function per production below
+ * (see libs/syntax/include/adl2/syntax/parser.hpp, BISON_MAP.md, RDGEN.md).
  * Owned by CMake target adl2_syntax (see MODULES.md). Bison/Flex are NOT
- * the implementation — this file is the readable grammar collaborators
- * audit the C++ against.
+ * the implementation. This file is a compile-time input to host tool
+ * adl2_rdgen (tools/rdgen/): CMake DEPENDS it, checks the method map, and
+ * emits the mechanical expression-ladder bodies. Hooks stay hand-written.
  *
  * Status: frozen for the C++ port packaging surface. Semantic [DECIDE]
  * items in SPEC_LANGUAGE remain as noted there; do not “fix” them in

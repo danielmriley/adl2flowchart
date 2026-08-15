@@ -1,10 +1,14 @@
 # `adl2_syntax` (P1 — filled)
 
-Lexer, hand-written recursive-descent parser, dump-shaped AST, and
-canonical `dump_ast` matching Rust `adl-syntax` / `smash2 check --dump-ast`.
+Lexer, recursive-descent parser, dump-shaped AST, and canonical
+`dump_ast` matching Rust `adl-syntax` / `smash2 check --dump-ast`.
 
 - Headers: `libs/syntax/include/adl2/syntax/`
-- Collaborator grammar: `../../grammar.ebnf`, `../../BISON_MAP.md`
+- Collaborator grammar: `../../grammar.ebnf`, `../../BISON_MAP.md`,
+  `../../RDGEN.md`
+- Mechanical expression-ladder bodies are generated at compile time by
+  host tool `adl2_rdgen` (`../../tools/rdgen/`). Hooks stay in
+  `src/parser.cpp`. Golden: `generated/parser_expr.inc.hpp`.
 - No dependency on sema / analysis / solver.
 
 CLI dump wiring lives in `adl2_cli` (`libs/cli`); this library owns parse/dump

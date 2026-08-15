@@ -82,9 +82,12 @@ cpp/
   libs/<module>/include/adl2/<module>/   public headers (seams by path + CMake)
   libs/<module>/src/                     implementation
   libs/cli/                              smash2_cpp executable only
+  tools/rdgen/                           host EBNF → RD emitter (adl2_rdgen)
   cmake/Adl2Module.cmake                 shared add_library helper
-  grammar.ebnf                           collaborator EBNF (owned by syntax)
+  grammar.ebnf                           collaborator EBNF (owned by syntax;
+                                         compile-time DEPENDS of adl2_syntax)
   BISON_MAP.md                           collaborator map (owned by syntax)
+  RDGEN.md                               generator plan + CMake contract
 ```
 
 Namespaces follow modules: `adl2::syntax`, `adl2::sema`, `adl2::formula`,

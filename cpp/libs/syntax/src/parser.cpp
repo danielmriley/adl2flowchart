@@ -908,8 +908,9 @@ RegionStmt Parser::parse_sort_stmt() {
 }
 
 // --- expressions ---
-
-std::unique_ptr<Expr> Parser::parse_condition() { return parse_ternary(); }
+// Mechanical ladder (condition / or / and / not / additive / mul / unary)
+// is generated from grammar.ebnf by adl2_rdgen (see RDGEN.md).
+#include "parser_expr.inc.hpp"
 
 std::unique_ptr<Expr> Parser::parse_ternary() {
   auto guard = parse_or_expr();
@@ -929,52 +930,6 @@ std::unique_ptr<Expr> Parser::parse_ternary() {
   e->then_e = std::move(then_e);
   e->else_e = std::move(else_e);
   return e;
-}
-
-std::unique_ptr<Expr> Parser::parse_or_expr() {
-  auto left = parse_and_expr();
-  while (check(TokKind::KwOr) || check(TokKind::OrOr)) {
-    advance();
-    auto right = parse_and_expr();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->bin_op = BinOp::Or;
-    e->span = left->span.to(right->span);
-    e->lhs = std::move(left);
-    e->rhs = std::move(right);
-    left = std::move(e);
-  }
-  return left;
-}
-
-std::unique_ptr<Expr> Parser::parse_and_expr() {
-  auto left = parse_not_expr();
-  while (check(TokKind::KwAnd) || check(TokKind::AndAnd)) {
-    advance();
-    auto right = parse_not_expr();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->bin_op = BinOp::And;
-    e->span = left->span.to(right->span);
-    e->lhs = std::move(left);
-    e->rhs = std::move(right);
-    left = std::move(e);
-  }
-  return left;
-}
-
-std::unique_ptr<Expr> Parser::parse_not_expr() {
-  if (check(TokKind::KwNot) || check(TokKind::Bang)) {
-    Token op = advance();
-    auto inner = parse_not_expr();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Unary;
-    e->unary_op = UnaryOp::Not;
-    e->span = op.span.to(inner->span);
-    e->child = std::move(inner);
-    return e;
-  }
-  return parse_comparison();
 }
 
 std::unique_ptr<Expr> Parser::parse_comparison() {
@@ -1052,68 +1007,6 @@ std::unique_ptr<Expr> Parser::parse_band_suffix(std::unique_ptr<Expr> lhs) {
   e->span = lhs->span.to(last_span_);
   e->child = std::move(lhs);
   return e;
-}
-
-std::unique_ptr<Expr> Parser::parse_additive() {
-  auto left = parse_multiplicative();
-  for (;;) {
-    BinOp op;
-    if (check(TokKind::Plus))
-      op = BinOp::Add;
-    else if (check(TokKind::Minus))
-      op = BinOp::Sub;
-    else
-      break;
-    advance();
-    auto right = parse_multiplicative();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->bin_op = op;
-    e->span = left->span.to(right->span);
-    e->lhs = std::move(left);
-    e->rhs = std::move(right);
-    left = std::move(e);
-  }
-  return left;
-}
-
-std::unique_ptr<Expr> Parser::parse_multiplicative() {
-  auto left = parse_unary();
-  for (;;) {
-    BinOp op;
-    if (check(TokKind::Star))
-      op = BinOp::Mul;
-    else if (check(TokKind::Slash))
-      op = BinOp::Div;
-    else if (check(TokKind::Caret))
-      op = BinOp::Pow;
-    else
-      break;
-    advance();
-    auto right = parse_unary();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Binary;
-    e->bin_op = op;
-    e->span = left->span.to(right->span);
-    e->lhs = std::move(left);
-    e->rhs = std::move(right);
-    left = std::move(e);
-  }
-  return left;
-}
-
-std::unique_ptr<Expr> Parser::parse_unary() {
-  if (check(TokKind::Minus)) {
-    Token op = advance();
-    auto inner = parse_unary();
-    auto e = std::make_unique<Expr>();
-    e->kind = ExprKind::Unary;
-    e->unary_op = UnaryOp::Neg;
-    e->span = op.span.to(inner->span);
-    e->child = std::move(inner);
-    return e;
-  }
-  return parse_postfix();
 }
 
 std::unique_ptr<Expr> Parser::parse_postfix() {

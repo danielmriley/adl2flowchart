@@ -1,23 +1,28 @@
 #include "adl2/rdgen/check.hpp"
 #include "adl2/rdgen/ebnf.hpp"
 #include "adl2/rdgen/emit.hpp"
+#include "adl2/rdgen/literals.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
 void usage(std::ostream& os) {
   os << "usage: adl2_rdgen --ebnf FILE --parser-hpp FILE --map FILE [options]\n"
-        "  --check           verify EBNF ↔ parse_* map (implied by --emit-expr)\n"
-        "  --dump-grammar    print parsed productions\n"
-        "  --dump-shapes     print shape classification\n"
-        "  --emit-expr FILE  write expression-ladder bodies (- = stdout)\n"
-        "  --stamp FILE      touch FILE on success\n"
-        "  --help            this message\n";
+        "  --check              verify EBNF ↔ parse_* map (implied by emit)\n"
+        "  --dump-grammar       print parsed productions\n"
+        "  --dump-shapes        print shape classification\n"
+        "  --dump-synonyms      print inherited keyword synonyms\n"
+        "  --emit-expr FILE     write generated parse_* bodies (- = stdout)\n"
+        "  --emit-keywords FILE write lexer synonym map entries\n"
+        "  --replace FROM TO    rewrite EBNF text before parse (repeatable)\n"
+        "  --stamp FILE         touch FILE on success\n"
+        "  --help               this message\n";
 }
 
 bool read_file(const std::string& path, std::string& out, std::string& err) {
@@ -43,13 +48,26 @@ bool write_file(const std::string& path, const std::string& data,
   return static_cast<bool>(out);
 }
 
+void apply_replaces(std::string& src,
+                    const std::vector<std::pair<std::string, std::string>>& reps) {
+  for (const auto& r : reps) {
+    std::size_t pos = 0;
+    while ((pos = src.find(r.first, pos)) != std::string::npos) {
+      src.replace(pos, r.first.size(), r.second);
+      pos += r.second.size();
+    }
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string ebnf_path, hpp_path, map_path, emit_path, stamp_path;
+  std::string ebnf_path, hpp_path, map_path, emit_path, kw_path, stamp_path;
   bool do_check = false;
   bool dump_grammar = false;
   bool dump_shapes = false;
+  bool dump_synonyms = false;
+  std::vector<std::pair<std::string, std::string>> replaces;
 
   const std::vector<std::string> args(argv + 1, argv + argc);
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -73,14 +91,22 @@ int main(int argc, char** argv) {
       map_path = need("--map");
     else if (a == "--emit-expr")
       emit_path = need("--emit-expr");
+    else if (a == "--emit-keywords")
+      kw_path = need("--emit-keywords");
     else if (a == "--stamp")
       stamp_path = need("--stamp");
-    else if (a == "--check")
+    else if (a == "--replace") {
+      const std::string from = need("--replace");
+      const std::string to = need("--replace");
+      replaces.emplace_back(from, to);
+    } else if (a == "--check")
       do_check = true;
     else if (a == "--dump-grammar")
       dump_grammar = true;
     else if (a == "--dump-shapes")
       dump_shapes = true;
+    else if (a == "--dump-synonyms")
+      dump_synonyms = true;
     else {
       std::cerr << "adl2_rdgen: unknown flag " << a << "\n";
       usage(std::cerr);
@@ -92,8 +118,10 @@ int main(int argc, char** argv) {
     usage(std::cerr);
     return 2;
   }
-  if (!emit_path.empty()) do_check = true;
-  if (!do_check && !dump_grammar && !dump_shapes) do_check = true;
+  if (!emit_path.empty() || !kw_path.empty()) do_check = true;
+  if (!do_check && !dump_grammar && !dump_shapes && !dump_synonyms) {
+    do_check = true;
+  }
 
   std::string err;
   std::string ebnf_src;
@@ -101,6 +129,8 @@ int main(int argc, char** argv) {
     std::cerr << "adl2_rdgen: " << err << "\n";
     return 1;
   }
+  apply_replaces(ebnf_src, replaces);
+
   const adl2::rdgen::Grammar g = adl2::rdgen::parse_ebnf(ebnf_src);
   if (!g.error.empty()) {
     std::cerr << "adl2_rdgen: " << ebnf_path << ":" << g.error_line << ":"
@@ -122,12 +152,25 @@ int main(int argc, char** argv) {
       std::cout << "\n";
     }
   }
+  if (dump_synonyms) {
+    std::vector<adl2::rdgen::Synonym> syns;
+    if (!adl2::rdgen::resolve_synonyms(g, syns, err)) {
+      std::cerr << "adl2_rdgen: " << err << "\n";
+      return 1;
+    }
+    for (const auto& s : syns) {
+      std::cout << s.lit << "\tTokKind::" << s.tok;
+      if (!s.bin.empty()) std::cout << "\tBinOp::" << s.bin;
+      std::cout << "\n";
+    }
+    if (syns.empty()) std::cout << "(no synonyms)\n";
+  }
 
   adl2::rdgen::MethodMap map;
   std::string hpp;
-  if (do_check || !emit_path.empty()) {
+  if (do_check || !emit_path.empty() || !kw_path.empty()) {
     if (hpp_path.empty() || map_path.empty()) {
-      std::cerr << "adl2_rdgen: --check / --emit-expr need --parser-hpp and --map\n";
+      std::cerr << "adl2_rdgen: --check / emit need --parser-hpp and --map\n";
       return 2;
     }
     std::string map_src;
@@ -156,13 +199,27 @@ int main(int argc, char** argv) {
 
   if (!emit_path.empty()) {
     std::string emitted;
-    if (!adl2::rdgen::emit_expr_ladder(g, map, emitted, err)) {
+    if (!adl2::rdgen::emit_generated(g, map, emitted, err)) {
       std::cerr << "adl2_rdgen: emit failed: " << err << "\n";
       return 1;
     }
     if (emit_path == "-") {
       std::cout << emitted;
     } else if (!write_file(emit_path, emitted, err)) {
+      std::cerr << "adl2_rdgen: " << err << "\n";
+      return 1;
+    }
+  }
+
+  if (!kw_path.empty()) {
+    std::string kws;
+    if (!adl2::rdgen::emit_keyword_synonyms(g, kws, err)) {
+      std::cerr << "adl2_rdgen: keywords failed: " << err << "\n";
+      return 1;
+    }
+    if (kw_path == "-") {
+      std::cout << kws;
+    } else if (!write_file(kw_path, kws, err)) {
       std::cerr << "adl2_rdgen: " << err << "\n";
       return 1;
     }

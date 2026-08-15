@@ -96,9 +96,9 @@ The tool parses our EBNF dialect (`(* *)` comments, hyphenated names,
 | **Alias** | `A = B` | yes — `parse_condition` |
 | **LeftAssoc** | `A = B { (op\|op) B }` | yes — `or` / `and` / `+−` / `*/^` |
 | **PrefixUnary** | `A = (op) A \| B` | yes — `not-expr`, `unary` |
-| **OptionalSuffix** | `A = B [ … ]` | later — `ternary` |
+| **OptionalSuffix** | `A = B [ "?" … ]` | yes — `ternary` |
+| **KeywordSeq** | `"reject" condition` | yes — reject / trigger / cut |
 | **Choice** | `A = B \| C \| …` | later — dispatchers |
-| **KeywordSeq** | `"reject" condition` | later — simple stmts |
 | **TokenClass** | `cmp-op = ">" \| …` | no — `peek_cmp_op` |
 | **Hook / Other** | indent, bins, path, … | never from EBNF alone |
 
@@ -111,6 +111,29 @@ Operator literals map to existing `TokKind` / `BinOp` / `UnaryOp`
 values. Same-op groups (`or` / `||`) become a `while (check A \|\| check B)`
 loop; mixed-op groups (`+` / `-`) become the current `for (;;)` switch.
 That matches today’s dump-ast-pinned construction.
+
+## Small grammar edits (no C++)
+
+A **word** literal added to an existing alternation inherits the first
+known sibling keyword’s `TokKind` (and `BinOp` / `UnaryOp` if any):
+
+```
+or-expr = and-expr { ("or"|"||"|"xor") and-expr } ;
+cut-stmt = ("select"|"cut"|"cmd"|"command"|"sel") condition ;
+```
+
+`adl2_rdgen` writes `keyword_synonyms.inc.hpp`; the hand-written lexer
+includes it. `xor` lexes as `KwOr` and the generated `or-expr` parser
+builds `Binary op=or`. `sel` lexes as `KwSelect` and the generated cut
+parser builds `Cut kw=select`. The grammar author does not edit
+`lexer.cpp` or `parser.cpp`.
+
+New *symbolic* operators (`@@`) and new AST node kinds (`BinOp::Xor`)
+still fail closed — those need a token / enum in C++ once. Synonyms of
+existing constructs do not.
+
+`ctest` `adl2_rdgen_mutate_parse` rebuilds the lexer keyword table from
+a copy of `grammar.ebnf` with the two edits above and checks the AST.
 
 ## What stays hand-written (hooks)
 
@@ -132,13 +155,10 @@ never invents their bodies from the EBNF comment.
 
 ## Phases
 
-0. **This change.** Host tool + EBNF parser + completeness checker +
-   CMake `DEPENDS` + emit the mechanical expression ladder
-   (`condition`, `or-expr`, `and-expr`, `not-expr`, `additive`,
-   `multiplicative`, `unary`). dump-ast 146 must not move.
-1. **Ternary + simple keyword statements** (`reject`, `trigger`, …)
-   once the emit templates are boring.
-2. **Dispatchers** (`section`, `region-stmt`) that only call hooks.
+0. Host tool + checker + expression ladder.
+1. **Done.** Ternary, reject / trigger / cut, keyword-synonym table,
+   mutation test (`xor` / `sel`).
+2. Dispatchers (`section`, `region-stmt`) that only call hooks.
 3. **Stop.** Do not generate indent / bins / path / particle-list /
    comparison-chain. Those stay hooks.
 

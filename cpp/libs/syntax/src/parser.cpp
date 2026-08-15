@@ -660,29 +660,6 @@ std::optional<RegionStmt> Parser::parse_region_stmt() {
   return std::nullopt;
 }
 
-RegionStmt Parser::parse_cut_as_region() {
-  Token kw_tok = advance();
-  std::string kw = "select";
-  if (kw_tok.kind == TokKind::KwCut) kw = "cut";
-  else if (kw_tok.kind == TokKind::KwCmd) kw = "cmd";
-  else if (kw_tok.kind == TokKind::KwCommand) kw = "command";
-  RegionStmt st;
-  st.kind = RegionStmt::Kind::Cut;
-  st.keyword = kw;
-  st.cond = parse_condition();
-  st.span = kw_tok.span.to(last_span_);
-  return st;
-}
-
-RegionStmt Parser::parse_reject_stmt() {
-  Token start = advance();
-  RegionStmt st;
-  st.kind = RegionStmt::Kind::Reject;
-  st.cond = parse_condition();
-  st.span = start.span.to(last_span_);
-  return st;
-}
-
 RegionStmt Parser::parse_region_ref() {
   if (check(TokKind::Ident) && iequals(peek().text, "type")) {
     Token tok = advance();
@@ -747,15 +724,6 @@ RegionStmt Parser::parse_bin_stmt() {
   st.label = std::move(label);
   st.bin_body.kind = BinBodyKind::Cond;
   st.bin_body.cond = parse_condition();
-  st.span = start.span.to(last_span_);
-  return st;
-}
-
-RegionStmt Parser::parse_trigger_stmt() {
-  Token start = advance();
-  RegionStmt st;
-  st.kind = RegionStmt::Kind::Trigger;
-  st.cond = parse_condition();
   st.span = start.span.to(last_span_);
   return st;
 }
@@ -908,29 +876,9 @@ RegionStmt Parser::parse_sort_stmt() {
 }
 
 // --- expressions ---
-// Mechanical ladder (condition / or / and / not / additive / mul / unary)
-// is generated from grammar.ebnf by adl2_rdgen (see RDGEN.md).
+// Mechanical parse_* bodies (ladder, ternary, reject/trigger/cut) are
+// generated from grammar.ebnf by adl2_rdgen (see RDGEN.md).
 #include "parser_expr.inc.hpp"
-
-std::unique_ptr<Expr> Parser::parse_ternary() {
-  auto guard = parse_or_expr();
-  if (!match(TokKind::Question)) return guard;
-  auto then_e = parse_ternary();
-  std::unique_ptr<Expr> else_e;
-  bool has_else = false;
-  if (match(TokKind::Colon)) {
-    else_e = parse_ternary();
-    has_else = true;
-  }
-  auto e = std::make_unique<Expr>();
-  e->kind = ExprKind::Ternary;
-  e->span = guard->span.to(last_span_);
-  e->ternary_has_else = has_else;
-  e->guard = std::move(guard);
-  e->then_e = std::move(then_e);
-  e->else_e = std::move(else_e);
-  return e;
-}
 
 std::unique_ptr<Expr> Parser::parse_comparison() {
   auto first = parse_additive();

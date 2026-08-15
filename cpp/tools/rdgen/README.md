@@ -21,7 +21,10 @@ the `smash2_cpp` CLI.
 | `--check` | Completeness + generate-shape gate |
 | `--dump-grammar` | Print parsed productions |
 | `--dump-shapes` | Print shape classification |
-| `--emit-expr FILE` | Write expression-ladder method bodies (`-` = stdout) |
+| `--emit-expr FILE` | Write generated `parse_*` bodies (`-` = stdout) |
+| `--emit-keywords FILE` | Extra lexer keyword-map entries (sibling synonyms) |
+| `--replace FROM TO` | Rewrite EBNF text before parse (repeatable) |
+| `--dump-synonyms` | Print inherited keyword synonyms |
 | `--stamp FILE` | Touch FILE after success |
 
 CMake target: `adl2_rdgen`. Library: `adl2_rdgen_lib` (unit tests only).

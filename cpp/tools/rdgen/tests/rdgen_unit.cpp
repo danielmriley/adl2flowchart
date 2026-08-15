@@ -1,6 +1,7 @@
 #include "adl2/rdgen/check.hpp"
 #include "adl2/rdgen/ebnf.hpp"
 #include "adl2/rdgen/emit.hpp"
+#include "adl2/rdgen/literals.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -120,12 +121,66 @@ int main() {
          "emits parse_condition");
   expect(emitted.find("Parser::parse_unary") != std::string::npos,
          "emits parse_unary");
-  expect(emitted.find("parse_ternary") != std::string::npos,
-         "condition delegates to parse_ternary");
-  expect(emitted.find("Parser::parse_ternary") == std::string::npos,
-         "does not emit parse_ternary in this slice");
+  expect(emitted.find("Parser::parse_ternary") != std::string::npos,
+         "emits parse_ternary");
+  expect(emitted.find("Parser::parse_reject_stmt") != std::string::npos,
+         "emits parse_reject_stmt");
+  expect(emitted.find("Parser::parse_trigger_stmt") != std::string::npos,
+         "emits parse_trigger_stmt");
+  expect(emitted.find("Parser::parse_cut_as_region") != std::string::npos,
+         "emits parse_cut_as_region");
   expect(emitted.find("Parser::parse_comparison") == std::string::npos,
          "does not emit parse_comparison");
+
+  {
+    std::vector<Synonym> syns;
+    std::string serr;
+    expect(resolve_synonyms(g, syns, serr), "stock grammar synonyms resolve");
+    expect(syns.empty(), "stock grammar has no extra keyword synonyms");
+  }
+
+  {
+    std::string mutated = ebnf_src;
+    const std::string from_or = "(\"or\"|\"||\")";
+    const std::string to_or = "(\"or\"|\"||\"|\"xor\")";
+    const std::string from_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\")";
+    const std::string to_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\"|\"sel\")";
+    auto repl = [](std::string& s, const std::string& a, const std::string& b) {
+      const auto pos = s.find(a);
+      expect(pos != std::string::npos, "mutation needle present in grammar.ebnf");
+      if (pos != std::string::npos) s.replace(pos, a.size(), b);
+    };
+    repl(mutated, from_or, to_or);
+    repl(mutated, from_sel, to_sel);
+    const Grammar mg = parse_ebnf(mutated);
+    expect(mg.error.empty(), "mutated grammar parses");
+    std::vector<Synonym> syns;
+    std::string serr;
+    expect(resolve_synonyms(mg, syns, serr), "xor/sel synonyms resolve");
+    bool saw_xor = false;
+    bool saw_sel = false;
+    for (const auto& s : syns) {
+      if (s.lit == "xor" && s.tok == "KwOr" && s.bin == "Or") saw_xor = true;
+      if (s.lit == "sel" && s.tok == "KwSelect") saw_sel = true;
+    }
+    expect(saw_xor, "xor inherits KwOr / BinOp::Or");
+    expect(saw_sel, "sel inherits KwSelect");
+    std::string kws;
+    expect(emit_keyword_synonyms(mg, kws, serr), "emit xor/sel keywords");
+    expect(kws.find("{\"xor\", TokKind::KwOr}") != std::string::npos,
+           "keyword table contains xor");
+    expect(kws.find("{\"sel\", TokKind::KwSelect}") != std::string::npos,
+           "keyword table contains sel");
+  }
+
+  {
+    const Grammar bad = parse_ebnf(
+        "or-expr = and-expr { (\"or\" | \"@@\") and-expr } ;\n");
+    std::vector<Synonym> syns;
+    std::string serr;
+    expect(!resolve_synonyms(bad, syns, serr),
+           "unknown symbolic operator fails closed");
+  }
 
   // Checker notices a missing production mapping.
   {

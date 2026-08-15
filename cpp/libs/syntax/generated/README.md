@@ -1,8 +1,11 @@
-This directory holds the **committed golden** for `adl2_rdgen --emit-expr`.
+This directory holds **committed goldens** for `adl2_rdgen`:
 
-CMake compiles the copy generated into the build tree
-(`libs/syntax/rdgen/parser_expr.inc.hpp`), not this file. `ctest`
-`adl2_rdgen_expr_golden` diffs them. Update this golden in the same
-commit as any emitter or `grammar.ebnf` change that alters the ladder.
-Do not edit `parser_expr.inc.hpp` by hand — change `tools/rdgen/` or
-the EBNF and re-emit.
+- `parser_expr.inc.hpp` — generated `parse_*` bodies
+- `keyword_synonyms.inc.hpp` — extra lexer keyword map entries
+  (empty for the frozen grammar; synonyms appear when the EBNF
+  adds a word next to a known keyword)
+
+CMake compiles the copies generated into the build tree
+(`libs/syntax/rdgen/`), not these files. `ctest` diffs them.
+Do not edit the `.inc.hpp` files by hand — change `tools/rdgen/`
+or `grammar.ebnf` and re-emit.

@@ -10,9 +10,11 @@ nonterminal there maps to a `parse_<name>` function in
 `libs/syntax/include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
 (CMake target **`adl2_syntax`** — see [`MODULES.md`](MODULES.md)).
 Host tool **`adl2_rdgen`** (`tools/rdgen/`, [`RDGEN.md`](RDGEN.md))
-checks that map at compile time and emits the mechanical expression
-ladder; hooks stay hand-written. The table below is still the
-onboarding surface if you know bison.
+checks that map at compile time, emits mechanical `parse_*` bodies
+(expression ladder, ternary, reject/trigger/cut), and writes lexer
+keyword synonyms when the EBNF adds a word next to a known keyword.
+Hooks stay hand-written. The table below is still the onboarding
+surface if you know bison.
 
 ## Token layer (`%token` → lexer)
 

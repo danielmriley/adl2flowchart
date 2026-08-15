@@ -22,16 +22,16 @@ take-stmt            parse_take_stmt             hook
 take-source          parse_take_source           hook             union / call / index forms
 region-block         parse_region_block          hook
 region-stmt          parse_region_stmt           hook             contextual bins; optional
-cut-stmt             parse_cut_as_region         hook             also inlined in object-block
-reject-stmt          parse_reject_stmt           generate-later
+cut-stmt             parse_cut_as_region         generate         also inlined in object-block
+reject-stmt          parse_reject_stmt           generate
 region-ref           parse_region_ref            hook             bare bins-as-ident
 bin-stmt             parse_bin_stmt              hook             contextual bins + bin-body
 bin-body             parse_bin_stmt              hook             inlined in parse_bin_stmt
 boundary-list        rest_of_line_is_boundary_list helper
-trigger-stmt         parse_trigger_stmt          generate-later
+trigger-stmt         parse_trigger_stmt          generate
 histo-stmt           parse_histo_stmt            hook
 condition            parse_condition             generate         alias of ternary
-ternary              parse_ternary               generate-later   optional ? :
+ternary              parse_ternary               generate         optional ? :
 or-expr              parse_or_expr               generate
 and-expr             parse_and_expr              generate
 not-expr             parse_not_expr              generate

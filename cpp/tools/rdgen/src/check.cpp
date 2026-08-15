@@ -32,7 +32,8 @@ bool header_mentions(std::string_view header, const std::string& symbol) {
 }
 
 bool is_emit_shape(Shape s) {
-  return s == Shape::Alias || s == Shape::LeftAssoc || s == Shape::PrefixUnary;
+  return s == Shape::Alias || s == Shape::LeftAssoc || s == Shape::PrefixUnary ||
+         s == Shape::OptionalSuffix || s == Shape::KeywordSeq;
 }
 
 }  // namespace

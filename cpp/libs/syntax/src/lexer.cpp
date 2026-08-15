@@ -179,6 +179,7 @@ TokKind Lexer::keyword_or_ident(const std::string& text) const {
       {"not", TokKind::KwNot},
       {"true", TokKind::KwTrue},
       {"false", TokKind::KwFalse},
+#include "keyword_synonyms.inc.hpp"
   };
   auto it = kws.find(to_lower(text));
   if (it != kws.end()) return it->second;

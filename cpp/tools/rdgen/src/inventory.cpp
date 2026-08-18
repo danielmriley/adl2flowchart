@@ -145,13 +145,10 @@ LitClass class_from_prod(const std::string& prod) {
       prod == "region-block") {
     return LitClass::SectionKw;
   }
-  if (prod == "cut-stmt" || prod == "reject-stmt" || prod == "bin-stmt" ||
-      prod == "trigger-stmt" || prod == "histo-stmt" || prod == "weight-stmt" ||
-      prod == "print-stmt" || prod == "save-stmt" || prod == "counts-stmt" ||
-      prod == "sort-stmt") {
+  if (prod.size() >= 5 && prod.compare(prod.size() - 5, 5, "-stmt") == 0) {
+    if (prod == "take-stmt") return LitClass::ObjectStmtKw;
     return LitClass::RegionStmtKw;
   }
-  if (prod == "take-stmt") return LitClass::ObjectStmtKw;
   if (prod == "or-expr" || prod == "and-expr" || prod == "not-expr") {
     return LitClass::ExprOpWord;
   }

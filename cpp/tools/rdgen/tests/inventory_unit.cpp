@@ -124,6 +124,22 @@ int main() {
   expect(find_lit(inv, "path-token") == nullptr,
          "path-token has no literal row");
 
+  {
+    const Grammar extra =
+        parse_ebnf(ebnf_src + "\nfoo-stmt = \"foo\" condition ;\n");
+    expect(extra.error.empty(), "frozen + foo-stmt parses");
+    Inventory extra_inv;
+    std::string extra_err;
+    expect(build_inventory(extra, extra_inv, extra_err),
+           "foo-stmt inventory builds");
+    const LitClassRow* foo = find_lit(extra_inv, "foo");
+    expect(foo != nullptr, "foo row present");
+    if (foo) {
+      expect(foo->cls == LitClass::RegionStmtKw,
+             "unpinned *-stmt word is region-stmt-kw");
+    }
+  }
+
   if (g_fail) {
     std::cerr << g_fail << " failure(s)\n";
     return 1;

@@ -404,4 +404,24 @@ ShapeInfo classify(const Production& p) {
   return info;
 }
 
+bool keyword_condition_kws(const Production& p, std::vector<std::string>& kws) {
+  if (p.alts.size() != 1 || p.alts[0].terms.size() != 2) return false;
+  const Term& a = p.alts[0].terms[0];
+  const Term& b = p.alts[0].terms[1];
+  if (b.kind != TermKind::Name || b.text != "condition") return false;
+  kws.clear();
+  if (a.kind == TermKind::Literal) {
+    kws.push_back(a.text);
+    return true;
+  }
+  if (a.kind != TermKind::Group) return false;
+  for (const auto& alt : a.group) {
+    if (alt.terms.size() != 1 || alt.terms[0].kind != TermKind::Literal) {
+      return false;
+    }
+    kws.push_back(alt.terms[0].text);
+  }
+  return !kws.empty();
+}
+
 }  // namespace adl2::rdgen

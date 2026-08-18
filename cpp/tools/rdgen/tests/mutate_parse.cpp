@@ -65,11 +65,53 @@ int check_oror() {
   return 0;
 }
 
+int check_cut_kw(const char* which, const char* src_body, const char* want,
+                 const char* forbid) {
+  const std::string src = std::string("region R\n  ") + src_body + "\n";
+  const auto r = adl2::syntax::parse_source(src);
+  const std::string dump = adl2::syntax::dump_ast(src, r.file);
+  if (r.diags.has_errors()) {
+    return fail(which, "parse diagnostics have errors", r, src, dump);
+  }
+  if (error_only_tree(dump)) {
+    return fail(which, "dump is an error-only tree", r, src, dump);
+  }
+  if (!contains(dump, want)) {
+    return fail(which, "dump_ast missing expected Cut keyword", r, src, dump);
+  }
+  if (forbid && contains(dump, forbid)) {
+    return fail(which, "dump_ast must not inherit a sibling Cut keyword", r, src,
+                dump);
+  }
+  return 0;
+}
+
+int check_object_sel() {
+  const std::string src = "object jets\n  take Jet\n  sel pt > 20\n";
+  const auto r = adl2::syntax::parse_source(src);
+  const std::string dump = adl2::syntax::dump_ast(src, r.file);
+  if (r.diags.has_errors()) {
+    return fail("object-sel", "parse diagnostics have errors", r, src, dump);
+  }
+  if (!contains(dump, "Cut kw=sel")) {
+    return fail("object-sel", "object-block must reach sel via is_cut_keyword",
+                r, src, dump);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   if (const int rc = check_xor()) return rc;
   if (const int rc = check_oror()) return rc;
+  if (const int rc = check_cut_kw("sel", "sel a > 1", "Cut kw=sel",
+                                  "Cut kw=select"))
+    return rc;
+  if (const int rc = check_cut_kw("foo", "foo a > 1", "Cut kw=foo",
+                                  "Cut kw=select"))
+    return rc;
+  if (const int rc = check_object_sel()) return rc;
   std::cout << "mutate_parse: PASS\n";
   return 0;
 }

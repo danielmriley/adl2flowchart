@@ -34,7 +34,8 @@ bool header_mentions(std::string_view header, const std::string& symbol) {
 
 bool is_emit_shape(Shape s) {
   return s == Shape::Alias || s == Shape::LeftAssoc || s == Shape::PrefixUnary ||
-         s == Shape::OptionalSuffix || s == Shape::KeywordSeq;
+         s == Shape::OptionalSuffix || s == Shape::KeywordSeq ||
+         s == Shape::Choice;
 }
 
 }  // namespace
@@ -176,6 +177,11 @@ CheckResult check_grammar(const Grammar& g, const MethodMap& map,
     }
     auto it = by_name.find(p.name);
     if (it == by_name.end()) {
+      std::vector<std::string> kws;
+      if (keyword_condition_kws(p, kws)) {
+        r.notes.push_back({p.name + " → (inferred Cut) [generate, KeywordSeq]"});
+        continue;
+      }
       r.errors.push_back({"EBNF production '" + p.name +
                           "' has no method_map.txt entry"});
       continue;

@@ -13,7 +13,7 @@
 # token           = lexer class referenced from the EBNF, not a parse method
 
 file                 parse_file                  hook             recovery loop to EOF
-section              parse_section               hook             dispatcher + unknown-section diag
+section              parse_section               generate         Choice dispatch (parser_dispatch.inc.hpp)
 info-block           parse_info_block            hook
 define               parse_define_section        hook             top-level define/def
 object-block         parse_object_block          hook             indent + derived-candidate lookahead
@@ -21,8 +21,8 @@ object-define        parse_object_define         hook             INDENTED only 
 take-stmt            parse_take_stmt             hook
 take-source          parse_take_source           hook             union / call / index forms
 region-block         parse_region_block          hook
-region-stmt          parse_region_stmt           hook             contextual bins; optional
-cut-stmt             parse_cut_as_region         generate         also inlined in object-block
+region-stmt          parse_region_stmt           generate         Choice + bins/take/using hooks
+cut-stmt             parse_cut_as_region         generate         object-block via is_cut_keyword
 reject-stmt          parse_reject_stmt           generate
 region-ref           parse_region_ref            hook             bare bins-as-ident
 bin-stmt             parse_bin_stmt              hook             contextual bins + bin-body
@@ -72,3 +72,5 @@ integer              TokKind::Int                token
 *                    parse_arg_list_to_eol       extra            print/save arg-list
 *                    parse_index_suffix          extra            [i] / [i:j] / _i
 *                    parse_source                extra            free function, not a method
+*                    is_cut_keyword              extra            first-set of cut-stmt
+*                    is_reject_keyword           extra            first-set of reject-stmt

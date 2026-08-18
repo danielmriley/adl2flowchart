@@ -299,26 +299,6 @@ void emit_ternary(std::ostringstream& os, const std::string& method,
   os << "}\n\n";
 }
 
-bool cond_stmt_kws(const Production& p, std::vector<std::string>& kws) {
-  if (p.alts.size() != 1 || p.alts[0].terms.size() != 2) return false;
-  const Term& a = p.alts[0].terms[0];
-  const Term& b = p.alts[0].terms[1];
-  if (b.kind != TermKind::Name || b.text != "condition") return false;
-  kws.clear();
-  if (a.kind == TermKind::Literal) {
-    kws.push_back(a.text);
-    return true;
-  }
-  if (a.kind != TermKind::Group) return false;
-  for (const auto& alt : a.group) {
-    if (alt.terms.size() != 1 || alt.terms[0].kind != TermKind::Literal) {
-      return false;
-    }
-    kws.push_back(alt.terms[0].text);
-  }
-  return !kws.empty();
-}
-
 const char* region_kind_for(const std::string& first_kw) {
   if (first_kw == "reject") return "Reject";
   if (first_kw == "trigger") return "Trigger";
@@ -326,33 +306,24 @@ const char* region_kind_for(const std::string& first_kw) {
       first_kw == "command") {
     return "Cut";
   }
-  return nullptr;
+  // Unknown first word of a mapped `keywords condition` is Cut-shaped.
+  // Identity is the lowercase lexeme, not a sibling's keyword.
+  (void)first_kw;
+  return "Cut";
 }
 
 void emit_cond_stmt(std::ostringstream& os, const std::string& method,
                     const std::vector<std::string>& kws,
-                    const std::vector<Synonym>& syns, std::string& error) {
+                    const std::vector<Synonym>&, std::string&) {
   const char* kind = region_kind_for(kws.front());
-  if (!kind) {
-    error = "no RegionStmt kind for keyword \"" + kws.front() + "\"";
-    return;
-  }
   os << "RegionStmt Parser::" << method << "() {\n";
   os << "  Token kw_tok = advance();\n";
   if (std::string(kind) == "Cut") {
-    os << "  std::string kw = \"select\";\n";
-    for (const auto& lit : kws) {
-      OpInfo info;
-      if (!op_info(lit, syns, info, error)) return;
-      // Synonyms that inherit KwSelect stay "select" (default).
-      if (info.tok.empty() || info.tok == "KwSelect") continue;
-      os << "  if (kw_tok.kind == TokKind::" << info.tok << ") kw = \"" << lit
-         << "\";\n";
-    }
+    os << "  std::string kw = lower_copy(kw_tok.text);\n";
   }
   os << "  RegionStmt st;\n";
   os << "  st.kind = RegionStmt::Kind::" << kind << ";\n";
-  if (std::string(kind) == "Cut") os << "  st.keyword = kw;\n";
+  if (std::string(kind) == "Cut") os << "  st.keyword = std::move(kw);\n";
   os << "  st.cond = parse_condition();\n";
   os << "  st.span = kw_tok.span.to(last_span_);\n";
   os << "  return st;\n";
@@ -405,13 +376,16 @@ bool emit_generated(const Grammar& g, const MethodMap& map, std::string& out,
       emit_ternary(os, method, guard, method);
     } else if (sh.shape == Shape::KeywordSeq) {
       std::vector<std::string> kws;
-      if (!cond_stmt_kws(p, kws)) {
+      if (!keyword_condition_kws(p, kws)) {
         error = "'" + p.name +
                 "' is generate/KeywordSeq but not `keywords condition`";
         return false;
       }
       emit_cond_stmt(os, method, kws, syns, error);
       if (!error.empty()) return false;
+    } else if (sh.shape == Shape::Choice) {
+      // parse_section / parse_region_stmt live in parser_dispatch.inc.hpp.
+      continue;
     } else {
       error = "'" + p.name + "' is generate but shape is " +
               std::string(shape_name(sh.shape));

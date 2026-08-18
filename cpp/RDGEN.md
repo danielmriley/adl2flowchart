@@ -59,8 +59,8 @@ named **hook** wherever the EBNF is intentionally incomplete.
 | Sources | `cpp/tools/rdgen/` |
 | Input grammar | `cpp/grammar.ebnf` (explicit CMake `DEPENDS`) |
 | Input map | `cpp/tools/rdgen/method_map.txt` |
-| Generated output | `${build}/libs/syntax/rdgen/parser_expr.inc.hpp` |
-| Committed golden | `cpp/libs/syntax/generated/parser_expr.inc.hpp` (review + ctest) |
+| Generated output | `${build}/libs/syntax/rdgen/parser_expr.inc.hpp`, `parser_dispatch.inc.hpp` |
+| Committed golden | `cpp/libs/syntax/generated/parser_expr.inc.hpp`, `parser_dispatch.inc.hpp` (review + ctest) |
 
 `parser.hpp` stays the class declaration (methods + private helpers).
 The generator fills **method bodies**, not the class shape, until a later
@@ -70,10 +70,10 @@ phase proves we can emit declarations without fighting hooks.
 
 ```
 adl2_rdgen (host exe)
-    ↓  --check --emit-expr
+    ↓  --check --emit-expr --emit-dispatch
 grammar.ebnf + method_map.txt + parser.hpp
     ↓
-parser_expr.inc.hpp     (build tree)
+parser_expr.inc.hpp + parser_dispatch.inc.hpp   (build tree)
     ↓  #include
 parser.cpp  →  adl2_syntax  →  smash2_cpp
 ```
@@ -98,7 +98,7 @@ The tool parses our EBNF dialect (`(* *)` comments, hyphenated names,
 | **PrefixUnary** | `A = (op) A \| B` | yes — `not-expr`, `unary` |
 | **OptionalSuffix** | `A = B [ "?" … ]` | yes — `ternary` |
 | **KeywordSeq** | `"reject" condition` | yes — reject / trigger / cut |
-| **Choice** | `A = B \| C \| …` | later — dispatchers |
+| **Choice** | `A = B \| C \| …` | yes — `section` / `region-stmt` |
 | **TokenClass** | `cmp-op = ">" \| …` | no — `peek_cmp_op` |
 | **Hook / Other** | indent, bins, path, … | never from EBNF alone |
 
@@ -132,8 +132,8 @@ Production membership is precedence, not meaning. See
   `ArithOp::Add`.
 - **Forbidden:** sibling inherit (`xor`→`KwOr`/`BinOp::Or`).
 - Unknown punctuation (`@@`) still fails closed (needs a lexer token).
-- **`sel`:** out of this slice. Statement keywords need generated
-  dispatch (slice 2).
+- **`sel`:** add it to `cut-stmt`. dump `Cut kw=sel` (lowercase lexeme).
+  Not `Cut kw=select`. Generated first-sets reach the Ident.
 
 ```
 or-expr = and-expr { ("or"|"||"|"xor") and-expr } ;
@@ -144,9 +144,10 @@ lexeme (case-insensitive) and builds `Binary op=xor`. Catalog forms
 `or` / `||` still build `Binary op=or`. The grammar author does not
 edit `lexer.cpp`, `token.hpp`, or `parser.cpp`.
 
-`ctest` `adl2_rdgen_mutate_parse` rebuilds a mutated
-`parser_expr.inc.hpp` from `grammar.ebnf` with the `xor` edit above
-and checks the AST.
+`ctest` `adl2_rdgen_mutate_parse` rebuilds mutated
+`parser_expr.inc.hpp` + `parser_dispatch.inc.hpp` from `grammar.ebnf`
+with `xor` in `or-expr`, `"sel"` in `cut-stmt`, and an inferred
+`foo-stmt = "foo" condition` on `region-stmt`.
 
 ## What stays hand-written (hooks)
 
@@ -155,7 +156,8 @@ never invents their bodies from the EBNF comment.
 
 - **Layout:** `parse_object_define` (`at_column_one`), section/stmt
   recovery (`synchronize_statement`, `nl_before`)
-- **Contextual `bins`:** `parse_region_stmt` + `is_ident_text("bins")`
+- **Contextual `bins`:** generated `parse_region_stmt` still uses
+  `is_ident_text("bins") && !next_is_line_end()` (not a keyword)
 - **`path-token`:** `parse_path_token` (arg position, deprecation)
 - **Particle lists:** `extend_particle_list`
 - **Comparison extras:** chain-to-`and`, OPEN-4 `~=` warning,
@@ -171,17 +173,20 @@ never invents their bodies from the EBNF comment.
 0. Host tool + checker + expression ladder.
 1. **Done.** Ternary, reject / trigger / cut, alias table, operator
    identity (`xor` is its own key; mutate-parse pins `Binary op=xor`).
-2. Dispatchers (`section`, `region-stmt`) that only call hooks.
+2. **Done.** Dispatchers (`section`, `region-stmt`) + first-set
+   predicates. Unmapped `keywords condition` inlines as Cut.
 3. **Stop.** Do not generate indent / bins / path / particle-list /
-   comparison-chain. Those stay hooks.
+   comparison-chain. Those stay hooks. Do not empty `lexer.cpp` yet.
 
 `parser.hpp` emission (declarations) is a later optional step. The
-class’s private helpers are not grammar.
+class’s private helpers are not grammar. New statement *words* do not
+need a new method: they reuse `RegionStmt::Cut` + the keyword string.
 
 ## Acceptance
 
 - `adl2_rdgen --check` is part of the `adl2_syntax` build graph.
-- `ctest` includes `adl2_rdgen_unit` and `adl2_rdgen_expr_golden`.
+- `ctest` includes `adl2_rdgen_unit`, `adl2_rdgen_expr_golden`, and
+  `adl2_rdgen_dispatch_golden`.
 - `smash2_cpp_dump_ast_tiny` / `bins_and_path` stay green.
 - Corpus dump-ast (146) stays well-formed; `CROSS_ORACLE=1` byte-diff
   is unchanged when that job runs.

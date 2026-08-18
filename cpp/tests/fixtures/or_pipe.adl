@@ -1,0 +1,5 @@
+# Pin: || and or both dump as Binary op=or (never op=||).
+
+region R
+  select a || b
+  select c or d

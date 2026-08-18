@@ -1,0 +1,5 @@
+# Pin: bare ALL dumps All (not Ident ALL); all(...) is Call.
+
+region R
+  select ALL
+  select all(jets, pt > 30)

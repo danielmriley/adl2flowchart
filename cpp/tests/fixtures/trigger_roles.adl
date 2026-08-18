@@ -1,0 +1,7 @@
+# Pin: object-level trigger, region-stmt trigger, and weight trigger.
+
+trigger HLT
+
+region R
+  trigger foo
+  weight trigger 0.65

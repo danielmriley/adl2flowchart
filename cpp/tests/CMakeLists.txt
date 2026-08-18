@@ -42,6 +42,23 @@ add_test(NAME smash2_cpp_dump_ast_tiny
 add_test(NAME smash2_cpp_dump_ast_bins_and_path
   COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${FIXTURE_BINS} ${GOLDEN_BINS})
 
+# Slice 0 construction probes: pin frozen-grammar dump identity
+# (||→or, &&→and, !→not, bins body, path vs expr, ->, [] vs index, +-,
+# trigger roles, ALL vs all(...)). One concern per fixture.
+foreach(_probe IN ITEMS
+    or_pipe and_amp not_bang bins_body path_vs_expr
+    arrow_member band_vs_bracket counts_plusminus trigger_roles all_primary)
+  set(_adl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/${_probe}.adl")
+  set(_dump "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/${_probe}.adl.dump")
+  add_test(NAME smash2_cpp_check_${_probe}
+    COMMAND ${SMASH2_CPP} check ${_adl})
+  add_test(NAME smash2_cpp_dump_ast_${_probe}
+    COMMAND bash ${DUMP_PARITY} ${SMASH2_CPP} ${_adl} ${_dump})
+endforeach()
+unset(_probe)
+unset(_adl)
+unset(_dump)
+
 add_test(NAME adl2_sema_identity
   COMMAND adl2_sema_identity)
 

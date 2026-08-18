@@ -1,0 +1,4 @@
+# Pin: ! dumps as Unary op=not (never op=!).
+
+region R
+  select !a

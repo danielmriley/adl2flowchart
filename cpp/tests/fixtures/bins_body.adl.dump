@@ -1,0 +1,9 @@
+File
+  Region kw=region name=r @4:1
+    Cut kw=select @5:3
+      Cmp op=>
+        Ident MET
+        Num 0
+    Bin @6:3
+      Boundaries edges=[300 500 700]
+        Ident HT

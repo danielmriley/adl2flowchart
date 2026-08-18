@@ -1,0 +1,5 @@
+File
+  Region kw=region name=R @3:1
+    Cut kw=select @4:3
+      Unary op=not
+        Ident a

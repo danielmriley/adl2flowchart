@@ -1,0 +1,5 @@
+# Pin: && and and both dump as Binary op=and (never op=&&).
+
+region R
+  select a && b
+  select c and d

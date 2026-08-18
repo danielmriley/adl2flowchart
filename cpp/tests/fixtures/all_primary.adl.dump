@@ -1,0 +1,10 @@
+File
+  Region kw=region name=R @3:1
+    Cut kw=select @4:3
+      All
+    Cut kw=select @5:3
+      Call name=all
+        Ident jets
+        Cmp op=>
+          Ident pt
+          Num 30

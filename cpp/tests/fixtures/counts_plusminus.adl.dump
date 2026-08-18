@@ -1,0 +1,9 @@
+File
+  CountsFormat name=results @3:1
+    Process name=estbg title="BG" columns=[stat]
+  Region kw=region name=R @6:1
+    Cut kw=select @7:3
+      Cmp op=>
+        Ident MET
+        Num 0
+    Counts format=results items=[10 +- 1] @8:3

@@ -1,4 +1,5 @@
 #include "adl2/rdgen/check.hpp"
+#include "adl2/rdgen/inventory.hpp"
 
 #include <cctype>
 #include <regex>
@@ -233,6 +234,16 @@ CheckResult check_grammar(const Grammar& g, const MethodMap& map,
 
   if (!header_mentions(parser_hpp, "extend_particle_list")) {
     r.errors.push_back({"parser.hpp is missing extend_particle_list"});
+  }
+
+  Inventory inv;
+  std::string inv_err;
+  if (!build_inventory(g, inv, inv_err) && inv.errors.empty() &&
+      !inv_err.empty()) {
+    r.errors.push_back({inv_err});
+  }
+  for (const auto& e : inv.errors) {
+    r.errors.push_back({e});
   }
 
   return r;

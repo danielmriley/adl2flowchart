@@ -28,6 +28,15 @@ target_compile_definitions(adl2_rdgen_unit PRIVATE
 )
 
 add_test(NAME adl2_rdgen_unit COMMAND adl2_rdgen_unit)
+
+add_executable(adl2_rdgen_inventory tests/inventory_unit.cpp)
+target_link_libraries(adl2_rdgen_inventory PRIVATE adl2_rdgen_lib)
+target_compile_options(adl2_rdgen_inventory PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(adl2_rdgen_inventory PRIVATE
+  ADL2_GRAMMAR_EBNF="${CMAKE_SOURCE_DIR}/grammar.ebnf"
+)
+add_test(NAME adl2_rdgen_inventory COMMAND adl2_rdgen_inventory)
+
 add_test(NAME adl2_rdgen_check
   COMMAND adl2_rdgen
     --ebnf ${CMAKE_SOURCE_DIR}/grammar.ebnf

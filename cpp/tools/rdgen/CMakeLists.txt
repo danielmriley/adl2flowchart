@@ -87,6 +87,7 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/grammar.ebnf
     ${CMAKE_CURRENT_SOURCE_DIR}/mutate.cmake
     ${CMAKE_CURRENT_SOURCE_DIR}/method_map.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/aliases.txt
   COMMENT "adl2_rdgen: mutate grammar.ebnf (xor) and emit expr + keywords"
   VERBATIM
 )

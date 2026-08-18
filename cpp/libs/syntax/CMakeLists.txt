@@ -26,9 +26,11 @@ add_custom_command(
     ${RDGEN_MAP}
     ${CMAKE_SOURCE_DIR}/tools/rdgen/src/ebnf.cpp
     ${CMAKE_SOURCE_DIR}/tools/rdgen/src/check.cpp
+    ${CMAKE_SOURCE_DIR}/tools/rdgen/src/inventory.cpp
     ${CMAKE_SOURCE_DIR}/tools/rdgen/src/emit.cpp
     ${CMAKE_SOURCE_DIR}/tools/rdgen/src/literals.cpp
     ${CMAKE_SOURCE_DIR}/tools/rdgen/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/tools/rdgen/aliases.txt
   COMMENT "adl2_rdgen: check grammar.ebnf, emit parse_* + keyword synonyms"
   VERBATIM
 )

@@ -1,6 +1,7 @@
 #include "adl2/rdgen/inventory.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -129,6 +130,47 @@ const Pin* find_pin(const std::string& lit) {
     if (p.lit == lit) return &p;
   }
   return nullptr;
+}
+
+bool is_word(const std::string& s) {
+  return !s.empty() && std::isalpha(static_cast<unsigned char>(s[0])) != 0;
+}
+
+/// Production → class for an *unpinned* word. Used so a new sibling
+/// (`xor` in or-expr, `sel` in cut-stmt) gets a token-class without
+/// inheriting TokKind / BinOp (identity owns meaning). Unknown
+/// productions and unknown punctuation stay Unclassified.
+LitClass class_from_prod(const std::string& prod) {
+  if (prod == "info-block" || prod == "define" || prod == "object-block" ||
+      prod == "region-block") {
+    return LitClass::SectionKw;
+  }
+  if (prod == "cut-stmt" || prod == "reject-stmt" || prod == "bin-stmt" ||
+      prod == "trigger-stmt" || prod == "histo-stmt" || prod == "weight-stmt" ||
+      prod == "print-stmt" || prod == "save-stmt" || prod == "counts-stmt" ||
+      prod == "sort-stmt") {
+    return LitClass::RegionStmtKw;
+  }
+  if (prod == "take-stmt") return LitClass::ObjectStmtKw;
+  if (prod == "or-expr" || prod == "and-expr" || prod == "not-expr") {
+    return LitClass::ExprOpWord;
+  }
+  if (prod == "take-source") return LitClass::OtherKw;
+  return LitClass::Unclassified;
+}
+
+LitClass infer_word_class(const std::vector<std::string>& sites,
+                          std::vector<LitClass>& roles) {
+  roles.clear();
+  for (const auto& prod : sites) {
+    const LitClass c = class_from_prod(prod);
+    if (c == LitClass::Unclassified) continue;
+    if (std::find(roles.begin(), roles.end(), c) == roles.end()) {
+      roles.push_back(c);
+    }
+  }
+  if (roles.empty()) return LitClass::Unclassified;
+  return roles.front();
 }
 
 void walk_term(const Term& t, const std::string& prod,
@@ -284,6 +326,15 @@ bool build_inventory(const Grammar& g, Inventory& out, std::string& error) {
     const Pin* pin = find_pin(lit);
     LitClassRow row = make_row(lit, pin);
     auto it = sites.find(lit);
+    if (!pin && it != sites.end() && is_word(lit)) {
+      std::vector<LitClass> inferred;
+      const LitClass cls = infer_word_class(it->second, inferred);
+      if (cls != LitClass::Unclassified) {
+        row.cls = cls;
+        row.roles = std::move(inferred);
+        row.note = "unpinned; classified from " + join_sites(it->second);
+      }
+    }
     if (it != sites.end()) append_site_note(row, it->second);
     if (row.cls == LitClass::Unclassified && sites.count(lit)) {
       out.errors.push_back("unclassified EBNF literal \"" + lit + "\"");

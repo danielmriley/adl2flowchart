@@ -126,8 +126,7 @@ class Resolver {
   HNode resolve_prop_access(const syn::Expr& target, const syn::Ident& prop, Span span,
                             const Ctx& ctx);
   HNode resolve_value_ident(const syn::Ident& id, const Ctx& ctx);
-  HNode resolve_binary(syn::BinOp op, const syn::Expr& lhs, const syn::Expr& rhs, Span span,
-                       const Ctx& ctx);
+  HNode resolve_binary(const syn::Expr& e, Span span, const Ctx& ctx);
   HNode resolve_reduce(ReduceKind kind,
                        const std::vector<std::unique_ptr<syn::Arg>>& args, Span span,
                        const Ctx& ctx, const std::function<HNode(HNode)>* cmp_hoist);

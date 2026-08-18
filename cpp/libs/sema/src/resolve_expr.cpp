@@ -206,7 +206,7 @@ HNode Resolver::resolve_expr(const syn::Expr& e, const Ctx& ctx) {
     }
     case syn::ExprKind::Binary:
       if (!e.lhs || !e.rhs) return HNode::unsupported(sp, "parse error");
-      return resolve_binary(e.bin_op, *e.lhs, *e.rhs, sp, ctx);
+      return resolve_binary(e, sp, ctx);
     case syn::ExprKind::Cmp: {
       if (!e.lhs || !e.rhs) return HNode::unsupported(sp, "parse error");
       CmpOp op = conv_cmp(e.cmp_op);
@@ -359,10 +359,33 @@ HNode Resolver::resolve_expr(const syn::Expr& e, const Ctx& ctx) {
   return HNode::unsupported(sp, "parse error");
 }
 
-HNode Resolver::resolve_binary(syn::BinOp op, const syn::Expr& lhs, const syn::Expr& rhs,
-                               Span span, const Ctx& ctx) {
-  HNode l = resolve_expr(lhs, ctx);
-  HNode r = resolve_expr(rhs, ctx);
+namespace {
+
+bool is_frozen_bin_key(const std::string& k) {
+  return k == "or" || k == "and" || k == "+" || k == "-" || k == "*" ||
+         k == "/" || k == "^";
+}
+
+syn::BinOp bin_op_from_frozen_key(const std::string& k) {
+  if (k == "or") return syn::BinOp::Or;
+  if (k == "and") return syn::BinOp::And;
+  if (k == "+") return syn::BinOp::Add;
+  if (k == "-") return syn::BinOp::Sub;
+  if (k == "*") return syn::BinOp::Mul;
+  if (k == "/") return syn::BinOp::Div;
+  return syn::BinOp::Pow;
+}
+
+}  // namespace
+
+HNode Resolver::resolve_binary(const syn::Expr& e, Span span, const Ctx& ctx) {
+  if (!e.bin_key.empty() && !is_frozen_bin_key(e.bin_key)) {
+    return HNode::unsupported(span, "unknown binary operator `" + e.bin_key + "`");
+  }
+  const syn::BinOp op =
+      e.bin_key.empty() ? e.bin_op : bin_op_from_frozen_key(e.bin_key);
+  HNode l = resolve_expr(*e.lhs, ctx);
+  HNode r = resolve_expr(*e.rhs, ctx);
   HNode n = HNode::make(HNode::Kind::Unsupported, span);
   if (op == syn::BinOp::And || op == syn::BinOp::Or) {
     n.kind = op == syn::BinOp::And ? HNode::Kind::And : HNode::Kind::Or;
@@ -396,8 +419,7 @@ HNode Resolver::resolve_binary(syn::BinOp op, const syn::Expr& lhs, const syn::E
       n.arith = ArithOp::Pow;
       break;
     default:
-      n.arith = ArithOp::Add;
-      break;
+      return HNode::unsupported(span, "unknown binary operator");
   }
   n.a = std::make_unique<HNode>(std::move(l));
   n.b = std::make_unique<HNode>(std::move(r));

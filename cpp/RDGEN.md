@@ -108,41 +108,45 @@ something the emitter does not understand fails closed instead of
 emitting a wrong AST.
 
 Operator literals map to existing `TokKind` / `BinOp` / `UnaryOp`
-values. Same-op groups (`or` / `||`) become a `while (check A \|\| check B)`
-loop; mixed-op groups (`+` / `-`) become the current `for (;;)` switch.
-That matches today’s dump-ast-pinned construction.
+values. Same-op catalog groups (`or` / `||`) become a
+`while (check A \|\| check B)` loop; mixed catalog groups (`+` / `-`)
+become the current `for (;;)` switch. New words in a LeftAssoc group
+do not inherit a `BinOp`: they match `Ident` and set `Expr::bin_key`.
 
 ## Fluid grammar (in progress)
 
 Sibling inherit (`xor`→`or`) is the rejected design. The replacement
 contract is [`tools/rdgen/FLUID.md`](tools/rdgen/FLUID.md): explicit
 aliases only (`||`/`&&`/`!`); new words keep their own dump key.
-Slice 0+1 is underway on `cursor/rdgen-grammar-fluid-32f3`.
 
 ## Small grammar edits (no C++)
 
-**Superseded for new work.** A **word** literal added to an existing
-alternation currently still inherits the first known sibling keyword’s
-`TokKind` (and `BinOp` / `UnaryOp` if any) until the identity slice
-lands:
+Production membership is precedence, not meaning. See
+[`tools/rdgen/FLUID.md`](tools/rdgen/FLUID.md).
+
+- **Alias table** ([`tools/rdgen/aliases.txt`](tools/rdgen/aliases.txt)):
+  `||`→`or`, `&&`→`and`, `!`→`not`. These dump as the canonical key.
+- Sitting next to `"or"` does **not** make a new word an alias.
+- A new word (e.g. `"xor"` in `or-expr`) keeps its own key. dump
+  `Binary op=xor`. sema is **Unsupported**, never `Or`, never
+  `ArithOp::Add`.
+- **Forbidden:** sibling inherit (`xor`→`KwOr`/`BinOp::Or`).
+- Unknown punctuation (`@@`) still fails closed (needs a lexer token).
+- **`sel`:** out of this slice. Statement keywords need generated
+  dispatch (slice 2).
 
 ```
 or-expr = and-expr { ("or"|"||"|"xor") and-expr } ;
-cut-stmt = ("select"|"cut"|"cmd"|"command"|"sel") condition ;
 ```
 
-`adl2_rdgen` writes `keyword_synonyms.inc.hpp`; the hand-written lexer
-includes it. `xor` lexes as `KwOr` and the generated `or-expr` parser
-builds `Binary op=or`. `sel` lexes as `KwSelect` and the generated cut
-parser builds `Cut kw=select`. The grammar author does not edit
-`lexer.cpp` or `parser.cpp`.
+`xor` lexes as `Ident`. The generated `or-expr` parser matches that
+lexeme (case-insensitive) and builds `Binary op=xor`. Catalog forms
+`or` / `||` still build `Binary op=or`. The grammar author does not
+edit `lexer.cpp`, `token.hpp`, or `parser.cpp`.
 
-New *symbolic* operators (`@@`) and new AST node kinds (`BinOp::Xor`)
-still fail closed — those need a token / enum in C++ once. Synonyms of
-existing constructs do not.
-
-`ctest` `adl2_rdgen_mutate_parse` rebuilds the lexer keyword table from
-a copy of `grammar.ebnf` with the two edits above and checks the AST.
+`ctest` `adl2_rdgen_mutate_parse` rebuilds a mutated
+`parser_expr.inc.hpp` from `grammar.ebnf` with the `xor` edit above
+and checks the AST.
 
 ## What stays hand-written (hooks)
 
@@ -165,8 +169,8 @@ never invents their bodies from the EBNF comment.
 ## Phases
 
 0. Host tool + checker + expression ladder.
-1. **Done.** Ternary, reject / trigger / cut, keyword-synonym table,
-   mutation test (`xor` / `sel`).
+1. **Done.** Ternary, reject / trigger / cut, alias table, operator
+   identity (`xor` is its own key; mutate-parse pins `Binary op=xor`).
 2. Dispatchers (`section`, `region-stmt`) that only call hooks.
 3. **Stop.** Do not generate indent / bins / path / particle-list /
    comparison-chain. Those stay hooks.

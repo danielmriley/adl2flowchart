@@ -140,38 +140,67 @@ int main() {
   }
 
   {
+    const std::string map_path = ADL2_METHOD_MAP;
+    const auto slash = map_path.find_last_of("/\\");
+    const std::string aliases_path =
+        (slash == std::string::npos ? std::string(".")
+                                    : map_path.substr(0, slash)) +
+        "/aliases.txt";
+    const std::string aliases_src = slurp(aliases_path.c_str());
+    expect(!aliases_src.empty(), "aliases.txt is readable");
+    std::vector<Alias> aliases;
+    std::string aerr;
+    expect(parse_aliases(aliases_src, aliases, aerr), "aliases.txt parses");
+    expect(aliases.size() == 3, "three stock aliases");
+    bool saw_or = false, saw_and = false, saw_not = false;
+    for (const auto& a : aliases) {
+      if (a.surface == "||" && a.canonical == "or") saw_or = true;
+      if (a.surface == "&&" && a.canonical == "and") saw_and = true;
+      if (a.surface == "!" && a.canonical == "not") saw_not = true;
+    }
+    expect(saw_or && saw_and && saw_not, "||→or &&→and !→not");
+    expect(lookup_alias("||") && lookup_alias("||")->canonical == "or",
+           "lookup_alias ||");
+  }
+
+  {
     std::string mutated = ebnf_src;
     const std::string from_or = "(\"or\"|\"||\")";
     const std::string to_or = "(\"or\"|\"||\"|\"xor\")";
-    const std::string from_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\")";
-    const std::string to_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\"|\"sel\")";
     auto repl = [](std::string& s, const std::string& a, const std::string& b) {
       const auto pos = s.find(a);
       expect(pos != std::string::npos, "mutation needle present in grammar.ebnf");
       if (pos != std::string::npos) s.replace(pos, a.size(), b);
     };
     repl(mutated, from_or, to_or);
-    repl(mutated, from_sel, to_sel);
     const Grammar mg = parse_ebnf(mutated);
     expect(mg.error.empty(), "mutated grammar parses");
     std::vector<Synonym> syns;
     std::string serr;
-    expect(resolve_synonyms(mg, syns, serr), "xor/sel synonyms resolve");
-    bool saw_xor = false;
-    bool saw_sel = false;
+    expect(resolve_synonyms(mg, syns, serr), "xor as a new key resolves");
+    bool xor_is_kwor = false;
     for (const auto& s : syns) {
-      if (s.lit == "xor" && s.tok == "KwOr" && s.bin == "Or") saw_xor = true;
-      if (s.lit == "sel" && s.tok == "KwSelect") saw_sel = true;
+      if (s.lit == "xor" && (s.tok == "KwOr" || s.bin == "Or")) xor_is_kwor = true;
     }
-    expect(saw_xor, "xor inherits KwOr / BinOp::Or");
-    expect(saw_sel, "sel inherits KwSelect");
+    expect(!xor_is_kwor, "xor is NOT KwOr / BinOp::Or");
+    expect(syns.empty(), "xor is not a keyword synonym");
     std::string kws;
-    expect(emit_keyword_synonyms(mg, kws, serr), "emit xor/sel keywords");
-    expect(kws.find("{\"xor\", TokKind::KwOr}") != std::string::npos,
-           "keyword table contains xor");
-    expect(kws.find("{\"sel\", TokKind::KwSelect}") != std::string::npos,
-           "keyword table contains sel");
+    expect(emit_keyword_synonyms(mg, kws, serr), "emit keywords after xor");
+    expect(kws.find("{\"xor\", TokKind::KwOr}") == std::string::npos,
+           "does not emit xor as KwOr");
+    expect(kws.find("{\"xor\", TokKind::KwXor}") == std::string::npos,
+           "does not emit KwXor");
+    std::string xor_emitted;
+    expect(emit_expr_ladder(mg, map, xor_emitted, serr), "emit mutated or-expr");
+    expect(xor_emitted.find("iequals(peek().text, \"xor\")") != std::string::npos,
+           "xor matches Ident text");
+    expect(xor_emitted.find("bin_key") != std::string::npos, "xor sets bin_key");
+    expect(xor_emitted.find("TokKind::KwXor") == std::string::npos,
+           "emit does not invent KwXor");
   }
+
+  expect(emitted.find("e->bin_key") == std::string::npos,
+         "stock emit has no bin_key");
 
   {
     const Grammar bad = parse_ebnf(

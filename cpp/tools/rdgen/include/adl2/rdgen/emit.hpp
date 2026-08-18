@@ -9,7 +9,8 @@ namespace adl2::rdgen {
 
 /// Emit mechanical parse_* bodies (`role = generate`): expression ladder,
 /// ternary, and keyword+condition region statements. AST construction is
-/// inferred from EBNF shape + the literal catalog / sibling synonyms.
+/// inferred from EBNF shape + the literal catalog / alias table. New
+/// words keep their own `bin_key`; they do not inherit a sibling BinOp.
 bool emit_generated(const Grammar& g, const MethodMap& map, std::string& out,
                     std::string& error);
 

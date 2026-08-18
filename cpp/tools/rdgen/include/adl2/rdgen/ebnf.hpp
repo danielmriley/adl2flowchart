@@ -64,4 +64,9 @@ struct ShapeInfo {
 
 ShapeInfo classify(const Production& p);
 
+/// True when the production is `keywords condition` (Literal or group of
+/// Literals, then the name `condition`). Used to infer unmapped statement
+/// words as Cut-shaped region statements (slice 2).
+bool keyword_condition_kws(const Production& p, std::vector<std::string>& kws);
+
 }  // namespace adl2::rdgen

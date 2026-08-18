@@ -22,6 +22,7 @@ the `smash2_cpp` CLI.
 | `--dump-grammar` | Print parsed productions |
 | `--dump-shapes` | Print shape classification |
 | `--emit-expr FILE` | Write generated `parse_*` bodies (`-` = stdout) |
+| `--emit-dispatch FILE` | Write Choice dispatch + first-set predicates |
 | `--emit-keywords FILE` | Extra lexer keyword-map entries (sibling synonyms) |
 | `--replace FROM TO` | Rewrite EBNF text before parse (repeatable) |
 | `--dump-synonyms` | Print inherited keyword synonyms |

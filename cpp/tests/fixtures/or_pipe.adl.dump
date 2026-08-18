@@ -1,0 +1,10 @@
+File
+  Region kw=region name=R @3:1
+    Cut kw=select @4:3
+      Binary op=or
+        Ident a
+        Ident b
+    Cut kw=select @5:3
+      Binary op=or
+        Ident c
+        Ident d

@@ -1,0 +1,14 @@
+File
+  Region kw=region name=R @3:1
+    Cut kw=select @4:3
+      Band kind=in lo=100 hi=200
+        Ident MET
+    Cut kw=select @5:3
+      Band kind=out lo=50 hi=60
+        Ident MET
+    Cut kw=select @6:3
+      Cmp op=>
+        Dot field=pt
+          Index 0
+            Ident jets
+        Num 20

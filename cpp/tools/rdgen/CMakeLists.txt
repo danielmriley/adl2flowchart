@@ -5,7 +5,9 @@ add_library(adl2_rdgen_lib STATIC
   src/ebnf.cpp
   src/check.cpp
   src/emit.cpp
+  src/dispatch.cpp
   src/literals.cpp
+  src/inventory.cpp
 )
 target_include_directories(adl2_rdgen_lib PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -27,6 +29,15 @@ target_compile_definitions(adl2_rdgen_unit PRIVATE
 )
 
 add_test(NAME adl2_rdgen_unit COMMAND adl2_rdgen_unit)
+
+add_executable(adl2_rdgen_inventory tests/inventory_unit.cpp)
+target_link_libraries(adl2_rdgen_inventory PRIVATE adl2_rdgen_lib)
+target_compile_options(adl2_rdgen_inventory PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(adl2_rdgen_inventory PRIVATE
+  ADL2_GRAMMAR_EBNF="${CMAKE_SOURCE_DIR}/grammar.ebnf"
+)
+add_test(NAME adl2_rdgen_inventory COMMAND adl2_rdgen_inventory)
+
 add_test(NAME adl2_rdgen_check
   COMMAND adl2_rdgen
     --ebnf ${CMAKE_SOURCE_DIR}/grammar.ebnf
@@ -43,6 +54,16 @@ add_test(NAME adl2_rdgen_expr_golden
     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/parser_expr.got.hpp
     -P ${CMAKE_CURRENT_SOURCE_DIR}/compare_emit.cmake)
 
+add_test(NAME adl2_rdgen_dispatch_golden
+  COMMAND ${CMAKE_COMMAND}
+    -DGEN=$<TARGET_FILE:adl2_rdgen>
+    -DEBNF=${CMAKE_SOURCE_DIR}/grammar.ebnf
+    -DHPP=${CMAKE_SOURCE_DIR}/libs/syntax/include/adl2/syntax/parser.hpp
+    -DMAP=${CMAKE_CURRENT_SOURCE_DIR}/method_map.txt
+    -DGOLDEN=${CMAKE_SOURCE_DIR}/libs/syntax/generated/parser_dispatch.inc.hpp
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/parser_dispatch.got.hpp
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/compare_dispatch.cmake)
+
 add_test(NAME adl2_rdgen_keywords_golden
   COMMAND ${CMAKE_COMMAND}
     -DGEN=$<TARGET_FILE:adl2_rdgen>
@@ -53,14 +74,18 @@ add_test(NAME adl2_rdgen_keywords_golden
     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/keyword_synonyms.got.hpp
     -P ${CMAKE_CURRENT_SOURCE_DIR}/compare_keywords.cmake)
 
-# Compile-time proof: the same grammar.ebnf plus two sibling synonyms
-# (xor of or, sel of select) rebuilds lexer keywords; AST is wired
-# without editing parser.cpp / lexer.cpp.
+# Compile-time proof: grammar.ebnf plus xor / sel / foo-stmt rebuilds
+# mutated parser_expr.inc.hpp + parser_dispatch.inc.hpp.
+# xor is Ident + bin_key; sel/foo are Ident + Cut keyword.
+# MUTATE_DIR is first on mutate_parse's include path so parser.cpp picks
+# up the mutated includes (production adl2_syntax is not pointed at it).
 set(MUTATE_DIR ${CMAKE_CURRENT_BINARY_DIR}/mutate)
 set(MUTATE_EBNF ${MUTATE_DIR}/grammar.ebnf)
 set(MUTATE_KWS ${MUTATE_DIR}/keyword_synonyms.inc.hpp)
+set(MUTATE_EXPR ${MUTATE_DIR}/parser_expr.inc.hpp)
+set(MUTATE_DISPATCH ${MUTATE_DIR}/parser_dispatch.inc.hpp)
 add_custom_command(
-  OUTPUT ${MUTATE_EBNF} ${MUTATE_KWS}
+  OUTPUT ${MUTATE_EBNF} ${MUTATE_KWS} ${MUTATE_EXPR} ${MUTATE_DISPATCH}
   COMMAND ${CMAKE_COMMAND}
           -DGEN=$<TARGET_FILE:adl2_rdgen>
           -DEBNF=${CMAKE_SOURCE_DIR}/grammar.ebnf
@@ -68,16 +93,20 @@ add_custom_command(
           -DMAP=${CMAKE_CURRENT_SOURCE_DIR}/method_map.txt
           -DOUT_EBNF=${MUTATE_EBNF}
           -DOUT_KWS=${MUTATE_KWS}
+          -DOUT_EXPR=${MUTATE_EXPR}
+          -DOUT_DISPATCH=${MUTATE_DISPATCH}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/mutate.cmake
   DEPENDS
     adl2_rdgen
     ${CMAKE_SOURCE_DIR}/grammar.ebnf
     ${CMAKE_CURRENT_SOURCE_DIR}/mutate.cmake
     ${CMAKE_CURRENT_SOURCE_DIR}/method_map.txt
-  COMMENT "adl2_rdgen: mutate grammar.ebnf (xor/sel) and emit keyword synonyms"
+    ${CMAKE_CURRENT_SOURCE_DIR}/aliases.txt
+  COMMENT "adl2_rdgen: mutate grammar.ebnf (xor/sel/foo) and emit"
   VERBATIM
 )
-add_custom_target(adl2_rdgen_mutate_kws DEPENDS ${MUTATE_EBNF} ${MUTATE_KWS})
+add_custom_target(adl2_rdgen_mutate_kws
+  DEPENDS ${MUTATE_EBNF} ${MUTATE_KWS} ${MUTATE_EXPR} ${MUTATE_DISPATCH})
 
 add_executable(adl2_rdgen_mutate_parse
   tests/mutate_parse.cpp
@@ -97,5 +126,8 @@ set_property(SOURCE ${CMAKE_SOURCE_DIR}/libs/syntax/src/lexer.cpp
   APPEND PROPERTY OBJECT_DEPENDS ${MUTATE_KWS})
 set_property(SOURCE ${CMAKE_SOURCE_DIR}/libs/syntax/src/parser.cpp
   APPEND PROPERTY OBJECT_DEPENDS
-  ${CMAKE_BINARY_DIR}/libs/syntax/rdgen/parser_expr.inc.hpp)
+  ${MUTATE_EXPR}
+  ${MUTATE_DISPATCH}
+  ${CMAKE_BINARY_DIR}/libs/syntax/rdgen/parser_expr.inc.hpp
+  ${CMAKE_BINARY_DIR}/libs/syntax/rdgen/parser_dispatch.inc.hpp)
 add_test(NAME adl2_rdgen_mutate_parse COMMAND adl2_rdgen_mutate_parse)

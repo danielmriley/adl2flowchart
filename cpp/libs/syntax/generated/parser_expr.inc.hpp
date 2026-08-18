@@ -4,13 +4,10 @@
 
 RegionStmt Parser::parse_cut_as_region() {
   Token kw_tok = advance();
-  std::string kw = "select";
-  if (kw_tok.kind == TokKind::KwCut) kw = "cut";
-  if (kw_tok.kind == TokKind::KwCmd) kw = "cmd";
-  if (kw_tok.kind == TokKind::KwCommand) kw = "command";
+  std::string kw = lower_copy(kw_tok.text);
   RegionStmt st;
   st.kind = RegionStmt::Kind::Cut;
-  st.keyword = kw;
+  st.keyword = std::move(kw);
   st.cond = parse_condition();
   st.span = kw_tok.span.to(last_span_);
   return st;

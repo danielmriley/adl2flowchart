@@ -21,6 +21,13 @@ bool iequals(const std::string& a, const char* b) {
   return i == a.size();
 }
 
+std::string lower_copy(std::string s) {
+  for (char& c : s) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return s;
+}
+
 }  // namespace
 
 Parser::Parser(std::string_view src, std::vector<Token> tokens, DiagSink& diags)
@@ -98,51 +105,6 @@ bool Parser::expect(TokKind k, const char* what) {
 bool Parser::nl_before() const {
   const TokKind k = raw_peek().kind;
   return k == TokKind::Newline || k == TokKind::Eof;
-}
-
-bool Parser::at_section_start() const {
-  switch (peek().kind) {
-    case TokKind::KwInfo:
-    case TokKind::KwTable:
-    case TokKind::KwCountsformat:
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
-    case TokKind::KwObject:
-    case TokKind::KwObj:
-    case TokKind::KwComposite:
-    case TokKind::KwTrigger:
-    case TokKind::KwRegion:
-    case TokKind::KwAlgo:
-    case TokKind::KwHistoList:
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool Parser::at_stmt_keyword() const {
-  switch (peek().kind) {
-    case TokKind::KwSelect:
-    case TokKind::KwCut:
-    case TokKind::KwCmd:
-    case TokKind::KwCommand:
-    case TokKind::KwReject:
-    case TokKind::KwTake:
-    case TokKind::KwUsing:
-    case TokKind::KwBin:
-    case TokKind::KwWeight:
-    case TokKind::KwTrigger:
-    case TokKind::KwHisto:
-    case TokKind::KwSave:
-    case TokKind::KwCounts:
-    case TokKind::KwPrint:
-    case TokKind::KwSort:
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
-      return true;
-    default:
-      return false;
-  }
 }
 
 void Parser::synchronize_statement() {
@@ -288,37 +250,6 @@ FileAst Parser::parse_file() {
     file.sections.push_back(std::move(sec));
   }
   return file;
-}
-
-bool Parser::parse_section(Section& out) {
-  switch (peek().kind) {
-    case TokKind::KwInfo:
-      out = parse_info_block();
-      return true;
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
-      out = parse_define_section();
-      return true;
-    case TokKind::KwObject:
-    case TokKind::KwObj:
-    case TokKind::KwComposite:
-    case TokKind::KwTrigger:
-      out = parse_object_block();
-      return true;
-    case TokKind::KwRegion:
-    case TokKind::KwAlgo:
-    case TokKind::KwHistoList:
-      out = parse_region_block();
-      return true;
-    case TokKind::KwTable:
-      out = parse_table_block();
-      return true;
-    case TokKind::KwCountsformat:
-      out = parse_countsformat_block();
-      return true;
-    default:
-      return false;
-  }
 }
 
 Section Parser::parse_info_block() {
@@ -467,27 +398,22 @@ Section Parser::parse_object_block() {
       block.stmts.push_back(parse_take_stmt());
       continue;
     }
-    if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
-        check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-      Token cut_kw = advance();
-      std::string kw = "select";
-      if (cut_kw.kind == TokKind::KwCut) kw = "cut";
-      else if (cut_kw.kind == TokKind::KwCmd) kw = "cmd";
-      else if (cut_kw.kind == TokKind::KwCommand) kw = "command";
+    if (is_cut_keyword()) {
+      RegionStmt rs = parse_cut_as_region();
       ObjectStmt st;
       st.kind = ObjectStmt::Kind::Cut;
-      st.keyword = kw;
-      st.cond = parse_condition();
-      st.span = cut_kw.span.to(last_span_);
+      st.keyword = std::move(rs.keyword);
+      st.cond = std::move(rs.cond);
+      st.span = rs.span;
       block.stmts.push_back(std::move(st));
       continue;
     }
-    if (check(TokKind::KwReject)) {
-      Token start = advance();
+    if (is_reject_keyword()) {
+      RegionStmt rs = parse_reject_stmt();
       ObjectStmt st;
       st.kind = ObjectStmt::Kind::Reject;
-      st.cond = parse_condition();
-      st.span = start.span.to(last_span_);
+      st.cond = std::move(rs.cond);
+      st.span = rs.span;
       block.stmts.push_back(std::move(st));
       continue;
     }
@@ -635,29 +561,6 @@ Section Parser::parse_region_block() {
   block.span = kw_tok.span.to(last_span_);
   s.region = std::move(block);
   return s;
-}
-
-std::optional<RegionStmt> Parser::parse_region_stmt() {
-  if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
-      check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-    return parse_cut_as_region();
-  }
-  if (check(TokKind::KwReject)) return parse_reject_stmt();
-  if (check(TokKind::KwBin)) return parse_bin_stmt();
-  if (is_ident_text("bins") && !next_is_line_end()) return parse_bin_stmt();
-  if (check(TokKind::KwWeight)) return parse_weight_stmt();
-  if (check(TokKind::KwTrigger)) return parse_trigger_stmt();
-  if (check(TokKind::KwHisto)) return parse_histo_stmt();
-  if (check(TokKind::KwSave)) return parse_save_stmt();
-  if (check(TokKind::KwCounts)) return parse_counts_stmt();
-  if (check(TokKind::KwPrint)) return parse_print_stmt();
-  if (check(TokKind::KwSort)) return parse_sort_stmt();
-  if (check(TokKind::KwTake) || check(TokKind::KwUsing)) {
-    advance();
-    return parse_region_ref();
-  }
-  if (check(TokKind::Ident)) return parse_region_ref();
-  return std::nullopt;
 }
 
 RegionStmt Parser::parse_region_ref() {
@@ -875,10 +778,12 @@ RegionStmt Parser::parse_sort_stmt() {
   return st;
 }
 
-// --- expressions ---
-// Mechanical parse_* bodies (ladder, ternary, reject/trigger/cut) are
-// generated from grammar.ebnf by adl2_rdgen (see RDGEN.md).
+// --- expressions + dispatch ---
+// Mechanical parse_* bodies (ladder, ternary, reject/trigger/cut) and
+// Choice dispatch / first-set predicates are generated from grammar.ebnf
+// by adl2_rdgen (see RDGEN.md).
 #include "parser_expr.inc.hpp"
+#include "parser_dispatch.inc.hpp"
 
 std::unique_ptr<Expr> Parser::parse_comparison() {
   auto first = parse_additive();

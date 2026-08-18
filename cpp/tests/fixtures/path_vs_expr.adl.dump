@@ -1,0 +1,10 @@
+File
+  Define kw=define name=r @4:1
+    Binary op=/
+      Dot field=pt
+        Ident photons
+      Dot field=pt
+        Ident j
+  Define kw=define name=w @5:1
+    Call name=bdt
+      Path "x.y-z.xml"

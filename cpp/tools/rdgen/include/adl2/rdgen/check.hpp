@@ -46,8 +46,9 @@ struct CheckResult {
 /// Extract `parse_foo` identifiers from a C++ header (declaration scan).
 std::vector<std::string> scan_parse_symbols(std::string_view header);
 
-/// Fail-closed: every EBNF production is mapped; every generate-role
-/// production has an emit shape; every parse_* in the header is listed.
+/// Fail-closed: every EBNF production is mapped *or* is an inferred
+/// `keywords condition` statement; every generate-role production has an
+/// emit shape (including Choice); every parse_* in the header is listed.
 CheckResult check_grammar(const Grammar& g, const MethodMap& map,
                           std::string_view parser_hpp);
 

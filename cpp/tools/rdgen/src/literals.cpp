@@ -1,10 +1,9 @@
 #include "adl2/rdgen/literals.hpp"
 
 #include <cctype>
+#include <fstream>
 #include <sstream>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
+#include <vector>
 
 namespace adl2::rdgen {
 namespace {
@@ -123,11 +122,20 @@ void collect_groups(const Production& p,
   }
 }
 
-std::string lower_copy(std::string s) {
-  for (char& c : s) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  }
-  return s;
+std::string trim_copy(std::string s) {
+  std::size_t a = 0;
+  while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+  std::size_t b = s.size();
+  while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+  return s.substr(a, b - a);
+}
+
+std::string aliases_file_path() {
+  std::string here = __FILE__;
+  const auto pos = here.find_last_of("/\\");
+  const std::string dir =
+      pos == std::string::npos ? std::string(".") : here.substr(0, pos);
+  return dir + "/../aliases.txt";
 }
 
 }  // namespace
@@ -139,43 +147,83 @@ const LitBind* lookup_lit(const std::string& lit) {
   return nullptr;
 }
 
+bool parse_aliases(const std::string& text, std::vector<Alias>& out,
+                   std::string& error) {
+  out.clear();
+  error.clear();
+  std::istringstream is(text);
+  std::string line;
+  int lineno = 0;
+  while (std::getline(is, line)) {
+    ++lineno;
+    const auto hash = line.find('#');
+    if (hash != std::string::npos) line = line.substr(0, hash);
+    line = trim_copy(line);
+    if (line.empty()) continue;
+    std::istringstream ls(line);
+    std::string surface, canonical, extra;
+    if (!(ls >> surface >> canonical)) {
+      error = "aliases.txt:" + std::to_string(lineno) +
+              ": expected surface and canonical";
+      return false;
+    }
+    if (ls >> extra) {
+      error = "aliases.txt:" + std::to_string(lineno) + ": extra field";
+      return false;
+    }
+    Alias a;
+    a.surface = std::move(surface);
+    a.canonical = std::move(canonical);
+    out.push_back(std::move(a));
+  }
+  return true;
+}
+
+const std::vector<Alias>& alias_table() {
+  static const std::vector<Alias> rows = [] {
+    std::vector<Alias> loaded;
+    std::string err;
+    std::ifstream in(aliases_file_path());
+    if (in) {
+      std::ostringstream ss;
+      ss << in.rdbuf();
+      if (parse_aliases(ss.str(), loaded, err) && !loaded.empty()) {
+        return loaded;
+      }
+    }
+    // Stock fallback matching aliases.txt (three rows).
+    return std::vector<Alias>{{"||", "or"}, {"&&", "and"}, {"!", "not"}};
+  }();
+  return rows;
+}
+
+const Alias* lookup_alias(const std::string& lit) {
+  for (const auto& a : alias_table()) {
+    if (a.surface == lit) return &a;
+  }
+  return nullptr;
+}
+
 bool resolve_synonyms(const Grammar& g, std::vector<Synonym>& out,
                       std::string& error) {
   out.clear();
   error.clear();
+  // Touch the alias table so identity is table-driven, not sibling inherit.
+  (void)alias_table();
+
   std::vector<std::vector<std::string>> groups;
   for (const auto& p : g.prods) collect_groups(p, groups);
 
-  std::unordered_set<std::string> seen;
   for (const auto& group : groups) {
-    const LitBind* inherit = nullptr;
     for (const auto& lit : group) {
-      const LitBind* b = lookup_lit(lit);
-      if (b && b->keyword && b->tok) {
-        inherit = b;
-        break;
-      }
-    }
-    for (const auto& lit : group) {
-      if (lookup_lit(lit)) continue;
+      if (lookup_lit(lit) || lookup_alias(lit)) continue;
       if (!is_word(lit)) {
         error = "unknown symbolic literal \"" + lit +
-                "\" — new punctuation needs a lexer token; word synonyms "
-                "inherit from a sibling keyword";
+                "\" — new punctuation needs a lexer token";
         return false;
       }
-      if (!inherit) {
-        error = "unknown keyword \"" + lit +
-                "\" has no known sibling to inherit a TokKind from";
-        return false;
-      }
-      if (!seen.insert(lit).second) continue;
-      Synonym s;
-      s.lit = lower_copy(lit);
-      s.tok = inherit->tok;
-      if (inherit->bin) s.bin = inherit->bin;
-      if (inherit->un) s.un = inherit->un;
-      out.push_back(std::move(s));
+      // New word: its own key (lowercase lexeme). Not a keyword synonym
+      // and not an inherited TokKind/BinOp.
     }
   }
   return true;
@@ -190,6 +238,7 @@ bool emit_keyword_synonyms(const Grammar& g, std::string& out,
   os << "// Extra lexer keyword entries (sibling synonyms). Included from\n";
   os << "// lexer.cpp inside the static keyword map.\n";
   for (const auto& s : syns) {
+    if (s.tok.empty()) continue;
     os << "      {\"" << s.lit << "\", TokKind::" << s.tok << "},\n";
   }
   out = os.str();

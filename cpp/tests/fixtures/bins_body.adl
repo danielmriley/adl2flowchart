@@ -1,0 +1,6 @@
+# Pin: `bins HT …` is a Bin with boundaries, not a RegionRef.
+# Bare `bins` as RegionRef is already covered by bins_and_path.adl.
+
+region r
+  select MET > 0
+  bins HT 300 500 700

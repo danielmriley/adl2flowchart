@@ -1,6 +1,7 @@
 #include "adl2/rdgen/check.hpp"
 #include "adl2/rdgen/ebnf.hpp"
 #include "adl2/rdgen/emit.hpp"
+#include "adl2/rdgen/inventory.hpp"
 #include "adl2/rdgen/literals.hpp"
 
 #include <fstream>
@@ -17,8 +18,10 @@ void usage(std::ostream& os) {
         "  --check              verify EBNF ↔ parse_* map (implied by emit)\n"
         "  --dump-grammar       print parsed productions\n"
         "  --dump-shapes        print shape classification\n"
+        "  --dump-inventory     print token-class inventory of quoted literals\n"
         "  --dump-synonyms      print inherited keyword synonyms\n"
         "  --emit-expr FILE     write generated parse_* bodies (- = stdout)\n"
+        "  --emit-dispatch FILE write Choice dispatch + first-set predicates\n"
         "  --emit-keywords FILE write lexer synonym map entries\n"
         "  --replace FROM TO    rewrite EBNF text before parse (repeatable)\n"
         "  --stamp FILE         touch FILE on success\n"
@@ -62,10 +65,12 @@ void apply_replaces(std::string& src,
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string ebnf_path, hpp_path, map_path, emit_path, kw_path, stamp_path;
+  std::string ebnf_path, hpp_path, map_path, emit_path, dispatch_path, kw_path,
+      stamp_path;
   bool do_check = false;
   bool dump_grammar = false;
   bool dump_shapes = false;
+  bool dump_inventory = false;
   bool dump_synonyms = false;
   std::vector<std::pair<std::string, std::string>> replaces;
 
@@ -91,6 +96,8 @@ int main(int argc, char** argv) {
       map_path = need("--map");
     else if (a == "--emit-expr")
       emit_path = need("--emit-expr");
+    else if (a == "--emit-dispatch")
+      dispatch_path = need("--emit-dispatch");
     else if (a == "--emit-keywords")
       kw_path = need("--emit-keywords");
     else if (a == "--stamp")
@@ -105,6 +112,8 @@ int main(int argc, char** argv) {
       dump_grammar = true;
     else if (a == "--dump-shapes")
       dump_shapes = true;
+    else if (a == "--dump-inventory")
+      dump_inventory = true;
     else if (a == "--dump-synonyms")
       dump_synonyms = true;
     else {
@@ -118,8 +127,10 @@ int main(int argc, char** argv) {
     usage(std::cerr);
     return 2;
   }
-  if (!emit_path.empty() || !kw_path.empty()) do_check = true;
-  if (!do_check && !dump_grammar && !dump_shapes && !dump_synonyms) {
+  if (!emit_path.empty() || !kw_path.empty() || !dispatch_path.empty())
+    do_check = true;
+  if (!do_check && !dump_grammar && !dump_shapes && !dump_inventory &&
+      !dump_synonyms) {
     do_check = true;
   }
 
@@ -152,6 +163,18 @@ int main(int argc, char** argv) {
       std::cout << "\n";
     }
   }
+  if (dump_inventory) {
+    adl2::rdgen::Inventory inv;
+    std::string ierr;
+    adl2::rdgen::build_inventory(g, inv, ierr);
+    std::cout << adl2::rdgen::format_inventory(inv);
+    if (!inv.ok()) {
+      for (const auto& e : inv.errors) {
+        std::cerr << "adl2_rdgen: " << e << "\n";
+      }
+      if (!do_check) return 1;
+    }
+  }
   if (dump_synonyms) {
     std::vector<adl2::rdgen::Synonym> syns;
     if (!adl2::rdgen::resolve_synonyms(g, syns, err)) {
@@ -168,7 +191,8 @@ int main(int argc, char** argv) {
 
   adl2::rdgen::MethodMap map;
   std::string hpp;
-  if (do_check || !emit_path.empty() || !kw_path.empty()) {
+  if (do_check || !emit_path.empty() || !kw_path.empty() ||
+      !dispatch_path.empty()) {
     if (hpp_path.empty() || map_path.empty()) {
       std::cerr << "adl2_rdgen: --check / emit need --parser-hpp and --map\n";
       return 2;
@@ -206,6 +230,20 @@ int main(int argc, char** argv) {
     if (emit_path == "-") {
       std::cout << emitted;
     } else if (!write_file(emit_path, emitted, err)) {
+      std::cerr << "adl2_rdgen: " << err << "\n";
+      return 1;
+    }
+  }
+
+  if (!dispatch_path.empty()) {
+    std::string dispatched;
+    if (!adl2::rdgen::emit_dispatch(g, map, dispatched, err)) {
+      std::cerr << "adl2_rdgen: dispatch emit failed: " << err << "\n";
+      return 1;
+    }
+    if (dispatch_path == "-") {
+      std::cout << dispatched;
+    } else if (!write_file(dispatch_path, dispatched, err)) {
       std::cerr << "adl2_rdgen: " << err << "\n";
       return 1;
     }

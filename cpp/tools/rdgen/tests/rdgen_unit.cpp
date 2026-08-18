@@ -131,6 +131,49 @@ int main() {
          "emits parse_cut_as_region");
   expect(emitted.find("Parser::parse_comparison") == std::string::npos,
          "does not emit parse_comparison");
+  expect(emitted.find("Parser::parse_section") == std::string::npos,
+         "expr emit does not write parse_section");
+  expect(emitted.find("lower_copy(kw_tok.text)") != std::string::npos,
+         "cut keyword is lowercase token text");
+
+  {
+    std::string dispatched;
+    std::string derr;
+    expect(emit_dispatch(g, map, dispatched, derr), "dispatch emit succeeds");
+    expect(derr.empty(), "dispatch has no error");
+    expect(dispatched.find("Parser::parse_section") != std::string::npos,
+           "emits parse_section");
+    expect(dispatched.find("Parser::parse_region_stmt") != std::string::npos,
+           "emits parse_region_stmt");
+    expect(dispatched.find("Parser::at_section_start") != std::string::npos,
+           "emits at_section_start");
+    expect(dispatched.find("Parser::at_stmt_keyword") != std::string::npos,
+           "emits at_stmt_keyword");
+    expect(dispatched.find("Parser::is_cut_keyword") != std::string::npos,
+           "emits is_cut_keyword");
+    expect(dispatched.find("Parser::is_reject_keyword") != std::string::npos,
+           "emits is_reject_keyword");
+    expect(dispatched.find("is_ident_text(\"bins\")") != std::string::npos,
+           "bins stays contextual");
+    expect(dispatched.find("TokKind::KwTake") != std::string::npos,
+           "take extra in region-stmt / at_stmt_keyword");
+    expect(dispatched.find("iequals(peek().text, \"foo\")") == std::string::npos,
+           "stock dispatch has no foo");
+    expect(dispatched.find("iequals(peek().text, \"sel\")") == std::string::npos,
+           "stock dispatch has no sel");
+    expect(dispatched.find("TokKind::KwTrigger") != std::string::npos,
+           "trigger is in generated first-sets");
+  }
+
+  {
+    const Grammar extra = parse_ebnf(ebnf_src + "\nfoo-stmt = \"foo\" condition ;\n");
+    expect(extra.error.empty(), "frozen + foo-stmt parses");
+    const CheckResult inferred = check_grammar(extra, map, hpp);
+    for (const auto& e : inferred.errors) {
+      std::cerr << "inferred: " << e.message << "\n";
+    }
+    expect(inferred.ok(), "unmapped keywords-condition is inferred generate");
+  }
 
   {
     std::vector<Synonym> syns;
@@ -140,38 +183,87 @@ int main() {
   }
 
   {
+    const std::string map_path = ADL2_METHOD_MAP;
+    const auto slash = map_path.find_last_of("/\\");
+    const std::string aliases_path =
+        (slash == std::string::npos ? std::string(".")
+                                    : map_path.substr(0, slash)) +
+        "/aliases.txt";
+    const std::string aliases_src = slurp(aliases_path.c_str());
+    expect(!aliases_src.empty(), "aliases.txt is readable");
+    std::vector<Alias> aliases;
+    std::string aerr;
+    expect(parse_aliases(aliases_src, aliases, aerr), "aliases.txt parses");
+    expect(aliases.size() == 3, "three stock aliases");
+    bool saw_or = false, saw_and = false, saw_not = false;
+    for (const auto& a : aliases) {
+      if (a.surface == "||" && a.canonical == "or") saw_or = true;
+      if (a.surface == "&&" && a.canonical == "and") saw_and = true;
+      if (a.surface == "!" && a.canonical == "not") saw_not = true;
+    }
+    expect(saw_or && saw_and && saw_not, "||→or &&→and !→not");
+    expect(lookup_alias("||") && lookup_alias("||")->canonical == "or",
+           "lookup_alias ||");
+  }
+
+  {
     std::string mutated = ebnf_src;
     const std::string from_or = "(\"or\"|\"||\")";
     const std::string to_or = "(\"or\"|\"||\"|\"xor\")";
-    const std::string from_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\")";
-    const std::string to_sel = "(\"select\"|\"cut\"|\"cmd\"|\"command\"|\"sel\")";
     auto repl = [](std::string& s, const std::string& a, const std::string& b) {
       const auto pos = s.find(a);
       expect(pos != std::string::npos, "mutation needle present in grammar.ebnf");
       if (pos != std::string::npos) s.replace(pos, a.size(), b);
     };
+    const std::string from_cut = "(\"select\"|\"cut\"|\"cmd\"|\"command\")";
+    const std::string to_cut = "(\"select\"|\"cut\"|\"cmd\"|\"command\"|\"sel\")";
+    const std::string from_ref = "| region-ref ;";
+    const std::string to_ref =
+        "| foo-stmt | region-ref ;\nfoo-stmt        = \"foo\" condition ;";
     repl(mutated, from_or, to_or);
-    repl(mutated, from_sel, to_sel);
+    repl(mutated, from_cut, to_cut);
+    repl(mutated, from_ref, to_ref);
     const Grammar mg = parse_ebnf(mutated);
     expect(mg.error.empty(), "mutated grammar parses");
     std::vector<Synonym> syns;
     std::string serr;
-    expect(resolve_synonyms(mg, syns, serr), "xor/sel synonyms resolve");
-    bool saw_xor = false;
-    bool saw_sel = false;
+    expect(resolve_synonyms(mg, syns, serr), "xor as a new key resolves");
+    bool xor_is_kwor = false;
     for (const auto& s : syns) {
-      if (s.lit == "xor" && s.tok == "KwOr" && s.bin == "Or") saw_xor = true;
-      if (s.lit == "sel" && s.tok == "KwSelect") saw_sel = true;
+      if (s.lit == "xor" && (s.tok == "KwOr" || s.bin == "Or")) xor_is_kwor = true;
     }
-    expect(saw_xor, "xor inherits KwOr / BinOp::Or");
-    expect(saw_sel, "sel inherits KwSelect");
+    expect(!xor_is_kwor, "xor is NOT KwOr / BinOp::Or");
+    expect(syns.empty(), "xor is not a keyword synonym");
     std::string kws;
-    expect(emit_keyword_synonyms(mg, kws, serr), "emit xor/sel keywords");
-    expect(kws.find("{\"xor\", TokKind::KwOr}") != std::string::npos,
-           "keyword table contains xor");
-    expect(kws.find("{\"sel\", TokKind::KwSelect}") != std::string::npos,
-           "keyword table contains sel");
+    expect(emit_keyword_synonyms(mg, kws, serr), "emit keywords after xor");
+    expect(kws.find("{\"xor\", TokKind::KwOr}") == std::string::npos,
+           "does not emit xor as KwOr");
+    expect(kws.find("{\"xor\", TokKind::KwXor}") == std::string::npos,
+           "does not emit KwXor");
+    std::string xor_emitted;
+    expect(emit_expr_ladder(mg, map, xor_emitted, serr), "emit mutated or-expr");
+    expect(xor_emitted.find("iequals(peek().text, \"xor\")") != std::string::npos,
+           "xor matches Ident text");
+    expect(xor_emitted.find("bin_key") != std::string::npos, "xor sets bin_key");
+    expect(xor_emitted.find("TokKind::KwXor") == std::string::npos,
+           "emit does not invent KwXor");
+    const CheckResult mcheck = check_grammar(mg, map, hpp);
+    for (const auto& e : mcheck.errors) {
+      std::cerr << "mutate-check: " << e.message << "\n";
+    }
+    expect(mcheck.ok(), "mutated xor/sel/foo still checks");
+    std::string dmut;
+    expect(emit_dispatch(mg, map, dmut, serr), "dispatch emit after sel/foo");
+    expect(dmut.find("iequals(peek().text, \"sel\")") != std::string::npos,
+           "sel is an Ident first-set of cut-stmt");
+    expect(dmut.find("iequals(peek().text, \"foo\")") != std::string::npos,
+           "foo-stmt is inlined as Ident Cut");
+    expect(dmut.find("parse_foo_stmt") == std::string::npos,
+           "does not invent parse_foo_stmt");
   }
+
+  expect(emitted.find("e->bin_key") == std::string::npos,
+         "stock emit has no bin_key");
 
   {
     const Grammar bad = parse_ebnf(

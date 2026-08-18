@@ -1,0 +1,4 @@
+# Pin: -> is Arrow / Member, not Minus then Gt.
+
+region R
+  select size(dijet->jj) == 1

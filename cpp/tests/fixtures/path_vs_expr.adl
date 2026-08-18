@@ -1,0 +1,5 @@
+# Pin: define-body photons.pt/j.pt is Div/Dot, not Path.
+# Path is only in arg position (parse_path_token).
+
+define r = photons.pt/j.pt
+define w = bdt(x.y-z.xml)

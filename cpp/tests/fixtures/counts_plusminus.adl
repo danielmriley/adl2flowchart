@@ -1,0 +1,8 @@
+# Pin: +- is one PlusMinus token in a counts line.
+
+countsformat results
+  process estbg, "BG", stat
+
+region R
+  select MET > 0
+  counts results 10 +- 1

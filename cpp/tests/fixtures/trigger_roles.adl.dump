@@ -1,0 +1,7 @@
+File
+  Object kw=trigger name=HLT @3:1
+  Region kw=region name=R @5:1
+    Trigger @6:3
+      Ident foo
+    Weight name=trigger @7:3
+      Num 0.65

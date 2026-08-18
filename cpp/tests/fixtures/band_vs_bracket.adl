@@ -1,0 +1,6 @@
+# Pin: [] / ][ are Band; jets[0].pt is Index+Dot.
+
+region R
+  select MET [] 100 200
+  select MET ][ 50 60
+  select jets[0].pt > 20

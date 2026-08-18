@@ -79,18 +79,23 @@ struct Dumper {
         line("False");
         break;
       case ExprKind::Unary: {
-        const char* name = e.unary_op == UnaryOp::Neg ? "-" : "not";
+        const std::string name = !e.un_key.empty()
+                                     ? e.un_key
+                                     : (e.unary_op == UnaryOp::Neg ? "-" : "not");
         nested(std::string("Unary op=") + name, [&] {
           if (e.child) dump_expr(*e.child);
         });
         break;
       }
-      case ExprKind::Binary:
-        nested(std::string("Binary op=") + bin_op_str(e.bin_op), [&] {
+      case ExprKind::Binary: {
+        const std::string opname =
+            e.bin_key.empty() ? std::string(bin_op_str(e.bin_op)) : e.bin_key;
+        nested(std::string("Binary op=") + opname, [&] {
           if (e.lhs) dump_expr(*e.lhs);
           if (e.rhs) dump_expr(*e.rhs);
         });
         break;
+      }
       case ExprKind::Cmp:
         nested(std::string("Cmp op=") + cmp_op_str(e.cmp_op), [&] {
           if (e.lhs) dump_expr(*e.lhs);

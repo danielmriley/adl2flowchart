@@ -37,24 +37,30 @@ int check_xor() {
   if (error_only_tree(dump)) {
     return fail("xor", "dump is an error-only tree", r, src, dump);
   }
-  if (!contains(dump, "Binary op=or")) {
-    return fail("xor", "dump_ast must contain 'Binary op=or'", r, src, dump);
+  if (!contains(dump, "Binary op=xor")) {
+    return fail("xor", "dump_ast must contain 'Binary op=xor'", r, src, dump);
+  }
+  if (contains(dump, "Binary op=or")) {
+    return fail("xor", "dump_ast must not contain 'Binary op=or'", r, src, dump);
   }
   return 0;
 }
 
-int check_sel() {
-  const std::string src = "region R\n  sel a > 1\n";
+int check_oror() {
+  const std::string src = "region R\n  select a || b\n";
   const auto r = adl2::syntax::parse_source(src);
   const std::string dump = adl2::syntax::dump_ast(src, r.file);
   if (r.diags.has_errors()) {
-    return fail("sel", "parse diagnostics have errors", r, src, dump);
+    return fail("oror", "parse diagnostics have errors", r, src, dump);
   }
   if (error_only_tree(dump)) {
-    return fail("sel", "dump is an error-only tree", r, src, dump);
+    return fail("oror", "dump is an error-only tree", r, src, dump);
   }
-  if (!contains(dump, "Cut kw=select")) {
-    return fail("sel", "dump_ast must contain 'Cut kw=select'", r, src, dump);
+  if (!contains(dump, "Binary op=or")) {
+    return fail("oror", "dump_ast must contain 'Binary op=or'", r, src, dump);
+  }
+  if (contains(dump, "Binary op=xor")) {
+    return fail("oror", "dump_ast must not contain 'Binary op=xor'", r, src, dump);
   }
   return 0;
 }
@@ -63,7 +69,7 @@ int check_sel() {
 
 int main() {
   if (const int rc = check_xor()) return rc;
-  if (const int rc = check_sel()) return rc;
+  if (const int rc = check_oror()) return rc;
   std::cout << "mutate_parse: PASS\n";
   return 0;
 }

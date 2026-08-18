@@ -20,19 +20,41 @@ struct OpInfo {
   std::string tok;
   std::string bin;
   std::string un;
+  std::string key;  // dump/sema identity; empty → bin_op_str / unary name
+  bool is_new_word = false;
 };
+
+void bind_catalog(OpInfo& out, const LitBind& b) {
+  if (b.tok) out.tok = b.tok;
+  if (b.bin) out.bin = b.bin;
+  if (b.un) out.un = b.un;
+  out.key.clear();
+  out.is_new_word = false;
+}
 
 bool op_info(const std::string& lit, const std::vector<Synonym>& syns,
              OpInfo& out, std::string& error) {
+  out = OpInfo{};
   if (const LitBind* b = lookup_lit(lit)) {
-    if (b->tok) out.tok = b->tok;
-    if (b->bin) out.bin = b->bin;
-    if (b->un) out.un = b->un;
+    bind_catalog(out, *b);
     if (out.tok.empty()) {
       error = "literal \"" + lit + "\" has no TokKind";
       return false;
     }
     return true;
+  }
+  if (const Alias* a = lookup_alias(lit)) {
+    if (const LitBind* b = lookup_lit(a->canonical)) {
+      bind_catalog(out, *b);
+      if (out.tok.empty()) {
+        error = "alias \"" + lit + "\" (→ \"" + a->canonical +
+                "\") has no TokKind";
+        return false;
+      }
+      return true;
+    }
+    error = "alias \"" + lit + "\" maps to unknown \"" + a->canonical + "\"";
+    return false;
   }
   const std::string key = lower_copy(lit);
   for (const auto& s : syns) {
@@ -42,6 +64,14 @@ bool op_info(const std::string& lit, const std::vector<Synonym>& syns,
       out.un = s.un;
       return true;
     }
+  }
+  // Unknown word in an operator group: its own key. Match Ident text;
+  // do not invent a TokKind.
+  if (!lit.empty() &&
+      std::isalpha(static_cast<unsigned char>(lit[0])) != 0) {
+    out.key = key;
+    out.is_new_word = true;
+    return true;
   }
   error = "unknown operator literal \"" + lit + "\"";
   return false;
@@ -63,6 +93,9 @@ bool same_field(const std::vector<std::string>& ops,
   for (const auto& op : ops) {
     OpInfo info;
     if (!op_info(op, syns, info, error)) return false;
+    // New words keep their own key. Do not collapse {or, ||, xor} to
+    // one BinOp::Or.
+    if (info.is_new_word) return false;
     const std::string& v = want_bin ? info.bin : info.un;
     if (v.empty()) {
       error = std::string("literal \"") + op + "\" is not a " +
@@ -83,6 +116,53 @@ void emit_alias(std::ostringstream& os, const std::string& method,
      << next_method << "(); }\n\n";
 }
 
+void emit_left_assoc_new_keys(std::ostringstream& os, const std::string& method,
+                              const std::string& next_method,
+                              const std::vector<std::string>& ops,
+                              const std::vector<Synonym>& syns,
+                              std::string& error) {
+  os << "std::unique_ptr<Expr> Parser::" << method << "() {\n";
+  os << "  auto left = " << next_method << "();\n";
+  os << "  for (;;) {\n";
+  os << "    BinOp op = BinOp::Add;\n";
+  os << "    std::string key;\n";
+  for (std::size_t i = 0; i < ops.size(); ++i) {
+    OpInfo info;
+    if (!op_info(ops[i], syns, info, error)) return;
+    os << "    ";
+    if (i) os << "else ";
+    if (info.is_new_word) {
+      os << "if (check(TokKind::Ident) && iequals(peek().text, \"" << info.key
+         << "\"))\n";
+      os << "      key = \"" << info.key << "\";\n";
+    } else {
+      if (info.tok.empty() || info.bin.empty()) {
+        error = "unknown binary operator literal \"" + ops[i] + "\"";
+        return;
+      }
+      os << "if (check(TokKind::" << info.tok << "))\n";
+      os << "      op = BinOp::" << info.bin << ";\n";
+    }
+  }
+  os << "    else\n";
+  os << "      break;\n";
+  os << "    advance();\n";
+  os << "    auto right = " << next_method << "();\n";
+  os << "    auto e = std::make_unique<Expr>();\n";
+  os << "    e->kind = ExprKind::Binary;\n";
+  os << "    if (key.empty())\n";
+  os << "      e->bin_op = op;\n";
+  os << "    else\n";
+  os << "      e->bin_key = std::move(key);\n";
+  os << "    e->span = left->span.to(right->span);\n";
+  os << "    e->lhs = std::move(left);\n";
+  os << "    e->rhs = std::move(right);\n";
+  os << "    left = std::move(e);\n";
+  os << "  }\n";
+  os << "  return left;\n";
+  os << "}\n\n";
+}
+
 void emit_left_assoc(std::ostringstream& os, const std::string& method,
                      const std::string& next_method,
                      const std::vector<std::string>& ops,
@@ -90,6 +170,17 @@ void emit_left_assoc(std::ostringstream& os, const std::string& method,
   std::string bin;
   const bool uniform = same_field(ops, syns, true, bin, error);
   if (!error.empty()) return;
+
+  bool any_new = false;
+  for (const auto& op : ops) {
+    OpInfo info;
+    if (!op_info(op, syns, info, error)) return;
+    if (info.is_new_word) any_new = true;
+  }
+  if (any_new) {
+    emit_left_assoc_new_keys(os, method, next_method, ops, syns, error);
+    return;
+  }
 
   os << "std::unique_ptr<Expr> Parser::" << method << "() {\n";
   os << "  auto left = " << next_method << "();\n";
@@ -254,7 +345,7 @@ void emit_cond_stmt(std::ostringstream& os, const std::string& method,
       OpInfo info;
       if (!op_info(lit, syns, info, error)) return;
       // Synonyms that inherit KwSelect stay "select" (default).
-      if (info.tok == "KwSelect") continue;
+      if (info.tok.empty() || info.tok == "KwSelect") continue;
       os << "  if (kw_tok.kind == TokKind::" << info.tok << ") kw = \"" << lit
          << "\";\n";
     }

@@ -110,6 +110,10 @@ struct Expr {
   Ident ident;
   UnaryOp unary_op = UnaryOp::Neg;
   BinOp bin_op = BinOp::Add;
+  // Empty → dump uses unary name / bin_op_str (frozen 146 pin).
+  // Non-empty → dump `Unary op=<un_key>` / `Binary op=<bin_key>`.
+  std::string un_key;
+  std::string bin_key;
   CmpOp cmp_op = CmpOp::Eq;
   BandKind band_kind = BandKind::In;
   NumLit band_lo;
@@ -149,6 +153,8 @@ inline Expr Expr::clone() const {
   e.ident = ident;
   e.unary_op = unary_op;
   e.bin_op = bin_op;
+  e.un_key = un_key;
+  e.bin_key = bin_key;
   e.cmp_op = cmp_op;
   e.band_kind = band_kind;
   e.band_lo = band_lo;

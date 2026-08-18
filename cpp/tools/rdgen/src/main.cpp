@@ -1,6 +1,7 @@
 #include "adl2/rdgen/check.hpp"
 #include "adl2/rdgen/ebnf.hpp"
 #include "adl2/rdgen/emit.hpp"
+#include "adl2/rdgen/inventory.hpp"
 #include "adl2/rdgen/literals.hpp"
 
 #include <fstream>
@@ -17,6 +18,7 @@ void usage(std::ostream& os) {
         "  --check              verify EBNF ↔ parse_* map (implied by emit)\n"
         "  --dump-grammar       print parsed productions\n"
         "  --dump-shapes        print shape classification\n"
+        "  --dump-inventory     print token-class inventory of quoted literals\n"
         "  --dump-synonyms      print inherited keyword synonyms\n"
         "  --emit-expr FILE     write generated parse_* bodies (- = stdout)\n"
         "  --emit-keywords FILE write lexer synonym map entries\n"
@@ -66,6 +68,7 @@ int main(int argc, char** argv) {
   bool do_check = false;
   bool dump_grammar = false;
   bool dump_shapes = false;
+  bool dump_inventory = false;
   bool dump_synonyms = false;
   std::vector<std::pair<std::string, std::string>> replaces;
 
@@ -105,6 +108,8 @@ int main(int argc, char** argv) {
       dump_grammar = true;
     else if (a == "--dump-shapes")
       dump_shapes = true;
+    else if (a == "--dump-inventory")
+      dump_inventory = true;
     else if (a == "--dump-synonyms")
       dump_synonyms = true;
     else {
@@ -119,7 +124,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (!emit_path.empty() || !kw_path.empty()) do_check = true;
-  if (!do_check && !dump_grammar && !dump_shapes && !dump_synonyms) {
+  if (!do_check && !dump_grammar && !dump_shapes && !dump_inventory &&
+      !dump_synonyms) {
     do_check = true;
   }
 
@@ -150,6 +156,18 @@ int main(int argc, char** argv) {
       if (!sh.next.empty()) std::cout << "\tnext=" << sh.next;
       for (const auto& op : sh.ops) std::cout << "\t\"" << op << "\"";
       std::cout << "\n";
+    }
+  }
+  if (dump_inventory) {
+    adl2::rdgen::Inventory inv;
+    std::string ierr;
+    adl2::rdgen::build_inventory(g, inv, ierr);
+    std::cout << adl2::rdgen::format_inventory(inv);
+    if (!inv.ok()) {
+      for (const auto& e : inv.errors) {
+        std::cerr << "adl2_rdgen: " << e << "\n";
+      }
+      if (!do_check) return 1;
     }
   }
   if (dump_synonyms) {

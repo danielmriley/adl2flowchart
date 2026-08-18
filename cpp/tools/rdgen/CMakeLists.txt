@@ -6,6 +6,7 @@ add_library(adl2_rdgen_lib STATIC
   src/check.cpp
   src/emit.cpp
   src/literals.cpp
+  src/inventory.cpp
 )
 target_include_directories(adl2_rdgen_lib PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include

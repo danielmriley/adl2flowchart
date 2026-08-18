@@ -112,10 +112,19 @@ values. Same-op groups (`or` / `||`) become a `while (check A \|\| check B)`
 loop; mixed-op groups (`+` / `-`) become the current `for (;;)` switch.
 That matches today’s dump-ast-pinned construction.
 
+## Fluid grammar (in progress)
+
+Sibling inherit (`xor`→`or`) is the rejected design. The replacement
+contract is [`tools/rdgen/FLUID.md`](tools/rdgen/FLUID.md): explicit
+aliases only (`||`/`&&`/`!`); new words keep their own dump key.
+Slice 0+1 is underway on `cursor/rdgen-grammar-fluid-32f3`.
+
 ## Small grammar edits (no C++)
 
-A **word** literal added to an existing alternation inherits the first
-known sibling keyword’s `TokKind` (and `BinOp` / `UnaryOp` if any):
+**Superseded for new work.** A **word** literal added to an existing
+alternation currently still inherits the first known sibling keyword’s
+`TokKind` (and `BinOp` / `UnaryOp` if any) until the identity slice
+lands:
 
 ```
 or-expr = and-expr { ("or"|"||"|"xor") and-expr } ;

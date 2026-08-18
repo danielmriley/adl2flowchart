@@ -1,0 +1,6 @@
+# Explicit operator aliases. Production membership is not meaning.
+# Surface form → canonical dump / sema key.
+# New words (xor, …) must NOT appear here.
+||	or
+&&	and
+!	not

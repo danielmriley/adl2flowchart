@@ -7,6 +7,7 @@ BIN="${ROOT}/cpp/build/smash2_cpp"
 FIX="${ROOT}/cpp/tests/fixtures/tiny.adl"
 test -x "$BIN"
 "$BIN" --help | grep -q check
+"$BIN" --help | grep -q verify
 "$BIN" --help | grep -q objects
 out="$("$BIN" check "$FIX")"
 test -z "$out"

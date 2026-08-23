@@ -91,6 +91,7 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | [`scripts/dump_objects_corpus_gate.sh`](scripts/dump_objects_corpus_gate.sh) | Allowlisted objects dumps |
 | [`scripts/interp_run_gate.sh`](scripts/interp_run_gate.sh) | Pinned `run` stdout |
 | [`scripts/dump_dot_corpus_gate.sh`](scripts/dump_dot_corpus_gate.sh) | Allowlisted flowchart/AST DOT dumps |
+| [`scripts/verify_corpus_gate.sh`](scripts/verify_corpus_gate.sh) | `smash2_cpp verify` over 146 files vs the smash2 ledger pin |
 
 ## Build
 
@@ -134,6 +135,7 @@ cpp/scripts/dump_axioms_corpus_gate.sh
 cpp/scripts/dump_objects_corpus_gate.sh
 cpp/scripts/interp_run_gate.sh
 cpp/scripts/dump_dot_corpus_gate.sh
+cpp/scripts/verify_corpus_gate.sh
 # already-built binary:
 SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 ```

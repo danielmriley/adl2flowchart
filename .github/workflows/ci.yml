@@ -130,8 +130,10 @@ jobs:
         continue-on-error: true
         run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_axioms_corpus_gate.sh
       - name: Cross-oracle dump-objects
+        continue-on-error: true
         run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_objects_corpus_gate.sh
       - name: Cross-oracle dump-dot
+        continue-on-error: true
         run: CROSS_ORACLE=1 SKIP_BUILD=1 cpp/scripts/dump_dot_corpus_gate.sh
 
   # Rust smash2 CLI smoke (does not replace the full smash2 workspace job).

@@ -33,6 +33,9 @@ numbers". LALR hid all of this; RD makes precedence, recovery, and
 context-sensitivity explicit and unit-testable.
 **Trade-offs.** More code than a grammar file; mitigated by the
 EBNF-to-function structural correspondence and snapshot tests.
+**Amended.** ADR-011 allows an in-tree recursive-descent *emitter*
+(`adl2_rdgen`) that reads the frozen EBNF. LALR / Bison / Flex remain
+rejected.
 
 ## ADR-003: Typed Quantity/Collection identity model
 
@@ -168,3 +171,39 @@ collaborator onboarding surface (ADR-002).
   ground truth the soundness campaign depends on.
 - **Accreting onto legacy `Expr*` / string identity** — reopens ADR-003
   and ADR-004 bug families by construction.
+
+## ADR-011: In-tree RD emitter (`adl2_rdgen`), not LALR
+
+**Decision.** The C++ parser may be *partially generated* by a host
+tool, `adl2_rdgen`, that reads [`cpp/grammar.ebnf`](../../../cpp/grammar.ebnf)
+and emits recursive-descent `parse_X` method bodies. CMake builds the
+tool first and lists the EBNF as an explicit `DEPENDS` of `adl2_syntax`.
+Generated code stays `adl2::syntax::Parser` + `peek`/`advance`/token
+vector. The lexer stays hand-written. Productions that the EBNF cannot
+state (indent-only `object-define`, contextual `bins`, arg-only
+`path-token`, particle-list juxtaposition, comparison chains, sort
+absorb-to-EOL) remain named **hooks**.
+
+**Motivated by.** Collaborators already audit a frozen EBNF against
+`parser.hpp`. Keeping that mapping as a compile-time check — and
+emitting the mechanical expression ladder from the same file — stops
+the grammar and the C++ from drifting, without reintroducing LALR
+conflict hiding (the reason ADR-002 rejected generators).
+
+**Trade-offs.** A second binary exists in the build graph. It is a
+**host tool**, not a product CLI: no `adl2_*` link, no z3, not
+installed, never invoked by `smash2_cpp` users. Writing it in C++
+avoids adding Python/flex/bison to the published toolchain.
+
+**Rejected.**
+
+- **Bison/Flex / any LALR or PEG table generator** — ADR-002; a stock
+  `.y` cannot express the hook constraints above.
+- **Generating the lexer** — policy (no hyphen-eating ids, no signed
+  literals, case-insensitive keywords) is smaller and safer by hand.
+- **A user-facing second smash-shaped tool** — `adl2_rdgen` is
+  compile-time only.
+- **Silently rewriting ADR-010** — the C++ port, smash2 forever-oracle,
+  and “not bison as the implementation” still hold. This ADR only
+  amends ADR-002’s “no parser generator” to “no *LALR* generator”.
+

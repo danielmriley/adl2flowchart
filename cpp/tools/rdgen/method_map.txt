@@ -1,0 +1,74 @@
+# EBNF nonterminal → C++ symbol. Owned by adl2_rdgen (see RDGEN.md).
+#
+# Columns: name  symbol  role  [notes…]
+#   name   hyphenated EBNF production, lexer token, or * for extras
+#   symbol parse_* / helper / TokKind note
+#   role   generate | generate-later | hook | helper | extra | token
+#
+# generate        = emitter must classify + write the method body
+# generate-later  = mechanical enough, not in this slice; method must exist
+# hook            = hand-written; EBNF is incomplete or contextual
+# helper          = not a parse_* production (peek / predicate)
+# extra           = parse_* (or free function) with no EBNF production
+# token           = lexer class referenced from the EBNF, not a parse method
+
+file                 parse_file                  hook             recovery loop to EOF
+section              parse_section               hook             dispatcher + unknown-section diag
+info-block           parse_info_block            hook
+define               parse_define_section        hook             top-level define/def
+object-block         parse_object_block          hook             indent + derived-candidate lookahead
+object-define        parse_object_define         hook             INDENTED only (at_column_one)
+take-stmt            parse_take_stmt             hook
+take-source          parse_take_source           hook             union / call / index forms
+region-block         parse_region_block          hook
+region-stmt          parse_region_stmt           hook             contextual bins; optional
+cut-stmt             parse_cut_as_region         generate         also inlined in object-block
+reject-stmt          parse_reject_stmt           generate
+region-ref           parse_region_ref            hook             bare bins-as-ident
+bin-stmt             parse_bin_stmt              hook             contextual bins + bin-body
+bin-body             parse_bin_stmt              hook             inlined in parse_bin_stmt
+boundary-list        rest_of_line_is_boundary_list helper
+trigger-stmt         parse_trigger_stmt          generate
+histo-stmt           parse_histo_stmt            hook
+condition            parse_condition             generate         alias of ternary
+ternary              parse_ternary               generate         optional ? :
+or-expr              parse_or_expr               generate
+and-expr             parse_and_expr              generate
+not-expr             parse_not_expr              generate
+comparison           parse_comparison            hook             chains + OPEN-4 + band
+cmp-op               peek_cmp_op                 helper
+additive             parse_additive              generate
+multiplicative       parse_multiplicative        generate
+unary                parse_unary                 generate
+postfix              parse_postfix               hook             -> member; nl_before index
+primary              parse_primary               hook
+func-call            parse_func_call             hook
+arg-list             parse_paren_args            hook             also parse_arg_list_to_eol
+arg                  parse_arg                   hook             path-token / particle-list
+particle-list        extend_particle_list        hook             juxtaposition, no comma
+path-token           parse_path_token            hook             arg position only; body is a comment
+index                parse_index_val             helper           EBNF "index"; OPEN-3 sign
+signed-num           parse_signed_num            hook
+info-line            parse_info_line             hook
+table-block          parse_table_block           hook
+countsformat-block   parse_countsformat_block    hook
+weight-stmt          parse_weight_stmt           hook
+histo-arg            parse_histo_arg             hook
+print-stmt           parse_print_stmt            hook
+save-stmt            parse_save_stmt             hook
+counts-stmt          parse_counts_stmt           hook
+sort-stmt            parse_sort_stmt             hook             absorb to end of statement
+
+# Lexer classes used on the RHS (not productions).
+EOF                  TokKind::Eof                token
+number               TokKind::Int|Real           token
+ident                TokKind::Ident              token
+string               TokKind::String             token
+integer              TokKind::Int                token
+
+# Parser methods with no EBNF production.
+*                    parse_derived_candidate     extra            object-block extra (keyword = expr)
+*                    parse_band_suffix           extra            comparison [] / ][ arm
+*                    parse_arg_list_to_eol       extra            print/save arg-list
+*                    parse_index_suffix          extra            [i] / [i:j] / _i
+*                    parse_source                extra            free function, not a method

@@ -6,9 +6,15 @@ recursive-descent parser under `cpp/`.
 
 **Bison/Flex are not the implementation.** The readable grammar is
 [`grammar.ebnf`](grammar.ebnf) (from `SPEC_LANGUAGE.md` §3). Every
-nonterminal there maps 1:1 to a `parse_<name>` function in
+nonterminal there maps to a `parse_<name>` function in
 `libs/syntax/include/adl2/syntax/parser.hpp` / `libs/syntax/src/parser.cpp`
 (CMake target **`adl2_syntax`** — see [`MODULES.md`](MODULES.md)).
+Host tool **`adl2_rdgen`** (`tools/rdgen/`, [`RDGEN.md`](RDGEN.md))
+checks that map at compile time, emits mechanical `parse_*` bodies
+(expression ladder, ternary, reject/trigger/cut), and writes lexer
+keyword synonyms when the EBNF adds a word next to a known keyword.
+Hooks stay hand-written. The table below is still the onboarding
+surface if you know bison.
 
 ## Token layer (`%token` → lexer)
 
@@ -48,7 +54,10 @@ loop calling `parse_region_stmt()` until the next section keyword or EOF.
 
 SPEC_LANGUAGE deliberately uses **standard** precedence (divergence #1
 from legacy: `or` binds looser than `and`). The C++ parser mirrors this
-with layered functions — not `%left`/`%right` declarations:
+with layered functions — not `%left`/`%right` declarations. `adl2_rdgen`
+emits `condition` / `or-expr` / `and-expr` / `not-expr` / `additive` /
+`multiplicative` / `unary` from the EBNF; the rest of the ladder is
+still hand-written:
 
 | Tightness (high → low) | EBNF / function | Operators |
 |---|---|---|

@@ -51,7 +51,7 @@ pairwise), Kleene `region3`, and EPRED/EPRES emitters.
 | Deliverable | Status |
 |---|---|
 | Modular CMake targets (crate map) | Yes |
-| Hand-written RD (`grammar.ebnf` → `parse_X`) in `adl2_syntax` | Yes |
+| RD parser (`grammar.ebnf` → `parse_X`; `adl2_rdgen` emits the expr ladder) | Yes |
 | Canonical AST dump | Yes — byte-for-byte **146 / 146** |
 | Interned Quantity/Collection identity | Yes |
 | CLI `--dump-hir` / `--dump-quantities` | Yes (allowlist **171 files × 2**) |
@@ -81,8 +81,9 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 | File | Role |
 |---|---|
 | [`MODULES.md`](MODULES.md) | Crate/CMake map + dependency spine |
-| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF for `adl2_syntax` |
+| [`grammar.ebnf`](grammar.ebnf) | Frozen EBNF; compile-time input to `adl2_rdgen` |
 | [`BISON_MAP.md`](BISON_MAP.md) | “If you know bison” → `parse_X` |
+| [`RDGEN.md`](RDGEN.md) | Custom RD emitter (`adl2_rdgen`); not bison |
 | [`scripts/gate_common.sh`](scripts/gate_common.sh) | Shared C++-only setup; `CROSS_ORACLE=1` opts into smash2 |
 | [`scripts/dump_ast_corpus_gate.sh`](scripts/dump_ast_corpus_gate.sh) | 146-file AST well-formedness (optional smash2 byte-diff) |
 | [`scripts/dump_hir_corpus_gate.sh`](scripts/dump_hir_corpus_gate.sh) | Allowlisted HIR/quantity dumps |
@@ -98,7 +99,9 @@ Unsupported constructs still emit honest diagnostics (no silent accept).
 Requires stock Ubuntu toolchain: `cmake` ≥ 3.20, `g++` or `clang++`
 with C++17. **No** bison, flex, or libz3. The solver talks to a `z3`
 binary on PATH (subprocess SMT-LIB2). Without z3, `verify` degrades to
-the interval fast path (verdicts capped at POSSIBLY).
+the interval fast path (verdicts capped at POSSIBLY). CMake builds host
+tool `adl2_rdgen` and runs it on `grammar.ebnf` before compiling
+`adl2_syntax` ([`RDGEN.md`](RDGEN.md)).
 
 ```bash
 cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release

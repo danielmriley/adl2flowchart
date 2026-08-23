@@ -11,6 +11,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Adl2Module)
 
+enable_testing()
+
+# Host EBNF → RD emitter. Built before adl2_syntax so grammar.ebnf is a
+# compile-time DEPENDS (see RDGEN.md). Does not link any adl2_* library.
+add_subdirectory(tools/rdgen)
+
 # --- module targets (spine order) ---
 # syntax → sema → {interp ‖ formula} → axioms → solver
 #                                    ↘ certify ↗ analysis
@@ -30,5 +36,4 @@ add_subdirectory(libs/analysis)
 add_subdirectory(libs/viz)
 add_subdirectory(libs/cli)
 
-enable_testing()
 add_subdirectory(tests)

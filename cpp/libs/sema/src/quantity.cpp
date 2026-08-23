@@ -372,4 +372,26 @@ bool QuantityTable::filter_chain(CollectionId id, Symbol& base,
   }
 }
 
+std::vector<std::pair<CollectionId, CollectionId>>
+QuantityTable::reconciliation_candidates() const {
+  std::map<Symbol, std::vector<CollectionId>> by_base;
+  for (std::size_t i = 0; i < colls_.size(); ++i) {
+    if (colls_[i].kind != CollectionKind::Filtered) continue;
+    CollectionId id{static_cast<std::uint32_t>(i)};
+    Symbol base;
+    std::vector<ElemPredId> preds;
+    if (filter_chain(id, base, preds)) by_base[base].push_back(id);
+  }
+  std::vector<std::pair<CollectionId, CollectionId>> out;
+  for (const auto& kv : by_base) {
+    const auto& ids = kv.second;
+    for (std::size_t a = 0; a < ids.size(); ++a) {
+      for (std::size_t b = a + 1; b < ids.size(); ++b) {
+        out.emplace_back(ids[a], ids[b]);
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace adl2::sema

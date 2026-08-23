@@ -21,7 +21,7 @@ docs/*.log
 docs/*.out
 docs/*.toc
 
-# scratch ingest samples (committed fixtures live in reimplementation/adl2/crates/adl-ingest/fixtures)
+# scratch ingest samples (committed fixtures live in cpp/libs/ingest/fixtures and reimplementation/adl2/crates/adl-ingest/fixtures)
 /samples/
 
 # generic analyze-adl outputs (regenerable; keep them out of commits)
@@ -37,3 +37,6 @@ docs/PRESENTATION_PLAN_2026-07.md
 
 # C++ P0 harness build tree (ADR-010)
 /cpp/build/
+
+# isolated agent worktrees (landing discipline)
+.claude/worktrees/

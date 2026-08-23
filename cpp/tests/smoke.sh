@@ -7,6 +7,9 @@ BIN="${ROOT}/cpp/build/smash2_cpp"
 FIX="${ROOT}/cpp/tests/fixtures/tiny.adl"
 test -x "$BIN"
 "$BIN" --help | grep -q check
-"$BIN" check "$FIX" | grep -q "check: ok"
+"$BIN" --help | grep -q verify
+"$BIN" --help | grep -q objects
+out="$("$BIN" check "$FIX")"
+test -z "$out"
 bash "${ROOT}/cpp/tests/dump_parity.sh" "$BIN" "$FIX" "${FIX}.dump"
 echo "smoke: ok"

@@ -7,8 +7,10 @@
 #include "adl2/sema/hir.hpp"
 #include "adl2/sema/num.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adl2::interp {
@@ -20,6 +22,40 @@ struct EvalError {
   std::string reason;
   EvalErrorKind kind = EvalErrorKind::OutOfFragment;
   bool is_missing_event_data() const { return kind == EvalErrorKind::MissingEventData; }
+};
+
+/// Three-valued (Kleene) truth for witness-validation membership.
+/// `Unknown` carries the blocking reason; a decidable False is never hidden
+/// behind it (`False ∧ Unknown = False`, `True ∨ Unknown = True`).
+enum class TriKind { True, False, Unknown };
+
+struct Tri {
+  TriKind kind = TriKind::Unknown;
+  EvalError err;
+
+  static Tri ttrue() {
+    Tri t;
+    t.kind = TriKind::True;
+    return t;
+  }
+  static Tri ffalse() {
+    Tri t;
+    t.kind = TriKind::False;
+    return t;
+  }
+  static Tri unknown(EvalError e) {
+    Tri t;
+    t.kind = TriKind::Unknown;
+    t.err = std::move(e);
+    return t;
+  }
+  static Tri from_bool(bool b) { return b ? ttrue() : ffalse(); }
+
+  Tri tnot() const {
+    if (kind == TriKind::True) return ffalse();
+    if (kind == TriKind::False) return ttrue();
+    return *this;
+  }
 };
 
 enum class NonValueKind { NonFinite, MissingElement, MissingProperty, EmptyReduction };
@@ -54,11 +90,29 @@ struct RegionResult {
   std::vector<BinOutcome> bins;
 };
 
+/// Outcome of one membership-affecting statement during a traced region
+/// walk (SPEC_EVENT_PIPELINE §2 cutflows). The walk short-circuits, so a
+/// trace covers exactly the statements the event reached.
+struct StepEval {
+  /// Index into the region's `stmts`.
+  std::size_t stmt = 0;
+  /// `true`: survived; `false`: failed (walk stops); nullopt: hard error
+  /// (`err` set) — the event counts as failing here.
+  std::optional<bool> pass;
+  EvalError err;
+};
+
 std::optional<std::size_t> assign_bin(double v, const std::vector<double>& edges);
 double wrap_dphi(double d);
 
 /// smash2 `run` text for one region (`PASS` / `fail` / `ERROR: …` + bins).
 std::string format_region_text(const RegionResult& r);
+
+/// smash2 `run --json` object for one region (`name` / `pass` / `bins` or `error`).
+std::string format_region_json(const RegionResult& r);
+
+/// serde_json/ryu shortest round-trip text for a finite f64 (`3.0`, not `3`).
+std::string json_f64(double v);
 
 class Interp {
  public:
@@ -73,10 +127,53 @@ class Interp {
 
   std::vector<RegionResult> run_event(const Event& event) const;
 
+  /// `run_event` plus, per region, the per-statement trace of the
+  /// membership walk (cutflow input). Evaluation matches the untraced path.
+  std::pair<std::vector<RegionResult>, std::vector<std::vector<StepEval>>> run_event_traced(
+      const Event& event) const;
+
   /// Two-valued region membership (smash2 run / cutflow). Hard error on
   /// missing event data or out-of-fragment.
   std::optional<bool> eval_region_by_name(const std::string& name, const Event& event,
                                           EvalError& err) const;
+
+  /// Kleene membership. nullopt + err = Unknown; true/false = decidable.
+  /// Prefers a decidable False over any Unknown (does not consult the
+  /// two-valued region cache).
+  std::optional<bool> eval_region_membership(const std::string& name, const Event& event,
+                                             EvalError& err) const;
+  std::optional<bool> eval_region_membership_idx(std::size_t idx, const Event& event,
+                                                 EvalError& err) const;
+
+  /// Evaluate `node` numerically. nullopt + err = hard error; otherwise
+  /// Value or soft NonValue (smash2 `Interp::eval_num`).
+  std::optional<NumOutcome> eval_num(const adl2::sema::HNode& node, const Event& event,
+                                     EvalError& err) const;
+
+  /// Value a interned quantity at a realized event (smash2
+  /// `Interp::eval_quantity`). Used to print overlap witness rows from the
+  /// validated event, not the pre-sort solver model.
+  std::optional<NumOutcome> eval_quantity(adl2::sema::QuantityId q, const Event& event,
+                                          EvalError& err) const;
+
+  /// One event, one materialize/region cache. Gate and witness paths must
+  /// reuse this instead of constructing a fresh evaluator per probe.
+  class EventEval {
+   public:
+    EventEval(const Interp& interp, const Event& event);
+    EventEval(EventEval&&) noexcept;
+    EventEval& operator=(EventEval&&) noexcept;
+    ~EventEval();
+    EventEval(const EventEval&) = delete;
+    EventEval& operator=(const EventEval&) = delete;
+
+    std::optional<bool> region_membership(std::size_t idx, EvalError& err);
+    std::optional<NumOutcome> quantity(adl2::sema::QuantityId q, EvalError& err);
+
+   private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+  };
 
  private:
   const adl2::sema::Hir* hir_;

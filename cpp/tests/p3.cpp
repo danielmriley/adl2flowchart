@@ -47,6 +47,21 @@ void test_rat_decimal() {
   CHECK(pd.numerator == "3" && pd.denominator == "5");
 }
 
+void test_rat_to_f64_scale() {
+  // Encoder F64-mode edges are from_f64_exact(k.to_f64()). A wrong scale
+  // here used to emit dPhi > 7 for a 3.5 cut and mass >= 4480 for 70.
+  auto r35 = Rat::from_decimal_string("3.5");
+  CHECK(r35.has_value());
+  CHECK(r35->to_f64() == 3.5);
+  auto back = Rat::from_f64_exact(r35->to_f64());
+  CHECK(back.has_value());
+  CHECK(back->dump() == "7/2");
+  CHECK(Rat::from_i64(70).to_f64() == 70.0);
+  auto r08 = Rat::from_ratio(2, 25);
+  CHECK(r08.has_value());
+  CHECK(r08->to_f64() == 0.08);
+}
+
 void test_formula_polarity() {
   auto atom = Formula::of_atom(LinAtom::single(QuantityId{0}, Rel::Gt, Rat::from_i64(1)));
   auto unk = Formula::unknown(adl2::formula::DiagId{0});
@@ -135,7 +150,7 @@ void test_no_existence_from_mention() {
   // Port of adl-axioms `axioms_hold_on_the_empty_event_no_existence_from_mention`:
   // mentioning jets[2].pt must not emit an unguarded size(jets) > 2.
   auto hir = analyze_str(
-      "object jets\n  take Jet\n"
+      "object jets\n  take Jet\n  select pt > 30\n"
       "region SR\n  select jets[2].pt > 10\n",
       "mention.adl", ExtDecls::legacy());
   CHECK(!has_errors(hir.diags));
@@ -151,8 +166,8 @@ void test_no_existence_from_mention() {
     if (unguarded_size_gt(hir, inst.formula)) prohibited = true;
   }
   CHECK(!prohibited);
-  CHECK(epred == 0);  // P3a emitter stub; bump when EPRED is ported
-  CHECK(epres == 0);  // P3a emitter stub; bump when EPRES is ported
+  CHECK(epred == 1);
+  CHECK(epres == 1);
   adl2::interp::EventError err;
   auto empty = adl2::interp::parse_event(
       R"({"Jet":[],"MET":{"pt":0.0,"phi":0.0}})", ExtDecls::legacy(), err);
@@ -295,6 +310,7 @@ void test_encode_presence() {
 
 int main() {
   test_rat_decimal();
+  test_rat_to_f64_scale();
   test_formula_polarity();
   test_linatom_merge();
   test_axiom_catalog();

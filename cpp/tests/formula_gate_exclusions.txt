@@ -1,0 +1,11 @@
+# dump-formula files NOT claimed vs Rust smash2.
+# Claim requires both `smash2_cpp check --dump-formula` and
+# `smash2 check --dump-formula` exit 0, emit a dump starting with `unit:`,
+# and match byte-for-byte.
+#
+# Scanned: HIR allowlist (38) ∪ dump-ast examples/ corpus (146) ∪
+# legacy_parser/tests/golden/*.adl ∪ cpp/tests/fixtures/{tiny,bins_and_path}.adl
+#
+# legacy_parser/tests/golden/bad_syntax.adl
+#   both smash2 and smash2_cpp `check --dump-formula` exit 1 (parse errors).
+#   Dump still starts with `unit:`; HIR gate also skips this file.

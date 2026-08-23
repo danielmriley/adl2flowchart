@@ -209,6 +209,21 @@ bool QFormula::operator==(const QFormula& o) const {
   return false;
 }
 
+bool QFormula::operator<(const QFormula& o) const {
+  if (kind != o.kind) return static_cast<int>(kind) < static_cast<int>(o.kind);
+  switch (kind) {
+    case Kind::True:
+    case Kind::False:
+      return false;
+    case Kind::Atom:
+      return atom < o.atom;
+    case Kind::And:
+    case Kind::Or:
+      return items < o.items;
+  }
+  return false;
+}
+
 Formula fand(std::vector<Formula> parts) {
   std::vector<Formula> out;
   for (auto& p : parts) {

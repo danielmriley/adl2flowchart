@@ -86,6 +86,7 @@ struct QFormula {
   QFormula qnot() const;
   bool operator==(const QFormula& o) const;
   bool operator!=(const QFormula& o) const { return !(*this == o); }
+  bool operator<(const QFormula& o) const;
 };
 
 /// Over-approximation R⁺ ⊇ R. The only constructor is Formula::over.

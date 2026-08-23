@@ -80,6 +80,11 @@ class LinAtom {
     return terms_ == o.terms_ && rel_ == o.rel_ && constant_ == o.constant_;
   }
   bool operator!=(const LinAtom& o) const { return !(*this == o); }
+  bool operator<(const LinAtom& o) const {
+    if (rel_ != o.rel_) return static_cast<std::uint8_t>(rel_) < static_cast<std::uint8_t>(o.rel_);
+    if (constant_ != o.constant_) return constant_ < o.constant_;
+    return terms_ < o.terms_;
+  }
 
  private:
   std::vector<Term> terms_;

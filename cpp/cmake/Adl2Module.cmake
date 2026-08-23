@@ -1,7 +1,8 @@
 # Helpers for adl2_* CMake targets (mirror Rust crate map).
 #
 # Spine (dependency direction only this way):
-#   syntax → sema → {interp ‖ formula} → axioms → solver → analysis → certify
+#   syntax → sema → {interp ‖ formula} → axioms → solver
+#                                      ↘ certify ↗ analysis
 #   viz reads HIR only; cli wires modules.
 #
 # Include policy: each library PUBLIC-exports only

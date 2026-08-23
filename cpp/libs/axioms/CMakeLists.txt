@@ -3,5 +3,6 @@ adl2_add_library(adl2_axioms
   SOURCES
     src/catalog.cpp
     src/emit.cpp
+    src/elem_pred.cpp
   PUBLIC_DEPS adl2_formula
 )

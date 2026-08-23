@@ -5,8 +5,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -306,8 +310,17 @@ struct Ev {
   }
 
   BRes region(std::size_t idx);
+  BRes region_traced(std::size_t idx, std::vector<StepEval>& trace);
+  BRes region_walk(std::size_t idx, std::vector<StepEval>* trace);
   BRes truth(const HNode& n, const EventObject* elem);
   NRes num(const HNode& n, const EventObject* elem);
+  Tri region3(std::size_t idx);
+  Tri truth3(const HNode& n, const EventObject* elem);
+  NRes num3(const HNode& n, const EventObject* elem);
+  Tri reduce_bool3(ReduceKind kind, CollectionId coll, const HNode& body,
+                   const EventObject* elem);
+  NRes reduce_num3(ReduceKind kind, CollectionId coll, const HNode& body,
+                   const EventObject* elem);
   NRes quantity(QuantityId q, Span span, const EventObject* elem);
   const std::vector<EventObject>* materialize(CollectionId id, EvalError& err);
   NRes angular(AngKind k, const ParticleRef& a, const ParticleRef& b, Span span,
@@ -331,9 +344,21 @@ struct Ev {
 BRes Ev::region(std::size_t idx) {
   auto itc = region_cache.find(idx);
   if (itc != region_cache.end()) return itc->second;
+  BRes result = region_walk(idx, nullptr);
+  region_cache[idx] = result;
+  return result;
+}
+
+BRes Ev::region_traced(std::size_t idx, std::vector<StepEval>& trace) {
+  BRes result = region_walk(idx, &trace);
+  region_cache[idx] = result;
+  return result;
+}
+
+BRes Ev::region_walk(std::size_t idx, std::vector<StepEval>* trace) {
   const auto& reg = it->hir().regions[idx];
-  BRes result = BRes::ok(true);
-  for (const auto& stmt : reg.stmts) {
+  for (std::size_t i = 0; i < reg.stmts.size(); ++i) {
+    const auto& stmt = reg.stmts[i];
     BRes o;
     switch (stmt.kind) {
       case HirRegionStmt::Kind::Select:
@@ -353,22 +378,62 @@ BRes Ev::region(std::size_t idx) {
         continue;
       case HirRegionStmt::Kind::NonMembership:
         if (!stmt.tag.in_fragment) {
-          o = BRes::err_(oof(stmt.span, "cannot evaluate region: " + stmt.tag.reason));
+          return BRes::err_(oof(stmt.span, "cannot evaluate region: " + stmt.tag.reason));
+        }
+        continue;
+    }
+    if (trace) {
+      StepEval se;
+      se.stmt = i;
+      if (o.hard) {
+        se.err = o.err;
+      } else {
+        se.pass = o.pass;
+      }
+      trace->push_back(std::move(se));
+    }
+    if (o.hard) return o;
+    if (!o.pass) return BRes::ok(false);
+  }
+  return BRes::ok(true);
+}
+
+Tri Ev::region3(std::size_t idx) {
+  // Do not consult region_cache: Kleene short-circuit rules differ from
+  // two-valued cutflow (False over Unknown; never abort on the first error).
+  std::optional<EvalError> unknown;
+  const auto& reg = it->hir().regions[idx];
+  for (const auto& stmt : reg.stmts) {
+    Tri t;
+    switch (stmt.kind) {
+      case HirRegionStmt::Kind::Select:
+      case HirRegionStmt::Kind::Trigger:
+        t = truth3(stmt.node, nullptr);
+        break;
+      case HirRegionStmt::Kind::Reject:
+        t = truth3(stmt.node, nullptr).tnot();
+        break;
+      case HirRegionStmt::Kind::Inherit:
+        t = region3(stmt.region);
+        break;
+      case HirRegionStmt::Kind::Bin:
+      case HirRegionStmt::Kind::BinCond:
+        continue;
+      case HirRegionStmt::Kind::NonMembership:
+        if (!stmt.tag.in_fragment) {
+          t = Tri::unknown(oof(stmt.span, "cannot evaluate region: " + stmt.tag.reason));
           break;
         }
         continue;
     }
-    if (o.hard) {
-      result = o;
-      break;
-    }
-    if (!o.pass) {
-      result = BRes::ok(false);
-      break;
+    if (t.kind == TriKind::True) {
+    } else if (t.kind == TriKind::False) {
+      return Tri::ffalse();
+    } else if (!unknown) {
+      unknown = t.err;
     }
   }
-  region_cache[idx] = result;
-  return result;
+  return unknown ? Tri::unknown(*unknown) : Tri::ttrue();
 }
 
 BRes Ev::reduce_bool(ReduceKind kind, CollectionId coll, const HNode& body,
@@ -569,6 +634,231 @@ NRes Ev::num(const HNode& n, const EventObject* elem) {
     default:
       return NRes::err_(oof(n.span, "expression is outside the checked fragment"));
   }
+}
+
+Tri Ev::reduce_bool3(ReduceKind kind, CollectionId coll, const HNode& body,
+                     const EventObject* elem) {
+  EvalError e;
+  const auto* objs = materialize(coll, e);
+  if (!objs) return Tri::unknown(e);
+  std::optional<EvalError> unknown;
+  for (const auto& obj : *objs) {
+    reduce_stack.push_back(obj);
+    Tri t = truth3(body, elem);
+    reduce_stack.pop_back();
+    if (kind == ReduceKind::Any && t.kind == TriKind::True) return Tri::ttrue();
+    if (kind == ReduceKind::All && t.kind == TriKind::False) return Tri::ffalse();
+    if (t.kind == TriKind::Unknown && !unknown) unknown = t.err;
+  }
+  if (unknown) return Tri::unknown(*unknown);
+  return Tri::from_bool(kind == ReduceKind::All);
+}
+
+NRes Ev::reduce_num3(ReduceKind kind, CollectionId coll, const HNode& body,
+                     const EventObject* elem) {
+  EvalError e;
+  const auto* objs = materialize(coll, e);
+  if (!objs) return NRes::err_(e);
+  NumVal sum = NumVal::from_exact(Rat::zero());
+  std::optional<NumVal> acc;
+  bool any = false;
+  for (const auto& obj : *objs) {
+    reduce_stack.push_back(obj);
+    NRes v = num3(body, elem);
+    reduce_stack.pop_back();
+    if (v.k == NR::Err) return v;
+    if (v.k == NR::NV) return v;  // soft non-value is absorbing
+    auto s = adl2::sema::bin_arith(ArithOp::Add, sum, v.val);
+    if (!s) return NRes::nv_(NonValueKind::NonFinite);
+    sum = *s;
+    any = true;
+    if (!acc) acc = v.val;
+    else if (kind == ReduceKind::Min) acc = adl2::sema::num_min(*acc, v.val);
+    else if (kind == ReduceKind::Max) acc = adl2::sema::num_max(*acc, v.val);
+  }
+  if (kind == ReduceKind::Sum) return NRes::of(sum);
+  if (kind == ReduceKind::Min || kind == ReduceKind::Max) {
+    if (any) return NRes::of(*acc);
+    return NRes::nv_(NonValueKind::EmptyReduction, adl2::sema::reduce_kind_str(kind));
+  }
+  return NRes::of(sum);
+}
+
+Tri Ev::truth3(const HNode& n, const EventObject* elem) {
+  if (!n.tag.in_fragment) return Tri::unknown(oof(n.span, n.tag.reason));
+  switch (n.kind) {
+    case HKind::Bool:
+      return Tri::from_bool(n.bool_val);
+    case HKind::Not:
+      return truth3(*n.a, elem).tnot();
+    case HKind::And: {
+      std::optional<EvalError> unknown;
+      for (const auto& p : n.items) {
+        Tri t = truth3(p, elem);
+        if (t.kind == TriKind::False) return Tri::ffalse();
+        if (t.kind == TriKind::Unknown && !unknown) unknown = t.err;
+      }
+      return unknown ? Tri::unknown(*unknown) : Tri::ttrue();
+    }
+    case HKind::Or: {
+      std::optional<EvalError> unknown;
+      for (const auto& p : n.items) {
+        Tri t = truth3(p, elem);
+        if (t.kind == TriKind::True) return Tri::ttrue();
+        if (t.kind == TriKind::Unknown && !unknown) unknown = t.err;
+      }
+      return unknown ? Tri::unknown(*unknown) : Tri::ffalse();
+    }
+    case HKind::Ternary: {
+      Tri g = truth3(*n.a, elem);
+      if (g.kind == TriKind::True) return truth3(*n.b, elem);
+      if (g.kind == TriKind::False) return n.c ? truth3(*n.c, elem) : Tri::ttrue();
+      Tri then_t = truth3(*n.b, elem);
+      Tri else_t = n.c ? truth3(*n.c, elem) : Tri::ttrue();
+      if (then_t.kind == TriKind::False && else_t.kind == TriKind::False) return Tri::ffalse();
+      if (then_t.kind == TriKind::True && else_t.kind == TriKind::True) return Tri::ttrue();
+      return Tri::unknown(g.err);
+    }
+    case HKind::RegionPred:
+      return region3(n.region_index);
+    case HKind::Reduce:
+      if (adl2::sema::reduce_kind_is_boolean(n.reduce))
+        return reduce_bool3(n.reduce, n.coll, *n.a, elem);
+      {
+        auto v = num3(n, elem);
+        if (v.k == NR::Err) return Tri::unknown(v.err);
+        if (v.k == NR::NV) return Tri::ffalse();
+        return Tri::from_bool(v.val.is_nonzero());
+      }
+    case HKind::Cmp: {
+      EvalError e;
+      if (auto r = whole_cmp(n.cmp, *n.a, *n.b, n.span, elem, e)) return Tri::from_bool(*r);
+      if (!e.reason.empty()) return Tri::unknown(e);
+      auto a = num3(*n.a, elem);
+      auto b = num3(*n.b, elem);
+      // §4.4: soft non-value is ABSORBING — decidable False even if the
+      // other operand is a blocking Unknown.
+      if (a.k == NR::NV || b.k == NR::NV) return Tri::ffalse();
+      if (a.k == NR::Err) return Tri::unknown(a.err);
+      if (b.k == NR::Err) return Tri::unknown(b.err);
+      return Tri::from_bool(cmp_num(n.cmp, a.val, b.val));
+    }
+    case HKind::Band: {
+      auto v = num3(*n.a, elem);
+      if (v.k == NR::Err) return Tri::unknown(v.err);
+      if (v.k == NR::NV) return Tri::ffalse();
+      auto lo = parse_rat(n.lo);
+      auto hi = parse_rat(n.hi);
+      if (!lo) return Tri::unknown(oof(n.span, "malformed numeric literal `" + n.lo + "`"));
+      if (!hi) return Tri::unknown(oof(n.span, "malformed numeric literal `" + n.hi + "`"));
+      return Tri::from_bool(band_ok(n.band, v.val, *lo, *hi));
+    }
+    case HKind::Num:
+    case HKind::Quantity:
+    case HKind::ElemSelfProp:
+    case HKind::ReduceProp:
+    case HKind::Neg:
+    case HKind::Abs:
+    case HKind::ScalarMinMax:
+    case HKind::Binary: {
+      auto v = num3(n, elem);
+      if (v.k == NR::Err) return Tri::unknown(v.err);
+      if (v.k == NR::NV) return Tri::ffalse();
+      return Tri::from_bool(v.val.is_nonzero());
+    }
+    case HKind::CollProp:
+    case HKind::Particle:
+    case HKind::CollValue:
+    case HKind::Unsupported: {
+      auto t = truth(n, elem);
+      if (t.hard) return Tri::unknown(t.err);
+      return Tri::from_bool(t.pass);
+    }
+  }
+  return Tri::unknown(oof(n.span, "expression is outside the checked fragment"));
+}
+
+NRes Ev::num3(const HNode& n, const EventObject* elem) {
+  if (!n.tag.in_fragment) return NRes::err_(oof(n.span, n.tag.reason));
+  switch (n.kind) {
+    case HKind::Neg: {
+      auto a = num3(*n.a, elem);
+      if (a.k != NR::Val) return a;
+      return NRes::of(a.val.negated());
+    }
+    case HKind::Abs: {
+      auto a = num3(*n.a, elem);
+      if (a.k != NR::Val) return a;
+      return NRes::of(a.val.abs());
+    }
+    case HKind::Binary: {
+      auto a = num3(*n.a, elem);
+      auto b = num3(*n.b, elem);
+      // §4.4: soft non-value is ABSORBING in arithmetic — checked before
+      // blocking Err so `softNV * opaque > k` stays a decidable False.
+      if (a.k == NR::NV) return a;
+      if (b.k == NR::NV) return b;
+      if (a.k == NR::Err) return a;
+      if (b.k == NR::Err) return b;
+      return arith(n.arith, a.val, b.val);
+    }
+    case HKind::ScalarMinMax: {
+      std::optional<NumVal> acc;
+      for (const auto& a : n.items) {
+        auto v = num3(a, elem);
+        if (v.k == NR::Err) return v;
+        if (v.k == NR::NV) return v;
+        if (!acc) acc = v.val;
+        else if (n.reduce == ReduceKind::Min) acc = adl2::sema::num_min(*acc, v.val);
+        else acc = adl2::sema::num_max(*acc, v.val);
+      }
+      if (!acc) return NRes::nv_(NonValueKind::EmptyReduction, adl2::sema::reduce_kind_str(n.reduce));
+      return NRes::of(*acc);
+    }
+    case HKind::Ternary: {
+      Tri g = truth3(*n.a, elem);
+      if (g.kind == TriKind::True) return num3(*n.b, elem);
+      if (g.kind == TriKind::False) {
+        if (n.c) return num3(*n.c, elem);
+        return NRes::of(NumVal::from_exact(Rat::one()));
+      }
+      auto then_v = num3(*n.b, elem);
+      if (then_v.k == NR::Err) return then_v;
+      NRes else_v = n.c ? num3(*n.c, elem) : NRes::of(NumVal::from_exact(Rat::one()));
+      if (else_v.k == NR::Err) return else_v;
+      if (then_v.k == NR::Val && else_v.k == NR::Val && then_v.val == else_v.val) return then_v;
+      if (then_v.k == NR::NV && else_v.k == NR::NV) return then_v;
+      return NRes::err_(g.err);
+    }
+    case HKind::Not:
+    case HKind::And:
+    case HKind::Or:
+    case HKind::Cmp:
+    case HKind::Band:
+    case HKind::RegionPred: {
+      Tri t = truth3(n, elem);
+      if (t.kind == TriKind::Unknown) return NRes::err_(t.err);
+      return NRes::of(NumVal::from_exact(t.kind == TriKind::True ? Rat::one() : Rat::zero()));
+    }
+    case HKind::Reduce:
+      if (adl2::sema::reduce_kind_is_boolean(n.reduce)) {
+        Tri t = truth3(n, elem);
+        if (t.kind == TriKind::Unknown) return NRes::err_(t.err);
+        return NRes::of(NumVal::from_exact(t.kind == TriKind::True ? Rat::one() : Rat::zero()));
+      }
+      return reduce_num3(n.reduce, n.coll, *n.a, elem);
+    case HKind::Num:
+    case HKind::Bool:
+    case HKind::Quantity:
+    case HKind::ElemSelfProp:
+    case HKind::ReduceProp:
+    case HKind::CollProp:
+    case HKind::Particle:
+    case HKind::CollValue:
+    case HKind::Unsupported:
+      return num(n, elem);
+  }
+  return NRes::err_(oof(n.span, "expression is outside the checked fragment"));
 }
 
 NRes Ev::event_scalar_q(const Quantity& q, Span span) {
@@ -832,10 +1122,21 @@ std::optional<bool> Ev::whole_cmp(CmpOp op, const HNode& lhs, const HNode& rhs, 
   }
   auto min = whole_angular_min(kind, a, b, span, elem, err);
   if (!err.reason.empty()) return std::nullopt;
+  // Smash2 compares `NumVal::Approx(+∞)` via f64 (`angular_whole_cmp`).
+  // `NumVal::from_f64` rejects inf (§4.4); that sentinel is "no pair
+  // existed", not a failed dR, so compare the raw doubles. Falling back
+  // to 0 made empty-product `dR == 0` PASS.
   double m = min.value_or(std::numeric_limits<double>::infinity());
-  auto approx_v = NumVal::from_f64(m);
-  if (!approx_v) approx_v = NumVal::from_f64(0);
-  return cmp_num(use, *approx_v, c.val);
+  double thresh = c.val.to_f64();
+  switch (use) {
+    case CmpOp::Eq:
+      return m == thresh;
+    case CmpOp::Ne:
+    case CmpOp::ApproxEq:
+      return m != thresh;
+    default:
+      return false;
+  }
 }
 
 std::optional<LV> Ev::lorentz(const ParticleRef& p, Span span, const EventObject* elem, NonValue& nv,
@@ -1218,6 +1519,78 @@ std::optional<std::size_t> assign_bin(double v, const std::vector<double>& edges
   return std::nullopt;
 }
 
+std::string json_f64(double v) {
+  if (!std::isfinite(v)) return "null";
+  if (v == 0.0) return std::signbit(v) ? "-0.0" : "0.0";
+  // Integers in the exact-mantissa range serialize as `N.0` (serde_json/ryu).
+  if (v == std::trunc(v) && std::fabs(v) <= 9007199254740992.0) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.1f", v);
+    return buf;
+  }
+  // Shortest round-trip that `strtod` recovers — same contract as ryu.
+  char buf[64];
+  for (int prec = 1; prec <= 17; ++prec) {
+    std::snprintf(buf, sizeof(buf), "%.*g", prec, v);
+    char* end = nullptr;
+    double back = std::strtod(buf, &end);
+    if (end && *end == '\0' && back == v) {
+      std::string s(buf);
+      if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
+          s.find('E') == std::string::npos) {
+        s += ".0";
+      }
+      return s;
+    }
+  }
+  std::snprintf(buf, sizeof(buf), "%.17g", v);
+  return buf;
+}
+
+namespace {
+std::string json_escape_str(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('"');
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out.push_back(static_cast<char>(c));
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+std::string bin_json(const BinOutcome& b) {
+  std::string s = "{\"kind\":";
+  if (b.kind == BinOutcomeKind::Boundary) {
+    s += "\"boundary\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"value\":";
+    s += b.value ? json_f64(*b.value) : "null";
+    s += ",\"bin\":";
+    s += b.bin ? std::to_string(*b.bin) : "null";
+  } else if (b.kind == BinOutcomeKind::Cond) {
+    s += "\"cond\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"member\":";
+    s += b.member ? "true" : "false";
+  } else {
+    s += "\"error\",\"label\":";
+    s += b.label ? json_escape_str(*b.label) : "null";
+    s += ",\"reason\":";
+    s += json_escape_str(b.reason);
+  }
+  s += "}";
+  return s;
+}
+}  // namespace
+
 std::string format_region_text(const RegionResult& r) {
   if (!r.pass) return "ERROR: " + r.error;
   if (!*r.pass) return "fail";
@@ -1233,6 +1606,25 @@ std::string format_region_text(const RegionResult& r) {
       s += " [" + label + ": error " + b.reason + "]";
     }
   }
+  return s;
+}
+
+std::string format_region_json(const RegionResult& r) {
+  std::string s = "{\"name\":" + json_escape_str(r.name);
+  if (!r.pass) {
+    s += ",\"pass\":null,\"error\":" + json_escape_str(r.error) + "}";
+    return s;
+  }
+  if (!*r.pass) {
+    s += ",\"pass\":false}";
+    return s;
+  }
+  s += ",\"pass\":true,\"bins\":[";
+  for (std::size_t i = 0; i < r.bins.size(); ++i) {
+    if (i) s += ",";
+    s += bin_json(r.bins[i]);
+  }
+  s += "]}";
   return s;
 }
 
@@ -1271,14 +1663,130 @@ std::optional<bool> Interp::eval_region_by_name(const std::string& name, const E
   return r.pass;
 }
 
+namespace {
+std::optional<bool> tri_to_opt(const Tri& t, EvalError& err) {
+  if (t.kind == TriKind::Unknown) {
+    err = t.err;
+    return std::nullopt;
+  }
+  return t.kind == TriKind::True;
+}
+
+NumOutcome num_outcome(const NRes& r, EvalError& err) {
+  NumOutcome o;
+  if (r.k == NR::Err) {
+    err = r.err;
+    o.kind = NumOutcomeKind::NonValue;
+    return o;
+  }
+  if (r.k == NR::NV) {
+    o.kind = NumOutcomeKind::NonValue;
+    o.nv = r.nv;
+  } else {
+    o.kind = NumOutcomeKind::Value;
+    o.value = r.val.to_f64();
+  }
+  return o;
+}
+}  // namespace
+
+struct Interp::EventEval::Impl {
+  Ev ev;
+};
+
+Interp::EventEval::EventEval(const Interp& interp, const Event& event)
+    : impl_(std::make_unique<Impl>(Impl{Ev{&interp, &event, {}, {}, {}, {}, {}}})) {}
+
+Interp::EventEval::EventEval(EventEval&&) noexcept = default;
+Interp::EventEval& Interp::EventEval::operator=(EventEval&&) noexcept = default;
+Interp::EventEval::~EventEval() = default;
+
+std::optional<bool> Interp::EventEval::region_membership(std::size_t idx, EvalError& err) {
+  if (idx >= impl_->ev.it->hir().regions.size()) {
+    err = mkerr(Span{}, "region index " + std::to_string(idx) + " out of range");
+    return std::nullopt;
+  }
+  return tri_to_opt(impl_->ev.region3(idx), err);
+}
+
+std::optional<NumOutcome> Interp::EventEval::quantity(QuantityId q, EvalError& err) {
+  auto r = impl_->ev.quantity(q, Span{}, nullptr);
+  if (r.k == NR::Err) {
+    err = r.err;
+    return std::nullopt;
+  }
+  return num_outcome(r, err);
+}
+
+std::optional<bool> Interp::eval_region_membership(const std::string& name, const Event& event,
+                                                   EvalError& err) const {
+  adl2::sema::Symbol sym;
+  if (!hir_->symbols.lookup(name, sym)) {
+    err = mkerr(Span{}, "no region named `" + name + "`");
+    return std::nullopt;
+  }
+  std::optional<std::size_t> idx;
+  for (std::size_t i = 0; i < hir_->regions.size(); ++i) {
+    if (hir_->regions[i].name == sym) {
+      idx = i;
+      break;
+    }
+  }
+  if (!idx) {
+    err = mkerr(Span{}, "no region named `" + name + "`");
+    return std::nullopt;
+  }
+  EventEval ev(*this, event);
+  return ev.region_membership(*idx, err);
+}
+
+std::optional<bool> Interp::eval_region_membership_idx(std::size_t idx, const Event& event,
+                                                       EvalError& err) const {
+  EventEval ev(*this, event);
+  return ev.region_membership(idx, err);
+}
+
+std::optional<NumOutcome> Interp::eval_num(const HNode& node, const Event& event,
+                                           EvalError& err) const {
+  Ev ev{this, &event, {}, {}, {}, {}, {}};
+  auto r = ev.num(node, nullptr);
+  if (r.k == NR::Err) {
+    err = r.err;
+    return std::nullopt;
+  }
+  NumOutcome o;
+  if (r.k == NR::NV) {
+    o.kind = NumOutcomeKind::NonValue;
+    o.nv = r.nv;
+  } else {
+    o.kind = NumOutcomeKind::Value;
+    o.value = r.val.to_f64();
+  }
+  return o;
+}
+
+std::optional<NumOutcome> Interp::eval_quantity(QuantityId q, const Event& event,
+                                                EvalError& err) const {
+  EventEval ev(*this, event);
+  return ev.quantity(q, err);
+}
+
 std::vector<RegionResult> Interp::run_event(const Event& event) const {
+  return run_event_traced(event).first;
+}
+
+std::pair<std::vector<RegionResult>, std::vector<std::vector<StepEval>>> Interp::run_event_traced(
+    const Event& event) const {
   Ev ev{this, &event, {}, {}, {}, {}, {}};
   std::vector<RegionResult> out;
+  std::vector<std::vector<StepEval>> traces;
   out.reserve(hir_->regions.size());
+  traces.reserve(hir_->regions.size());
   for (std::size_t i = 0; i < hir_->regions.size(); ++i) {
+    std::vector<StepEval> steps;
+    auto r = ev.region_traced(i, steps);
     RegionResult rr;
     rr.name = hir_->symbols.display(hir_->regions[i].name);
-    auto r = ev.region(i);
     if (r.hard) {
       rr.error = r.err.reason;
     } else {
@@ -1286,8 +1794,9 @@ std::vector<RegionResult> Interp::run_event(const Event& event) const {
       if (r.pass) rr.bins = ev.region_bins(i);
     }
     out.push_back(std::move(rr));
+    traces.push_back(std::move(steps));
   }
-  return out;
+  return {std::move(out), std::move(traces)};
 }
 
 int module_anchor() { return 3; }

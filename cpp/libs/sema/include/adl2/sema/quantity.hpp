@@ -545,6 +545,13 @@ class QuantityTable {
   bool filter_chain(CollectionId id, Symbol& base,
                     std::vector<ElemPredId>& preds) const;
 
+  /// Unordered pairs of distinct `Filtered` collections that flatten to the
+  /// same base symbol. Bare `Base`s and non-filter shapes are excluded.
+  /// Deterministic: base symbols in intern order, ids ascending. Emits no
+  /// solver fact.
+  std::vector<std::pair<CollectionId, CollectionId>> reconciliation_candidates()
+      const;
+
  private:
   std::vector<Collection> colls_;
   std::map<Collection, CollectionId> coll_ids_;

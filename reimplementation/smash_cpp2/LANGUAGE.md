@@ -13,7 +13,7 @@ stay only where the encoder cannot pick one reading without lying.
 | Name resolution | Case-insensitive. Diagnostics keep the source spelling. | `libs/sema` |
 | Division by zero / non-finite | The enclosing comparison is false. Non-finite literals cannot build atoms. | `libs/interp`, sema `Rat` |
 | `and` / `or` | Standard precedence. `or` binds looser. | `grammar.ebnf` |
-| Solver | SMT-LIB subprocess to a `z3` binary is the default. Native libz3 is opt-in. | solver (later unit) |
+| Solver | SMT-LIB subprocess to a `z3` binary is the default. Native libz3 is opt-in. | `libs/solver` |
 | Numerics | Exact rationals on the checked fragment. `0.3` is `3/10`. | sema `Rat` |
 | Missing elements | A comparison over an absent element is false. Encodings guard with presence. | interp, `libs/formula` |
 

@@ -1,3 +1,4 @@
+#include "adl2/analysis/analysis.hpp"
 #include "adl2/axioms/axioms.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
@@ -7,12 +8,16 @@
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -39,8 +44,8 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U06 implements `run` and `check` dumps including `--dump-axioms`.\n"
-      << "verify, ingest, and ROOT `--profile` are later units.\n";
+      << "U07 implements `run`, `check` dumps, and subprocess `verify`.\n"
+      << "ingest and ROOT `--profile` are later units.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -56,6 +61,26 @@ void print_check_help(const char* argv0) {
       << "      --dump-formula     Print the polarity-aware region formulas to stdout\n"
       << "      --dump-axioms      Print the canonical emitted-axiom dump to stdout\n"
       << "  -h, --help             Print help\n";
+}
+
+void print_verify_help(const char* argv0) {
+  std::cout
+      << "Full analysis: pairwise verdicts, vacuity, bins\n"
+      << "\n"
+      << "Usage: " << argv0 << " verify [OPTIONS] <FILE>...\n"
+      << "\n"
+      << "Arguments:\n"
+      << "  <FILE>  ADL analysis (directories expand to sorted *.adl)\n"
+      << "\n"
+      << "Options:\n"
+      << "      --no-solver       Interval path only; verdicts cap at POSSIBLY\n"
+      << "      --no-certify      Solver-UNSAT stays CANDIDATE DISJOINT\n"
+      << "      --no-refute-gate  Skip the adversarial interpreter probe search\n"
+      << "      --dump-verdicts   One `A vs B: KIND` line per pair\n"
+      << "      --explain         Per-pair proof chain after the default report\n"
+      << "      --matrix          Force the pairwise matrix\n"
+      << "      --fail-on <KINDS> Exit 4 on selected findings\n"
+      << "  -h, --help            Print help\n";
 }
 
 void print_run_help(const char* argv0) {
@@ -88,7 +113,7 @@ std::string unit_name(const std::string& path) {
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U06 implements run and check dumps\n";
+            << "` is not in this unit; U07 implements run, check dumps, and verify\n";
   return 2;
 }
 
@@ -209,6 +234,138 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool ve
   return 0;
 }
 
+bool stdout_color() {
+  return isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
+}
+
+void warn_if_no_solver(const std::string& name, const adl2::analysis::Report& report,
+                       bool no_solver) {
+  if (!no_solver && report.solver == "none") {
+    std::cerr << name
+              << ": WARNING — no SMT solver found, so only the solver-free interval "
+                 "checks ran; overlaps and any disjoint/empty beyond simple interval "
+                 "bounds cap at POSSIBLY. Put a `z3` binary on PATH. Pass `--no-solver` "
+                 "to acknowledge and silence this.\n";
+  }
+  if (report.solver_degraded) {
+    std::cerr << name << ": WARNING — " << *report.solver_degraded
+              << ". Gate CI on this with --fail-on=unknown.\n";
+  }
+}
+
+bool expand_adl_inputs(const std::vector<std::string>& inputs,
+                       std::vector<std::string>& files, std::string& err) {
+  std::set<std::string> seen;
+  for (const auto& p : inputs) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(p, ec)) {
+      std::vector<std::string> found;
+      for (const auto& ent : std::filesystem::directory_iterator(p, ec)) {
+        if (ec) break;
+        if (!ent.is_regular_file()) continue;
+        if (ent.path().extension() == ".adl") found.push_back(ent.path().string());
+      }
+      if (ec) {
+        err = "cannot read directory " + p;
+        return false;
+      }
+      std::sort(found.begin(), found.end());
+      if (found.empty()) {
+        err = "no .adl files in directory " + p;
+        return false;
+      }
+      for (const auto& f : found) {
+        if (seen.insert(f).second) files.push_back(f);
+      }
+    } else {
+      if (seen.insert(p).second) files.push_back(p);
+    }
+  }
+  return true;
+}
+
+int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_certify,
+               bool no_refute_gate, bool dump_only, bool explain, bool matrix, bool verbose,
+               const std::string& fail_on_s) {
+  std::vector<std::string> files;
+  std::string err;
+  if (!expand_adl_inputs(inputs, files, err)) {
+    std::cerr << "error: " << err << "\n";
+    return 2;
+  }
+  if (files.empty()) {
+    std::cerr << "error: verify requires a file path\n";
+    return 2;
+  }
+  adl2::analysis::FailOn fail_on;
+  if (!fail_on_s.empty()) {
+    if (!adl2::analysis::FailOn::parse(fail_on_s, fail_on, err)) {
+      std::cerr << "error: " << err << "\n";
+      return 2;
+    }
+  }
+  auto ext = adl2::sema::ExtDecls::legacy();
+  adl2::analysis::AnalysisOptions opts;
+  opts.solver = no_solver ? adl2::analysis::SolverChoice::NoSolver
+                          : adl2::analysis::SolverChoice::Auto;
+  opts.certify = !no_certify;
+  opts.sample_gate = 64;
+  opts.refute_gate = !no_refute_gate;
+  opts.fail_on = fail_on;
+  opts.combine = false;
+
+  int worst = 0;
+  bool multi = files.size() > 1;
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    std::ifstream probe(files[i]);
+    if (!probe) {
+      std::cerr << "error: cannot read file: " << files[i] << "\n";
+      worst = std::max(worst, 2);
+      continue;
+    }
+    probe.close();
+    std::string src = read_file(files[i]);
+    std::string name = unit_name(files[i]);
+    auto hir = adl2::sema::analyze_str(src, name, ext);
+    if (!hir.diags.empty()) print_sema_diags(hir.diags);
+    if (adl2::sema::has_errors(hir.diags)) {
+      std::cerr << name << ": cannot verify — resolve errors\n";
+      worst = std::max(worst, 1);
+      continue;
+    }
+    auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
+    warn_if_no_solver(name, report, no_solver);
+    if (verbose) {
+      std::cerr << name << ": solver=" << report.solver
+                << "; regions=" << report.regions.size()
+                << "; pairs=" << report.pairwise.size() << "\n";
+    }
+    if (multi) {
+      if (i > 0) std::cout << "\n";
+      std::cout << "==== " << name << " ====\n";
+    }
+    if (dump_only) {
+      std::cout << adl2::analysis::dump_verdicts(report);
+    } else {
+      adl2::analysis::RenderOptions ropts;
+      ropts.color = stdout_color();
+      ropts.force_matrix = matrix;
+      if (explain) {
+        std::cout << report.render_explain(ropts);
+      } else {
+        std::cout << report.render_default(ropts);
+      }
+    }
+    auto findings = report.findings(opts.fail_on);
+    if (!findings.empty()) {
+      std::cerr << name << ": --fail-on fired:\n";
+      for (const auto& f : findings) std::cerr << "  " << f << "\n";
+    }
+    worst = std::max(worst, report.exit_code(opts.fail_on));
+  }
+  return worst;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -262,7 +419,7 @@ int main(int argc, char** argv) {
         dump = DumpKind::Axioms;
       } else if (arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U06 implements run and check dumps\n";
+                  << "` is not in this unit; U07 implements run, check dumps, and verify\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
@@ -309,7 +466,69 @@ int main(int argc, char** argv) {
     }
     return cmd_run(paths[0], paths[1], verbose);
   }
-  if (cmd == "verify") return cmd_not_in_unit("verify");
+  if (cmd == "verify") {
+    std::vector<std::string> paths;
+    bool no_solver = false;
+    bool no_certify = false;
+    bool no_refute_gate = false;
+    bool dump_only = false;
+    bool explain = false;
+    bool matrix = false;
+    std::string fail_on_s;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--help" || arg == "-h") {
+        print_verify_help(argv[0]);
+        return 0;
+      }
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--no-solver") {
+        no_solver = true;
+      } else if (arg == "--no-certify") {
+        no_certify = true;
+      } else if (arg == "--no-refute-gate") {
+        no_refute_gate = true;
+      } else if (arg == "--dump-verdicts") {
+        dump_only = true;
+      } else if (arg == "--explain") {
+        explain = true;
+      } else if (arg == "--matrix") {
+        matrix = true;
+      } else if (arg == "--fail-on") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --fail-on needs a value\n";
+          return 2;
+        }
+        fail_on_s = argv[++i];
+      } else if (arg.rfind("--fail-on=", 0) == 0) {
+        fail_on_s = arg.substr(std::string("--fail-on=").size());
+      } else if (arg == "--combine" || arg == "--cross" || arg == "--json" ||
+                 arg == "--recon" || arg == "--human" ||
+                 arg == "--demote-uncertified-interval") {
+        std::cerr << "smash_cpp2: `" << arg
+                  << "` is not in this unit; U07 implements single-file verify\n";
+        return 2;
+      } else if (arg.rfind("--combine", 0) == 0 || arg.rfind("--recon=", 0) == 0 ||
+                 arg.rfind("--human=", 0) == 0) {
+        std::cerr << "smash_cpp2: `" << arg
+                  << "` is not in this unit; U07 implements single-file verify\n";
+        return 2;
+      } else if (!arg.empty() && arg[0] == '-') {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      } else {
+        paths.push_back(arg);
+      }
+    }
+    if (paths.empty()) {
+      std::cerr << "error: verify requires a file path\n";
+      print_verify_help(argv[0]);
+      return 2;
+    }
+    return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, explain,
+                      matrix, verbose, fail_on_s);
+  }
   if (cmd == "dot") return cmd_not_in_unit("dot");
   if (cmd == "objects") return cmd_not_in_unit("objects");
   if (cmd == "ingest") return cmd_not_in_unit("ingest");

@@ -8,9 +8,10 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U06 of this tree implements `run` over JSONL events and `check`
-`--dump-ast` / `--dump-hir` / `--dump-quantities` / `--dump-formula`
-/ `--dump-axioms`. Later units add verify, ingest, and certify.
+U07 of this tree implements `run` over JSONL events, `check` dumps,
+and `verify` via a subprocess `z3` solver. Later units add ingest
+and ROOT histos. Farkas is the smash2_cpp certify kernel, not a
+rewrite.
 
 ## Install
 
@@ -37,12 +38,12 @@ smash_cpp2 check --dump-quantities analysis.adl
 smash_cpp2 check --dump-formula analysis.adl
 smash_cpp2 check --dump-axioms analysis.adl
 
-# later units
+# pairwise verdicts (subprocess z3 on PATH)
 smash_cpp2 verify analysis.adl
 ```
 
 `run` is listed first in `--help`. The interpreter is the meaning.
-`verify` is property-tested against it.
+`verify` uses SMT-LIB `z3 -in`; there is no libz3 link.
 
 ## Grammar edits
 

@@ -39,6 +39,7 @@ struct Diagnostic {
   Span span;
   std::string message;
   std::string help;
+  std::string label;
 
   static Diagnostic error(Span span, std::string message) {
     Diagnostic d;

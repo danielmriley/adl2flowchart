@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run the smash_cpp2 acceptance gates against a smash3 oracle.
+# Includes the 146-file verify_corpus_gate (PROVEN DISJOINT must not rise).
 # Requires cpp2 and smash3 env vars pointing at real binaries.
 set -euo pipefail
 
@@ -98,8 +99,10 @@ gate compare-dot bash "$scripts/compare_stdout.sh" --corpus dot
 gate compare-dot-ast bash "$scripts/compare_stdout.sh" --corpus dot-ast
 gate run-tutorials bash "$scripts/run_tutorials.sh"
 gate verify-summary pin_verify_summary
+gate verify-corpus bash "$scripts/verify_corpus_gate.sh"
 gate u10-accept bash "$scripts/u10_accept.sh"
 gate u11-accept bash "$scripts/u11_accept.sh"
+gate u13-accept bash "$scripts/u13_accept.sh"
 gate help-run-first help_run_first
 
 if [[ "$fail" -ne 0 ]]; then

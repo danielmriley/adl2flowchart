@@ -376,7 +376,7 @@ struct Emit {
       const auto& c = hir->table.collection(qq.coll);
       if (c.kind != CollectionKind::Slice) continue;
       auto qp = hir->table.intern_quantity(Quantity::size(c.parent));
-      push(AxiomId::Szslice, qatom({{1.0, q}}, Rel::Ge, 0), label(q) + " >= 0");
+      // smash3: SZ0 already covers size >= 0; SZSLICE is the upper bounds.
       push(AxiomId::Szslice, qatom({{1.0, q}, {-1.0, qp}}, Rel::Le, 0),
            label(q) + " <= " + label(qp));
       if (c.slice_end && *c.slice_end >= c.slice_start) {
@@ -409,8 +409,9 @@ struct Emit {
       const auto& c = hir->table.collection(qq.coll);
       if (c.kind == CollectionKind::CombProject) {
         auto qk = hir->table.intern_quantity(Quantity::size(c.parent));
+        std::string axis = hir->symbols.display(c.axis.name);
         push(AxiomId::CombSize, qatom({{1.0, q}, {-1.0, qk}}, Rel::Eq, 0),
-             label(q) + " = " + label(qk));
+             label(q) + " = " + label(qk) + " (->" + axis + ")");
         continue;
       }
       if (c.kind != CollectionKind::Combination) continue;
@@ -541,6 +542,33 @@ std::vector<std::pair<QuantityId, QuantityId>> twin_pairs(
   return out;
 }
 
+std::string particle_label(const Hir& hir, const ParticleRef& p) {
+  switch (p.kind) {
+    case ParticleKind::Elem:
+      return collection_label(hir, p.coll) + "[" + p.index.to_string() + "]";
+    case ParticleKind::Whole:
+      return collection_label(hir, p.coll) + "[*]";
+    case ParticleKind::Met:
+      return "MET";
+    case ParticleKind::Binder:
+      return collection_label(hir, p.coll) + "@" + hir.symbols.display(p.name);
+    case ParticleKind::ThisElem:
+      return "this";
+    case ParticleKind::ReduceElem:
+      return "elem";
+    case ParticleKind::Sum: {
+      std::string out = "(";
+      for (std::size_t i = 0; i < p.parts.size(); ++i) {
+        if (i) out += " + ";
+        out += particle_label(hir, p.parts[i]);
+      }
+      out += ")";
+      return out;
+    }
+  }
+  return "?";
+}
+
 std::string quantity_label(const Hir& hir, QuantityId q) {
   const auto& qq = hir.table.quantity(q);
   switch (qq.kind) {
@@ -556,7 +584,8 @@ std::string quantity_label(const Hir& hir, QuantityId q) {
       return collection_label(hir, qq.coll) + "[" + qq.index.to_string() + "]." +
              hir.table.prop_display(qq.prop);
     case QuantityKind::AngularSep:
-      return std::string(adl2::sema::ang_kind_str(qq.ang)) + "(...)";
+      return std::string(adl2::sema::ang_kind_str(qq.ang)) + "(" +
+             particle_label(hir, qq.a) + ", " + particle_label(hir, qq.b) + ")";
     case QuantityKind::ExternalFn:
       return hir.symbols.display(qq.name) + "(...)";
     case QuantityKind::Present:
@@ -612,10 +641,12 @@ AxiomSet emit_axioms(Hir& hir, const ExtDecls& ext, const std::set<QuantityId>& 
     }
     if (!grew) break;
   }
-  std::sort(instances.begin(), instances.end(), [](const AxiomInstance& a, const AxiomInstance& b) {
-    if (a.id != b.id) return static_cast<int>(a.id) < static_cast<int>(b.id);
-    return a.description < b.description;
-  });
+  // smash3 `sort_by` is stable: equal (id, description) keep emit order.
+  std::stable_sort(instances.begin(), instances.end(),
+                  [](const AxiomInstance& a, const AxiomInstance& b) {
+                    if (a.id != b.id) return static_cast<int>(a.id) < static_cast<int>(b.id);
+                    return a.description < b.description;
+                  });
   AxiomSet set;
   set.instances = std::move(instances);
   return set;

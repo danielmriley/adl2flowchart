@@ -1,0 +1,16 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: or_unencodable_branch.adl
+== objects ==
+object jets -> C1#jets
+object MET -> C2#MET  (pure rename of C2#MET)
+== defines ==
+== regions ==
+region SR_orcut
+  select ((MET.pt > 500) or (aplanarity(C1#jets) > 0.9))
+region SR_lowmet
+  select (MET.pt < 100)
+== diagnostics ==
+warning: function `aplanarity` is not declared in the external library

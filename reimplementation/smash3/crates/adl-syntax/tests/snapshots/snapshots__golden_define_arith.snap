@@ -1,0 +1,29 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/define_arith.adl\")"
+---
+File
+  Object kw=object name=MET @1:1
+    Take kw=take src=MissingET @2:3
+  Define kw=define name=halfmet @4:1
+    Binary op=/
+      Dot field=pT
+        Ident MET
+      Num 2
+  Region kw=region name=SR_a @6:1
+    Cut kw=select @7:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 100
+    Cut kw=select @8:3
+      Cmp op=<
+        Ident halfmet
+        Num 10
+  Region kw=region name=SR_b @10:1
+    Cut kw=select @11:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 100
+---- diagnostics ----

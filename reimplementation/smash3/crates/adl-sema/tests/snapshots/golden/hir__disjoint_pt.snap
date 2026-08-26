@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: disjoint_pt.adl
+== objects ==
+object jets -> C1#jets
+== defines ==
+== regions ==
+region SR_low
+  select (C1#jets[0].pt > 100)
+  select (C1#jets[0].pt < 200)
+region SR_high
+  select (C1#jets[0].pt > 300)
+== diagnostics ==

@@ -1,0 +1,37 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/collection_quant.adl\")"
+---
+File
+  Object kw=object name=jets @1:1
+    Take kw=take src=Jet @2:3
+  Region kw=region name=SR_allhard @4:1
+    Cut kw=select @5:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 1
+    Cut kw=select @6:3
+      Cmp op=<=
+        Call name=size
+          Ident jets
+        Num 2
+    Cut kw=select @7:3
+      Cmp op=>
+        Call name=pT
+          Ident jets
+        Num 100
+  Region kw=region name=SR_unbounded @9:1
+    Cut kw=select @10:3
+      Cmp op=>
+        Call name=pT
+          Ident jets
+        Num 100
+  Region kw=region name=SR_softlead @12:1
+    Cut kw=select @13:3
+      Cmp op=<
+        Call name=pT
+          Index 0
+            Ident jets
+        Num 50
+---- diagnostics ----

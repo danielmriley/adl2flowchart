@@ -1,3 +1,5 @@
+#include "adl2/formula/dump.hpp"
+#include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/syntax/diag.hpp"
@@ -34,7 +36,7 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U04 implements `run` over JSONL events and `check` dumps.\n"
+      << "U05 implements `run` and `check` dumps including `--dump-formula`.\n"
       << "verify, ingest, and ROOT `--profile` are later units.\n";
 }
 
@@ -48,6 +50,7 @@ void print_check_help(const char* argv0) {
       << "      --dump-ast         Print the canonical AST dump for each file to stdout\n"
       << "      --dump-hir         Print the resolved HIR dump for each file to stdout\n"
       << "      --dump-quantities  Print the interned quantity table to stdout\n"
+      << "      --dump-formula     Print the polarity-aware region formulas to stdout\n"
       << "  -h, --help             Print help\n";
 }
 
@@ -81,11 +84,11 @@ std::string unit_name(const std::string& path) {
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U04 implements run and check dumps\n";
+            << "` is not in this unit; U05 implements run and check dumps\n";
   return 2;
 }
 
-enum class DumpKind { None, Ast, Hir, Quantities };
+enum class DumpKind { None, Ast, Hir, Quantities, Formula };
 
 void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
   for (const auto& d : diags) {
@@ -119,6 +122,9 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
       std::cout << adl2::sema::hir_dump(hir);
     } else if (dump == DumpKind::Quantities) {
       std::cout << adl2::sema::quantity_table_dump(hir);
+    } else if (dump == DumpKind::Formula) {
+      auto regions = adl2::formula::encode_regions(hir);
+      std::cout << adl2::formula::dump_encoded(hir, regions);
     }
     if (!hir.diags.empty()) {
       print_sema_diags(hir.diags);
@@ -235,10 +241,11 @@ int main(int argc, char** argv) {
         dump = DumpKind::Hir;
       } else if (arg == "--dump-quantities") {
         dump = DumpKind::Quantities;
-      } else if (arg == "--dump-formula" || arg == "--dump-axioms" ||
-                 arg == "--json") {
+      } else if (arg == "--dump-formula") {
+        dump = DumpKind::Formula;
+      } else if (arg == "--dump-axioms" || arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U04 implements run and check dumps\n";
+                  << "` is not in this unit; U05 implements run and check dumps\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";

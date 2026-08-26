@@ -1,6 +1,5 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U04: syntax + sema + interp + run over JSONL events.
-# 3.20+: ctest --test-dir. Stock g++. No Flex, no Bison, no libz3.
+# U05: syntax + sema + interp + formula dumps. No Flex, no Bison, no libz3.
 cmake_minimum_required(VERSION 3.20)
 
 # Prefer stock g++. Some images default `c++` to clang without libstdc++.
@@ -23,4 +22,5 @@ include(Adl2Module)
 add_subdirectory(libs/syntax)
 add_subdirectory(libs/sema)
 add_subdirectory(libs/interp)
+add_subdirectory(libs/formula)
 add_subdirectory(libs/cli)

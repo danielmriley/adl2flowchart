@@ -8,8 +8,9 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U01 of this tree implements `check --dump-ast` and a run-first CLI.
-Later units add interpreter, verify, ingest, and certify.
+U03 of this tree implements `check --dump-ast`, `--dump-hir`, and
+`--dump-quantities`, plus a run-first CLI. Later units add interpreter,
+verify, ingest, and certify.
 
 ## Install
 
@@ -25,9 +26,11 @@ alias smash_cpp2=$PWD/reimplementation/smash_cpp2/build/smash_cpp2
 ## Daily loop
 
 ```bash
-# 1. parse (U01: --dump-ast is the oracle-facing dump)
+# 1. parse + resolve (U03: dumps are the oracle-facing surface)
 smash_cpp2 check analysis.adl
 smash_cpp2 check --dump-ast analysis.adl
+smash_cpp2 check --dump-hir analysis.adl
+smash_cpp2 check --dump-quantities analysis.adl
 
 # later units
 smash_cpp2 run analysis.adl events.jsonl
@@ -45,18 +48,17 @@ interpreter unit lands. `verify` is property-tested against it.
 
 Language meaning is in `LANGUAGE.md`. Those items are closed.
 
-## Dump-ast gate (U01)
+## Dump gates (U03)
 
-Stdout of `smash_cpp2 check --dump-ast` must match smash3 on every
-`examples/tutorials/*.adl` file. The same dump also matches smash3 on
-the full 146-file `examples/` corpus.
+Stdout of `smash_cpp2 check --dump-ast` must match smash3 on the full
+146-file `examples/` corpus. `--dump-hir` and `--dump-quantities` must
+match smash3 on every `examples/tutorials/*.adl` file.
 
 ```bash
 smash3=./reimplementation/smash3/target/release/smash3
 cpp2=./reimplementation/smash_cpp2/build/smash_cpp2
-for f in examples/tutorials/*.adl; do
-  diff -u <("$smash3" check --dump-ast "$f") <("$cpp2" check --dump-ast "$f")
-done
-# full corpus
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_ast_corpus.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_hir_tutorials.sh
+# stretch: full corpus / smash2_cpp allowlist
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_hir_corpus.sh
 ```

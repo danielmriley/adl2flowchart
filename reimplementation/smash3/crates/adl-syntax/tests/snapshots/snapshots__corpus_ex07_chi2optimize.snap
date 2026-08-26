@@ -175,7 +175,7 @@ warning: negative index: from-the-end on element properties; combinatorial and d
    |
 40 | define bcand2 = goodjet[-4] 
    |                         ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
-warning: `~=` semantics are unverified (OPEN-4)
+warning: `~=` is `!=` (not approximately equal)
   --> examples/tutorials/ex07_chi2optimize.adl:66:18
    |
 66 |   select totchi2 ~= 0  

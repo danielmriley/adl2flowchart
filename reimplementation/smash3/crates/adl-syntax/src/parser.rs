@@ -1363,7 +1363,7 @@ impl<'s> Parser<'s> {
             if op == CmpOp::ApproxEq && !self.tilde_warned {
                 self.tilde_warned = true;
                 self.diags.push(
-                    Diagnostic::warning(op_span, "`~=` semantics are unverified (OPEN-4)")
+                    Diagnostic::warning(op_span, "`~=` is `!=` (not approximately equal)")
                         .with_label("treated as `!=` downstream, matching the legacy parser")
                         .with_help("this warning is emitted once per file"),
                 );

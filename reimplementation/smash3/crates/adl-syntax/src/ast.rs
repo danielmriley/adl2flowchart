@@ -346,7 +346,7 @@ pub enum CmpOp {
     Le,
     Eq,
     Ne,
-    /// `~=` — parsed distinctly; OPEN-4 maps it to `!=` downstream.
+    /// `~=` — parsed distinctly; smash3 maps it to `!=` downstream.
     ApproxEq,
 }
 

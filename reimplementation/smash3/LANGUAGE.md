@@ -8,7 +8,7 @@ stay only where the encoder cannot pick one reading without lying.
 | Unindexed collection cut (`pt(jets)` at region level) | Dual bounded expansion, k=3. Empty collection is true in the plus branch. | `adl-formula` encoder, audit Bug 1 |
 | `dPhi` / `dEta` | Oriented quantities. Range axiom −π…π. Twin axiom `x=y ∨ x=−y`. SAT-direction caps at POSSIBLY when reversed twins appear. | `adl-sema` Quantity, `adl-axioms` |
 | Index base and `[-n]` | 0-based. `jets[-1].pt` is `FromBack(1)` in fragment. `COMB(jets[-1] …)` and `define` of `goodjet[-n]` stay Unsupported. The parser warns on every `[-n]` so combinatorial tutorial files stay honest; it does not say the item is open. | `adl-sema` `ElemIndex::FromBack` |
-| `~=` | Same parse as `!=`. One warning per file. Not "approximately equal". | `adl-syntax` lexer |
+| `~=` | Same parse as `!=`. One warning per file: `` `~=` is `!=` (not approximately equal) ``. | `adl-syntax` lexer |
 | `size` / `Size` / `count` | Case-insensitive aliases of the size quantity. | `adl-sema` |
 | Name resolution | Case-insensitive. Diagnostics keep the source spelling. | `adl-sema` |
 | Division by zero / non-finite | The enclosing comparison is false. Non-finite literals cannot build atoms. | `adl-interp`, `adl-sema::Rat` |

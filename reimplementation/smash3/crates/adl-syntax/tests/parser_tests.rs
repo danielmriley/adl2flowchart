@@ -456,7 +456,7 @@ fn tilde_eq_parses_with_one_warning_per_file() {
     let warns = r
         .diags
         .iter()
-        .filter(|d| d.message.contains("OPEN-4"))
+        .filter(|d| d.message.contains("`~=` is `!=`"))
         .count();
     assert_eq!(warns, 1);
 }

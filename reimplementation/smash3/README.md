@@ -70,14 +70,24 @@ Language meaning is in `LANGUAGE.md`. Those items are closed.
 
 ## Tests
 
+Same battery smash2 CI runs, plus the corpus ledger pin. Needs a `z3`
+binary on PATH (CI pins 4.12.2).
+
 ```bash
-cargo test -p adl-syntax
-cargo test -p adl-sema
-cargo test -p adl-interp --lib
-cargo test -p adl-formula
+cargo test --release --workspace --no-fail-fast
 scripts/corpus_gate.sh
-scripts/verify_corpus_gate.sh   # needs z3
+scripts/verify_corpus_gate.sh
+scripts/parity_dump_ast.sh      # smash2 is the dump-ast oracle
 ```
 
-Workspace tests that pull native libz3 stay opt-in (`--features native`).
-The default CLI build uses the subprocess solver.
+Landing-discipline extras (native libz3 optional; subprocess works):
+
+```bash
+cargo test -p adl-analysis --release --test golden_regions --test golden_cross
+cargo test -p adl-difftest --release --test prop_encoder_vs_interp
+cargo test -p adl-difftest --release --test metamorphic
+cargo test -p adl-difftest --release --test cross_oracle --test prop_reconcile_oracle
+cargo test -p adl-cli --release --test cli --test ingest --test adversarial
+```
+
+`--features native` and `--features deep` (100k-case oracle) stay opt-in.

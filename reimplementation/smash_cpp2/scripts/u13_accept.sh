@@ -50,6 +50,20 @@ else
   diff -u "$work/s3.ex07.json" "$work/c2.ex07.json" || true
 fi
 
+cms="$root/examples/CMS-SUS-21-006_TreeMaker2result.adl"
+set +e
+"$cpp2" check --json "$cms" >"$work/c2.cms.json" 2>"$work/c2.cms.err"
+c2_cms=$?
+"$smash3" check --json "$cms" >"$work/s3.cms.json" 2>"$work/s3.cms.err"
+s3_cms=$?
+set -e
+if [[ "$c2_cms" -eq 0 && "$s3_cms" -eq 0 ]] && cmp -s "$work/c2.cms.json" "$work/s3.cms.json"; then
+  note "check --json CMS-SUS-21-006_TreeMaker2result: IDENTICAL (path label)"
+else
+  bad "check --json CMS-SUS-21-006_TreeMaker2result"
+  diff -u "$work/s3.cms.json" "$work/c2.cms.json" || true
+fi
+
 set +e
 "$cpp2" check --json --dump-ast "$ex01" >/dev/null 2>"$work/c2.dump.err"
 c2_dump=$?

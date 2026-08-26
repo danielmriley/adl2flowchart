@@ -1348,7 +1348,8 @@ std::unique_ptr<Arg> Parser::parse_arg() {
   if (check(TokKind::PathLike)) {
     Token t = advance();
     diags_.warning(t.span, "bare file-path token is deprecated",
-                   "quote it: \"" + t.text + "\"");
+                   "quote it: \"" + t.text + "\"",
+                   "interpreted as a file path argument");
     a->kind = Arg::Kind::Path;
     a->str.value = std::move(t.text);
     a->str.span = t.span;
@@ -1400,7 +1401,8 @@ bool Parser::parse_path_token(StrLit& out) {
   out.span = Span::at(tok_start, line, column, end - tok_start);
   out.span.end = end;
   diags_.warning(out.span, "bare file-path token is deprecated",
-                 "quote it: \"" + out.value + "\"");
+                 "quote it: \"" + out.value + "\"",
+                 "interpreted as a file path argument");
   return true;
 }
 

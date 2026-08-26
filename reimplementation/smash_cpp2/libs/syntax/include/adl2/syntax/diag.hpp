@@ -13,21 +13,28 @@ struct Diagnostic {
   DiagLevel level = DiagLevel::Error;
   Span span;
   std::string message;
-  std::string help;  // optional
+  std::string help;
+  std::string label;
 };
 
 class DiagSink {
  public:
   void emit(DiagLevel level, Span span, std::string message,
-            std::string help = {});
-  void error(Span span, std::string message, std::string help = {}) {
-    emit(DiagLevel::Error, span, std::move(message), std::move(help));
+            std::string help = {}, std::string label = {});
+  void error(Span span, std::string message, std::string help = {},
+             std::string label = {}) {
+    emit(DiagLevel::Error, span, std::move(message), std::move(help),
+         std::move(label));
   }
-  void warning(Span span, std::string message, std::string help = {}) {
-    emit(DiagLevel::Warning, span, std::move(message), std::move(help));
+  void warning(Span span, std::string message, std::string help = {},
+               std::string label = {}) {
+    emit(DiagLevel::Warning, span, std::move(message), std::move(help),
+         std::move(label));
   }
-  void note(Span span, std::string message, std::string help = {}) {
-    emit(DiagLevel::Note, span, std::move(message), std::move(help));
+  void note(Span span, std::string message, std::string help = {},
+            std::string label = {}) {
+    emit(DiagLevel::Note, span, std::move(message), std::move(help),
+         std::move(label));
   }
 
   const std::vector<Diagnostic>& diagnostics() const { return diags_; }

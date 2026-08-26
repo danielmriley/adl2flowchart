@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -54,8 +55,8 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U11 implements `run --json`, `verify --json`, `verify --cross`,\n"
-      << "and `--recon all|related` on top of the U10 surface.\n";
+      << "`check --json` emits smash3-schema diagnostics. `verify --cross`\n"
+      << "merges files. `--combine` writes smash2-combine/2 bundles.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -70,6 +71,7 @@ void print_check_help(const char* argv0) {
       << "      --dump-quantities  Print the interned quantity table to stdout\n"
       << "      --dump-formula     Print the polarity-aware region formulas to stdout\n"
       << "      --dump-axioms      Print the canonical emitted-axiom dump to stdout\n"
+      << "      --json             Emit diagnostics as a JSON array to stdout\n"
       << "  -h, --help             Print help\n";
 }
 
@@ -188,6 +190,61 @@ std::string unit_name(const std::string& path) {
   return path.substr(slash + 1);
 }
 
+std::string json_escape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+          out += buf;
+        } else {
+          out.push_back(static_cast<char>(c));
+        }
+    }
+  }
+  return out;
+}
+
+void write_check_diag_json(std::ostream& out, const std::string& file,
+                           const adl2::sema::Diagnostic& d) {
+  // smash3 serde field order (alphabetical).
+  out << "{\"col\":" << d.span.column << ",\"end\":" << d.span.end << ",\"file\":\""
+      << json_escape(file) << "\",\"help\":";
+  if (d.help.empty()) {
+    out << "null";
+  } else {
+    out << "\"" << json_escape(d.help) << "\"";
+  }
+  out << ",\"label\":";
+  if (d.label.empty()) {
+    out << "null";
+  } else {
+    out << "\"" << json_escape(d.label) << "\"";
+  }
+  out << ",\"line\":" << d.span.line << ",\"message\":\""
+      << json_escape(d.message) << "\",\"severity\":\""
+      << adl2::sema::severity_str(d.severity) << "\",\"start\":" << d.span.start
+      << "}";
+}
+
 bool stdout_color() {
   return isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
 }
@@ -296,8 +353,38 @@ void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
   }
 }
 
-int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose) {
+int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose,
+              bool json) {
+  if (json && dump != DumpKind::None) {
+    std::cerr << "error: --json cannot be combined with --dump-*\n";
+    return 2;
+  }
   auto ext = adl2::sema::ExtDecls::legacy();
+  if (json) {
+    for (const auto& path : paths) {
+      std::ifstream probe(path);
+      if (!probe) {
+        std::cerr << "error: cannot read file: " << path << "\n";
+        return 2;
+      }
+    }
+    std::cout << "[";
+    bool first = true;
+    bool any_err = false;
+    for (const auto& path : paths) {
+      std::string src = read_file(path);
+      std::string name = unit_name(path);
+      auto hir = adl2::sema::analyze_str(src, name, ext);
+      for (const auto& d : hir.diags) {
+        if (!first) std::cout << ",";
+        first = false;
+        write_check_diag_json(std::cout, name, d);
+      }
+      if (adl2::sema::has_errors(hir.diags)) any_err = true;
+    }
+    std::cout << "]\n";
+    return any_err ? 1 : 0;
+  }
   bool any_err = false;
   for (const auto& path : paths) {
     std::ifstream probe(path);
@@ -1076,6 +1163,7 @@ int main(int argc, char** argv) {
 
   if (cmd == "check") {
     DumpKind dump = DumpKind::None;
+    bool json_check = false;
     std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
@@ -1096,10 +1184,7 @@ int main(int argc, char** argv) {
       } else if (arg == "--dump-axioms") {
         dump = DumpKind::Axioms;
       } else if (arg == "--json") {
-        std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U08 implements run, check dumps, verify, "
-                     "and --combine / smash_cpp2-recheck\n";
-        return 2;
+        json_check = true;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
         return 2;
@@ -1112,7 +1197,7 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
-    return cmd_check(paths, dump, verbose);
+    return cmd_check(paths, dump, verbose, json_check);
   }
 
   if (cmd == "run") {

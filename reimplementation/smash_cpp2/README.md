@@ -8,11 +8,11 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U10 of this tree implements `run` over JSONL events, `check` dumps,
-subprocess `verify`, `verify --combine DIR` / `smash_cpp2-recheck`,
-`objects`, `dot` / `dot --ast`, `ingest`, and `run --histos`.
-`--cross` and `run --json` are later units. Farkas is the smash2_cpp
-certify kernel, not a rewrite.
+This tree implements the smash3 product loop. `run` over JSONL or
+ingested ROOT, `check` (dumps and `--json`), subprocess `verify`,
+`verify --cross` / `--json` / `--combine DIR`, `smash_cpp2-recheck`,
+`objects`, `dot` / `dot --ast`, `ingest`, and `run --histos`. Farkas
+is the smash2_cpp certify kernel, not a rewrite.
 
 ## Install
 
@@ -30,12 +30,14 @@ alias smash_cpp2=$PWD/reimplementation/smash_cpp2/build/smash_cpp2
 ```bash
 # 1. evaluate regions over events (the meaning)
 smash_cpp2 run analysis.adl events.jsonl
+smash_cpp2 run --json analysis.adl events.jsonl
 smash_cpp2 run --histos /tmp/histos analysis.adl events.jsonl
 smash_cpp2 ingest --profile delphes -o events.jsonl file.root
 smash_cpp2 run --profile delphes --histos /tmp/histos analysis.adl file.root
 
 # 2. parse + resolve (dumps stay smash3-identical)
 smash_cpp2 check analysis.adl
+smash_cpp2 check --json analysis.adl
 smash_cpp2 check --dump-ast analysis.adl
 smash_cpp2 check --dump-hir analysis.adl
 smash_cpp2 check --dump-quantities analysis.adl
@@ -49,6 +51,8 @@ smash_cpp2 dot --ast analysis.adl
 
 # pairwise verdicts (subprocess z3 on PATH)
 smash_cpp2 verify analysis.adl
+smash_cpp2 verify --json analysis.adl
+smash_cpp2 verify --cross a.adl b.adl
 
 # portable smash2-combine/2 certificates; replay offline, no solver
 smash_cpp2 verify --combine /tmp/bundles analysis.adl
@@ -69,13 +73,11 @@ replay those files. Producer is `smash_cpp2`. Schema is not `/1`.
 
 Language meaning is in `LANGUAGE.md`. Those items are closed.
 
-## Dump gates (U03/U05/U06, still required)
+## Dump gates
 
 Stdout of `smash_cpp2 check --dump-ast`, `--dump-hir`,
 `--dump-quantities`, `--dump-formula`, and `--dump-axioms` must match
-smash3 on the tutorial files. The first three stay 146/146 on the full
-`examples/` corpus; dump-formula and dump-axioms tutorials are the
-U05/U06 gates (full corpus is stretch).
+smash3 on every `examples/**/*.adl` file (146).
 
 ```bash
 smash3=./reimplementation/smash3/target/release/smash3
@@ -113,10 +115,10 @@ smash3=$smash3 cpp2=$cpp2 \
   reimplementation/smash_cpp2/scripts/u10_accept.sh
 ```
 
-## Objects and DOT gates (U09)
+## Objects and DOT gates
 
-Stdout of `smash_cpp2 objects`, `dot`, and `dot --ast` must match smash3.
-Tutorials are the gate. The full `examples/` corpus is stretch (146).
+Stdout of `smash_cpp2 objects`, `dot`, and `dot --ast` must match smash3
+on every `examples/**/*.adl` file (146).
 
 ```bash
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_objects_tutorials.sh
@@ -126,3 +128,29 @@ smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_objects_corpu
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_corpus.sh
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_ast_corpus.sh
 ```
+
+## Check --json (U13)
+
+`smash_cpp2 check --json` writes one smash3-schema diagnostic array on
+stdout. Keys stay `col, end, file, help, label, line, message,
+severity, start`. A clean file is `[]`. Errors exit 1. `--json` cannot
+combine with `--dump-*` (exit 2).
+
+```bash
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/u13_accept.sh
+```
+
+## Verify corpus gate
+
+`scripts/verify_corpus_gate.sh` runs `verify` on all 146 corpus files
+against smash3. It fails on a `summary:` mismatch, any UNKNOWN, a
+PROVEN DISJOINT rise, or drift from the pin (1900 pairs, 813 PD, 76
+PO, 45 candidate, 966 possibly, 0 unknown).
+
+```bash
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/verify_corpus_gate.sh
+```
+
+`scripts/ci_gates.sh` runs the dump, run, ingest, cross, check --json,
+and verify-corpus gates. GitHub job `smash_cpp2` invokes it.
+

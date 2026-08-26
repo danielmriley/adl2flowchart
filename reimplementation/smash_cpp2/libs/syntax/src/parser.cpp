@@ -991,7 +991,8 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
     if (*op == CmpOp::ApproxEq && !tilde_warned_) {
       tilde_warned_ = true;
       diags_.warning(op_tok.span, "`~=` is `!=` (not approximately equal)",
-                     "this warning is emitted once per file");
+                     "this warning is emitted once per file",
+                     "treated as `!=` downstream, matching the legacy parser");
     }
     links.push_back(Link{*op, parse_additive()});
   }
@@ -1178,9 +1179,11 @@ IndexVal Parser::parse_index_val() {
     diags_.error(peek().span, "expected an integer index");
   }
   if (v.neg) {
-    diags_.warning(start.to(last_span_),
-                   "negative index: from-the-end on element properties; combinatorial and define uses stay unsupported",
-                   "jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment");
+    diags_.warning(
+        start.to(last_span_),
+        "negative index: from-the-end on element properties; combinatorial and define uses stay unsupported",
+        {},
+        "jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment");
   }
   return v;
 }
@@ -1345,7 +1348,8 @@ std::unique_ptr<Arg> Parser::parse_arg() {
   if (check(TokKind::PathLike)) {
     Token t = advance();
     diags_.warning(t.span, "bare file-path token is deprecated",
-                   "quote it: \"" + t.text + "\"");
+                   "quote it: \"" + t.text + "\"",
+                   "interpreted as a file path argument");
     a->kind = Arg::Kind::Path;
     a->str.value = std::move(t.text);
     a->str.span = t.span;
@@ -1397,7 +1401,8 @@ bool Parser::parse_path_token(StrLit& out) {
   out.span = Span::at(tok_start, line, column, end - tok_start);
   out.span.end = end;
   diags_.warning(out.span, "bare file-path token is deprecated",
-                 "quote it: \"" + out.value + "\"");
+                 "quote it: \"" + out.value + "\"",
+                 "interpreted as a file path argument");
   return true;
 }
 

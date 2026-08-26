@@ -31,6 +31,7 @@ Diagnostic conv_diag(const syn::Diagnostic& d) {
   o.span = conv_span(d.span);
   o.message = d.message;
   o.help = d.help;
+  o.label = d.label;
   return o;
 }
 

@@ -161,3 +161,63 @@ jobs:
         run: |
           ./target/release/smash2 check --dump-ast \
             ../../examples/tutorials/ex01_selection.adl
+
+  # smash_cpp2 vs smash3 oracle. Fail if smash3-production cannot be fetched.
+  smash_cpp2:
+    name: smash_cpp2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make
+      - name: Install z3 4.12.2
+        run: |
+          curl -sSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.12.2/z3-4.12.2-x64-glibc-2.35.zip
+          unzip -q /tmp/z3.zip -d /tmp/z3
+          sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
+          z3 --version
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Fetch smash3 oracle sources
+        run: |
+          ok=0
+          for i in 0 1 2 3; do
+            if git fetch origin cursor/smash3-production-9e76; then
+              ok=1
+              break
+            fi
+            sleep $((4 * (2 ** i)))
+          done
+          if [[ "$ok" -ne 1 ]]; then
+            echo "failed to fetch origin/cursor/smash3-production-9e76" >&2
+            echo "smash_cpp2 gates require the smash3 oracle; do not fall back to smash2" >&2
+            exit 1
+          fi
+          git checkout origin/cursor/smash3-production-9e76 -- reimplementation/smash3
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reimplementation/smash3
+      - name: Build smash3 oracle
+        working-directory: reimplementation/smash3
+        run: cargo build --release -p adl-cli --no-default-features
+      - name: Configure smash_cpp2
+        run: cmake -S reimplementation/smash_cpp2 -B reimplementation/smash_cpp2/build -DCMAKE_BUILD_TYPE=Release
+        env:
+          CXX: g++
+      - name: Build smash_cpp2
+        run: cmake --build reimplementation/smash_cpp2/build -j$(nproc)
+      - name: ldd must not show libz3 or CERN ROOT
+        run: |
+          bin=reimplementation/smash_cpp2/build/smash_cpp2
+          ldd "$bin"
+          if ldd "$bin" | grep -E 'libz3|libCore|libRIO'; then
+            echo "ldd shows banned library" >&2
+            exit 1
+          fi
+      - name: Run ci_gates.sh
+        env:
+          root: ${{ github.workspace }}
+          cpp2: ${{ github.workspace }}/reimplementation/smash_cpp2/build/smash_cpp2
+          smash3: ${{ github.workspace }}/reimplementation/smash3/target/release/smash3
+        run: bash reimplementation/smash_cpp2/scripts/ci_gates.sh

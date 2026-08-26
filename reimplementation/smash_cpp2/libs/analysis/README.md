@@ -18,8 +18,8 @@ P4 fills:
   unknown or an encoding-gap Unsat is POSSIBLY, never a certified claim.
 - Compact `dump_verdicts` (`A vs B: KIND`)
 
-Sampling/refute gates, `--cross` reconciliation (XSUB/XEQ), smash2-schema
-`verify --json`, and `--combine` certificate bundles (`smash2-combine/2`)
-are wired. Recheck is the `smash2_cpp-recheck` binary.
+Sampling/refute gates, `--cross` reconciliation (XSUB/XEQ), and
+smash2-schema `verify --json` stay later units. `--combine` writes
+`smash2-combine/2` bundles. Recheck is the `smash_cpp2-recheck` binary.
 
 Headers: `libs/analysis/include/adl2/analysis/`

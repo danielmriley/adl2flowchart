@@ -1,5 +1,7 @@
 #include "adl2/analysis/analysis.hpp"
 #include "adl2/axioms/axioms.hpp"
+#include "adl2/certify/bundle.hpp"
+#include "adl2/certify/sha256.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
@@ -9,6 +11,7 @@
 #include "adl2/syntax/parser.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -44,8 +47,9 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U07 implements `run`, `check` dumps, and subprocess `verify`.\n"
-      << "ingest and ROOT `--profile` are later units.\n";
+      << "U08 implements `run`, `check` dumps, subprocess `verify`, and\n"
+      << "`verify --combine DIR` / `smash_cpp2-recheck`. ingest and ROOT\n"
+      << "`--profile` are later units.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -80,6 +84,7 @@ void print_verify_help(const char* argv0) {
       << "      --explain         Per-pair proof chain after the default report\n"
       << "      --matrix          Force the pairwise matrix\n"
       << "      --fail-on <KINDS> Exit 4 on selected findings\n"
+      << "      --combine DIR     Write smash2-combine/2 bundles for certified pairs\n"
       << "  -h, --help            Print help\n";
 }
 
@@ -111,9 +116,101 @@ std::string unit_name(const std::string& path) {
   return path.substr(slash + 1);
 }
 
+bool is_combine_bundle_filename(const std::string& name) {
+  if (name.size() < 5 || name.compare(name.size() - 5, 5, ".json") != 0) return false;
+  std::string stem = name.substr(0, name.size() - 5);
+  const auto* b = reinterpret_cast<const unsigned char*>(stem.data());
+  std::size_t n = stem.size();
+  for (std::size_t i = 0; i + 6 < n; ++i) {
+    if (b[i] == '_' && b[i + 1] == '_' && std::isdigit(b[i + 2]) && std::isdigit(b[i + 3]) &&
+        std::isdigit(b[i + 4]) && b[i + 5] == '_' && b[i + 6] == '_' && i > 0) {
+      std::string rest = stem.substr(i + 7);
+      auto j = rest.find("__");
+      if (j != std::string::npos && j > 0 && j + 2 < rest.size()) return true;
+    }
+  }
+  return false;
+}
+
+std::string sane_filename(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (unsigned char c : s) {
+    if (std::isalnum(c) || c == '-' || c == '.') out.push_back(static_cast<char>(c));
+    else out.push_back('_');
+  }
+  return out;
+}
+
+int clean_stale_bundles(const std::string& dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    std::cerr << "error: cannot create " << dir << ": " << ec.message() << "\n";
+    return 2;
+  }
+  std::size_t removed = 0;
+  for (const auto& ent : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      std::cerr << "error: cannot read " << dir << ": " << ec.message() << "\n";
+      return 2;
+    }
+    if (!ent.is_regular_file()) continue;
+    std::string name = ent.path().filename().string();
+    if (!is_combine_bundle_filename(name)) continue;
+    std::filesystem::remove(ent.path(), ec);
+    if (ec) {
+      std::cerr << "error: cannot remove " << ent.path().string() << ": " << ec.message() << "\n";
+      return 2;
+    }
+    ++removed;
+  }
+  std::cerr << "removed " << removed << " stale certificate bundle(s) from " << dir << "\n";
+  return 0;
+}
+
+adl2::certify::BundleInput bundle_input(const std::string& name, const std::string& src) {
+  adl2::certify::BundleInput in;
+  in.name = name;
+  in.sha256 = adl2::certify::sha256_hex(src);
+  return in;
+}
+
+int write_bundles(const std::string& dir, const std::string& unit,
+                  const adl2::analysis::Report& report,
+                  const std::vector<adl2::certify::BundleInput>& inputs) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    std::cerr << "error: cannot create " << dir << ": " << ec.message() << "\n";
+    return 2;
+  }
+  for (std::size_t i = 0; i < report.combine_bundles.size(); ++i) {
+    auto b = report.combine_bundles[i];
+    b.inputs = inputs;
+    std::string idx = std::to_string(i);
+    if (idx.size() < 3) idx.insert(0, 3 - idx.size(), '0');
+    std::string path = (std::filesystem::path(dir) /
+                        (sane_filename(unit) + "__" + idx + "__" + sane_filename(b.region_a) +
+                         "__" + sane_filename(b.region_b) + ".json"))
+                           .string();
+    std::ofstream out(path);
+    if (!out) {
+      std::cerr << "error: cannot write " << path << "\n";
+      return 2;
+    }
+    out << b.to_json();
+  }
+  std::cerr << unit << ": wrote " << report.combine_bundles.size()
+            << " certificate bundle(s) to " << dir
+            << " (re-check offline with smash_cpp2-recheck)\n";
+  return 0;
+}
+
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U07 implements run, check dumps, and verify\n";
+            << "` is not in this unit; U08 implements run, check dumps, verify, "
+               "and --combine / smash_cpp2-recheck\n";
   return 2;
 }
 
@@ -286,7 +383,7 @@ bool expand_adl_inputs(const std::vector<std::string>& inputs,
 
 int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_certify,
                bool no_refute_gate, bool dump_only, bool explain, bool matrix, bool verbose,
-               const std::string& fail_on_s) {
+               const std::string& fail_on_s, const std::string& combine_dir) {
   std::vector<std::string> files;
   std::string err;
   if (!expand_adl_inputs(inputs, files, err)) {
@@ -312,7 +409,11 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
   opts.sample_gate = 64;
   opts.refute_gate = !no_refute_gate;
   opts.fail_on = fail_on;
-  opts.combine = false;
+  opts.combine = !combine_dir.empty();
+  if (!combine_dir.empty()) {
+    int c = clean_stale_bundles(combine_dir);
+    if (c) return c;
+  }
 
   int worst = 0;
   bool multi = files.size() > 1;
@@ -335,6 +436,10 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
     }
     auto report = adl2::analysis::analyze_hir(hir, src, ext, opts);
     warn_if_no_solver(name, report, no_solver);
+    if (!combine_dir.empty()) {
+      int w = write_bundles(combine_dir, name, report, {bundle_input(name, src)});
+      if (w) return w;
+    }
     if (verbose) {
       std::cerr << name << ": solver=" << report.solver
                 << "; regions=" << report.regions.size()
@@ -419,7 +524,8 @@ int main(int argc, char** argv) {
         dump = DumpKind::Axioms;
       } else if (arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U07 implements run, check dumps, and verify\n";
+                  << "` is not in this unit; U08 implements run, check dumps, verify, "
+                     "and --combine / smash_cpp2-recheck\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
@@ -475,6 +581,7 @@ int main(int argc, char** argv) {
     bool explain = false;
     bool matrix = false;
     std::string fail_on_s;
+    std::string combine_dir;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--help" || arg == "-h") {
@@ -503,16 +610,26 @@ int main(int argc, char** argv) {
         fail_on_s = argv[++i];
       } else if (arg.rfind("--fail-on=", 0) == 0) {
         fail_on_s = arg.substr(std::string("--fail-on=").size());
-      } else if (arg == "--combine" || arg == "--cross" || arg == "--json" ||
-                 arg == "--recon" || arg == "--human" ||
+      } else if (arg == "--combine") {
+        if (i + 1 >= argc) {
+          std::cerr << "error: --combine requires a directory\n";
+          return 2;
+        }
+        combine_dir = argv[++i];
+      } else if (arg.compare(0, 10, "--combine=") == 0) {
+        combine_dir = arg.substr(10);
+        if (combine_dir.empty()) {
+          std::cerr << "error: --combine requires a directory\n";
+          return 2;
+        }
+      } else if (arg == "--cross" || arg == "--json" || arg == "--recon" || arg == "--human" ||
                  arg == "--demote-uncertified-interval") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U07 implements single-file verify\n";
+                  << "` is not in this unit; U08 implements --combine / smash_cpp2-recheck\n";
         return 2;
-      } else if (arg.rfind("--combine", 0) == 0 || arg.rfind("--recon=", 0) == 0 ||
-                 arg.rfind("--human=", 0) == 0) {
+      } else if (arg.rfind("--recon=", 0) == 0 || arg.rfind("--human=", 0) == 0) {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U07 implements single-file verify\n";
+                  << "` is not in this unit; U08 implements --combine / smash_cpp2-recheck\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
@@ -526,8 +643,12 @@ int main(int argc, char** argv) {
       print_verify_help(argv[0]);
       return 2;
     }
+    if (!combine_dir.empty() && no_certify) {
+      std::cerr << "error: --combine cannot be used with --no-certify\n";
+      return 2;
+    }
     return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, explain,
-                      matrix, verbose, fail_on_s);
+                      matrix, verbose, fail_on_s, combine_dir);
   }
   if (cmd == "dot") return cmd_not_in_unit("dot");
   if (cmd == "objects") return cmd_not_in_unit("objects");

@@ -13,8 +13,8 @@
 /// quantity-dictionary *coverage*. Descriptive and unchecked: quantity labels,
 /// assert sources (except the derived link), producer, inputs, region names.
 ///
-/// C++ producer identity is `smash2_cpp` — never `smash2` (that name is the
-/// Rust oracle). Replay does not check the producer field.
+/// C++ producer identity is `smash_cpp2`. Replay does not check the producer
+/// field. Schema stays `smash2-combine/2` so smash3-recheck can read it.
 
 #include "adl2/certify/certify.hpp"
 #include "adl2/formula/formula.hpp"
@@ -40,8 +40,8 @@ inline constexpr const char* SCHEMA_HISTORY[] = {
     "derivation chain for reconciliation facts, producer/inputs identity",
 };
 
-/// C++ port identity. Descriptive; replay does not check it.
-inline constexpr const char* PRODUCER_TOOL = "smash2_cpp";
+/// smash_cpp2 identity. Descriptive; replay does not check it.
+inline constexpr const char* PRODUCER_TOOL = "smash_cpp2";
 inline constexpr const char* PRODUCER_VERSION = "0.1.0";
 
 inline constexpr const char* SCOPE_NOTE =
@@ -209,7 +209,7 @@ struct Producer {
   std::string version;
   std::vector<std::string> schema_history;
 
-  static Producer smash2_cpp() {
+  static Producer smash_cpp2() {
     Producer p;
     p.tool = PRODUCER_TOOL;
     p.version = PRODUCER_VERSION;

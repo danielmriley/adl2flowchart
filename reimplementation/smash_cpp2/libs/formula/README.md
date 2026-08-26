@@ -11,8 +11,8 @@ collection is true in the plus branch (`LANGUAGE.md`).
 
 Headers: `libs/formula/include/adl2/formula/`
 
-This unit dumps encoded regions. It does not emit axioms, call a solver,
-or implement `verify`.
+This library dumps encoded regions. Axiom emission lives in
+`libs/axioms`. It does not call a solver or implement `verify`.
 
 ```bash
 ./reimplementation/smash_cpp2/build/smash_cpp2 check --dump-formula \

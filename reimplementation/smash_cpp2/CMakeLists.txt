@@ -1,5 +1,5 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U05: syntax + sema + interp + formula dumps. No Flex, no Bison, no libz3.
+# U06: syntax + sema + interp + formula + axiom dumps. No Flex, no Bison, no libz3.
 cmake_minimum_required(VERSION 3.20)
 
 # Prefer stock g++. Some images default `c++` to clang without libstdc++.
@@ -23,4 +23,5 @@ add_subdirectory(libs/syntax)
 add_subdirectory(libs/sema)
 add_subdirectory(libs/interp)
 add_subdirectory(libs/formula)
+add_subdirectory(libs/axioms)
 add_subdirectory(libs/cli)

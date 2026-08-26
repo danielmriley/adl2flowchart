@@ -6,7 +6,7 @@ stay only where the encoder cannot pick one reading without lying.
 | Item | smash_cpp2 decision | Where it lives |
 |---|---|---|
 | Unindexed collection cut (`pt(jets)` at region level) | Dual bounded expansion, k=3. Empty collection is true in the plus branch. | `libs/formula` encoder, audit Bug 1 |
-| `dPhi` / `dEta` | Oriented quantities. Range axiom −π…π. Twin axiom `x=y ∨ x=−y`. SAT-direction caps at POSSIBLY when reversed twins appear. | sema Quantity, axioms (later units) |
+| `dPhi` / `dEta` | Oriented quantities. Range axiom −π…π. Twin axiom `x=y ∨ x=−y`. SAT-direction caps at POSSIBLY when reversed twins appear. | sema Quantity, `libs/axioms` |
 | Index base and `[-n]` | 0-based. `jets[-1].pt` is `FromBack(1)` in fragment. `COMB(jets[-1] …)` and `define` of `goodjet[-n]` stay Unsupported. The parser warns on every `[-n]` so combinatorial tutorial files stay honest; it does not say the item is open. | `parse_index_val`; sema `ElemIndex::FromBack` |
 | `~=` | Same parse as `!=`. One warning per file: `` `~=` is `!=` (not approximately equal) ``. | `libs/syntax` lexer / `parse_comparison` |
 | `size` / `Size` / `count` | Case-insensitive aliases of the size quantity. | `libs/sema` |

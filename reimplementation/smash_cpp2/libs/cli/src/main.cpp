@@ -1,3 +1,4 @@
+#include "adl2/axioms/axioms.hpp"
 #include "adl2/formula/dump.hpp"
 #include "adl2/formula/encode.hpp"
 #include "adl2/interp/interp.hpp"
@@ -6,8 +7,10 @@
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -36,7 +39,7 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U05 implements `run` and `check` dumps including `--dump-formula`.\n"
+      << "U06 implements `run` and `check` dumps including `--dump-axioms`.\n"
       << "verify, ingest, and ROOT `--profile` are later units.\n";
 }
 
@@ -51,6 +54,7 @@ void print_check_help(const char* argv0) {
       << "      --dump-hir         Print the resolved HIR dump for each file to stdout\n"
       << "      --dump-quantities  Print the interned quantity table to stdout\n"
       << "      --dump-formula     Print the polarity-aware region formulas to stdout\n"
+      << "      --dump-axioms      Print the canonical emitted-axiom dump to stdout\n"
       << "  -h, --help             Print help\n";
 }
 
@@ -84,11 +88,11 @@ std::string unit_name(const std::string& path) {
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U05 implements run and check dumps\n";
+            << "` is not in this unit; U06 implements run and check dumps\n";
   return 2;
 }
 
-enum class DumpKind { None, Ast, Hir, Quantities, Formula };
+enum class DumpKind { None, Ast, Hir, Quantities, Formula, Axioms };
 
 void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
   for (const auto& d : diags) {
@@ -125,6 +129,17 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
     } else if (dump == DumpKind::Formula) {
       auto regions = adl2::formula::encode_regions(hir);
       std::cout << adl2::formula::dump_encoded(hir, regions);
+    } else if (dump == DumpKind::Axioms) {
+      // smash3 `check --dump-axioms` still runs encode_regions first. The
+      // EncodedRegion vector is unused, but OPEN-1 intern mutates the
+      // quantity table; skipping it shifts QuantityIds and the axiom dump.
+      (void)adl2::formula::encode_regions(hir);
+      std::set<adl2::sema::QuantityId> qs;
+      for (std::uint32_t i = 0; i < hir.table.quantities().size(); ++i) {
+        qs.insert(adl2::sema::QuantityId{i});
+      }
+      auto set = adl2::axioms::emit_axioms(hir, ext, qs);
+      std::cout << adl2::axioms::dump_axioms(hir, set);
     }
     if (!hir.diags.empty()) {
       print_sema_diags(hir.diags);
@@ -243,9 +258,11 @@ int main(int argc, char** argv) {
         dump = DumpKind::Quantities;
       } else if (arg == "--dump-formula") {
         dump = DumpKind::Formula;
-      } else if (arg == "--dump-axioms" || arg == "--json") {
+      } else if (arg == "--dump-axioms") {
+        dump = DumpKind::Axioms;
+      } else if (arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U05 implements run and check dumps\n";
+                  << "` is not in this unit; U06 implements run and check dumps\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";

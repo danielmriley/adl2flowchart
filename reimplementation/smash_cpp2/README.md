@@ -8,9 +8,9 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U04 of this tree implements `run` over JSONL events and `check`
-`--dump-ast` / `--dump-hir` / `--dump-quantities`. Later units add
-verify, ingest, and certify.
+U05 of this tree implements `run` over JSONL events and `check`
+`--dump-ast` / `--dump-hir` / `--dump-quantities` / `--dump-formula`.
+Later units add verify, ingest, and certify.
 
 ## Install
 
@@ -34,6 +34,7 @@ smash_cpp2 check analysis.adl
 smash_cpp2 check --dump-ast analysis.adl
 smash_cpp2 check --dump-hir analysis.adl
 smash_cpp2 check --dump-quantities analysis.adl
+smash_cpp2 check --dump-formula analysis.adl
 
 # later units
 smash_cpp2 verify analysis.adl
@@ -50,17 +51,20 @@ smash_cpp2 verify analysis.adl
 
 Language meaning is in `LANGUAGE.md`. Those items are closed.
 
-## Dump gates (U03, still required)
+## Dump gates (U03/U05, still required)
 
-Stdout of `smash_cpp2 check --dump-ast`, `--dump-hir`, and
-`--dump-quantities` must match smash3 on the full 146-file `examples/`
-corpus.
+Stdout of `smash_cpp2 check --dump-ast`, `--dump-hir`,
+`--dump-quantities`, and `--dump-formula` must match smash3 on the
+tutorial files. The first three stay 146/146 on the full `examples/`
+corpus; dump-formula tutorials are the U05 gate (full corpus is stretch).
 
 ```bash
 smash3=./reimplementation/smash3/target/release/smash3
 cpp2=./reimplementation/smash_cpp2/build/smash_cpp2
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_ast_corpus.sh
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_hir_corpus.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_formula_tutorials.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_formula_corpus.sh
 ```
 
 ## Run gate (U04)

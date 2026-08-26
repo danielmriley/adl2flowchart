@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# U13: smash_cpp2 check --json vs smash3. Schema, clean [], ex07 labels.
 set -euo pipefail
 root="${root:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 cpp2="${cpp2:-/tmp/smash-cpp2-u13-coord-build/smash_cpp2}"

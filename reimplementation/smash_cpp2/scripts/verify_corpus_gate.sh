@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# smash_cpp2 verify over every examples/**/*.adl vs smash3.
-# Fail if a summary: line differs, UNKNOWN > 0, or PROVEN DISJOINT rises.
 set -euo pipefail
 root="${root:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 cpp2="${cpp2:-$root/reimplementation/smash_cpp2/build/smash_cpp2}"
@@ -105,7 +103,6 @@ if agg_c2["unk"] or agg_s3["unk"]:
 if fail:
     print(f"verify_corpus_gate: FAIL — {fail} file(s)", file=sys.stderr)
     sys.exit(1)
-# smash2/smash3/smash_cpp2 U12 coordinator ledger.
 pin = {"pairs": 1900, "pd": 813, "po": 76, "cand": 45, "pos": 966, "unk": 0}
 if agg_c2 != pin or agg_s3 != pin:
     print(

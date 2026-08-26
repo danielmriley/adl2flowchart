@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Run the smash_cpp2 acceptance gates against a smash3 oracle.
-# Includes the 146-file verify_corpus_gate (PROVEN DISJOINT must not rise).
 # Requires cpp2 and smash3 env vars pointing at real binaries.
 set -euo pipefail
 

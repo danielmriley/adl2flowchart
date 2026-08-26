@@ -145,36 +145,36 @@ File
         Num 20.0
     RegionRef name=chi2histos @72:3
 ---- diagnostics ----
-warning: negative index: semantics reserved pending OPEN-3
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:32:21
    |
 32 | define W1 = goodjet[-1] + goodjet[-1] 
-   |                     ^^ parsed, but tagged Unsupported in semantic analysis
-warning: negative index: semantics reserved pending OPEN-3
+   |                     ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:32:35
    |
 32 | define W1 = goodjet[-1] + goodjet[-1] 
-   |                                   ^^ parsed, but tagged Unsupported in semantic analysis
-warning: negative index: semantics reserved pending OPEN-3
+   |                                   ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:33:21
    |
 33 | define W2 = goodjet[-3] + goodjet[-3] 
-   |                     ^^ parsed, but tagged Unsupported in semantic analysis
-warning: negative index: semantics reserved pending OPEN-3
+   |                     ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:33:35
    |
 33 | define W2 = goodjet[-3] + goodjet[-3] 
-   |                                   ^^ parsed, but tagged Unsupported in semantic analysis
-warning: negative index: semantics reserved pending OPEN-3
+   |                                   ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:39:25
    |
 39 | define bcand1 = goodjet[-2] 
-   |                         ^^ parsed, but tagged Unsupported in semantic analysis
-warning: negative index: semantics reserved pending OPEN-3
+   |                         ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
+warning: negative index: from-the-end on element properties; combinatorial and define uses stay unsupported
   --> examples/tutorials/ex07_chi2optimize.adl:40:25
    |
 40 | define bcand2 = goodjet[-4] 
-   |                         ^^ parsed, but tagged Unsupported in semantic analysis
+   |                         ^^ jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment
 warning: `~=` semantics are unverified (OPEN-4)
   --> examples/tutorials/ex07_chi2optimize.adl:66:18
    |

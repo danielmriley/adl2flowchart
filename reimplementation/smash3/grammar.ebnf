@@ -4,8 +4,8 @@
  * crates/adl-syntax/src/parser.rs. One parse_<name> per nonterminal.
  * Flex and Bison are not the implementation. See BISON_MAP.md.
  *
- * Provenance: SPEC_LANGUAGE.md §3. Negative indices are in-fragment
- * (LANGUAGE.md OPEN-3).
+ * Provenance: SPEC_LANGUAGE.md §3. `[-n]` on an element property is
+ * last-from-end (LANGUAGE.md). COMB/define uses stay unsupported.
  *)
 
 file            = { section } EOF ;

@@ -1607,8 +1607,10 @@ impl<'s> Parser<'s> {
                 && matches!(self.peek2().kind, TokKind::Int(_)))
     }
 
-    /// `index = [ "-" ] integer` — negative indices parse but are reserved
-    /// pending OPEN-3 (warning; sema tags them Unsupported).
+    /// `index = [ "-" ] integer`. `jets[-1].pt` is last-from-end
+    /// (`FromBack`); `COMB` / `define` uses stay out of the checked
+    /// fragment. The warning names both so a tutorial file that uses
+    /// combinatorial `[-n]` does not look like an open language item.
     fn parse_index_val(&mut self) -> IndexVal {
         let mut neg = false;
         let start = self.peek().span;
@@ -1630,9 +1632,9 @@ impl<'s> Parser<'s> {
             self.diags.push(
                 Diagnostic::warning(
                     start.to(self.last_span),
-                    "negative index: semantics reserved pending OPEN-3",
+                    "negative index: from-the-end on element properties; combinatorial and define uses stay unsupported",
                 )
-                .with_label("parsed, but tagged Unsupported in semantic analysis"),
+                .with_label("jets[-1].pt is last-from-end; COMB/define [-n] is not in the checked fragment"),
             );
         }
         IndexVal { neg, value }

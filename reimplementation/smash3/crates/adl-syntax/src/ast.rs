@@ -394,7 +394,7 @@ pub enum BandKind {
     Out,
 }
 
-/// An element index: `[i]`, `[-i]` (reserved pending OPEN-3), `_i`.
+/// An element index: `[i]`, `[-i]` (from-the-end on element properties), `_i`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexVal {
     pub neg: bool,

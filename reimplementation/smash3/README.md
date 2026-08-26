@@ -5,9 +5,11 @@ relations after the interpreter agrees with the file.
 
 `smash3` is the product name. The libraries keep the `adl-*` crate names.
 The certified cores (HIR identity, polarity formulas, Farkas replay,
-Delphes/NanoAOD ingest, ROOT histos) are the smash2 algorithms. smash2
-stays the CI oracle. smash3 is the run-first tool with closed language
-decisions and a grammar file collaborators can edit.
+Delphes/NanoAOD ingest, ROOT histos) are the smash2 algorithms. This
+tree is a copy of those crates, not a shared library — soundness fixes
+must land in both. smash2 stays the CI oracle. smash3 is the run-first
+tool with closed language decisions and a grammar file collaborators
+can edit.
 
 ## Install
 

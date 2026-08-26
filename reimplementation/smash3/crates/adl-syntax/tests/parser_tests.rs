@@ -412,7 +412,10 @@ fn negative_index_parses_with_warning() {
     assert!(
         r.diags
             .iter()
-            .any(|d| d.severity == Severity::Warning && d.message.contains("OPEN-3"))
+            .any(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("from-the-end on element properties")
+            })
     );
 }
 

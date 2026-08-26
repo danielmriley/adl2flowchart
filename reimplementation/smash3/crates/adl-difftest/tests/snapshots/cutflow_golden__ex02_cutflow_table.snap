@@ -1,0 +1,19 @@
+---
+source: crates/adl-difftest/tests/cutflow_golden.rs
+expression: set.text_table()
+---
+cutflow: baseline
+  step                          raw      abs%      rel%  errors  sumw +- err
+  all                           200   100.00%         -       0  200.0 +- 14.142135623730951
+  select ALL                    200   100.00%   100.00%       0  200.0 +- 14.142135623730951
+  select size(goodJets) >= 3     75    37.50%    37.50%       0  75.0 +- 8.660254037844387
+  select size(goodbJets) >= 1    62    31.00%    82.67%       0  62.0 +- 7.874007874011811
+  select pT(goodJets[0]) > 200   60    30.00%    96.77%       0  60.0 +- 7.745966692414834
+  select MET > 100               47    23.50%    78.33%       0  47.0 +- 6.855654600401044
+  select MET > 200               32    16.00%    68.09%       0  32.0 +- 5.656854249492381
+
+cutflow: singlelepton
+  step                       raw      abs%      rel%  errors  sumw +- err
+  all                        200   100.00%         -       0  200.0 +- 14.142135623730951
+  baseline                    32    16.00%    16.00%       0  32.0 +- 5.656854249492381
+  select Size(leptons) == 1   11     5.50%    34.38%       0  11.0 +- 3.3166247903554

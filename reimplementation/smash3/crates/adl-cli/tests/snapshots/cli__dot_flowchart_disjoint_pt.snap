@@ -1,0 +1,25 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+digraph flowchart {
+  rankdir=LR;
+  node [shape=box, fontname="monospace"];
+  label="disjoint_pt.adl";
+  labelloc=t;
+  subgraph cluster_objects {
+    label="objects";
+    color=gray70;
+    coll0 [label="JET\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll1 [label="jets\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+  }
+  coll0 -> coll1 [label="take"];
+  subgraph cluster_regions {
+    label="regions";
+    color=gray70;
+    region0 [label="SR_low\lselect (jets[0].pt > 100)\lselect (jets[0].pt < 200)\l", style=filled, fillcolor="#f0fff0"];
+    region1 [label="SR_high\lselect (jets[0].pt > 300)\l", style=filled, fillcolor="#f0fff0"];
+  }
+  coll1 -> region0 [style=dotted, color=gray60];
+  coll1 -> region1 [style=dotted, color=gray60];
+}

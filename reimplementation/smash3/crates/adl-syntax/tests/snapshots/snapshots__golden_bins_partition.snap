@@ -1,0 +1,26 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/bins_partition.adl\")"
+---
+File
+  Object kw=object name=MET @1:1
+    Take kw=take src=MissingET @2:3
+  Region kw=region name=SR_binned @4:1
+    Cut kw=select @5:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 250
+    Bin @6:3
+      Boundaries edges=[250 300 500]
+        Ident MET
+  Region kw=region name=SR_gap @8:1
+    Cut kw=select @9:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 250
+    Bin @10:3
+      Boundaries edges=[300 500]
+        Ident MET
+---- diagnostics ----

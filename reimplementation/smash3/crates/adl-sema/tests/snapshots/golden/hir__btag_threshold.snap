@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: btag_threshold.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+== defines ==
+== regions ==
+region SR_no
+  select (C0#jets[0].btag < 1)
+region SR_yes
+  select (C0#jets[0].btag > 0)
+== diagnostics ==

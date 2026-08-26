@@ -1,0 +1,18 @@
+[package]
+name = "adl-interp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+adl-syntax.workspace = true
+adl-sema.workspace = true
+# float_roundtrip: serde_json's default float parse is lossy (several
+# ulps); event values must load bit-exactly (witness validation and the
+# loader's fidelity depend on it). See BUILD_NOTES (heavyweight difftest
+# layers entry, CE-4).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]

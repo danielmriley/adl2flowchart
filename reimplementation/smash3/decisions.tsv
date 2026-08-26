@@ -1,0 +1,5 @@
+ts	phase	decision	why	evidence	result
+2026-08-26T02:15:53Z	frame	exit predicate is smash3 builds and check/run/verify/dot/objects work on tutorial files with workspace tests green on subprocess	autonomous-run needs a checkable stop	reimplementation/smash3/README.md	open
+2026-08-26T02:15:53Z	harness	lift smash2 crates into smash3 instead of rewriting certify/ingest	rewriting Farkas and ROOT from scratch would ship false proofs	reimplementation/smash3/Cargo.toml	copied
+2026-08-26T02:15:53Z	language	closed OPEN items in LANGUAGE.md to match the running interpreter	production tool cannot leave Dual as the user contract	reimplementation/smash3/LANGUAGE.md	written
+2026-08-26T02:19:27Z	verify	smash3_gate and corpus 146/146 and golden_regions/cross and 55 cli tests passed	prove-it-works on the real binary and corpus	scripts/smash3_gate.sh /tmp/smash3_verify.txt	tests green

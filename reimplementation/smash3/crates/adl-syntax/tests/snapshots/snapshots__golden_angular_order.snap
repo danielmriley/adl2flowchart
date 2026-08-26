@@ -1,0 +1,48 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"legacy_parser/tests/golden/angular_order.adl\")"
+---
+File
+  Object kw=object name=eles @1:1
+    Take kw=take src=Ele @2:3
+  Object kw=object name=muons @4:1
+    Take kw=take src=Muo @5:3
+  Region kw=region name=SR_a @7:1
+    Cut kw=select @8:3
+      Cmp op=>=
+        Call name=size
+          Ident eles
+        Num 1
+    Cut kw=select @9:3
+      Cmp op=>=
+        Call name=size
+          Ident muons
+        Num 1
+    Cut kw=select @10:3
+      Cmp op=>
+        Call name=dEta
+          Index 0
+            Ident eles
+          Index 0
+            Ident muons
+        Num 1
+  Region kw=region name=SR_b @12:1
+    Cut kw=select @13:3
+      Cmp op=>=
+        Call name=size
+          Ident eles
+        Num 1
+    Cut kw=select @14:3
+      Cmp op=>=
+        Call name=size
+          Ident muons
+        Num 1
+    Cut kw=select @15:3
+      Cmp op=>
+        Call name=dEta
+          Index 0
+            Ident muons
+          Index 0
+            Ident eles
+        Num 1
+---- diagnostics ----

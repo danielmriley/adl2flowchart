@@ -1,0 +1,32 @@
+[package]
+name = "adl-analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Forwarded solver-backend features. Default is the SMT-LIB subprocess
+# backend (no link burden); `native`/`bundled` opt into in-process libz3.
+default = []
+native = ["adl-solver/native"]
+bundled = ["adl-solver/bundled"]
+
+[dependencies]
+adl-axioms.workspace = true
+adl-formula.workspace = true
+adl-certify.workspace = true
+adl-interp.workspace = true
+adl-sema.workspace = true
+# Direct path dep (not workspace-inherited): workspace inheritance cannot
+# override default-features, and this crate must forward the `native`
+# backend feature explicitly.
+adl-solver = { path = "../adl-solver", default-features = false }
+adl-syntax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+adl-difftest.workspace = true
+insta.workspace = true

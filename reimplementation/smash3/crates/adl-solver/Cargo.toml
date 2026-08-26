@@ -1,0 +1,27 @@
+[package]
+name = "adl-solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The SMT-LIB2 SUBPROCESS backend is the default: always compiled, no
+# linking burden, needs only a `z3` binary on PATH at runtime.
+# `cargo build` therefore works on a stock machine with no libz3.
+#
+#   native  — in-process libz3 bindings (faster; needs system libz3, e.g.
+#             `apt install libz3-dev`). Opt in with `--features native`.
+#   bundled — `native` with libz3 built automatically from vendored z3
+#             source (no system install; needs a C++ toolchain + cmake).
+default = []
+native = ["dep:z3"]
+bundled = ["native", "z3/bundled"]
+
+[dependencies]
+adl-formula.workspace = true
+adl-sema.workspace = true
+z3 = { workspace = true, optional = true }
+
+[dev-dependencies]

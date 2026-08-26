@@ -1,0 +1,106 @@
+---
+source: crates/adl-difftest/tests/cutflow_golden.rs
+expression: set.to_json(true)
+---
+{
+  "version": 1,
+  "total": {
+    "raw": 200,
+    "sumw": 200.0,
+    "sumw2": 200.0
+  },
+  "regions": [
+    {
+      "name": "baseline",
+      "steps": [
+        {
+          "kind": "all",
+          "label": "all",
+          "raw": 200,
+          "sumw": 200.0,
+          "sumw2": 200.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select ALL",
+          "raw": 200,
+          "sumw": 200.0,
+          "sumw2": 200.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select size(goodJets) >= 3",
+          "raw": 75,
+          "sumw": 75.0,
+          "sumw2": 75.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select size(goodbJets) >= 1",
+          "raw": 62,
+          "sumw": 62.0,
+          "sumw2": 62.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select pT(goodJets[0]) > 200",
+          "raw": 60,
+          "sumw": 60.0,
+          "sumw2": 60.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select MET > 100",
+          "raw": 47,
+          "sumw": 47.0,
+          "sumw2": 47.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select MET > 200",
+          "raw": 32,
+          "sumw": 32.0,
+          "sumw2": 32.0,
+          "errors": 0
+        }
+      ],
+      "bins": []
+    },
+    {
+      "name": "singlelepton",
+      "steps": [
+        {
+          "kind": "all",
+          "label": "all",
+          "raw": 200,
+          "sumw": 200.0,
+          "sumw2": 200.0,
+          "errors": 0
+        },
+        {
+          "kind": "inherit",
+          "label": "baseline",
+          "raw": 32,
+          "sumw": 32.0,
+          "sumw2": 32.0,
+          "errors": 0
+        },
+        {
+          "kind": "select",
+          "label": "select Size(leptons) == 1",
+          "raw": 11,
+          "sumw": 11.0,
+          "sumw2": 11.0,
+          "errors": 0
+        }
+      ],
+      "bins": []
+    }
+  ]
+}

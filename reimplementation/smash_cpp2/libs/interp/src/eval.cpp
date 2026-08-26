@@ -1567,25 +1567,28 @@ std::string json_escape_str(const std::string& s) {
 }
 
 std::string bin_json(const BinOutcome& b) {
-  std::string s = "{\"kind\":";
   if (b.kind == BinOutcomeKind::Boundary) {
-    s += "\"boundary\",\"label\":";
+    std::string s = "{\"bin\":";
+    s += b.bin ? std::to_string(*b.bin) : "null";
+    s += ",\"kind\":\"boundary\",\"label\":";
     s += b.label ? json_escape_str(*b.label) : "null";
     s += ",\"value\":";
     s += b.value ? json_f64(*b.value) : "null";
-    s += ",\"bin\":";
-    s += b.bin ? std::to_string(*b.bin) : "null";
-  } else if (b.kind == BinOutcomeKind::Cond) {
-    s += "\"cond\",\"label\":";
+    s += "}";
+    return s;
+  }
+  if (b.kind == BinOutcomeKind::Cond) {
+    std::string s = "{\"kind\":\"cond\",\"label\":";
     s += b.label ? json_escape_str(*b.label) : "null";
     s += ",\"member\":";
     s += b.member ? "true" : "false";
-  } else {
-    s += "\"error\",\"label\":";
-    s += b.label ? json_escape_str(*b.label) : "null";
-    s += ",\"reason\":";
-    s += json_escape_str(b.reason);
+    s += "}";
+    return s;
   }
+  std::string s = "{\"kind\":\"error\",\"label\":";
+  s += b.label ? json_escape_str(*b.label) : "null";
+  s += ",\"reason\":";
+  s += json_escape_str(b.reason);
   s += "}";
   return s;
 }
@@ -1610,21 +1613,19 @@ std::string format_region_text(const RegionResult& r) {
 }
 
 std::string format_region_json(const RegionResult& r) {
-  std::string s = "{\"name\":" + json_escape_str(r.name);
   if (!r.pass) {
-    s += ",\"pass\":null,\"error\":" + json_escape_str(r.error) + "}";
-    return s;
+    return "{\"error\":" + json_escape_str(r.error) + ",\"name\":" + json_escape_str(r.name) +
+           ",\"pass\":null}";
   }
   if (!*r.pass) {
-    s += ",\"pass\":false}";
-    return s;
+    return "{\"name\":" + json_escape_str(r.name) + ",\"pass\":false}";
   }
-  s += ",\"pass\":true,\"bins\":[";
+  std::string s = "{\"bins\":[";
   for (std::size_t i = 0; i < r.bins.size(); ++i) {
     if (i) s += ",";
     s += bin_json(r.bins[i]);
   }
-  s += "]}";
+  s += "],\"name\":" + json_escape_str(r.name) + ",\"pass\":true}";
   return s;
 }
 

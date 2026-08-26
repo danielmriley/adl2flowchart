@@ -8,10 +8,11 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U09 of this tree implements `run` over JSONL events, `check` dumps,
+U10 of this tree implements `run` over JSONL events, `check` dumps,
 subprocess `verify`, `verify --combine DIR` / `smash_cpp2-recheck`,
-`objects`, and `dot` / `dot --ast`. Later units add ingest and ROOT
-histos. Farkas is the smash2_cpp certify kernel, not a rewrite.
+`objects`, `dot` / `dot --ast`, `ingest`, and `run --histos`.
+`--cross` and `run --json` are later units. Farkas is the smash2_cpp
+certify kernel, not a rewrite.
 
 ## Install
 
@@ -29,6 +30,9 @@ alias smash_cpp2=$PWD/reimplementation/smash_cpp2/build/smash_cpp2
 ```bash
 # 1. evaluate regions over events (the meaning)
 smash_cpp2 run analysis.adl events.jsonl
+smash_cpp2 run --histos /tmp/histos analysis.adl events.jsonl
+smash_cpp2 ingest --profile delphes -o events.jsonl file.root
+smash_cpp2 run --profile delphes --histos /tmp/histos analysis.adl file.root
 
 # 2. parse + resolve (dumps stay smash3-identical)
 smash_cpp2 check analysis.adl
@@ -93,6 +97,20 @@ files plus `ex02_events.jsonl`.
 events=reimplementation/adl2/crates/adl-difftest/tests/fixtures/ex02_events.jsonl
 smash3=$smash3 cpp2=$cpp2 events=$events \
   reimplementation/smash_cpp2/scripts/run_tutorials.sh
+```
+
+## Ingest and histos (U10)
+
+`ingest --profile delphes` must match the frozen Delphes JSONL and
+smash3 ingest on the same file. `run --histos DIR` writes
+`histos.json`, `cutflow.json`, bridges, and `out.root`. The TNamed
+key is `smash2_provenance`. JSON matches smash3 after substituting
+`smash_cpp2 0.1.0` for `smash3 0.1.0`. `--no-root` skips `out.root`.
+
+```bash
+fix=reimplementation/adl2/crates/adl-ingest/fixtures
+smash3=$smash3 cpp2=$cpp2 \
+  reimplementation/smash_cpp2/scripts/u10_accept.sh
 ```
 
 ## Objects and DOT gates (U09)

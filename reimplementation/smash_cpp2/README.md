@@ -8,10 +8,10 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U07 of this tree implements `run` over JSONL events, `check` dumps,
-and `verify` via a subprocess `z3` solver. Later units add ingest
-and ROOT histos. Farkas is the smash2_cpp certify kernel, not a
-rewrite.
+U08 of this tree implements `run` over JSONL events, `check` dumps,
+subprocess `verify`, and `verify --combine DIR` / `smash_cpp2-recheck`.
+Later units add ingest and ROOT histos. Farkas is the smash2_cpp
+certify kernel, not a rewrite.
 
 ## Install
 
@@ -40,10 +40,17 @@ smash_cpp2 check --dump-axioms analysis.adl
 
 # pairwise verdicts (subprocess z3 on PATH)
 smash_cpp2 verify analysis.adl
+
+# portable smash2-combine/2 certificates; replay offline, no solver
+smash_cpp2 verify --combine /tmp/bundles analysis.adl
+smash_cpp2-recheck /tmp/bundles
 ```
 
 `run` is listed first in `--help`. The interpreter is the meaning.
 `verify` uses SMT-LIB `z3 -in`; there is no libz3 link.
+`--combine DIR` writes one `smash2-combine/2` JSON file per certified
+PROVEN DISJOINT pair. `smash_cpp2-recheck` and `smash3-recheck` both
+replay those files. Producer is `smash_cpp2`. Schema is not `/1`.
 
 ## Grammar edits
 

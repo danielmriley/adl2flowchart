@@ -933,7 +933,7 @@ CombineBundle CombineBundle::make(BundleParts parts,
   collect_ids(parts.asserts, parts.derived_facts, ids);
   CombineBundle b;
   b.schema = BUNDLE_SCHEMA;
-  b.producer = Producer::smash2_cpp();
+  b.producer = Producer::smash_cpp2();
   b.region_a = std::move(parts.region_a);
   b.region_b = std::move(parts.region_b);
   b.verdict = BUNDLE_VERDICT;

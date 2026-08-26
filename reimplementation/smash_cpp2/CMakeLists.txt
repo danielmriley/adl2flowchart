@@ -1,5 +1,6 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U07: syntax + sema + interp + formula + axioms + subprocess verify.
+# U08: syntax + sema + interp + formula + axioms + subprocess verify +
+# --combine / smash_cpp2-recheck.
 # No Flex, no Bison, no libz3.
 cmake_minimum_required(VERSION 3.20)
 

@@ -1,8 +1,8 @@
 #pragma once
 
-/// Provenance object for later histos.json / cutflow.json embedding.
-/// Tool identity for this binary is `smash_cpp2 0.1.0`. Not emitted by
-/// this unit's default `run` text path.
+/// Provenance object for histos.json / cutflow.json / out.root.
+/// Tool identity for this binary is `smash_cpp2 0.1.0`. The TNamed key
+/// in out.root stays `smash2_provenance` (hadd).
 
 #include <cstdint>
 #include <optional>

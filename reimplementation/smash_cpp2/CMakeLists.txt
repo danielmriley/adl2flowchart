@@ -1,6 +1,6 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U09: U08 plus objects + dot / dot --ast (libs/viz).
-# No Flex, no Bison, no libz3.
+# U10: U09 plus ingest + histo ROOT I/O (libs/ingest, libs/rootfile).
+# No Flex, no Bison, no libz3, no CERN ROOT.
 cmake_minimum_required(VERSION 3.20)
 
 # Prefer stock g++. Some images default `c++` to clang without libstdc++.
@@ -29,4 +29,6 @@ add_subdirectory(libs/solver)
 add_subdirectory(libs/certify)
 add_subdirectory(libs/analysis)
 add_subdirectory(libs/viz)
+add_subdirectory(libs/ingest)
+add_subdirectory(libs/rootfile)
 add_subdirectory(libs/cli)

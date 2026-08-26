@@ -354,18 +354,21 @@ struct Emit {
   }
 
   void idom(const std::vector<QuantityId>& qs) {
-    for (auto q : qs) {
-      const auto& qq = hir->table.quantity(q);
-      if (qq.kind != QuantityKind::ElemProp) continue;
-      if (hir->table.prop_key(qq.prop) != pt_key) continue;
-      if (qq.index.kind != ElemIndexKind::FromFront) continue;
-      const auto& c = hir->table.collection(qq.coll);
+    // smash3 walks front pT quantities grouped by collection, then index.
+    // Intern order of parent pT helpers must match or QuantityIds drift.
+    auto front = elem_pt(qs, false);
+    for (auto& kv : front) {
+      const auto& c = hir->table.collection(kv.first);
       if (c.kind != CollectionKind::Filtered) continue;
-      if (!pt_ordered(qq.coll) || !pt_ordered(c.parent)) continue;
-      auto qp = hir->table.intern_quantity(
-          Quantity::elem_prop(c.parent, qq.index, qq.prop));
-      auto [f, g] = guarded({{1.0, q}, {-1.0, qp}}, Rel::Le, 0);
-      push(AxiomId::Idom, std::move(f), g + label(q) + " <= " + label(qp));
+      if (!pt_ordered(c.parent)) continue;
+      for (auto& ix : kv.second) {
+        auto qp = hir->table.intern_quantity(
+            Quantity::elem_prop(c.parent, ElemIndex::from_front(ix.first),
+                                hir->table.quantity(ix.second).prop));
+        auto [f, g] = guarded({{1.0, ix.second}, {-1.0, qp}}, Rel::Le, 0);
+        push(AxiomId::Idom, std::move(f),
+             g + label(ix.second) + " <= " + label(qp));
+      }
     }
   }
 

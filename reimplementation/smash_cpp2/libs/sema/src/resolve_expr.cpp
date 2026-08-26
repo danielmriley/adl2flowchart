@@ -564,7 +564,10 @@ HNode Resolver::resolve_braced(const std::vector<std::unique_ptr<syn::Arg>>& arg
     }
     auto qa = quantity_arg(*a, ctx);
     if (!qa) {
-      return HNode::unsupported(span, unknown_arg_reason("braced property", prop.name, *a, ctx));
+      // smash3: context-tainted args stay opaque with no shared identity.
+      return HNode::unsupported(
+          span, "braced property `" + prop.name +
+                    "` over an element-context argument (no shared identity)");
     }
     qargs.push_back(*qa);
   }
@@ -824,11 +827,15 @@ HNode Resolver::resolve_call(const syn::Ident& name,
   if (ang && args.size() == 2 && args[0] && args[1] &&
       args[0]->kind == syn::Arg::Kind::Expr && args[1]->kind == syn::Arg::Kind::Expr &&
       args[0]->expr && args[1]->expr) {
-    auto pa = target_particle(*args[0]->expr, ctx);
-    auto pb = target_particle(*args[1]->expr, ctx);
-    if (pa && pb) {
-      QuantityId q = table.intern_angular(*ang, *pa, *pb);
-      return quantity_node(q, span);
+    // smash3 `&& let Some(pa) && let Some(pb)` short-circuits: do not
+    // resolve the second leg (and intern its collections) when the first
+    // is not a particle. Eager evaluation shifts CollectionIds on files
+    // such as CMS-SUS-16-047_Delphes.adl (`dR(j, photons)`).
+    if (auto pa = target_particle(*args[0]->expr, ctx)) {
+      if (auto pb = target_particle(*args[1]->expr, ctx)) {
+        QuantityId q = table.intern_angular(*ang, *pa, *pb);
+        return quantity_node(q, span);
+      }
     }
   }
   if ((lc == "size" || lc == "count") && args.size() == 1 && args[0] &&
@@ -879,7 +886,10 @@ HNode Resolver::resolve_call(const syn::Ident& name,
     }
     auto qa = quantity_arg(*a, ctx);
     if (!qa) {
-      return HNode::unsupported(span, unknown_arg_reason("call", name.name, *a, ctx));
+      // smash3: context-tainted args stay opaque with no shared identity.
+      return HNode::unsupported(
+          span, "call `" + name.name +
+                    "` over an element-context argument (no shared identity)");
     }
     qargs.push_back(*qa);
   }

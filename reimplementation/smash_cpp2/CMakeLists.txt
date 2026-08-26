@@ -1,6 +1,5 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U08: syntax + sema + interp + formula + axioms + subprocess verify +
-# --combine / smash_cpp2-recheck.
+# U09: U08 plus objects + dot / dot --ast (libs/viz).
 # No Flex, no Bison, no libz3.
 cmake_minimum_required(VERSION 3.20)
 
@@ -29,4 +28,5 @@ add_subdirectory(libs/axioms)
 add_subdirectory(libs/solver)
 add_subdirectory(libs/certify)
 add_subdirectory(libs/analysis)
+add_subdirectory(libs/viz)
 add_subdirectory(libs/cli)

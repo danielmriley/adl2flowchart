@@ -1,7 +1,7 @@
 # Helpers for smash_cpp2 library targets.
 #
-# U07 spine: syntax → sema → {interp ‖ formula} → axioms → solver
-#                                         ↘ certify ↗ analysis → cli
+# U09 spine: syntax → sema → {interp ‖ formula ‖ viz} → axioms → solver
+#                                              ↘ certify ↗ analysis → cli
 # Include policy: each library PUBLIC-exports only
 #   ${CMAKE_CURRENT_SOURCE_DIR}/include
 # i.e. `libs/<module>/include/adl2/<module>/…`.

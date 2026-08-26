@@ -8,10 +8,10 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U08 of this tree implements `run` over JSONL events, `check` dumps,
-subprocess `verify`, and `verify --combine DIR` / `smash_cpp2-recheck`.
-Later units add ingest and ROOT histos. Farkas is the smash2_cpp
-certify kernel, not a rewrite.
+U09 of this tree implements `run` over JSONL events, `check` dumps,
+subprocess `verify`, `verify --combine DIR` / `smash_cpp2-recheck`,
+`objects`, and `dot` / `dot --ast`. Later units add ingest and ROOT
+histos. Farkas is the smash2_cpp certify kernel, not a rewrite.
 
 ## Install
 
@@ -37,6 +37,11 @@ smash_cpp2 check --dump-hir analysis.adl
 smash_cpp2 check --dump-quantities analysis.adl
 smash_cpp2 check --dump-formula analysis.adl
 smash_cpp2 check --dump-axioms analysis.adl
+
+# object table and Graphviz DOT (flowchart, or AST with --ast)
+smash_cpp2 objects analysis.adl
+smash_cpp2 dot analysis.adl
+smash_cpp2 dot --ast analysis.adl
 
 # pairwise verdicts (subprocess z3 on PATH)
 smash_cpp2 verify analysis.adl
@@ -88,4 +93,18 @@ files plus `ex02_events.jsonl`.
 events=reimplementation/adl2/crates/adl-difftest/tests/fixtures/ex02_events.jsonl
 smash3=$smash3 cpp2=$cpp2 events=$events \
   reimplementation/smash_cpp2/scripts/run_tutorials.sh
+```
+
+## Objects and DOT gates (U09)
+
+Stdout of `smash_cpp2 objects`, `dot`, and `dot --ast` must match smash3.
+Tutorials are the gate. The full `examples/` corpus is stretch (146).
+
+```bash
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_objects_tutorials.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_tutorials.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_ast_tutorials.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_objects_corpus.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_corpus.sh
+smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_dot_ast_corpus.sh
 ```

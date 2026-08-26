@@ -9,6 +9,7 @@
 #include "adl2/syntax/diag.hpp"
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
+#include "adl2/viz/viz.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -47,9 +48,9 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U08 implements `run`, `check` dumps, subprocess `verify`, and\n"
-      << "`verify --combine DIR` / `smash_cpp2-recheck`. ingest and ROOT\n"
-      << "`--profile` are later units.\n";
+      << "U09 implements `run`, `check` dumps, subprocess `verify`,\n"
+      << "`verify --combine DIR` / `smash_cpp2-recheck`, `objects`, and\n"
+      << "`dot` / `dot --ast`. ingest and ROOT `--profile` are later units.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -88,6 +89,35 @@ void print_verify_help(const char* argv0) {
       << "  -h, --help            Print help\n";
 }
 
+void print_objects_help(const char* argv0) {
+  std::cout
+      << "Object-attribute summary: one aligned row per declared collection\n"
+      << "\n"
+      << "Usage: " << argv0 << " objects [OPTIONS] <FILE>\n"
+      << "\n"
+      << "Arguments:\n"
+      << "  <FILE>  The ADL file\n"
+      << "\n"
+      << "Options:\n"
+      << "  -v, --verbose  Extra detail on stderr\n"
+      << "  -h, --help     Print help\n";
+}
+
+void print_dot_help(const char* argv0) {
+  std::cout
+      << "Graphviz DOT from the resolved HIR (flowchart by default)\n"
+      << "\n"
+      << "Usage: " << argv0 << " dot [OPTIONS] <FILE>\n"
+      << "\n"
+      << "Arguments:\n"
+      << "  <FILE>  The ADL file\n"
+      << "\n"
+      << "Options:\n"
+      << "      --ast      Emit the AST graph instead of the flowchart\n"
+      << "  -v, --verbose  Extra detail on stderr\n"
+      << "  -h, --help     Print help\n";
+}
+
 void print_run_help(const char* argv0) {
   std::cout
       << "Evaluate regions over JSONL events: per-region pass/fail + bins\n"
@@ -114,6 +144,10 @@ std::string unit_name(const std::string& path) {
   auto slash = path.find_last_of("/\\");
   if (slash == std::string::npos) return path;
   return path.substr(slash + 1);
+}
+
+bool stdout_color() {
+  return isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
 }
 
 bool is_combine_bundle_filename(const std::string& name) {
@@ -209,8 +243,8 @@ int write_bundles(const std::string& dir, const std::string& unit,
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U08 implements run, check dumps, verify, "
-               "and --combine / smash_cpp2-recheck\n";
+            << "` is not in this unit; U09 implements run, check dumps, verify, "
+               "--combine / smash_cpp2-recheck, objects, and dot\n";
   return 2;
 }
 
@@ -276,6 +310,52 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
   return any_err ? 1 : 0;
 }
 
+int cmd_objects(const std::string& path, bool verbose) {
+  std::ifstream probe(path);
+  if (!probe) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  probe.close();
+  std::string src = read_file(path);
+  std::string name = unit_name(path);
+  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
+  if (!hir.diags.empty()) print_sema_diags(hir.diags);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot summarize objects — resolve errors above\n";
+    return 1;
+  }
+  std::cout << adl2::sema::object_table(hir, stdout_color());
+  if (verbose) {
+    std::cerr << name << ": " << hir.table.collections().size() << " collections\n";
+  }
+  return 0;
+}
+
+int cmd_dot(const std::string& path, bool ast, bool verbose) {
+  std::ifstream probe(path);
+  if (!probe) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return 2;
+  }
+  probe.close();
+  std::string src = read_file(path);
+  std::string name = unit_name(path);
+  auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
+  if (!hir.diags.empty()) print_sema_diags(hir.diags);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot render DOT — resolve errors above\n";
+    return 1;
+  }
+  std::cout << (ast ? adl2::viz::ast_dot(hir) : adl2::viz::flowchart_dot(hir));
+  if (verbose) {
+    const char* kind = ast ? "AST" : "flowchart";
+    std::cerr << name << ": " << kind << " DOT emitted (" << hir.regions.size()
+              << " regions, " << hir.objects.size() << " objects)\n";
+  }
+  return 0;
+}
+
 int cmd_run(const std::string& adl_path, const std::string& events_path, bool verbose) {
   std::ifstream probe(adl_path);
   if (!probe) {
@@ -329,10 +409,6 @@ int cmd_run(const std::string& adl_path, const std::string& events_path, bool ve
               << " regions ---\n";
   }
   return 0;
-}
-
-bool stdout_color() {
-  return isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
 }
 
 void warn_if_no_solver(const std::string& name, const adl2::analysis::Report& report,
@@ -650,8 +726,73 @@ int main(int argc, char** argv) {
     return cmd_verify(paths, no_solver, no_certify, no_refute_gate, dump_only, explain,
                       matrix, verbose, fail_on_s, combine_dir);
   }
-  if (cmd == "dot") return cmd_not_in_unit("dot");
-  if (cmd == "objects") return cmd_not_in_unit("objects");
+  if (cmd == "dot") {
+    bool ast = false;
+    std::string path;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--help" || arg == "-h") {
+        print_dot_help(argv[0]);
+        return 0;
+      }
+      if (arg == "--ast") {
+        ast = true;
+      } else if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--json" || arg == "--histos" || arg == "--cross") {
+        std::cerr << "smash_cpp2: `" << arg
+                  << "` is not in this unit; U09 implements objects and "
+                     "dot / dot --ast\n";
+        return 2;
+      } else if (!arg.empty() && arg[0] == '-') {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
+      std::cerr << "error: dot requires a file path\n";
+      print_dot_help(argv[0]);
+      return 2;
+    }
+    return cmd_dot(path, ast, verbose);
+  }
+  if (cmd == "objects") {
+    std::string path;
+    for (int i = arg0; i < argc; ++i) {
+      std::string arg = argv[i];
+      if (arg == "--help" || arg == "-h") {
+        print_objects_help(argv[0]);
+        return 0;
+      }
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--json" || arg == "--histos" || arg == "--cross") {
+        std::cerr << "smash_cpp2: `" << arg
+                  << "` is not in this unit; U09 implements objects and "
+                     "dot / dot --ast\n";
+        return 2;
+      } else if (!arg.empty() && arg[0] == '-') {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      } else if (path.empty()) {
+        path = arg;
+      } else {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      }
+    }
+    if (path.empty()) {
+      std::cerr << "error: objects requires a file path\n";
+      print_objects_help(argv[0]);
+      return 2;
+    }
+    return cmd_objects(path, verbose);
+  }
   if (cmd == "ingest") return cmd_not_in_unit("ingest");
 
   std::cerr << "error: unknown command '" << cmd << "'\n";

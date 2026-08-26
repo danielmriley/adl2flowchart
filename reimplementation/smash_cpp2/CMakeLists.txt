@@ -1,5 +1,5 @@
 # smash_cpp2 — C++ production tree (smash3 ideas, smash2_cpp parse_*).
-# U01: syntax + run-first CLI + check --dump-ast.
+# U03: syntax + sema + run-first CLI + check --dump-ast/--dump-hir/--dump-quantities.
 # 3.20+: ctest --test-dir. Stock g++. No Flex, no Bison, no libz3.
 cmake_minimum_required(VERSION 3.20)
 
@@ -21,4 +21,5 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Adl2Module)
 
 add_subdirectory(libs/syntax)
+add_subdirectory(libs/sema)
 add_subdirectory(libs/cli)

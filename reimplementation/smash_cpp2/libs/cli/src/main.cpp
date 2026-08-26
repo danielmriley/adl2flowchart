@@ -1,3 +1,4 @@
+#include "adl2/sema/sema.hpp"
 #include "adl2/syntax/diag.hpp"
 #include "adl2/syntax/dump.hpp"
 #include "adl2/syntax/parser.hpp"
@@ -32,8 +33,9 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U01 implements `check --dump-ast`. Other commands are listed so\n"
-      << "help stays run-first; they are not in this unit.\n";
+      << "U03 implements `check --dump-ast`, `--dump-hir`, and\n"
+      << "`--dump-quantities`. Other commands are listed so help stays\n"
+      << "run-first; they are not in this unit.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -43,8 +45,10 @@ void print_check_help(const char* argv0) {
       << "Usage: " << argv0 << " check [OPTIONS] <FILES>...\n"
       << "\n"
       << "Options:\n"
-      << "      --dump-ast  Print the canonical AST dump for each file to stdout\n"
-      << "  -h, --help      Print help\n";
+      << "      --dump-ast         Print the canonical AST dump for each file to stdout\n"
+      << "      --dump-hir         Print the resolved HIR dump for each file to stdout\n"
+      << "      --dump-quantities  Print the interned quantity table to stdout\n"
+      << "  -h, --help             Print help\n";
 }
 
 void print_run_help(const char* argv0) {
@@ -53,7 +57,7 @@ void print_run_help(const char* argv0) {
       << "\n"
       << "Usage: " << argv0 << " run [OPTIONS] <FILE> <EVENTS>\n"
       << "\n"
-      << "This unit implements `check --dump-ast` only.\n";
+      << "This unit implements `check` dumps only.\n";
 }
 
 std::string read_file(const std::string& path) {
@@ -72,11 +76,25 @@ std::string unit_name(const std::string& path) {
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U01 implements check --dump-ast\n";
+            << "` is not in this unit; U03 implements check dumps\n";
   return 2;
 }
 
-int cmd_check(const std::vector<std::string>& paths, bool dump_ast, bool verbose) {
+enum class DumpKind { None, Ast, Hir, Quantities };
+
+void print_sema_diags(const std::vector<adl2::sema::Diagnostic>& diags) {
+  for (const auto& d : diags) {
+    std::cerr << d.span.line << ":" << d.span.column << ": "
+              << adl2::sema::severity_str(d.severity) << ": " << d.message
+              << "\n";
+    if (!d.help.empty()) {
+      std::cerr << "  help: " << d.help << "\n";
+    }
+  }
+}
+
+int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose) {
+  auto ext = adl2::sema::ExtDecls::legacy();
   bool any_err = false;
   for (const auto& path : paths) {
     std::ifstream probe(path);
@@ -87,18 +105,24 @@ int cmd_check(const std::vector<std::string>& paths, bool dump_ast, bool verbose
     probe.close();
     std::string src = read_file(path);
     std::string name = unit_name(path);
-    auto parsed = adl2::syntax::parse_source(src);
-    if (dump_ast) {
+    if (dump == DumpKind::Ast) {
+      auto parsed = adl2::syntax::parse_source(src);
       std::cout << adl2::syntax::dump_ast(src, parsed.file);
     }
-    if (!parsed.diags.diagnostics().empty()) {
-      std::cerr << parsed.diags.format_all();
+    auto hir = adl2::sema::analyze_str(src, name, ext);
+    if (dump == DumpKind::Hir) {
+      std::cout << adl2::sema::hir_dump(hir);
+    } else if (dump == DumpKind::Quantities) {
+      std::cout << adl2::sema::quantity_table_dump(hir);
     }
-    if (parsed.diags.has_errors()) {
+    if (!hir.diags.empty()) {
+      print_sema_diags(hir.diags);
+    }
+    if (adl2::sema::has_errors(hir.diags)) {
       any_err = true;
       std::cerr << name << ": FAILED\n";
     } else if (verbose) {
-      std::cerr << name << ": ok (" << parsed.file.sections.size() << " sections)\n";
+      std::cerr << name << ": ok (" << hir.regions.size() << " regions)\n";
     }
   }
   return any_err ? 1 : 0;
@@ -135,7 +159,7 @@ int main(int argc, char** argv) {
   }
 
   if (cmd == "check") {
-    bool dump_ast = false;
+    DumpKind dump = DumpKind::None;
     std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
@@ -146,12 +170,15 @@ int main(int argc, char** argv) {
       if (arg == "--verbose" || arg == "-v") {
         verbose = true;
       } else if (arg == "--dump-ast") {
-        dump_ast = true;
-      } else if (arg == "--dump-hir" || arg == "--dump-quantities" ||
-                 arg == "--dump-formula" || arg == "--dump-axioms" ||
+        dump = DumpKind::Ast;
+      } else if (arg == "--dump-hir") {
+        dump = DumpKind::Hir;
+      } else if (arg == "--dump-quantities") {
+        dump = DumpKind::Quantities;
+      } else if (arg == "--dump-formula" || arg == "--dump-axioms" ||
                  arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U01 implements check --dump-ast\n";
+                  << "` is not in this unit; U03 implements check dumps\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
@@ -165,7 +192,7 @@ int main(int argc, char** argv) {
       print_help(argv[0]);
       return 2;
     }
-    return cmd_check(paths, dump_ast, verbose);
+    return cmd_check(paths, dump, verbose);
   }
 
   if (cmd == "run") {

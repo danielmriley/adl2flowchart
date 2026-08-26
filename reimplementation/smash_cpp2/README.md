@@ -8,8 +8,8 @@ names. Language decisions are the smash3 closed contract
 (`LANGUAGE.md`). The parser is the smash2_cpp `parse_*` recursive
 descent, not Flex or Bison. smash3 is the dump-ast / verify oracle.
 
-U03 of this tree implements `check --dump-ast`, `--dump-hir`, and
-`--dump-quantities`, plus a run-first CLI. Later units add interpreter,
+U04 of this tree implements `run` over JSONL events and `check`
+`--dump-ast` / `--dump-hir` / `--dump-quantities`. Later units add
 verify, ingest, and certify.
 
 ## Install
@@ -26,19 +26,21 @@ alias smash_cpp2=$PWD/reimplementation/smash_cpp2/build/smash_cpp2
 ## Daily loop
 
 ```bash
-# 1. parse + resolve (U03: dumps are the oracle-facing surface)
+# 1. evaluate regions over events (the meaning)
+smash_cpp2 run analysis.adl events.jsonl
+
+# 2. parse + resolve (dumps stay smash3-identical)
 smash_cpp2 check analysis.adl
 smash_cpp2 check --dump-ast analysis.adl
 smash_cpp2 check --dump-hir analysis.adl
 smash_cpp2 check --dump-quantities analysis.adl
 
 # later units
-smash_cpp2 run analysis.adl events.jsonl
 smash_cpp2 verify analysis.adl
 ```
 
-`run` is listed first in `--help`. `run` is the meaning once the
-interpreter unit lands. `verify` is property-tested against it.
+`run` is listed first in `--help`. The interpreter is the meaning.
+`verify` is property-tested against it.
 
 ## Grammar edits
 
@@ -48,17 +50,26 @@ interpreter unit lands. `verify` is property-tested against it.
 
 Language meaning is in `LANGUAGE.md`. Those items are closed.
 
-## Dump gates (U03)
+## Dump gates (U03, still required)
 
-Stdout of `smash_cpp2 check --dump-ast` must match smash3 on the full
-146-file `examples/` corpus. `--dump-hir` and `--dump-quantities` must
-match smash3 on every `examples/tutorials/*.adl` file.
+Stdout of `smash_cpp2 check --dump-ast`, `--dump-hir`, and
+`--dump-quantities` must match smash3 on the full 146-file `examples/`
+corpus.
 
 ```bash
 smash3=./reimplementation/smash3/target/release/smash3
 cpp2=./reimplementation/smash_cpp2/build/smash_cpp2
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_ast_corpus.sh
-smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_hir_tutorials.sh
-# stretch: full corpus / smash2_cpp allowlist
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/dump_hir_corpus.sh
+```
+
+## Run gate (U04)
+
+Stdout of `smash_cpp2 run` must match smash3 `run` on the two tutorial
+files plus `ex02_events.jsonl`.
+
+```bash
+events=reimplementation/adl2/crates/adl-difftest/tests/fixtures/ex02_events.jsonl
+smash3=$smash3 cpp2=$cpp2 events=$events \
+  reimplementation/smash_cpp2/scripts/run_tutorials.sh
 ```

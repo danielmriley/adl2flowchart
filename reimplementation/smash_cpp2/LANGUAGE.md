@@ -11,7 +11,7 @@ stay only where the encoder cannot pick one reading without lying.
 | `~=` | Same parse as `!=`. One warning per file: `` `~=` is `!=` (not approximately equal) ``. | `libs/syntax` lexer / `parse_comparison` |
 | `size` / `Size` / `count` | Case-insensitive aliases of the size quantity. | `libs/sema` |
 | Name resolution | Case-insensitive. Diagnostics keep the source spelling. | `libs/sema` |
-| Division by zero / non-finite | The enclosing comparison is false. Non-finite literals cannot build atoms. | interp (later unit), sema `Rat` |
+| Division by zero / non-finite | The enclosing comparison is false. Non-finite literals cannot build atoms. | `libs/interp`, sema `Rat` |
 | `and` / `or` | Standard precedence. `or` binds looser. | `grammar.ebnf` |
 | Solver | SMT-LIB subprocess to a `z3` binary is the default. Native libz3 is opt-in. | solver (later unit) |
 | Numerics | Exact rationals on the checked fragment. `0.3` is `3/10`. | sema `Rat` |

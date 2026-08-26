@@ -1,3 +1,4 @@
+#include "adl2/interp/interp.hpp"
 #include "adl2/sema/sema.hpp"
 #include "adl2/syntax/diag.hpp"
 #include "adl2/syntax/dump.hpp"
@@ -33,9 +34,8 @@ void print_help(const char* argv0) {
       << "  -h, --help     Print help\n"
       << "  -V, --version  Print version\n"
       << "\n"
-      << "U03 implements `check --dump-ast`, `--dump-hir`, and\n"
-      << "`--dump-quantities`. Other commands are listed so help stays\n"
-      << "run-first; they are not in this unit.\n";
+      << "U04 implements `run` over JSONL events and `check` dumps.\n"
+      << "verify, ingest, and ROOT `--profile` are later units.\n";
 }
 
 void print_check_help(const char* argv0) {
@@ -57,7 +57,12 @@ void print_run_help(const char* argv0) {
       << "\n"
       << "Usage: " << argv0 << " run [OPTIONS] <FILE> <EVENTS>\n"
       << "\n"
-      << "This unit implements `check` dumps only.\n";
+      << "Arguments:\n"
+      << "  <FILE>    ADL analysis\n"
+      << "  <EVENTS>  JSONL event records (one object per line)\n"
+      << "\n"
+      << "Options:\n"
+      << "  -h, --help  Print help\n";
 }
 
 std::string read_file(const std::string& path) {
@@ -76,7 +81,7 @@ std::string unit_name(const std::string& path) {
 
 int cmd_not_in_unit(const char* name) {
   std::cerr << "smash_cpp2: `" << name
-            << "` is not in this unit; U03 implements check dumps\n";
+            << "` is not in this unit; U04 implements run and check dumps\n";
   return 2;
 }
 
@@ -126,6 +131,61 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
     }
   }
   return any_err ? 1 : 0;
+}
+
+int cmd_run(const std::string& adl_path, const std::string& events_path, bool verbose) {
+  std::ifstream probe(adl_path);
+  if (!probe) {
+    std::cerr << "error: cannot read file: " << adl_path << "\n";
+    return 2;
+  }
+  probe.close();
+  std::string src = read_file(adl_path);
+  std::string name = unit_name(adl_path);
+  auto ext = adl2::sema::ExtDecls::legacy();
+  auto hir = adl2::sema::analyze_str(src, name, ext);
+  if (!hir.diags.empty()) print_sema_diags(hir.diags);
+  if (adl2::sema::has_errors(hir.diags)) {
+    std::cerr << name << ": cannot run — resolve errors\n";
+    return 1;
+  }
+
+  std::ifstream evprobe(events_path);
+  if (!evprobe) {
+    std::cerr << "error: cannot read file: " << events_path << "\n";
+    return 1;
+  }
+  evprobe.close();
+  std::string jsonl = read_file(events_path);
+  std::vector<adl2::interp::Event> events;
+  adl2::interp::EventError err;
+  if (!adl2::interp::read_jsonl(jsonl, ext, events, err)) {
+    std::cerr << events_path << ": " << err.to_string() << "\n";
+    return 1;
+  }
+
+  adl2::interp::Interp interp(hir, ext);
+  auto cutflow = adl2::interp::CutflowSet::make(hir, src);
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    auto [results, traces] = interp.run_event_traced(events[i]);
+    cutflow.record_event(events[i], results, traces);
+    for (const auto& r : results) {
+      std::cout << "event " << i << ": " << r.name << " -> "
+                << adl2::interp::format_region_text(r) << "\n";
+    }
+  }
+  for (const auto& d : cutflow.diagnostics()) {
+    std::cerr << name << ": " << d << "\n";
+  }
+  if (!cutflow.empty()) {
+    if (!events.empty()) std::cout << "\n";
+    std::cout << cutflow.text_table();
+  }
+  if (verbose) {
+    std::cerr << "--- " << events.size() << " events, " << hir.regions.size()
+              << " regions ---\n";
+  }
+  return 0;
 }
 
 }  // namespace
@@ -178,7 +238,7 @@ int main(int argc, char** argv) {
       } else if (arg == "--dump-formula" || arg == "--dump-axioms" ||
                  arg == "--json") {
         std::cerr << "smash_cpp2: `" << arg
-                  << "` is not in this unit; U03 implements check dumps\n";
+                  << "` is not in this unit; U04 implements run and check dumps\n";
         return 2;
       } else if (!arg.empty() && arg[0] == '-') {
         std::cerr << "error: unexpected argument '" << arg << "'\n";
@@ -196,14 +256,34 @@ int main(int argc, char** argv) {
   }
 
   if (cmd == "run") {
+    std::vector<std::string> paths;
     for (int i = arg0; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--help" || arg == "-h") {
         print_run_help(argv[0]);
         return 0;
       }
+      if (arg == "--verbose" || arg == "-v") {
+        verbose = true;
+      } else if (arg == "--json" || arg == "--profile" || arg == "--histos" ||
+                 arg == "--csv" || arg == "--svg" || arg == "--flat-names" ||
+                 arg == "--no-root") {
+        std::cerr << "smash_cpp2: `" << arg
+                  << "` is not in this unit; U04 implements text `run`\n";
+        return 2;
+      } else if (!arg.empty() && arg[0] == '-') {
+        std::cerr << "error: unexpected argument '" << arg << "'\n";
+        return 2;
+      } else {
+        paths.push_back(arg);
+      }
     }
-    return cmd_not_in_unit("run");
+    if (paths.size() != 2) {
+      std::cerr << "error: run requires <FILE> <EVENTS>\n";
+      print_run_help(argv[0]);
+      return 2;
+    }
+    return cmd_run(paths[0], paths[1], verbose);
   }
   if (cmd == "verify") return cmd_not_in_unit("verify");
   if (cmd == "dot") return cmd_not_in_unit("dot");

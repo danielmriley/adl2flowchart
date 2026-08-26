@@ -6,8 +6,10 @@ set -euo pipefail
 root="${root:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 cpp2="${cpp2:-$root/reimplementation/smash_cpp2/build/smash_cpp2}"
 smash3="${smash3:-$root/reimplementation/smash3/target/release/smash3}"
-ok=0
-fail=0
+hir_ok=0
+hir_fail=0
+qty_ok=0
+qty_fail=0
 if [[ ! -x "$cpp2" ]]; then
   echo "missing smash_cpp2: $cpp2" >&2
   exit 2
@@ -26,17 +28,26 @@ diff_one() {
   "$smash3" check "$flag" "$f" >"$tmpdir/s3.out" 2>"$tmpdir/s3.err" || true
   "$cpp2" check "$flag" "$f" >"$tmpdir/c2.out" 2>"$tmpdir/c2.err" || true
   if diff -q "$tmpdir/s3.out" "$tmpdir/c2.out" >/dev/null; then
-    ok=$((ok + 1))
+    if [[ "$flag" == "--dump-hir" ]]; then
+      hir_ok=$((hir_ok + 1))
+    else
+      qty_ok=$((qty_ok + 1))
+    fi
   else
     echo "FAIL $rel $flag"
-    fail=$((fail + 1))
+    if [[ "$flag" == "--dump-hir" ]]; then
+      hir_fail=$((hir_fail + 1))
+    else
+      qty_fail=$((qty_fail + 1))
+    fi
   fi
 }
 for f in "${files[@]}"; do
   diff_one --dump-hir "$f"
   diff_one --dump-quantities "$f"
 done
-echo "corpus dump-hir/quantities: ok=$ok fail=$fail total=$((ok + fail))"
-if [[ "$fail" -ne 0 ]]; then
+echo "corpus dump-hir: ok=$hir_ok fail=$hir_fail total=$((hir_ok + hir_fail))"
+echo "corpus dump-quantities: ok=$qty_ok fail=$qty_fail total=$((qty_ok + qty_fail))"
+if [[ "$hir_fail" -ne 0 || "$qty_fail" -ne 0 ]]; then
   exit 1
 fi

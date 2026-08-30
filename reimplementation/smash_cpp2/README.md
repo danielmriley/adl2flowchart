@@ -67,9 +67,19 @@ replay those files. Producer is `smash_cpp2`. Schema is not `/1`.
 
 ## Grammar edits
 
+Do not reach for Flex/Bison. The statement layer is LALR-hostile
+(column-1 `define`, contextual `bins`, path tokens, particle lists,
+bin-body fork). Ordinary expression productions stay recursive descent.
+
 1. Edit `grammar.ebnf`.
-2. Add or update a dump-ast comparison against smash3.
-3. Change the `parse_*` named in `BISON_MAP.md`.
+2. Add a `method_map.txt` row (`production`, `parse_*`, `generate|hook`).
+3. Add one row to `libs/syntax/include/adl2/syntax/stmt_dispatch.hpp`
+   (section keyword or region-stmt keyword). `bins` stays a named hook.
+4. Write `parse_*`. If `grammar_check.py` reports a new FIRST overlap,
+   either change the grammar or list it in `grammar_hooks.txt`.
+5. `python3 reimplementation/smash_cpp2/scripts/grammar_check.py`
+   (reads EBNF + tables; does not parse ADL).
+6. Compare `check --dump-ast` to smash3.
 
 Language meaning is in `LANGUAGE.md`. Those items are closed.
 
@@ -151,6 +161,7 @@ PO, 45 candidate, 966 possibly, 0 unknown).
 smash3=$smash3 cpp2=$cpp2 reimplementation/smash_cpp2/scripts/verify_corpus_gate.sh
 ```
 
-`scripts/ci_gates.sh` runs the dump, run, ingest, cross, check --json,
-and verify-corpus gates. GitHub job `smash_cpp2` invokes it.
+`scripts/ci_gates.sh` runs grammar-check (no ADL parse), then the dump,
+run, ingest, cross, check --json, and verify-corpus gates. GitHub job
+`smash_cpp2` runs grammar-check first, then invokes `ci_gates.sh`.
 

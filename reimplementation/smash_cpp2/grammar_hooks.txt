@@ -1,0 +1,18 @@
+# Known FIRST overlaps that must stay named parse_* hooks.
+# Columns: production<TAB>alt-label
+# alt-label is the first quoted token or production name of an alternative.
+# A new overlap that is not listed here is a hard error.
+
+take-source	ident
+primary	ident
+primary	func-call
+arg	particle-list
+arg	condition
+bin-body	postfix
+bin-body	condition
+histo-arg	signed-num
+histo-arg	condition
+weight-stmt	ident
+weight-stmt	func-call
+counts-stmt	signed-num
+counts-stmt	-

@@ -14,6 +14,7 @@ namespace adl2::syntax {
 
 /// Hand-written recursive-descent parser.
 /// One `parse_<nonterminal>` per production in grammar.ebnf.
+/// Keyword dispatch is stmt_dispatch.hpp (one table, not three if-chains).
 /// Flex and Bison are not the implementation. See BISON_MAP.md.
 class Parser {
  public:

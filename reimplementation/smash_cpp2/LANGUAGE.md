@@ -17,8 +17,9 @@ stay only where the encoder cannot pick one reading without lying.
 | Numerics | Exact rationals on the checked fragment. `0.3` is `3/10`. | sema `Rat` |
 | Missing elements | A comparison over an absent element is false. Encodings guard with presence. | interp, `libs/formula` |
 
-Grammar edits start in `grammar.ebnf`. Add a dump-ast test next to the
-edit. Then change the matching `parse_*` in `libs/syntax/src/parser.cpp`.
+Grammar edits start in `grammar.ebnf`, then `method_map.txt` and one
+row in `stmt_dispatch.hpp`, then the matching `parse_*`.
+`scripts/grammar_check.py` is the early warning (no ADL parse).
 `BISON_MAP.md` names the function for each nonterminal.
 
 Flex and Bison are not the implementation. The statement layer is

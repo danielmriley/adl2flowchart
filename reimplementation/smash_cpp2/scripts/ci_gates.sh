@@ -88,6 +88,8 @@ help_run_first() {
   "$cpp2" --help | awk '/^Commands:/{p=1;next} p&&NF{print $1; exit}' | grep -qx run
 }
 
+# EBNF / table / FIRST checks. Does not parse ADL.
+gate grammar-check python3 "$scripts/grammar_check.py"
 gate corpus-count check_corpus_count
 gate dump-ast bash "$scripts/dump_ast_corpus.sh"
 gate dump-hir bash "$scripts/dump_hir_corpus.sh"

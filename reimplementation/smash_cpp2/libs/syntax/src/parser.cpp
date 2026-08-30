@@ -1,6 +1,7 @@
 #include "adl2/syntax/parser.hpp"
 
 #include "adl2/syntax/lexer.hpp"
+#include "adl2/syntax/stmt_dispatch.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -101,48 +102,14 @@ bool Parser::nl_before() const {
 }
 
 bool Parser::at_section_start() const {
-  switch (peek().kind) {
-    case TokKind::KwInfo:
-    case TokKind::KwTable:
-    case TokKind::KwCountsformat:
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
-    case TokKind::KwObject:
-    case TokKind::KwObj:
-    case TokKind::KwComposite:
-    case TokKind::KwTrigger:
-    case TokKind::KwRegion:
-    case TokKind::KwAlgo:
-    case TokKind::KwHistoList:
-      return true;
-    default:
-      return false;
-  }
+  return find_section(peek().kind) != nullptr;
 }
 
 bool Parser::at_stmt_keyword() const {
-  switch (peek().kind) {
-    case TokKind::KwSelect:
-    case TokKind::KwCut:
-    case TokKind::KwCmd:
-    case TokKind::KwCommand:
-    case TokKind::KwReject:
-    case TokKind::KwTake:
-    case TokKind::KwUsing:
-    case TokKind::KwBin:
-    case TokKind::KwWeight:
-    case TokKind::KwTrigger:
-    case TokKind::KwHisto:
-    case TokKind::KwSave:
-    case TokKind::KwCounts:
-    case TokKind::KwPrint:
-    case TokKind::KwSort:
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
-      return true;
-    default:
-      return false;
-  }
+  if (is_region_stmt_keyword(peek().kind)) return true;
+  // Column-1 define is a new section; indented define is object-define.
+  // Recovery must stop on both so synchronize_statement does not eat them.
+  return check(TokKind::KwDefine) || check(TokKind::KwDef);
 }
 
 void Parser::synchronize_statement() {
@@ -291,34 +258,29 @@ FileAst Parser::parse_file() {
 }
 
 bool Parser::parse_section(Section& out) {
-  switch (peek().kind) {
-    case TokKind::KwInfo:
+  const SectionRow* row = find_section(peek().kind);
+  if (!row) return false;
+  switch (row->hook) {
+    case SectionHook::Info:
       out = parse_info_block();
       return true;
-    case TokKind::KwDefine:
-    case TokKind::KwDef:
+    case SectionHook::Define:
       out = parse_define_section();
       return true;
-    case TokKind::KwObject:
-    case TokKind::KwObj:
-    case TokKind::KwComposite:
-    case TokKind::KwTrigger:
+    case SectionHook::Object:
       out = parse_object_block();
       return true;
-    case TokKind::KwRegion:
-    case TokKind::KwAlgo:
-    case TokKind::KwHistoList:
+    case SectionHook::Region:
       out = parse_region_block();
       return true;
-    case TokKind::KwTable:
+    case SectionHook::Table:
       out = parse_table_block();
       return true;
-    case TokKind::KwCountsformat:
+    case SectionHook::Countsformat:
       out = parse_countsformat_block();
       return true;
-    default:
-      return false;
   }
+  return false;
 }
 
 Section Parser::parse_info_block() {
@@ -638,23 +600,34 @@ Section Parser::parse_region_block() {
 }
 
 std::optional<RegionStmt> Parser::parse_region_stmt() {
-  if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
-      check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-    return parse_cut_as_region();
-  }
-  if (check(TokKind::KwReject)) return parse_reject_stmt();
-  if (check(TokKind::KwBin)) return parse_bin_stmt();
+  // Contextual `bins`: ident, not a TokKind. Bare on a line is region-ref.
   if (is_ident_text("bins") && !next_is_line_end()) return parse_bin_stmt();
-  if (check(TokKind::KwWeight)) return parse_weight_stmt();
-  if (check(TokKind::KwTrigger)) return parse_trigger_stmt();
-  if (check(TokKind::KwHisto)) return parse_histo_stmt();
-  if (check(TokKind::KwSave)) return parse_save_stmt();
-  if (check(TokKind::KwCounts)) return parse_counts_stmt();
-  if (check(TokKind::KwPrint)) return parse_print_stmt();
-  if (check(TokKind::KwSort)) return parse_sort_stmt();
-  if (check(TokKind::KwTake) || check(TokKind::KwUsing)) {
-    advance();
-    return parse_region_ref();
+  if (const StmtRow* row = find_region_stmt(peek().kind)) {
+    switch (row->hook) {
+      case RegionStmtHook::Cut:
+        return parse_cut_as_region();
+      case RegionStmtHook::Reject:
+        return parse_reject_stmt();
+      case RegionStmtHook::Bin:
+        return parse_bin_stmt();
+      case RegionStmtHook::Weight:
+        return parse_weight_stmt();
+      case RegionStmtHook::Trigger:
+        return parse_trigger_stmt();
+      case RegionStmtHook::Histo:
+        return parse_histo_stmt();
+      case RegionStmtHook::Save:
+        return parse_save_stmt();
+      case RegionStmtHook::Counts:
+        return parse_counts_stmt();
+      case RegionStmtHook::Print:
+        return parse_print_stmt();
+      case RegionStmtHook::Sort:
+        return parse_sort_stmt();
+      case RegionStmtHook::TakeUsing:
+        advance();
+        return parse_region_ref();
+    }
   }
   if (check(TokKind::Ident)) return parse_region_ref();
   return std::nullopt;

@@ -4,6 +4,14 @@
  * libs/syntax/src/parser.cpp. One parse_<name> per nonterminal.
  * Flex and Bison are not the implementation. See BISON_MAP.md.
  *
+ * Edit workflow:
+ *   1. Change this file.
+ *   2. Add or update the method_map.txt row (production → parse_*).
+ *   3. Add one row to stmt_dispatch.hpp (section or region-stmt).
+ *   4. Write parse_* . Hostile FIRST overlaps go in grammar_hooks.txt.
+ *   5. python3 scripts/grammar_check.py  (does not parse ADL).
+ *   6. dump-ast against smash3.
+ *
  * Provenance: smash3 grammar.ebnf / SPEC_LANGUAGE.md §3. `[-n]` on an
  * element property is last-from-end (LANGUAGE.md). COMB/define uses
  * stay unsupported.
@@ -28,6 +36,7 @@ region-block    = ("region"|"algo"|"histoList") ident { region-stmt } ;
 region-stmt     = cut-stmt | reject-stmt | bin-stmt | weight-stmt
                 | trigger-stmt | histo-stmt | save-stmt | counts-stmt
                 | print-stmt | sort-stmt
+                | ("take" | "using") region-ref
                 | region-ref ;
 cut-stmt        = ("select"|"cut"|"cmd"|"command") condition ;
 reject-stmt     = "reject" condition ;

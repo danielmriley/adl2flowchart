@@ -1,0 +1,51 @@
+# smash_cpp2 production → parse_* map
+# Columns: production<TAB>method<TAB>role
+# role = generate (ordinary LALR-shaped RD) | hook (layout / FIRST-overlap)
+# grammar_check.py reads this file. Add a row when you add a production.
+
+file	parse_file	hook
+section	parse_section	hook
+info-block	parse_info_block	generate
+define	parse_define_section	hook
+object-block	parse_object_block	hook
+object-define	parse_object_define	hook
+take-stmt	parse_take_stmt	generate
+take-source	parse_take_source	hook
+region-block	parse_region_block	generate
+region-stmt	parse_region_stmt	hook
+cut-stmt	parse_cut_as_region	generate
+reject-stmt	parse_reject_stmt	generate
+region-ref	parse_region_ref	hook
+bin-stmt	parse_bin_stmt	hook
+bin-body	parse_bin_stmt	hook
+boundary-list	parse_bin_stmt	generate
+trigger-stmt	parse_trigger_stmt	generate
+histo-stmt	parse_histo_stmt	generate
+condition	parse_condition	generate
+ternary	parse_ternary	generate
+or-expr	parse_or_expr	generate
+and-expr	parse_and_expr	generate
+not-expr	parse_not_expr	generate
+comparison	parse_comparison	generate
+cmp-op	peek_cmp_op	generate
+additive	parse_additive	generate
+multiplicative	parse_multiplicative	generate
+unary	parse_unary	generate
+postfix	parse_postfix	generate
+primary	parse_primary	hook
+func-call	parse_func_call	generate
+arg-list	parse_paren_args	generate
+arg	parse_arg	hook
+particle-list	extend_particle_list	hook
+path-token	parse_path_token	hook
+index	parse_index_val	generate
+signed-num	parse_signed_num	generate
+info-line	parse_info_line	hook
+table-block	parse_table_block	generate
+countsformat-block	parse_countsformat_block	generate
+weight-stmt	parse_weight_stmt	hook
+histo-arg	parse_histo_arg	hook
+print-stmt	parse_print_stmt	generate
+save-stmt	parse_save_stmt	generate
+counts-stmt	parse_counts_stmt	hook
+sort-stmt	parse_sort_stmt	generate

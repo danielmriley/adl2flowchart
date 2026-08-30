@@ -1,7 +1,11 @@
 # BISON_MAP
 
 For collaborators who know Flex/Bison. The grammar is `grammar.ebnf`.
-Each nonterminal maps to one function in `libs/syntax/src/parser.cpp`.
+Each nonterminal maps to one function in `libs/syntax/src/parser.cpp`
+(`method_map.txt` is the complete list). Keyword dispatch is
+`stmt_dispatch.hpp` — one table for sections, one for region-stmts.
+`scripts/grammar_check.py` checks the EBNF, the map, the tables, and
+FIRST overlaps without parsing ADL.
 
 Flex and Bison are not the implementation.
 
@@ -17,29 +21,15 @@ Flex and Bison are not the implementation.
 
 ## Rules to functions
 
-| EBNF | Function |
-|---|---|
-| `file` | `parse_file` |
-| `section` | dispatch in `parse_file` |
-| `info-block` | `parse_info_block` |
-| `define` | `parse_define_section` / `parse_object_define` |
-| `object-block` | `parse_object_block` |
-| `take-stmt` | `parse_take_stmt` |
-| `region-block` | `parse_region_block` |
-| `region-stmt` | `parse_region_stmt` |
-| `bin-stmt` | `parse_bin_stmt` |
-| `condition` | `parse_condition` |
-| `ternary` | `parse_ternary` |
-| `or-expr` / `and-expr` / `not-expr` | `parse_or_expr` / `parse_and_expr` / `parse_not_expr` |
-| `comparison` | `parse_comparison` |
-| `additive` / `multiplicative` / `unary` | `parse_additive` / `parse_multiplicative` / `parse_unary` |
-| `postfix` / `primary` | `parse_postfix` / `parse_primary` |
-
-A bison rule `region_block: REGION ident region_stmts` is
-`parse_region_block`. It consumes the keyword and name, then loops
-`parse_region_stmt` until the next section keyword or EOF.
+See `method_map.txt`. A bison rule `region_block: REGION ident region_stmts`
+is `parse_region_block`. It consumes the keyword and name, then loops
+`parse_region_stmt` until the next section keyword or EOF. Adding a
+statement is a `parse_*` plus one `kRegionStmtTable` row, not a third
+if-chain.
 
 ## Hostile productions (stay hand-written)
+
+Listed in `grammar_hooks.txt` when they are FIRST overlaps. Also:
 
 - Column-1 `define` vs indented object-define (`at_column_one`)
 - Contextual `bins`

@@ -14,6 +14,16 @@ ingested ROOT, `check` (dumps and `--json`), subprocess `verify`,
 `objects`, `dot` / `dot --ast`, `ingest`, and `run --histos`. Farkas
 is the smash2_cpp certify kernel, not a rewrite.
 
+## Architecture
+
+[ARCHITECTURE.md](ARCHITECTURE.md) is the explainer: daily loop,
+library spine, and CLI. The poster:
+
+![smash_cpp2 architecture and capabilities](docs/architecture.png)
+
+`run` is first. syntax → sema → interp / formula / viz. `verify` shells
+out to `z3 -in`. Grammar edits are `grammar.ebnf` plus one table row.
+
 ## Install
 
 Stock `cmake` ≥ 3.20 and `g++` (C++17). No Flex, no Bison, no libz3.

@@ -3,7 +3,9 @@
 #include "adl2/syntax/lexer.hpp"
 #include "adl2/syntax/stmt_dispatch.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <utility>
 
@@ -86,8 +88,55 @@ bool Parser::match_any(std::initializer_list<TokKind> ks) {
   return false;
 }
 
+bool Parser::rec_enter() {
+  ++rec_;
+  if (rec_ > MAX_EXPR_DEPTH) {
+    abort_too_deep();
+    return false;
+  }
+  return true;
+}
+
+void Parser::rec_exit() {
+  if (rec_ > 0) --rec_;
+}
+
+std::uint32_t Parser::built(std::uint32_t child_max) {
+  // Already at the ceiling and unwinding: nodes closing over the truncated
+  // subtree must not grow it further, or the accepted depth would be
+  // MAX_EXPR_DEPTH plus the nesting depth.
+  if (aborted_) return last_depth_;
+  std::uint32_t d = child_max == UINT32_MAX ? child_max : child_max + 1;
+  last_depth_ = d;
+  if (d > MAX_EXPR_DEPTH) abort_too_deep();
+  return d;
+}
+
+std::uint32_t Parser::leaf() {
+  last_depth_ = 1;
+  return 1;
+}
+
+void Parser::abort_too_deep() {
+  if (!aborted_) {
+    diags_.error(last_span_, "expression nested too deeply",
+                 "split the expression across several `define`s; the rest of "
+                 "this file was not parsed",
+                 "expression structure exceeds the " +
+                     std::to_string(MAX_EXPR_DEPTH) + "-level limit here");
+    aborted_ = true;
+  }
+  // Park on EOF (the lexer always emits one) so every loop terminates on
+  // its next test and the parse unwinds without consuming anything more.
+  pos_ = tokens_.size() - 1;
+}
+
 bool Parser::expect(TokKind k, const char* what) {
   if (match(k)) return true;
+  // Post-abort the cursor sits on EOF and every enclosing production is
+  // unwinding; their `expected …` complaints are noise about a failure
+  // already reported once.
+  if (aborted_) return false;
   diags_.error(peek().span,
                std::string("expected ") + what + " (got " +
                    tok_kind_name(peek().kind) + ")",
@@ -194,8 +243,10 @@ Ident Parser::expect_ident(const char* what) {
   if (check(TokKind::Ident)) return make_ident(advance());
   // Some keywords are accepted as section/object names in Rust via
   // parse_section_name; for ordinary expect_ident, error.
-  diags_.error(peek().span, std::string("expected ") + what,
-               "ident production");
+  if (!aborted_) {
+    diags_.error(peek().span, std::string("expected ") + what,
+                 "ident production");
+  }
   Ident id;
   id.span = peek().span;
   return id;
@@ -886,12 +937,20 @@ std::unique_ptr<Expr> Parser::parse_condition() { return parse_ternary(); }
 
 std::unique_ptr<Expr> Parser::parse_ternary() {
   auto guard = parse_or_expr();
-  if (!match(TokKind::Question)) return guard;
+  if (!check(TokKind::Question)) return guard;
+  if (!rec_enter()) {
+    leaf();
+    return make_error(last_span_);
+  }
+  std::uint32_t deepest = last_depth_;
+  advance();
   auto then_e = parse_ternary();
+  deepest = std::max(deepest, last_depth_);
   std::unique_ptr<Expr> else_e;
   bool has_else = false;
   if (match(TokKind::Colon)) {
     else_e = parse_ternary();
+    deepest = std::max(deepest, last_depth_);
     has_else = true;
   }
   auto e = std::make_unique<Expr>();
@@ -901,14 +960,18 @@ std::unique_ptr<Expr> Parser::parse_ternary() {
   e->guard = std::move(guard);
   e->then_e = std::move(then_e);
   e->else_e = std::move(else_e);
+  built(deepest);
+  rec_exit();
   return e;
 }
 
 std::unique_ptr<Expr> Parser::parse_or_expr() {
   auto left = parse_and_expr();
+  std::uint32_t depth = last_depth_;
   while (check(TokKind::KwOr) || check(TokKind::OrOr)) {
     advance();
     auto right = parse_and_expr();
+    depth = built(std::max(depth, last_depth_));
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
     e->bin_op = BinOp::Or;
@@ -917,14 +980,17 @@ std::unique_ptr<Expr> Parser::parse_or_expr() {
     e->rhs = std::move(right);
     left = std::move(e);
   }
+  last_depth_ = depth;
   return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_and_expr() {
   auto left = parse_not_expr();
+  std::uint32_t depth = last_depth_;
   while (check(TokKind::KwAnd) || check(TokKind::AndAnd)) {
     advance();
     auto right = parse_not_expr();
+    depth = built(std::max(depth, last_depth_));
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
     e->bin_op = BinOp::And;
@@ -933,11 +999,16 @@ std::unique_ptr<Expr> Parser::parse_and_expr() {
     e->rhs = std::move(right);
     left = std::move(e);
   }
+  last_depth_ = depth;
   return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_not_expr() {
   if (check(TokKind::KwNot) || check(TokKind::Bang)) {
+    if (!rec_enter()) {
+      leaf();
+      return make_error(last_span_);
+    }
     Token op = advance();
     auto inner = parse_not_expr();
     auto e = std::make_unique<Expr>();
@@ -945,6 +1016,8 @@ std::unique_ptr<Expr> Parser::parse_not_expr() {
     e->unary_op = UnaryOp::Not;
     e->span = op.span.to(inner->span);
     e->child = std::move(inner);
+    built(last_depth_);
+    rec_exit();
     return e;
   }
   return parse_comparison();
@@ -954,6 +1027,7 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
   auto first = parse_additive();
   if (!peek_cmp_op()) return parse_band_suffix(std::move(first));
 
+  std::uint32_t operand_max = last_depth_;
   struct Link {
     CmpOp op;
     std::unique_ptr<Expr> operand;
@@ -968,6 +1042,14 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
                      "treated as `!=` downstream, matching the legacy parser");
     }
     links.push_back(Link{*op, parse_additive()});
+    operand_max = std::max(operand_max, last_depth_);
+    // The fold below runs over this vector, not the token stream, so
+    // parking the cursor on EOF would not stop it: `L` links desugar to
+    // `L-1` nested Ands above one Cmp, a tree of depth operand_max + L.
+    if (operand_max + static_cast<std::uint32_t>(links.size()) > MAX_EXPR_DEPTH) {
+      abort_too_deep();
+      break;
+    }
   }
 
   if (links.size() == 1) {
@@ -977,10 +1059,12 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
     e->span = first->span.to(links[0].operand->span);
     e->lhs = std::move(first);
     e->rhs = std::move(links[0].operand);
+    built(operand_max);
     return e;
   }
 
   // Chain → nested And of Cmp, cloning shared middles.
+  std::uint32_t chain_depth = operand_max;
   std::unique_ptr<Expr> prev = std::move(first);
   std::unique_ptr<Expr> conj;
   for (auto& link : links) {
@@ -991,6 +1075,7 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
     cmp->span = lhs->span.to(link.operand->span);
     cmp->lhs = std::move(lhs);
     cmp->rhs = std::make_unique<Expr>(link.operand->clone());
+    chain_depth = built(chain_depth);
     if (!conj) {
       conj = std::move(cmp);
     } else {
@@ -1015,6 +1100,7 @@ std::unique_ptr<Expr> Parser::parse_band_suffix(std::unique_ptr<Expr> lhs) {
     kind = BandKind::Out;
   else
     return lhs;
+  std::uint32_t inner = last_depth_;
   advance();
   NumLit lo = parse_signed_num();
   NumLit hi = parse_signed_num();
@@ -1025,11 +1111,13 @@ std::unique_ptr<Expr> Parser::parse_band_suffix(std::unique_ptr<Expr> lhs) {
   e->band_hi = std::move(hi);
   e->span = lhs->span.to(last_span_);
   e->child = std::move(lhs);
+  built(inner);
   return e;
 }
 
 std::unique_ptr<Expr> Parser::parse_additive() {
   auto left = parse_multiplicative();
+  std::uint32_t depth = last_depth_;
   for (;;) {
     BinOp op;
     if (check(TokKind::Plus))
@@ -1040,6 +1128,7 @@ std::unique_ptr<Expr> Parser::parse_additive() {
       break;
     advance();
     auto right = parse_multiplicative();
+    depth = built(std::max(depth, last_depth_));
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
     e->bin_op = op;
@@ -1048,11 +1137,13 @@ std::unique_ptr<Expr> Parser::parse_additive() {
     e->rhs = std::move(right);
     left = std::move(e);
   }
+  last_depth_ = depth;
   return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_multiplicative() {
   auto left = parse_unary();
+  std::uint32_t depth = last_depth_;
   for (;;) {
     BinOp op;
     if (check(TokKind::Star))
@@ -1065,6 +1156,7 @@ std::unique_ptr<Expr> Parser::parse_multiplicative() {
       break;
     advance();
     auto right = parse_unary();
+    depth = built(std::max(depth, last_depth_));
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Binary;
     e->bin_op = op;
@@ -1073,11 +1165,16 @@ std::unique_ptr<Expr> Parser::parse_multiplicative() {
     e->rhs = std::move(right);
     left = std::move(e);
   }
+  last_depth_ = depth;
   return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_unary() {
   if (check(TokKind::Minus)) {
+    if (!rec_enter()) {
+      leaf();
+      return make_error(last_span_);
+    }
     Token op = advance();
     auto inner = parse_unary();
     auto e = std::make_unique<Expr>();
@@ -1085,13 +1182,29 @@ std::unique_ptr<Expr> Parser::parse_unary() {
     e->unary_op = UnaryOp::Neg;
     e->span = op.span.to(inner->span);
     e->child = std::move(inner);
+    built(last_depth_);
+    rec_exit();
     return e;
   }
   return parse_postfix();
 }
 
 std::unique_ptr<Expr> Parser::parse_postfix() {
+  // The one primary entry every `(`, call-argument and `|…|` descent runs
+  // through (smash3 parity): one unit of recursion budget per nesting level,
+  // whether or not that level builds a node.
+  if (!rec_enter()) {
+    leaf();
+    return make_error(last_span_);
+  }
+  auto e = parse_postfix_inner();
+  rec_exit();
+  return e;
+}
+
+std::unique_ptr<Expr> Parser::parse_postfix_inner() {
   auto expr = parse_primary();
+  std::uint32_t depth = last_depth_;
   for (;;) {
     if (match(TokKind::Dot)) {
       Ident field = expect_ident("a property name after `.`");
@@ -1101,6 +1214,7 @@ std::unique_ptr<Expr> Parser::parse_postfix() {
       e->span = expr->span.to(field.span);
       e->child = std::move(expr);
       expr = std::move(e);
+      depth = built(depth);
       continue;
     }
     if (match(TokKind::Arrow)) {
@@ -1111,10 +1225,12 @@ std::unique_ptr<Expr> Parser::parse_postfix() {
       e->span = expr->span.to(field.span);
       e->child = std::move(expr);
       expr = std::move(e);
+      depth = built(depth);
       continue;
     }
     if (!nl_before() && check(TokKind::LBracket)) {
       expr = parse_index_suffix(std::move(expr));
+      depth = built(depth);
       continue;
     }
     if (!nl_before() && match(TokKind::Underscore)) {
@@ -1133,10 +1249,12 @@ std::unique_ptr<Expr> Parser::parse_postfix() {
         e->child = std::move(expr);
         expr = std::move(e);
       }
+      depth = built(depth);
       continue;
     }
     break;
   }
+  last_depth_ = depth;
   return expr;
 }
 
@@ -1148,7 +1266,7 @@ IndexVal Parser::parse_index_val() {
     v.value = static_cast<std::uint64_t>(
         std::strtoull(peek().text.c_str(), nullptr, 10));
     advance();
-  } else {
+  } else if (!aborted_) {
     diags_.error(peek().span, "expected an integer index");
   }
   if (v.neg) {
@@ -1202,6 +1320,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     e->kind = ExprKind::Num;
     e->num = parse_signed_num();
     e->span = e->num.span;
+    leaf();
     return e;
   }
   if (check(TokKind::Ident)) {
@@ -1213,6 +1332,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     e->kind = ExprKind::Ident;
     e->ident = std::move(id);
     e->span = e->ident.span;
+    leaf();
     return e;
   }
   if (check(TokKind::KwAll)) {
@@ -1226,24 +1346,28 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::All;
     e->span = t.span;
+    leaf();
     return e;
   }
   if (check(TokKind::KwNone)) {
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::NoneKw;
     e->span = advance().span;
+    leaf();
     return e;
   }
   if (check(TokKind::KwTrue)) {
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::True;
     e->span = advance().span;
+    leaf();
     return e;
   }
   if (check(TokKind::KwFalse)) {
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::False;
     e->span = advance().span;
+    leaf();
     return e;
   }
   if (match(TokKind::LParen)) {
@@ -1259,13 +1383,19 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     e->kind = ExprKind::Abs;
     e->span = start.span.to(last_span_);
     e->child = std::move(inner);
+    built(last_depth_);
     return e;
   }
   if (check(TokKind::LBrace)) {
     Token start = advance();
     std::vector<std::unique_ptr<Arg>> args;
+    std::uint32_t arg_depth = 0;
     args.push_back(parse_arg());
-    while (match(TokKind::Comma)) args.push_back(parse_arg());
+    arg_depth = std::max(arg_depth, last_depth_);
+    while (match(TokKind::Comma)) {
+      args.push_back(parse_arg());
+      arg_depth = std::max(arg_depth, last_depth_);
+    }
     expect(TokKind::RBrace, "`}` to close the braced object list");
     Ident prop = expect_ident("a property name after `}`");
     auto e = std::make_unique<Expr>();
@@ -1273,14 +1403,18 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     e->field = prop;
     e->args = std::move(args);
     e->span = start.span.to(last_span_);
+    built(arg_depth);
     return e;
   }
   Span sp = peek().span;
-  diags_.error(sp,
-               std::string("expected an expression (got ") +
-                   tok_kind_name(peek().kind) + ")",
-               "primary = number | ident | func-call | '(' condition ')' | "
-               "'|' additive '|' | '{' arg-list '}' ident");
+  if (!aborted_) {
+    diags_.error(sp,
+                 std::string("expected an expression (got ") +
+                     tok_kind_name(peek().kind) + ")",
+                 "primary = number | ident | func-call | '(' condition ')' | "
+                 "'|' additive '|' | '{' arg-list '}' ident");
+  }
+  leaf();
   return make_error(sp);
 }
 
@@ -1288,19 +1422,27 @@ std::unique_ptr<Expr> Parser::parse_func_call(Ident name) {
   auto e = std::make_unique<Expr>();
   e->kind = ExprKind::Call;
   e->field = std::move(name);
-  e->args = parse_paren_args();
+  std::uint32_t arg_depth = 0;
+  e->args = parse_paren_args(&arg_depth);
   e->span = e->field.span.to(last_span_);
+  built(arg_depth);
   return e;
 }
 
-std::vector<std::unique_ptr<Arg>> Parser::parse_paren_args() {
+std::vector<std::unique_ptr<Arg>> Parser::parse_paren_args(std::uint32_t* arg_depth) {
   expect(TokKind::LParen, "`(`");
   std::vector<std::unique_ptr<Arg>> args;
+  std::uint32_t deepest = 0;
   if (!check(TokKind::RParen)) {
     args.push_back(parse_arg());
-    while (match(TokKind::Comma)) args.push_back(parse_arg());
+    deepest = std::max(deepest, last_depth_);
+    while (match(TokKind::Comma)) {
+      args.push_back(parse_arg());
+      deepest = std::max(deepest, last_depth_);
+    }
   }
   expect(TokKind::RParen, "`)` to close the argument list");
+  if (arg_depth) *arg_depth = deepest;
   return args;
 }
 
@@ -1316,6 +1458,7 @@ std::unique_ptr<Arg> Parser::parse_arg() {
   if (check(TokKind::String)) {
     a->kind = Arg::Kind::Str;
     a->str = expect_string("a string argument");
+    leaf();
     return a;
   }
   if (check(TokKind::PathLike)) {
@@ -1326,12 +1469,14 @@ std::unique_ptr<Arg> Parser::parse_arg() {
     a->kind = Arg::Kind::Path;
     a->str.value = std::move(t.text);
     a->str.span = t.span;
+    leaf();
     return a;
   }
   StrLit path;
   if (parse_path_token(path)) {
     a->kind = Arg::Kind::Path;
     a->str = std::move(path);
+    leaf();
     return a;
   }
   a->kind = Arg::Kind::Expr;
@@ -1385,13 +1530,16 @@ std::unique_ptr<Expr> Parser::extend_particle_list(
     return first;
   }
   Span start = first->span;
+  std::uint32_t depth = last_depth_;
   auto e = std::make_unique<Expr>();
   e->kind = ExprKind::ParticleList;
   e->items.push_back(std::move(first));
   while (!nl_before() && at_postfix_start()) {
     e->items.push_back(parse_postfix());
+    depth = std::max(depth, last_depth_);
   }
   e->span = start.to(last_span_);
+  built(depth);
   return e;
 }
 
@@ -1406,7 +1554,7 @@ NumLit Parser::parse_signed_num() {
     n.span = (n.neg ? start.to(t.span) : t.span);
     return n;
   }
-  diags_.error(peek().span, "expected a number");
+  if (!aborted_) diags_.error(peek().span, "expected a number");
   n.raw = "0";
   n.span = peek().span;
   return n;

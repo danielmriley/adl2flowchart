@@ -2,8 +2,10 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <unordered_map>
+#include <vector>
 
 namespace adl2::syntax {
 
@@ -263,51 +265,109 @@ Token Lexer::next() {
     return t;
   }
 
-  // Numbers (unsigned only — negation is grammatical unary minus)
+  // Numbers (unsigned only — negation is grammatical unary minus).
+  // Mirrors smash3 `lex_number`: digit separators and scientific notation
+  // are lexical errors with a rewrite help; the token keeps the mantissa.
   if (std::isdigit(static_cast<unsigned char>(c))) {
+    auto is_digit_at = [&](std::size_t k) {
+      return k < src_.size() && std::isdigit(static_cast<unsigned char>(src_[k]));
+    };
+    auto eat_digits = [&](std::string& into) {
+      while (is_digit_at(i_)) {
+        into.push_back(src_[i_]);
+        ++i_;
+        ++col_;
+      }
+    };
     std::string text;
-    while (i_ < src_.size() &&
-           std::isdigit(static_cast<unsigned char>(src_[i_]))) {
-      text.push_back(src_[i_]);
-      ++i_;
-      ++col_;
-    }
-    if (i_ + 1 < src_.size() && src_[i_] == '.' &&
-        std::isdigit(static_cast<unsigned char>(src_[i_ + 1]))) {
+    eat_digits(text);
+    bool is_real = false;
+    if (i_ < src_.size() && src_[i_] == '.' && is_digit_at(i_ + 1)) {
+      is_real = true;
       text.push_back('.');
       ++i_;
       ++col_;
-      while (i_ < src_.size() &&
-             std::isdigit(static_cast<unsigned char>(src_[i_]))) {
-        text.push_back(src_[i_]);
-        ++i_;
+      eat_digits(text);
+    }
+    // `1_000`: ADL has no numeric separators, and `_<digit>` is the
+    // underscore-indexing operator — this used to lex as `1` `_` `000` and
+    // parse, silently, into `1[000]`-shaped nonsense. Reject it and recover
+    // with the separators removed.
+    if (i_ < src_.size() && src_[i_] == '_' && is_digit_at(i_ + 1)) {
+      std::string digits = text;
+      while (i_ < src_.size() && src_[i_] == '_' && is_digit_at(i_ + 1)) {
+        ++i_;  // `_`
         ++col_;
+        eat_digits(digits);
       }
-      // Smash2: a nonzero subnormal f64 is a lexical error. Analyzer atoms
-      // are exact rationals; the interpreter is f64; they diverge only here.
-      // C++ Real tokens carry text only, so recover by rewriting to "0"
-      // (smash2 recovers the token's f64 slot to 0.0 and keeps the spelling).
+      std::string raw(src_.substr(begin, i_ - begin));
+      diags_.error(Span::at(begin, line, column, i_ - begin),
+                   "`_` is not a digit separator in `" + elide(raw) + "`",
+                   "write `" + elide(digits) + "`",
+                   "`_<digit>` is the underscore-indexing operator");
+      text = std::move(digits);
+    }
+    // End of the literal proper; the exponent scan below moves the cursor
+    // past a rejected exponent, which must not widen the token's span.
+    const std::size_t num_end = i_;
+
+    if (i_ < src_.size() && (src_[i_] == 'e' || src_[i_] == 'E')) {
+      std::size_t off = 1;
+      if (i_ + 1 < src_.size() && (src_[i_ + 1] == '+' || src_[i_ + 1] == '-')) off = 2;
+      if (is_digit_at(i_ + off)) {
+        i_ += off;
+        col_ += static_cast<std::uint32_t>(off);
+        while (is_digit_at(i_)) {
+          ++i_;
+          ++col_;
+        }
+        std::string full(src_.substr(begin, i_ - begin));
+        double expanded = std::strtod(full.c_str(), nullptr);
+        char buf[64];
+        std::string shown;
+        if (std::isinf(expanded)) {
+          shown = expanded < 0 ? "-inf" : "inf";
+        } else if (std::isnan(expanded)) {
+          shown = "NaN";
+        } else if (std::fabs(expanded) < 1e18) {
+          std::snprintf(buf, sizeof buf, "%.1f", expanded);
+          shown = buf;
+        } else {
+          // Rust `{:.1}` prints the full integer part; do the same.
+          std::vector<char> big(400);
+          std::snprintf(big.data(), big.size(), "%.1f", expanded);
+          shown = big.data();
+        }
+        diags_.error(Span::at(begin, line, column, i_ - begin),
+                     "scientific notation `" + elide(full) + "` is not supported",
+                     "write the value out, e.g. `" + shown + "`",
+                     "exponent starts here");
+        // Recover with the mantissa value.
+      }
+    }
+
+    Token t;
+    t.kind = is_real ? TokKind::Real : TokKind::Int;
+    t.span.start = begin;
+    t.span.end = num_end;
+    t.span.line = line;
+    t.span.column = column;
+    if (is_real) {
+      // A nonzero subnormal f64 is a lexical error. Analyzer atoms are exact
+      // rationals; the interpreter is f64; they diverge only here. Real
+      // tokens carry text only, so recover by rewriting to "0" (smash3
+      // recovers the f64 slot to 0.0).
       double value = std::strtod(text.c_str(), nullptr);
       if (value != 0.0 && std::fpclassify(value) == FP_SUBNORMAL) {
-        diags_.error(Span::at(begin, line, column, text.size()),
+        diags_.error(Span::at(begin, line, column, num_end - begin),
                      "subnormal literal `" + elide(text) + "` is not supported",
-                     "magnitude is below the smallest normal f64; use a "
-                     "representable magnitude (>= 2.3e-308) or 0");
+                     "use a representable magnitude (≥ 2.3e-308) or 0",
+                     "magnitude is below the smallest normal f64");
         text = "0";
       }
-      return make(TokKind::Real, begin, line, column, text);
     }
-    // Reject scientific notation with a help message (SPEC_LANGUAGE §2).
-    if (i_ < src_.size() && (src_[i_] == 'e' || src_[i_] == 'E')) {
-      diags_.error(Span::at(i_, line_, col_, 1),
-                   "scientific notation is not accepted in v1",
-                   "write an explicit decimal (e.g. 1000000.0)");
-      while (i_ < src_.size() && !std::isspace(static_cast<unsigned char>(src_[i_]))) {
-        ++i_;
-        ++col_;
-      }
-    }
-    return make(TokKind::Int, begin, line, column, text);
+    t.text = std::move(text);
+    return t;
   }
 
   // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }

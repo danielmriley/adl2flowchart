@@ -177,6 +177,67 @@ std::string read_file(const std::string& path) {
   return ss.str();
 }
 
+/// Strict UTF-8 check (Rust `str::from_utf8` rules: no overlongs, no
+/// surrogates, nothing above U+10FFFF). Column arithmetic and JSON
+/// diagnostics assume valid UTF-8; smash3 refuses the file otherwise.
+bool valid_utf8(const std::string& s) {
+  const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+  std::size_t n = s.size();
+  std::size_t i = 0;
+  while (i < n) {
+    unsigned char c = p[i];
+    if (c < 0x80) {
+      ++i;
+      continue;
+    }
+    std::size_t len = 0;
+    std::uint32_t cp = 0;
+    if ((c & 0xE0) == 0xC0) {
+      len = 2;
+      cp = c & 0x1F;
+      if (c < 0xC2) return false;  // overlong 2-byte
+    } else if ((c & 0xF0) == 0xE0) {
+      len = 3;
+      cp = c & 0x0F;
+    } else if ((c & 0xF8) == 0xF0) {
+      len = 4;
+      cp = c & 0x07;
+      if (c > 0xF4) return false;
+    } else {
+      return false;
+    }
+    if (i + len > n) return false;
+    for (std::size_t k = 1; k < len; ++k) {
+      unsigned char cc = p[i + k];
+      if ((cc & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if (len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) return false;
+    if (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) return false;
+    i += len;
+  }
+  return true;
+}
+
+/// Read an ADL source file. Returns false and prints the usage error on
+/// an unreadable path or invalid UTF-8 (exit code 2 at every call site).
+bool read_source(const std::string& path, std::string& out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    std::cerr << "error: cannot read file: " << path << "\n";
+    return false;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  out = ss.str();
+  if (!valid_utf8(out)) {
+    std::cerr << "error: cannot read file: " << path
+              << ": stream did not contain valid UTF-8\n";
+    return false;
+  }
+  return true;
+}
+
 std::vector<std::uint8_t> read_file_binary(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) return {};
@@ -361,18 +422,19 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
   }
   auto ext = adl2::sema::ExtDecls::legacy();
   if (json) {
+    std::vector<std::string> sources;
+    sources.reserve(paths.size());
     for (const auto& path : paths) {
-      std::ifstream probe(path);
-      if (!probe) {
-        std::cerr << "error: cannot read file: " << path << "\n";
-        return 2;
-      }
+      std::string src;
+      if (!read_source(path, src)) return 2;
+      sources.push_back(std::move(src));
     }
     std::cout << "[";
     bool first = true;
     bool any_err = false;
-    for (const auto& path : paths) {
-      std::string src = read_file(path);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      const std::string& path = paths[i];
+      const std::string& src = sources[i];
       std::string name = unit_name(path);
       auto hir = adl2::sema::analyze_str(src, name, ext);
       for (const auto& d : hir.diags) {
@@ -387,13 +449,8 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
   }
   bool any_err = false;
   for (const auto& path : paths) {
-    std::ifstream probe(path);
-    if (!probe) {
-      std::cerr << "error: cannot read file: " << path << "\n";
-      return 2;
-    }
-    probe.close();
-    std::string src = read_file(path);
+    std::string src;
+    if (!read_source(path, src)) return 2;
     std::string name = unit_name(path);
     if (dump == DumpKind::Ast) {
       auto parsed = adl2::syntax::parse_source(src);
@@ -433,13 +490,8 @@ int cmd_check(const std::vector<std::string>& paths, DumpKind dump, bool verbose
 }
 
 int cmd_objects(const std::string& path, bool verbose) {
-  std::ifstream probe(path);
-  if (!probe) {
-    std::cerr << "error: cannot read file: " << path << "\n";
-    return 2;
-  }
-  probe.close();
-  std::string src = read_file(path);
+  std::string src;
+  if (!read_source(path, src)) return 2;
   std::string name = unit_name(path);
   auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
   if (!hir.diags.empty()) print_sema_diags(hir.diags);
@@ -455,13 +507,8 @@ int cmd_objects(const std::string& path, bool verbose) {
 }
 
 int cmd_dot(const std::string& path, bool ast, bool verbose) {
-  std::ifstream probe(path);
-  if (!probe) {
-    std::cerr << "error: cannot read file: " << path << "\n";
-    return 2;
-  }
-  probe.close();
-  std::string src = read_file(path);
+  std::string src;
+  if (!read_source(path, src)) return 2;
   std::string name = unit_name(path);
   auto hir = adl2::sema::analyze_str(src, name, adl2::sema::ExtDecls::legacy());
   if (!hir.diags.empty()) print_sema_diags(hir.diags);
@@ -631,13 +678,8 @@ void print_ingest_diags(const std::vector<adl2::ingest::IngestDiag>& diags,
 int cmd_run(const std::string& adl_path, const std::string& events_path, bool json_out,
             const std::string& histos_dir, bool csv, bool svg, bool flat_names, bool no_root,
             const std::string& profile, bool verbose) {
-  std::ifstream probe(adl_path);
-  if (!probe) {
-    std::cerr << "error: cannot read file: " << adl_path << "\n";
-    return 2;
-  }
-  probe.close();
-  std::string src = read_file(adl_path);
+  std::string src;
+  if (!read_source(adl_path, src)) return 2;
   std::string jsonl;
   std::string input_sha;
   std::optional<std::string> profile_id;
@@ -942,13 +984,8 @@ int run_cross(const std::vector<std::string>& files, const std::vector<std::stri
   std::vector<adl2::certify::BundleInput> inputs;
   inputs.reserve(files.size());
   for (std::size_t i = 0; i < files.size(); ++i) {
-    std::ifstream probe(files[i]);
-    if (!probe) {
-      std::cerr << "error: cannot read file: " << files[i] << "\n";
-      return 2;
-    }
-    probe.close();
-    std::string src = read_file(files[i]);
+    std::string src;
+    if (!read_source(files[i], src)) return 2;
     auto hir = adl2::sema::analyze_str(src, labels[i], ext);
     if (!hir.diags.empty()) print_sema_diags(hir.diags);
     if (adl2::sema::has_errors(hir.diags)) {
@@ -1058,14 +1095,11 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
   std::vector<std::string> json_reports;
   bool multi = files.size() > 1;
   for (std::size_t i = 0; i < files.size(); ++i) {
-    std::ifstream probe(files[i]);
-    if (!probe) {
-      std::cerr << "error: cannot read file: " << files[i] << "\n";
+    std::string src;
+    if (!read_source(files[i], src)) {
       worst = std::max(worst, 2);
       continue;
     }
-    probe.close();
-    std::string src = read_file(files[i]);
     const std::string& name = labels[i];
     auto hir = adl2::sema::analyze_str(src, name, ext);
     if (!hir.diags.empty()) print_sema_diags(hir.diags);

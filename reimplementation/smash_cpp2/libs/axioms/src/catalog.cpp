@@ -138,15 +138,26 @@ const CatalogEntry* catalog() {
        "element is a missing-element soft non-value, so the interpreter "
        "obtains no value for it and the indicator is 0. The converse is "
        "deliberately NOT asserted: an element can exist and still lack the "
-       "property",
+       "property, which is the whole reason presence is modelled "
+       "separately from existence. Reads the same element floors as the "
+       "encoder's leaf guards (QuantityTable::existence_floor), so the two "
+       "can never disagree",
        "none"},
       {AxiomId::Epres,
-       "size(F) > i implies defined(q) >= 1 for every possibly-absent quantity "
-       "the filter predicate of F decides at F[i]",
-       "true of every physical event because membership in a filtered "
-       "collection PROVES the interpreter obtained a value for every quantity "
-       "the filter read (otherwise the comparison would have been a decidable "
-       "false and the element would not have been kept)",
+       "size(F) > i => defined(F[i].x) >= 1, for a filtered F whose filter "
+       "predicate is FALSE on every element lacking x",
+       "true of every physical event because every element of a filtered "
+       "collection passed the filter, and the filter cannot pass an element "
+       "lacking x: on the recognised grammar (comparisons and bands over "
+       "arithmetic in the element's own properties) the interpreter's "
+       "evaluation is soft-non-value ABSORBING, so an absent x makes the "
+       "comparison a decidable FALSE. The recogniser is FAIL-CLOSED - `not` "
+       "and a ternary are refused outright (absence makes a negation HOLD, "
+       "and a missing ternary branch is true), as is any reducer, region "
+       "predicate, collection property, scalar min/max or opaque external. "
+       "This is the fact that lets ORD/IDOM and downstream cuts over "
+       "pT(jets[i]) discharge their presence guards on a `select pT > 30` "
+       "collection",
        "take = filter"},
   };
   return k;

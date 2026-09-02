@@ -1139,6 +1139,11 @@ int cmd_verify(const std::vector<std::string>& inputs, bool no_solver, bool no_c
       ropts.short_human = short_human && !explain;
       if (explain) {
         std::cout << report.render_explain(ropts);
+        // The object-attribute summary is a pure function of the resolved
+        // HIR; re-resolve (deterministic, cheap — analysis mutated `hir`'s
+        // quantity table) and append it as an `== objects ==` section.
+        auto fresh = adl2::sema::analyze_str(src, name, ext);
+        std::cout << "\n" << adl2::sema::object_table(fresh, ropts.color);
       } else {
         std::cout << report.render_default(ropts);
       }

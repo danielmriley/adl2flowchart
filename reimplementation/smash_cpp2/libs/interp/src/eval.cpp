@@ -1772,6 +1772,17 @@ std::optional<NumOutcome> Interp::eval_quantity(QuantityId q, const Event& event
   return ev.quantity(q, err);
 }
 
+std::optional<bool> Interp::eval_bool(const HNode& node, const Event& event,
+                                      EvalError& err) const {
+  Ev ev{this, &event, {}, {}, {}, {}, {}};
+  BRes r = ev.truth(node, nullptr);
+  if (r.hard) {
+    err = r.err;
+    return std::nullopt;
+  }
+  return r.pass;
+}
+
 std::vector<RegionResult> Interp::run_event(const Event& event) const {
   return run_event_traced(event).first;
 }

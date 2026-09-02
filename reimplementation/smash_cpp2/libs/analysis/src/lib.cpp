@@ -201,6 +201,14 @@ Report analyze_hir(Hir& hir, const std::string& src, const adl2::sema::ExtDecls&
                                            &recon_run.facts, false);
         rr.empty = (cert.flag == false) ? EmptyStatus::Candidate : EmptyStatus::Proven;
         rr.empty_proof = ProofPath::SolverCore;
+        // The core is what `--explain` renders and what the `assumes:`
+        // clause of the EMPTY line is computed from (smash3 `region_empty`).
+        if (core_names) {
+          for (const auto& n : *core_names) {
+            auto it = acc.origins.find(n);
+            if (it != acc.origins.end()) rr.empty_core.push_back(it->second);
+          }
+        }
       } else if (er.is_sat()) {
         rr.empty = EmptyStatus::NotProven;
       } else {

@@ -150,6 +150,12 @@ class Interp {
   std::optional<NumOutcome> eval_num(const adl2::sema::HNode& node, const Event& event,
                                      EvalError& err) const;
 
+  /// Two-valued boolean evaluation of one statement node (smash3
+  /// `Interp::eval_bool`). nullopt + err = hard error. Used to name the
+  /// failing statements of a rejected witness; not a membership oracle.
+  std::optional<bool> eval_bool(const adl2::sema::HNode& node, const Event& event,
+                                EvalError& err) const;
+
   /// Value a interned quantity at a realized event (smash2
   /// `Interp::eval_quantity`). Used to print overlap witness rows from the
   /// validated event, not the pre-sort solver model.

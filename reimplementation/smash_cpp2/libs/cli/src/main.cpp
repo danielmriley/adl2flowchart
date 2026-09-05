@@ -402,12 +402,17 @@ int write_bundles(const std::string& dir, const std::string& unit,
                            .string();
     std::string label = unit + " (" + b.region_a + " vs " + b.region_b + ")";
     auto prev = written.find(path);
-    if (prev != written.end() || std::filesystem::exists(path, ec)) {
-      std::cerr << "error: certificate bundle file name collision: " << path << " is the file for "
-                << (prev != written.end() ? prev->second : std::string("an existing file"))
-                << " and for " << label
-                << "; region or unit names differ only in characters the file name drops, so "
-                   "refusing to overwrite\n";
+    if (prev != written.end()) {
+      std::cerr << "error: certificate bundle file name collision: " << path
+                << " is the file for both " << prev->second << " and " << label
+                << " (the names differ only in characters the file name drops); refusing to "
+                   "overwrite\n";
+      return 2;
+    }
+    if (std::filesystem::exists(path, ec)) {
+      std::cerr << "error: certificate bundle file name collision: " << path << " already exists "
+                << "and was not written by this run; refusing to overwrite it with " << label
+                << "\n";
       return 2;
     }
     written.emplace(path, label);

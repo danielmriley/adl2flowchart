@@ -436,45 +436,20 @@ Tri Ev::region3(std::size_t idx) {
   return unknown ? Tri::unknown(*unknown) : Tri::ttrue();
 }
 
+// The two-valued evaluator shares the oracle's single Kleene fold: a
+// decidable False/True element wins over another element's Unknown, and only
+// an undecided fold surfaces the error (eval.rs `reduce_bool` is the one
+// reducer both `truth` and `truth3` call).
 BRes Ev::reduce_bool(ReduceKind kind, CollectionId coll, const HNode& body,
                      const EventObject* elem) {
-  EvalError e;
-  const auto* objs = materialize(coll, e);
-  if (!objs) return BRes::err_(e);
-  for (const auto& obj : *objs) {
-    reduce_stack.push_back(obj);
-    BRes t = truth(body, elem);
-    reduce_stack.pop_back();
-    if (t.hard) return t;
-    if (kind == ReduceKind::Any && t.pass) return BRes::ok(true);
-    if (kind == ReduceKind::All && !t.pass) return BRes::ok(false);
-  }
-  return BRes::ok(kind == ReduceKind::All);
+  Tri t = reduce_bool3(kind, coll, body, elem);
+  if (t.kind == TriKind::Unknown) return BRes::err_(t.err);
+  return BRes::ok(t.kind == TriKind::True);
 }
 
 NRes Ev::reduce_num(ReduceKind kind, CollectionId coll, const HNode& body,
                     const EventObject* elem) {
-  EvalError e;
-  const auto* objs = materialize(coll, e);
-  if (!objs) return NRes::err_(e);
-  NumVal sum = NumVal::from_exact(Rat::zero());
-  std::optional<NumVal> acc;
-  for (const auto& obj : *objs) {
-    reduce_stack.push_back(obj);
-    NRes v = num(body, elem);
-    reduce_stack.pop_back();
-    if (v.k == NR::Err) return v;
-    if (v.k == NR::NV) return v;
-    auto s = adl2::sema::bin_arith(ArithOp::Add, sum, v.val);
-    if (!s) return NRes::nv_(NonValueKind::NonFinite);
-    sum = *s;
-    if (!acc) acc = v.val;
-    else if (kind == ReduceKind::Min) acc = adl2::sema::num_min(*acc, v.val);
-    else if (kind == ReduceKind::Max) acc = adl2::sema::num_max(*acc, v.val);
-  }
-  if (kind == ReduceKind::Sum) return NRes::of(sum);
-  if (!acc) return NRes::nv_(NonValueKind::EmptyReduction, adl2::sema::reduce_kind_str(kind));
-  return NRes::of(*acc);
+  return reduce_num3(kind, coll, body, elem);
 }
 
 BRes Ev::truth(const HNode& n, const EventObject* elem) {
@@ -1552,14 +1527,26 @@ std::string json_escape_str(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 2);
   out.push_back('"');
+  // serde_json's escape table: short forms for \b \f \n \r \t, \u00XX
+  // (lowercase hex) for the other control bytes, everything else verbatim.
+  static const char kHex[] = "0123456789abcdef";
   for (unsigned char c : s) {
     switch (c) {
       case '"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
       case '\n': out += "\\n"; break;
       case '\r': out += "\\r"; break;
       case '\t': out += "\\t"; break;
-      default: out.push_back(static_cast<char>(c));
+      default:
+        if (c < 0x20) {
+          out += "\\u00";
+          out.push_back(kHex[c >> 4]);
+          out.push_back(kHex[c & 0xF]);
+        } else {
+          out.push_back(static_cast<char>(c));
+        }
     }
   }
   out.push_back('"');

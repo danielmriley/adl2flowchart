@@ -98,4 +98,15 @@ struct Token {
 
 const char* tok_kind_name(TokKind k);
 
+/// Keywords are contiguous in TokKind (KwInfo..KwFalse above).
+inline bool is_keyword_kind(TokKind k) {
+  return k >= TokKind::KwInfo && k <= TokKind::KwFalse;
+}
+
+/// How a token is named inside a diagnostic (smash3 `Token::describe`):
+/// ``identifier `x` ``, ``number `20` ``, `string literal`,
+/// ``keyword `select` `` (canonical spelling), `end of file`, else the raw
+/// lexeme in backticks.
+std::string describe_token(const Token& t);
+
 }  // namespace adl2::syntax

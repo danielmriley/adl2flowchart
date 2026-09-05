@@ -96,6 +96,11 @@ class Parser {
   bool match(TokKind k);
   bool match_any(std::initializer_list<TokKind> ks);
   bool expect(TokKind k, const char* what);
+  /// A keyword slot in the table header (`tabletype`/`nvars`/`errors`).
+  /// smash3's `expect_tok` compares enum discriminants, so ANY keyword
+  /// satisfies a `Kw(_)` target; mirrored so recovery from a malformed
+  /// table header is byte-identical. Only the table header uses it.
+  bool expect_keyword_slot(const char* what);
   bool nl_before() const;
   bool at_section_start() const;
   bool at_stmt_keyword() const;
@@ -112,7 +117,18 @@ class Parser {
   /// (smash3 `recover_block_stmt`): `false` at EOF, a bare identifier or a
   /// section keyword (the block ends); otherwise warn, skip the line, `true`.
   bool recover_block_stmt(const char* ctx_label);
+  /// Report `message` at the current token with the oracle's ``found `…` ``
+  /// label (smash3 `error_here`); silent after a depth abort. Returns the
+  /// span so callers can build an error node at the same place.
+  Span error_here(std::string message);
+  /// Nearest statement keyword within Levenshtein distance 2 of `word`
+  /// (smash3 `suggest_keyword`), or nullptr.
+  const char* suggest_keyword(const std::string& word) const;
   Ident expect_ident(const char* what);
+  /// Section name after `object`/`region`/…: joins byte-adjacent `_<digit>`
+  /// / `_<ident>` runs the lexer split off (`SR3L_1`, `SR_3b3j`), smash3
+  /// `parse_section_name`.
+  Ident parse_section_name(const char* context);
   Ident make_ident(const Token& tok);
   StrLit expect_string(const char* what);
   std::optional<CmpOp> peek_cmp_op() const;

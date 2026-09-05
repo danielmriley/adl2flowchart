@@ -137,10 +137,6 @@ class Resolver {
 
   std::optional<QuantityArg> quantity_arg(const syn::Arg& arg, const Ctx& ctx);
   std::optional<QuantityArg> opaque_arg(const syn::Expr& e, const Ctx& ctx);
-  std::string unknown_arg_reason(const std::string& kind, const std::string& callee,
-                                 const syn::Arg& arg, const Ctx& ctx);
-  std::string nearest_declared_name(const std::string& name) const;
-  const syn::Ident* first_unresolved_ident(const syn::Expr& e, const Ctx& ctx);
   void collect_plural_colls(const HNode& node, std::vector<CollectionId>& out) const;
 
   HistoSpec resolve_histo_spec(const std::vector<syn::HistoArg>& args, const Ctx& ctx);
@@ -203,6 +199,9 @@ class Resolver {
 
   std::vector<Diagnostic> diags;
   std::unordered_set<std::string> warned_names;
+  // Insertion log for `warned_names`, so `resolve_expr_quiet` can undo the
+  // keys it added without copying the whole set.
+  std::vector<std::string> warned_journal;
 };
 
 }  // namespace adl2::sema

@@ -137,16 +137,15 @@ std::pair<std::vector<Limb>, std::vector<Limb>> div_mag(std::vector<Limb> u,
     Wide u2 = (static_cast<Wide>(u[j + n]) << 32) | u[j + n - 1];
     Wide qhat = u2 / v[n - 1];
     Wide rhat = u2 % v[n - 1];
-    if (qhat >= BASE) {
-      qhat = BASE - 1;
-      rhat += v[n - 1];
-    }
+    // Knuth D3. When u[j+n] == v[n-1] the estimate is B or B+1; each
+    // decrement must add v[n-1] to rhat exactly once (clamping straight to
+    // B-1 while adding v[n-1] once fires the v[n-2] test spuriously, and
+    // the add-back step can only repair a digit that is too large).
     while (qhat >= BASE ||
-           (n >= 2 && qhat * v[n - 2] > ((rhat << 32) | u[j + n - 2]) &&
-            rhat < BASE)) {
+           (n >= 2 && rhat < BASE &&
+            qhat * v[n - 2] > ((rhat << 32) | u[j + n - 2]))) {
       --qhat;
       rhat += v[n - 1];
-      if (rhat >= BASE) break;
     }
     // u[j..j+n] -= qhat * v
     Wide borrow = 0;

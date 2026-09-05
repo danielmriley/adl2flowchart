@@ -2,6 +2,7 @@
 
 #include "adl2/syntax/span.hpp"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,11 @@ class DiagSink {
   }
 
   const std::vector<Diagnostic>& diagnostics() const { return diags_; }
+  /// Drop every diagnostic recorded after the first `n` — the rollback half
+  /// of a speculative parse (smash3 `Vec::truncate`).
+  void truncate(std::size_t n) {
+    if (n < diags_.size()) diags_.erase(diags_.begin() + static_cast<std::ptrdiff_t>(n), diags_.end());
+  }
   bool has_errors() const;
   std::string format_all() const;
 

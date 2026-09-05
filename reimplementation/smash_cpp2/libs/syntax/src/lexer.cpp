@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace adl2::syntax {
@@ -117,8 +119,9 @@ std::vector<Token> Lexer::tokenize() {
   std::vector<Token> out;
   for (;;) {
     Token t = next();
-    out.push_back(t);
-    if (t.kind == TokKind::Eof) break;
+    const bool eof = t.kind == TokKind::Eof;
+    out.push_back(std::move(t));
+    if (eof) break;
   }
   if (underscore_splits_ > 1) {
     const char* plural = (underscore_splits_ == 2) ? "" : "s";
@@ -188,9 +191,12 @@ TokKind Lexer::keyword_or_ident(const std::string& text) const {
 }
 
 void Lexer::skip_spaces() {
+  // `\r` is whitespace, never a line break (smash3 parity): only `\n` is
+  // NEWLINE, so CRLF and CR-only files produce the same tokens and spans as
+  // the oracle, and a lone CR mid-line does not split the line.
   while (i_ < src_.size()) {
     char c = src_[i_];
-    if (c == ' ' || c == '\t') {
+    if (c == ' ' || c == '\t' || c == '\r') {
       ++i_;
       ++col_;
     } else {
@@ -200,13 +206,36 @@ void Lexer::skip_spaces() {
 }
 
 void Lexer::skip_line_comment() {
-  while (i_ < src_.size() && src_[i_] != '\n' && src_[i_] != '\r') {
+  while (i_ < src_.size() && src_[i_] != '\n') {
     ++i_;
     ++col_;
   }
 }
 
+std::size_t Lexer::utf8_len_at(std::size_t k) const {
+  const auto lead = static_cast<unsigned char>(src_[k]);
+  std::size_t len = 1;
+  if (lead >= 0xC2 && lead <= 0xDF) len = 2;
+  else if (lead >= 0xE0 && lead <= 0xEF) len = 3;
+  else if (lead >= 0xF0 && lead <= 0xF4) len = 4;
+  if (k + len > src_.size()) return 1;
+  for (std::size_t j = 1; j < len; ++j) {
+    const auto u = static_cast<unsigned char>(src_[k + j]);
+    if (u < 0x80 || u > 0xBF) return 1;
+  }
+  return len;
+}
+
 Token Lexer::next() {
+  // A loop, not tail recursion: comments and rejected characters are skipped
+  // in place. Recursing once per bad byte made a 10k-byte run of `@`
+  // overflow the stack.
+  for (;;) {
+    if (std::optional<Token> t = lex_one()) return std::move(*t);
+  }
+}
+
+std::optional<Token> Lexer::lex_one() {
   skip_spaces();
   if (i_ >= src_.size()) {
     return make(TokKind::Eof, i_, line_, col_, {});
@@ -219,18 +248,11 @@ Token Lexer::next() {
 
   if (c == '#') {
     skip_line_comment();
-    return next();
+    return std::nullopt;
   }
 
   if (c == '\n') {
     ++i_;
-    ++line_;
-    col_ = 1;
-    return make(TokKind::Newline, begin, line, column, "\n");
-  }
-  if (c == '\r') {
-    ++i_;
-    if (i_ < src_.size() && src_[i_] == '\n') ++i_;
     ++line_;
     col_ = 1;
     return make(TokKind::Newline, begin, line, column, "\n");
@@ -243,7 +265,7 @@ Token Lexer::next() {
     ++col_;
     std::string body;
     while (i_ < src_.size() && src_[i_] != '"') {
-      if (src_[i_] == '\n' || src_[i_] == '\r') break;
+      if (src_[i_] == '\n') break;
       body.push_back(src_[i_]);
       ++i_;
       ++col_;
@@ -481,8 +503,9 @@ Token Lexer::next() {
   }
 
   // Single-char
-  ++i_;
-  ++col_;
+  const std::size_t ch_len = utf8_len_at(i_);
+  i_ += ch_len;
+  col_ += static_cast<std::uint32_t>(ch_len);
   switch (c) {
     case '+': return make(TokKind::Plus, begin, line, column, "+");
     case '-': return make(TokKind::Minus, begin, line, column, "-");
@@ -506,10 +529,15 @@ Token Lexer::next() {
     case '>': return make(TokKind::Gt, begin, line, column, ">");
     case '<': return make(TokKind::Lt, begin, line, column, "<");
     default:
-      diags_.error(Span::at(begin, line, column, 1),
-                   std::string("unexpected character '") + c + "'",
-                   "skipped; lexer recovers and continues");
-      return next();
+      // One error per (possibly multi-byte) character, spanning all its
+      // bytes — text, label and help are smash3's `lex_operator` fallthrough.
+      diags_.error(Span::at(begin, line, column, ch_len),
+                   "unexpected character `" +
+                       std::string(src_.substr(begin, ch_len)) + "`",
+                   "remove this character; see SPEC_LANGUAGE §2 for the "
+                   "operator set",
+                   "not part of ADL syntax");
+      return std::nullopt;
   }
 }
 

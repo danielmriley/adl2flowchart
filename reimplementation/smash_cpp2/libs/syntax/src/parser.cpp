@@ -60,12 +60,10 @@ const Token& Parser::peek_n(std::size_t n) const {
   return tokens_[i];
 }
 
-Token Parser::advance() {
-  while (pos_ < tokens_.size() && tokens_[pos_].kind == TokKind::Newline) {
-    ++pos_;
-  }
-  Token t = peek();
-  if (t.kind != TokKind::Eof && pos_ < tokens_.size()) ++pos_;
+const Token& Parser::advance() {
+  const std::size_t i = sig_index();
+  const Token& t = tokens_[i];
+  pos_ = (t.kind == TokKind::Eof) ? i : i + 1;
   last_span_ = t.span;
   return t;
 }
@@ -158,7 +156,9 @@ bool Parser::at_stmt_keyword() const {
   if (is_region_stmt_keyword(peek().kind)) return true;
   // Column-1 define is a new section; indented define is object-define.
   // Recovery must stop on both so synchronize_statement does not eat them.
-  return check(TokKind::KwDefine) || check(TokKind::KwDef);
+  // `process` completes smash3's STMT_KEYWORDS (its `recover` stops there).
+  return check(TokKind::KwDefine) || check(TokKind::KwDef) ||
+         check(TokKind::KwProcess);
 }
 
 void Parser::synchronize_statement() {
@@ -169,8 +169,25 @@ void Parser::synchronize_statement() {
   while (raw_peek().kind == TokKind::Newline) ++pos_;
 }
 
+bool Parser::recover_block_stmt(const char* ctx_label) {
+  if (check(TokKind::Eof)) return false;
+  // A bare identifier here may be a mistyped section keyword; end the block
+  // and let parse_file report it. (Region blocks consume legitimate bare
+  // idents as region references before reaching this backstop.)
+  if (check(TokKind::Ident)) return false;
+  if (at_section_start()) return false;
+  // A warning, never an error: skipping a cut only drops a constraint.
+  diags_.warning(peek().span, std::string("unrecognized `") + ctx_label +
+                                  "` statement; skipped");
+  advance();
+  synchronize_statement();
+  return true;
+}
+
 bool Parser::next_is_line_end() const {
-  const TokKind k = tokens_[sig_index() + 1].kind;
+  const std::size_t i = sig_index();
+  if (i + 1 >= tokens_.size()) return true;
+  const TokKind k = tokens_[i + 1].kind;
   return k == TokKind::Newline || k == TokKind::Eof;
 }
 
@@ -232,9 +249,9 @@ bool Parser::derived_candidate_ahead() const {
   return i < tokens_.size() && tokens_[i].kind == TokKind::Assign;
 }
 
-Ident Parser::make_ident(Token tok) {
+Ident Parser::make_ident(const Token& tok) {
   Ident id;
-  id.name = std::move(tok.text);
+  id.name = tok.text;
   id.span = tok.span;
   return id;
 }
@@ -254,9 +271,9 @@ Ident Parser::expect_ident(const char* what) {
 
 StrLit Parser::expect_string(const char* what) {
   if (check(TokKind::String)) {
-    Token t = advance();
+    const Token& t = advance();
     StrLit s;
-    s.value = std::move(t.text);
+    s.value = t.text;
     s.span = t.span;
     return s;
   }
@@ -337,7 +354,7 @@ bool Parser::parse_section(Section& out) {
 Section Parser::parse_info_block() {
   Section s;
   s.kind = SectionKind::Info;
-  Token start = advance();  // info
+  const Token& start = advance();  // info
   Ident name = expect_ident("an analysis name after `info`");
   InfoBlock block;
   block.name = std::move(name);
@@ -387,7 +404,7 @@ InfoLine Parser::parse_info_line() {
 Section Parser::parse_define_section() {
   Section s;
   s.kind = SectionKind::Define;
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   Define def;
   def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
   def.name = expect_ident("a name after `define`");
@@ -403,7 +420,7 @@ Section Parser::parse_define_section() {
 Section Parser::parse_table_block() {
   Section s;
   s.kind = SectionKind::Table;
-  Token start = advance();  // table
+  const Token& start = advance();  // table
   TableBlock t;
   t.name = expect_ident("a table name after `table`");
   if (expect(TokKind::KwTabletype, "`tabletype`")) {
@@ -438,11 +455,11 @@ Section Parser::parse_table_block() {
 Section Parser::parse_countsformat_block() {
   Section s;
   s.kind = SectionKind::CountsFormat;
-  Token start = advance();
+  const Token& start = advance();
   CountsFormatBlock cf;
   cf.name = expect_ident("a format name after `countsformat`");
   while (check(TokKind::KwProcess)) {
-    Token pstart = advance();
+    const Token& pstart = advance();
     ProcessDecl p;
     p.name = expect_ident("a process name");
     expect(TokKind::Comma, "`,` after the process name");
@@ -461,7 +478,7 @@ Section Parser::parse_countsformat_block() {
 Section Parser::parse_object_block() {
   Section s;
   s.kind = SectionKind::Object;
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   ObjectKw keyword = ObjectKw::Object;
   switch (kw_tok.kind) {
     case TokKind::KwObj: keyword = ObjectKw::Obj; break;
@@ -482,7 +499,7 @@ Section Parser::parse_object_block() {
     }
     if (check(TokKind::KwSelect) || check(TokKind::KwCut) ||
         check(TokKind::KwCmd) || check(TokKind::KwCommand)) {
-      Token cut_kw = advance();
+      const Token& cut_kw = advance();
       std::string kw = "select";
       if (cut_kw.kind == TokKind::KwCut) kw = "cut";
       else if (cut_kw.kind == TokKind::KwCmd) kw = "cmd";
@@ -496,7 +513,7 @@ Section Parser::parse_object_block() {
       continue;
     }
     if (check(TokKind::KwReject)) {
-      Token start = advance();
+      const Token& start = advance();
       ObjectStmt st;
       st.kind = ObjectStmt::Kind::Reject;
       st.cond = parse_condition();
@@ -516,6 +533,7 @@ Section Parser::parse_object_block() {
       block.stmts.push_back(parse_object_define());
       continue;
     }
+    if (recover_block_stmt("object")) continue;
     break;
   }
   block.span = kw_tok.span.to(last_span_);
@@ -524,7 +542,7 @@ Section Parser::parse_object_block() {
 }
 
 ObjectStmt Parser::parse_object_define() {
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   Define def;
   def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
   def.name = expect_ident("a name after `define`");
@@ -541,7 +559,7 @@ ObjectStmt Parser::parse_object_define() {
 }
 
 ObjectStmt Parser::parse_derived_candidate() {
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   std::string keyword = "candidate";
   if (kw_tok.kind == TokKind::KwObj) keyword = "obj";
   else if (kw_tok.kind == TokKind::KwObject) keyword = "object";
@@ -559,7 +577,7 @@ ObjectStmt Parser::parse_derived_candidate() {
 }
 
 ObjectStmt Parser::parse_take_stmt() {
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   std::string keyword = "take";
   if (kw_tok.kind == TokKind::KwUsing) keyword = "using";
   else if (kw_tok.kind == TokKind::Colon) keyword = ":";
@@ -586,7 +604,7 @@ ObjectStmt Parser::parse_take_stmt() {
 TakeSource Parser::parse_take_source() {
   TakeSource src;
   if (check(TokKind::KwUnion)) {
-    Token start = advance();
+    const Token& start = advance();
     src.kind = TakeSourceKind::Union;
     if (expect(TokKind::LParen, "`(` after `union`")) {
       src.members.push_back(expect_ident("a collection name"));
@@ -600,7 +618,7 @@ TakeSource Parser::parse_take_source() {
   }
   Ident name;
   if (check(TokKind::KwSort)) {
-    Token t = advance();
+    const Token& t = advance();
     name.name = "sort";
     name.span = t.span;
   } else {
@@ -632,7 +650,7 @@ TakeSource Parser::parse_take_source() {
 Section Parser::parse_region_block() {
   Section s;
   s.kind = SectionKind::Region;
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   RegionKw keyword = RegionKw::Region;
   if (kw_tok.kind == TokKind::KwAlgo) keyword = RegionKw::Algo;
   else if (kw_tok.kind == TokKind::KwHistoList) keyword = RegionKw::HistoList;
@@ -642,8 +660,12 @@ Section Parser::parse_region_block() {
   block.name = std::move(name);
   for (;;) {
     auto stmt = parse_region_stmt();
-    if (!stmt) break;
-    block.stmts.push_back(std::move(*stmt));
+    if (stmt) {
+      block.stmts.push_back(std::move(*stmt));
+      continue;
+    }
+    if (recover_block_stmt("region")) continue;
+    break;
   }
   block.span = kw_tok.span.to(last_span_);
   s.region = std::move(block);
@@ -685,7 +707,7 @@ std::optional<RegionStmt> Parser::parse_region_stmt() {
 }
 
 RegionStmt Parser::parse_cut_as_region() {
-  Token kw_tok = advance();
+  const Token& kw_tok = advance();
   std::string kw = "select";
   if (kw_tok.kind == TokKind::KwCut) kw = "cut";
   else if (kw_tok.kind == TokKind::KwCmd) kw = "cmd";
@@ -699,7 +721,7 @@ RegionStmt Parser::parse_cut_as_region() {
 }
 
 RegionStmt Parser::parse_reject_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Reject;
   st.cond = parse_condition();
@@ -709,7 +731,7 @@ RegionStmt Parser::parse_reject_stmt() {
 
 RegionStmt Parser::parse_region_ref() {
   if (check(TokKind::Ident) && iequals(peek().text, "type")) {
-    Token tok = advance();
+    const Token& tok = advance();
     if (!nl_before() && check(TokKind::Ident)) {
       RegionStmt st;
       st.kind = RegionStmt::Kind::TypeTag;
@@ -739,13 +761,19 @@ RegionStmt Parser::parse_region_ref() {
 }
 
 RegionStmt Parser::parse_bin_stmt() {
-  Token start = advance();  // bin or bins
+  const Token& start = advance();  // bin or bins
   std::optional<StrLit> label;
   if (check(TokKind::String)) label = expect_string("a bin label");
 
   if (at_postfix_start()) {
+    // Speculative parse: snapshot the whole cursor state as a unit so a
+    // failed attempt leaves no trace (smash3 restores `pos` and truncates
+    // `diags`; the depth-budget fields are restored for the same reason).
     const std::size_t save_pos = pos_;
     const std::size_t save_diags = diags_.diagnostics().size();
+    const std::uint32_t save_rec = rec_;
+    const std::uint32_t save_last_depth = last_depth_;
+    const bool save_aborted = aborted_;
     auto var = parse_postfix();
     if (!nl_before() && rest_of_line_is_boundary_list()) {
       RegionStmt st;
@@ -759,12 +787,25 @@ RegionStmt Parser::parse_bin_stmt() {
       st.span = start.span.to(last_span_);
       return st;
     }
+    if (aborted_ && !save_aborted) {
+      // The attempt tripped the depth budget: its one located error is
+      // recorded and the cursor is parked on EOF. Rewinding here would
+      // re-run the same descent with `aborted_` already set, which reports
+      // nothing and suppresses every later error — the file would come out
+      // clean. Keep the truncated tree as the condition and stay parked.
+      RegionStmt st;
+      st.kind = RegionStmt::Kind::Bin;
+      st.label = std::move(label);
+      st.bin_body.kind = BinBodyKind::Cond;
+      st.bin_body.cond = std::move(var);
+      st.span = start.span.to(last_span_);
+      return st;
+    }
     pos_ = save_pos;
-    // Cannot truncate DiagSink easily — avoid emitting during speculative
-    // parse by only keeping path when successful. If we got here, discard
-    // by re-parsing condition from save (diags from failed attempt remain
-    // only if parse_postfix errored; rare). Best-effort: leave them.
-    (void)save_diags;
+    rec_ = save_rec;
+    last_depth_ = save_last_depth;
+    aborted_ = save_aborted;
+    diags_.truncate(save_diags);
   }
   RegionStmt st;
   st.kind = RegionStmt::Kind::Bin;
@@ -776,7 +817,7 @@ RegionStmt Parser::parse_bin_stmt() {
 }
 
 RegionStmt Parser::parse_trigger_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Trigger;
   st.cond = parse_condition();
@@ -785,7 +826,7 @@ RegionStmt Parser::parse_trigger_stmt() {
 }
 
 RegionStmt Parser::parse_histo_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Histo;
   st.name = expect_ident("a histogram name");
@@ -826,11 +867,11 @@ HistoArg Parser::parse_histo_arg() {
 }
 
 RegionStmt Parser::parse_weight_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Weight;
   if (check(TokKind::KwTrigger)) {
-    Token t = advance();
+    const Token& t = advance();
     st.name.name = "trigger";
     st.name.span = t.span;
   } else {
@@ -869,7 +910,7 @@ RegionStmt Parser::parse_weight_stmt() {
 }
 
 RegionStmt Parser::parse_save_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Save;
   st.name = expect_ident("an output name after `save`");
@@ -880,7 +921,7 @@ RegionStmt Parser::parse_save_stmt() {
 }
 
 RegionStmt Parser::parse_print_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Print;
   st.args = parse_arg_list_to_eol();
@@ -889,7 +930,7 @@ RegionStmt Parser::parse_print_stmt() {
 }
 
 RegionStmt Parser::parse_counts_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   RegionStmt st;
   st.kind = RegionStmt::Kind::Counts;
   st.format = expect_ident("a counts format name");
@@ -916,7 +957,7 @@ done:
 }
 
 RegionStmt Parser::parse_sort_stmt() {
-  Token start = advance();
+  const Token& start = advance();
   const std::size_t raw_start = peek().span.start;
   std::size_t raw_end = raw_start;
   while (!nl_before()) {
@@ -1009,7 +1050,7 @@ std::unique_ptr<Expr> Parser::parse_not_expr() {
       leaf();
       return make_error(last_span_);
     }
-    Token op = advance();
+    const Token& op = advance();
     auto inner = parse_not_expr();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Unary;
@@ -1034,7 +1075,7 @@ std::unique_ptr<Expr> Parser::parse_comparison() {
   };
   std::vector<Link> links;
   while (auto op = peek_cmp_op()) {
-    Token op_tok = advance();
+    const Token& op_tok = advance();
     if (*op == CmpOp::ApproxEq && !tilde_warned_) {
       tilde_warned_ = true;
       diags_.warning(op_tok.span, "`~=` is `!=` (not approximately equal)",
@@ -1175,7 +1216,7 @@ std::unique_ptr<Expr> Parser::parse_unary() {
       leaf();
       return make_error(last_span_);
     }
-    Token op = advance();
+    const Token& op = advance();
     auto inner = parse_unary();
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::Unary;
@@ -1336,7 +1377,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     return e;
   }
   if (check(TokKind::KwAll)) {
-    Token t = advance();
+    const Token& t = advance();
     if (!nl_before() && check(TokKind::LParen)) {
       Ident id;
       id.name = "all";
@@ -1376,7 +1417,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     return inner;
   }
   if (check(TokKind::Pipe)) {
-    Token start = advance();
+    const Token& start = advance();
     auto inner = parse_additive();
     expect(TokKind::Pipe, "`|` to close the absolute value");
     auto e = std::make_unique<Expr>();
@@ -1387,7 +1428,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     return e;
   }
   if (check(TokKind::LBrace)) {
-    Token start = advance();
+    const Token& start = advance();
     std::vector<std::unique_ptr<Arg>> args;
     std::uint32_t arg_depth = 0;
     args.push_back(parse_arg());
@@ -1462,12 +1503,12 @@ std::unique_ptr<Arg> Parser::parse_arg() {
     return a;
   }
   if (check(TokKind::PathLike)) {
-    Token t = advance();
+    const Token& t = advance();
     diags_.warning(t.span, "bare file-path token is deprecated",
                    "quote it: \"" + t.text + "\"",
                    "interpreted as a file path argument");
     a->kind = Arg::Kind::Path;
-    a->str.value = std::move(t.text);
+    a->str.value = t.text;
     a->str.span = t.span;
     leaf();
     return a;
@@ -1548,7 +1589,7 @@ NumLit Parser::parse_signed_num() {
   Span start = peek().span;
   if (match(TokKind::Minus)) n.neg = true;
   if (check(TokKind::Int) || check(TokKind::Real)) {
-    Token t = advance();
+    const Token& t = advance();
     n.raw = t.text;
     n.is_real = (t.kind == TokKind::Real);
     n.span = (n.neg ? start.to(t.span) : t.span);

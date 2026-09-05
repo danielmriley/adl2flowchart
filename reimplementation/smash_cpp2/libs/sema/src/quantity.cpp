@@ -1,5 +1,7 @@
 #include "adl2/sema/quantity.hpp"
 
+#include "adl2/syntax/dump.hpp"
+
 #include <algorithm>
 #include <tuple>
 
@@ -146,18 +148,8 @@ std::string SortKey::debug() const {
   if (kind == SortKeyKind::Prop) {
     return "Prop(" + prop.debug() + ")";
   }
-  // Rust Debug for String: `"..."` with escapes.
-  std::string out = "Opaque(\"";
-  for (unsigned char c : opaque) {
-    if (c == '\\' || c == '"') {
-      out.push_back('\\');
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back(static_cast<char>(c));
-    }
-  }
-  out += "\")";
-  return out;
+  // Rust Debug for String: `"..."` with `{:?}` escapes.
+  return "Opaque(" + adl2::syntax::rust_debug_str(opaque) + ")";
 }
 
 bool Collection::operator==(const Collection& o) const {

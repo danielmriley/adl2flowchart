@@ -89,7 +89,9 @@ class Parser {
   const Token& peek() const;
   const Token& peek_n(std::size_t n) const;  // significant tokens
   std::size_t sig_index() const;
-  Token advance();
+  /// Consume the next significant token and return it (a reference into
+  /// `tokens_`, which is never mutated after construction).
+  const Token& advance();
   bool check(TokKind k) const;
   bool match(TokKind k);
   bool match_any(std::initializer_list<TokKind> ks);
@@ -106,8 +108,12 @@ class Parser {
   bool rest_of_line_is_boundary_list() const;
   bool derived_candidate_ahead() const;
   void synchronize_statement();
+  /// Backstop for an unrecognized token inside an object/region block
+  /// (smash3 `recover_block_stmt`): `false` at EOF, a bare identifier or a
+  /// section keyword (the block ends); otherwise warn, skip the line, `true`.
+  bool recover_block_stmt(const char* ctx_label);
   Ident expect_ident(const char* what);
-  Ident make_ident(Token tok);
+  Ident make_ident(const Token& tok);
   StrLit expect_string(const char* what);
   std::optional<CmpOp> peek_cmp_op() const;
   std::unique_ptr<Expr> make_error(Span span);

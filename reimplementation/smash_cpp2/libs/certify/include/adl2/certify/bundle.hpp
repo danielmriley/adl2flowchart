@@ -264,7 +264,12 @@ struct CombineBundle {
   bool replay() const;
 
   /// serde_json `to_string_pretty` (2-space indent, no trailing newline).
-  std::string to_json() const;
+  std::string to_json() const { return to_json(inputs); }
+
+  /// Same document with `with_inputs` written in place of this bundle's own
+  /// `inputs`, so a producer can stamp input identity without copying the
+  /// bundle. Byte-identical to `to_json()` when `with_inputs == inputs`.
+  std::string to_json(const std::vector<BundleInput>& with_inputs) const;
 
   /// Parse a smash2-combine document. Does not run replay. `nullopt` on
   /// malformed JSON or a structurally invalid `/2` document.

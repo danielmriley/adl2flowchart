@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -344,20 +345,26 @@ int clean_stale_bundles(const std::string& dir) {
     return 2;
   }
   std::size_t removed = 0;
-  for (const auto& ent : std::filesystem::directory_iterator(dir, ec)) {
-    if (ec) {
-      std::cerr << "error: cannot read " << dir << ": " << ec.message() << "\n";
-      return 2;
-    }
-    if (!ent.is_regular_file()) continue;
-    std::string name = ent.path().filename().string();
-    if (!is_combine_bundle_filename(name)) continue;
-    std::filesystem::remove(ent.path(), ec);
-    if (ec) {
-      std::cerr << "error: cannot remove " << ent.path().string() << ": " << ec.message() << "\n";
+  const std::filesystem::directory_iterator end;
+  std::filesystem::directory_iterator it(dir, ec);
+  while (!ec && it != end) {
+    std::error_code fec;
+    bool regular = it->is_regular_file(fec);
+    std::filesystem::path path = it->path();
+    it.increment(ec);
+    if (fec || !regular) continue;
+    if (!is_combine_bundle_filename(path.filename().string())) continue;
+    std::error_code rec;
+    std::filesystem::remove(path, rec);
+    if (rec) {
+      std::cerr << "error: cannot remove " << path.string() << ": " << rec.message() << "\n";
       return 2;
     }
     ++removed;
+  }
+  if (ec) {
+    std::cerr << "error: cannot read " << dir << ": " << ec.message() << "\n";
+    return 2;
   }
   std::cerr << "removed " << removed << " stale certificate bundle(s) from " << dir << "\n";
   return 0;
@@ -379,21 +386,44 @@ int write_bundles(const std::string& dir, const std::string& unit,
     std::cerr << "error: cannot create " << dir << ": " << ec.message() << "\n";
     return 2;
   }
+  // Paths written by this process, so two bundles whose unit/region names
+  // sanitize to the same file name error out instead of one silently
+  // overwriting the other. (`clean_stale_bundles` has already emptied the
+  // directory of earlier runs' bundles, so anything else found on disk is
+  // treated as a collision too.)
+  static std::map<std::string, std::string> written;
   for (std::size_t i = 0; i < report.combine_bundles.size(); ++i) {
-    auto b = report.combine_bundles[i];
-    b.inputs = inputs;
+    const auto& b = report.combine_bundles[i];
     std::string idx = std::to_string(i);
     if (idx.size() < 3) idx.insert(0, 3 - idx.size(), '0');
     std::string path = (std::filesystem::path(dir) /
                         (sane_filename(unit) + "__" + idx + "__" + sane_filename(b.region_a) +
                          "__" + sane_filename(b.region_b) + ".json"))
                            .string();
+    std::string label = unit + " (" + b.region_a + " vs " + b.region_b + ")";
+    auto prev = written.find(path);
+    if (prev != written.end() || std::filesystem::exists(path, ec)) {
+      std::cerr << "error: certificate bundle file name collision: " << path << " is the file for "
+                << (prev != written.end() ? prev->second : std::string("an existing file"))
+                << " and for " << label
+                << "; region or unit names differ only in characters the file name drops, so "
+                   "refusing to overwrite\n";
+      return 2;
+    }
+    written.emplace(path, label);
+    std::string json = b.to_json(inputs);
     std::ofstream out(path);
     if (!out) {
       std::cerr << "error: cannot write " << path << "\n";
       return 2;
     }
-    out << b.to_json();
+    if (!(out << json) || !out.flush()) {
+      std::cerr << "error: write failed for " << path << " (disk full or closed descriptor?)\n";
+      out.close();
+      std::error_code rec;
+      std::filesystem::remove(path, rec);
+      return 2;
+    }
   }
   std::cerr << unit << ": wrote " << report.combine_bundles.size()
             << " certificate bundle(s) to " << dir
@@ -902,10 +932,14 @@ bool expand_adl_inputs(const std::vector<std::string>& inputs,
     std::error_code ec;
     if (std::filesystem::is_directory(p, ec)) {
       std::vector<std::string> found;
-      for (const auto& ent : std::filesystem::directory_iterator(p, ec)) {
-        if (ec) break;
-        if (!ent.is_regular_file()) continue;
-        if (ent.path().extension() == ".adl") found.push_back(ent.path().string());
+      const std::filesystem::directory_iterator end;
+      std::filesystem::directory_iterator it(p, ec);
+      while (!ec && it != end) {
+        std::error_code fec;
+        if (it->is_regular_file(fec) && !fec && it->path().extension() == ".adl") {
+          found.push_back(it->path().string());
+        }
+        it.increment(ec);
       }
       if (ec) {
         err = "cannot read directory " + p;

@@ -1,13 +1,13 @@
 #include "adl2/sema/rat.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <sstream>
 #include <utility>
+
+#include "adl2/sema/ryu_f64.hpp"
 
 namespace adl2::sema {
 namespace {
@@ -310,8 +310,11 @@ double mag_to_f64(const std::vector<Limb>& num, const std::vector<Limb>& den, bo
   }
   auto [mant_v, rem] = div_mag(n, d);
   if (!rem.empty()) {
+    // Round to nearest, ties to even (IEEE / num-rational `to_f64`).
     auto twice = add_mag(rem, rem);
-    if (cmp_mag(twice, d) >= 0) mant_v = add_mag(mant_v, from_u64(1));
+    int c = cmp_mag(twice, d);
+    bool odd = !mant_v.empty() && (mant_v[0] & 1u);
+    if (c > 0 || (c == 0 && odd)) mant_v = add_mag(mant_v, from_u64(1));
   }
   int exp_off = -shift;
   auto too_wide = [](const std::vector<Limb>& v) {
@@ -416,6 +419,8 @@ std::optional<Rat> Rat::from_decimal_string(const std::string& s) {
     frac_part = t.substr(dot + 1);
     if (frac_part.find('.') != std::string::npos) return std::nullopt;
   }
+  // "." carries no digits (Rust: `"".parse::<BigInt>()` fails → None).
+  if (int_part.empty() && frac_part.empty()) return std::nullopt;
   if (int_part.empty()) int_part = "0";
   auto n = from_dec(int_part + frac_part);
   if (!n) return std::nullopt;
@@ -431,54 +436,49 @@ std::optional<Rat> Rat::from_decimal_string(const std::string& s) {
 
 std::optional<Rat> Rat::from_decimal_f64(double v) {
   if (!std::isfinite(v)) return std::nullopt;
-  char buf[64];
-  auto res = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general);
-  if (res.ec != std::errc()) return std::nullopt;
-  std::string s(buf, res.ptr);
-  // Rust Display never uses scientific notation for finite f64. If to_chars
-  // emitted one, expand via the decimal-string path after rewriting.
-  if (s.find('e') != std::string::npos || s.find('E') != std::string::npos) {
-    // Fallback: print with enough digits then strip.
-    std::ostringstream os;
-    os.setf(std::ios::fmtflags(0), std::ios::floatfield);
-    os.precision(17);
-    os << v;
-    s = os.str();
-    auto epos = s.find_first_of("eE");
-    if (epos != std::string::npos) {
-      // Convert scientific to plain decimal for from_decimal_string.
-      bool neg = false;
-      std::string body = s;
-      if (body[0] == '-') {
-        neg = true;
-        body = body.substr(1);
-      }
-      epos = body.find_first_of("eE");
-      std::string mant = body.substr(0, epos);
-      int exp = std::stoi(body.substr(epos + 1));
-      auto dpos = mant.find('.');
-      std::string digits = mant;
-      int frac = 0;
-      if (dpos != std::string::npos) {
-        frac = static_cast<int>(mant.size() - dpos - 1);
-        digits = mant.substr(0, dpos) + mant.substr(dpos + 1);
-      }
-      int place = static_cast<int>(digits.size()) - frac + exp;
-      std::string plain;
-      if (place <= 0) {
-        plain = "0." + std::string(static_cast<std::size_t>(-place), '0') + digits;
-      } else if (place >= static_cast<int>(digits.size())) {
-        plain = digits + std::string(static_cast<std::size_t>(place - digits.size()), '0');
-      } else {
-        plain = digits.substr(0, static_cast<std::size_t>(place)) + "." +
-                digits.substr(static_cast<std::size_t>(place));
-      }
-      if (neg) plain = "-" + plain;
-      s = plain;
+  // Rust `format!("{}", v)`: the shortest round-trip digits laid out as a
+  // plain decimal (never scientific), e.g. 1e-7 → "0.0000001". Any other
+  // printing (precision 17, `%g`) reads a different rational.
+  ShortestDecimal d = shortest_decimal(v);
+  if (d.digits == "0") return zero();
+  auto plain_decimal = [](const std::string& digits, int exponent) {
+    const int len = static_cast<int>(digits.size());
+    const int place = len + exponent;  // digits before the decimal point
+    if (exponent >= 0) return digits + std::string(static_cast<std::size_t>(exponent), '0');
+    if (place > 0) {
+      return digits.substr(0, static_cast<std::size_t>(place)) + "." +
+             digits.substr(static_cast<std::size_t>(place));
+    }
+    return "0." + std::string(static_cast<std::size_t>(-place), '0') + digits;
+  };
+  std::optional<Rat> r = from_decimal_string(plain_decimal(d.digits, d.exponent));
+  if (!r) return std::nullopt;
+  // Ryu (std::to_chars) and Rust's flt2dec pick the same shortest digits
+  // except when the f64 is exactly the midpoint of two candidates: Ryu
+  // rounds to even, Rust `Display` rounds up in magnitude
+  // (…989.25 → Ryu "…989.2", Rust "…989.3"). A midpoint needs
+  // 2·|v|/10^k to be an odd integer; with |v| = m·2^e, m odd, that forces
+  // k == e+1, so the exact check runs only on that (rare) shape.
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  int raw_exp = static_cast<int>((bits >> 52) & 0x7ff);
+  std::uint64_t mant = bits & 0x000fffffffffffffull;
+  int e2 = raw_exp == 0 ? -1074 : raw_exp - 1075;
+  if (raw_exp != 0) mant |= 0x0010000000000000ull;
+  while ((mant & 1) == 0) {
+    mant >>= 1;
+    ++e2;
+  }
+  if (d.exponent == e2 + 1) {
+    std::optional<Rat> exact = from_f64_exact(std::fabs(v));
+    std::optional<Rat> unit = from_decimal_string(plain_decimal("1", d.exponent));
+    if (exact && unit) {
+      Rat diff = *exact - *r;
+      if (diff.is_positive() && diff + diff == *unit) r = *r + *unit;
     }
   }
-  if (s == "-0") s = "0";
-  return from_decimal_string(s);
+  if (d.negative) r = -*r;
+  return r;
 }
 
 std::optional<Rat> Rat::from_f64_exact(double v) {

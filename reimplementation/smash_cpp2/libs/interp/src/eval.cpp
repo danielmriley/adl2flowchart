@@ -2,6 +2,7 @@
 
 #include "adl2/sema/num.hpp"
 #include "adl2/sema/quantity.hpp"
+#include "adl2/sema/ryu_f64.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1520,31 +1521,8 @@ std::optional<std::size_t> assign_bin(double v, const std::vector<double>& edges
 }
 
 std::string json_f64(double v) {
-  if (!std::isfinite(v)) return "null";
-  if (v == 0.0) return std::signbit(v) ? "-0.0" : "0.0";
-  // Integers in the exact-mantissa range serialize as `N.0` (serde_json/ryu).
-  if (v == std::trunc(v) && std::fabs(v) <= 9007199254740992.0) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.1f", v);
-    return buf;
-  }
-  // Shortest round-trip that `strtod` recovers — same contract as ryu.
-  char buf[64];
-  for (int prec = 1; prec <= 17; ++prec) {
-    std::snprintf(buf, sizeof(buf), "%.*g", prec, v);
-    char* end = nullptr;
-    double back = std::strtod(buf, &end);
-    if (end && *end == '\0' && back == v) {
-      std::string s(buf);
-      if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
-          s.find('E') == std::string::npos) {
-        s += ".0";
-      }
-      return s;
-    }
-  }
-  std::snprintf(buf, sizeof(buf), "%.17g", v);
-  return buf;
+  // serde_json/ryu text (non-finite → "null"), shared with ingest's jnum.
+  return adl2::sema::ryu_f64(v);
 }
 
 namespace {

@@ -2,7 +2,6 @@
 
 #include "adl2/syntax/dump.hpp"
 
-#include <algorithm>
 #include <vector>
 
 namespace adl2::sema {
@@ -915,81 +914,6 @@ bool Resolver::context_tainted(const HNode& node) {
     if (context_tainted(*ch)) return true;
   }
   return false;
-}
-
-int edit_distance(const std::string& a, const std::string& b) {
-  const std::size_t n = a.size();
-  const std::size_t m = b.size();
-  if (n > 48 || m > 48) return 1000;
-  std::vector<int> prev(m + 1), cur(m + 1);
-  for (std::size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
-  for (std::size_t i = 1; i <= n; ++i) {
-    cur[0] = static_cast<int>(i);
-    for (std::size_t j = 1; j <= m; ++j) {
-      int cost = a[i - 1] == b[j - 1] ? 0 : 1;
-      cur[j] = std::min(prev[j] + 1, std::min(cur[j - 1] + 1, prev[j - 1] + cost));
-    }
-    prev.swap(cur);
-  }
-  return prev[m];
-}
-
-const syn::Ident* Resolver::first_unresolved_ident(const syn::Expr& e, const Ctx& ctx) {
-  if (e.kind == syn::ExprKind::Ident) {
-    if (ctx.elem_source && ext->is_property(e.ident.name)) return nullptr;
-    if (resolve_target(e, ctx).kind == TargetKind::None) return &e.ident;
-    return nullptr;
-  }
-  auto walk = [&](const std::unique_ptr<syn::Expr>& p) -> const syn::Ident* {
-    return p ? first_unresolved_ident(*p, ctx) : nullptr;
-  };
-  if (auto* id = walk(e.child)) return id;
-  if (auto* id = walk(e.lhs)) return id;
-  if (auto* id = walk(e.rhs)) return id;
-  if (auto* id = walk(e.guard)) return id;
-  if (auto* id = walk(e.then_e)) return id;
-  if (auto* id = walk(e.else_e)) return id;
-  for (const auto& item : e.items) {
-    if (auto* id = walk(item)) return id;
-  }
-  for (const auto& a : e.args) {
-    if (a && a->expr) {
-      if (auto* id = first_unresolved_ident(*a->expr, ctx)) return id;
-    }
-  }
-  return nullptr;
-}
-
-std::string Resolver::nearest_declared_name(const std::string& name) const {
-  std::string best;
-  int best_d = 4;
-  auto consider = [&](const std::string& cand) {
-    if (cand.empty() || cand == name) return;
-    int d = edit_distance(name, cand);
-    if (d <= 0 || d >= best_d) return;
-    best_d = d;
-    best = cand;
-  };
-  for (const auto* obj : ast_objects) {
-    if (obj) consider(obj->name.name);
-  }
-  for (const auto* def : ast_defines) {
-    if (def) consider(def->name.name);
-  }
-  return best;
-}
-
-std::string Resolver::unknown_arg_reason(const std::string& kind, const std::string& callee,
-                                         const syn::Arg& arg, const Ctx& ctx) {
-  if (arg.expr) {
-    if (const syn::Ident* id = first_unresolved_ident(*arg.expr, ctx)) {
-      std::string msg = kind + " `" + callee + "` references unknown `" + id->name + "`";
-      std::string hint = nearest_declared_name(id->name);
-      if (!hint.empty()) msg += " (did you mean `" + hint + "`?)";
-      return msg;
-    }
-  }
-  return kind + " `" + callee + "` over an element-context argument (no shared identity)";
 }
 
 std::optional<QuantityArg> Resolver::quantity_arg(const syn::Arg& arg, const Ctx& ctx) {

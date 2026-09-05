@@ -15,6 +15,11 @@ namespace {
 
 constexpr std::size_t CUTS_MAX = 64;
 
+const std::vector<Symbol>& names_of(const Hir& hir, CollectionId id) {
+  static const std::vector<Symbol> kEmpty;
+  return id.id < hir.coll_names.size() ? hir.coll_names[id.id] : kEmpty;
+}
+
 std::size_t utf8_chars(const std::string& s) {
   std::size_t n = 0;
   for (unsigned char c : s) {
@@ -106,8 +111,7 @@ std::string base_chain(const Hir& hir, CollectionId id) {
   std::vector<std::string> links;
   CollectionId cur = id;
   for (;;) {
-    const std::vector<Symbol>& names =
-        cur.id < hir.coll_names.size() ? hir.coll_names[cur.id] : std::vector<Symbol>{};
+    const std::vector<Symbol>& names = names_of(hir, cur);
     const Collection& coll = hir.table.collection(cur);
     if (coll.kind == CollectionKind::Filtered) {
       links.push_back(link_name(hir, cur, names));
@@ -417,8 +421,7 @@ std::vector<std::string> derived_facts(const Hir& hir, CollectionId id, const Co
 }
 
 std::optional<Row> build_row(const Hir& hir, CollectionId id, const Collection& coll) {
-  const std::vector<Symbol>& names =
-      id.id < hir.coll_names.size() ? hir.coll_names[id.id] : std::vector<Symbol>{};
+  const std::vector<Symbol>& names = names_of(hir, id);
   if (names.empty() && coll.kind == CollectionKind::Base) return std::nullopt;
   Row row;
   row.name = collapse_names(hir, names);

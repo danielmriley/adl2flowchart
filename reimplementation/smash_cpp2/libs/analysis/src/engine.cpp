@@ -348,7 +348,8 @@ std::unique_ptr<SubprocessSolver> make_solver(SolverChoice choice, std::string& 
     label = "none";
     return nullptr;
   }
-  label = "smtlib-subprocess";
+  // smash3 report label: backend plus the binary it shells out to.
+  label = "smtlib-subprocess(z3)";
   return std::make_unique<SubprocessSolver>(SubprocessSolver::z3());
 }
 

@@ -32,6 +32,7 @@ adl2_add_library(adl2_sema
     src/ext.cpp
     src/dump.cpp
     src/rat.cpp
+    src/ryu_f64.cpp
     src/num.cpp
     src/resolve.cpp
     src/resolve_expr.cpp

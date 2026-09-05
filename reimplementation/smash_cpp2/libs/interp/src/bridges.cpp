@@ -276,7 +276,11 @@ std::string svg_heatmap(const std::string& title, const std::string& rname, cons
   for (std::size_t by = 1; by <= ny; ++by) {
     for (std::size_t bx = 1; bx <= nx; ++bx) {
       double v = h.sumw[bx + (nx + 2) * by];
-      unsigned shade = 255u - static_cast<unsigned>(std::round((v / vmax) * 215.0));
+      // Negative weights (or NaN) would make the double→unsigned cast UB.
+      double frac = v / vmax;
+      if (!(frac > 0.0)) frac = 0.0;
+      if (frac > 1.0) frac = 1.0;
+      unsigned shade = 255u - static_cast<unsigned>(std::round(frac * 215.0));
       double x = PAD_L + cw * static_cast<double>(bx - 1);
       double y = PAD_T + plot_h - ch * static_cast<double>(by);
       char fill[16];

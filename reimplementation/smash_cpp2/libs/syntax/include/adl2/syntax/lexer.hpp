@@ -3,6 +3,7 @@
 #include "adl2/syntax/diag.hpp"
 #include "adl2/syntax/token.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,8 +20,14 @@ class Lexer {
 
  private:
   Token next();
-  void skip_spaces();  // space/tab only; newlines become tokens
+  /// One lexing step: a token, or nullopt after skipping a comment or a
+  /// rejected character (`next` loops; nothing recurses per byte).
+  std::optional<Token> lex_one();
+  void skip_spaces();  // space/tab/CR; only `\n` becomes a token
   void skip_line_comment();
+  /// Byte length of the UTF-8 character starting at `k` (1 for an invalid
+  /// lead or truncated sequence).
+  std::size_t utf8_len_at(std::size_t k) const;
   Token make(TokKind kind, std::size_t begin, std::uint32_t line,
              std::uint32_t column, std::string text);
   TokKind keyword_or_ident(const std::string& text) const;

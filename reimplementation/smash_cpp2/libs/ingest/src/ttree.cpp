@@ -26,7 +26,9 @@ struct Cursor {
   std::size_t i = 0;
 
   void need(std::size_t k) const {
-    if (i + k > n) throw ParseError("short ROOT read");
+    // Written so neither `i + k` nor `n - i` can wrap: the cursor may sit
+    // past `n` after a frame-relative `i = end` assignment.
+    if (i > n || k > n - i) throw ParseError("short ROOT read");
   }
   std::uint8_t u8() {
     need(1);
@@ -122,41 +124,76 @@ Key parse_key(const std::uint8_t* p, std::size_t n, std::size_t pos) {
   k.name = r.pstr();
   k.title = r.pstr();
   k.after_strings = r.i;
+  if (k.nbytes < 0 || k.keylen > k.nbytes) throw ParseError("bad TKey header (keylen > nbytes)");
   return k;
 }
 
+// A key whose record `[offset, offset + nbytes)` must lie inside the buffer
+// (as opposed to a KeysList entry, whose nbytes describes a record elsewhere).
+Key parse_record_key(const std::uint8_t* p, std::size_t n, std::size_t pos) {
+  Key k = parse_key(p, n, pos);
+  if (static_cast<std::size_t>(k.nbytes) > n - k.offset) throw ParseError("TKey record past end of file");
+  return k;
+}
+
+std::size_t payload_len(const Key& k) { return static_cast<std::size_t>(k.nbytes - k.keylen); }
+
+constexpr std::size_t kMaxObjLen = std::size_t{1} << 30;
+constexpr std::size_t kMaxExpansion = 64;
+
 std::vector<std::uint8_t> decompress(const std::uint8_t* data, std::size_t n, std::int32_t objlen) {
-  if (static_cast<std::size_t>(objlen) == n) {
+  if (objlen <= 0) throw ParseError("bad objlen");
+  const std::size_t want = static_cast<std::size_t>(objlen);
+  if (want == n) {
     return {data, data + n};
   }
+  if (want > kMaxObjLen || want > kMaxExpansion * n) throw ParseError("implausible objlen");
   std::vector<std::uint8_t> out;
-  out.reserve(static_cast<std::size_t>(objlen));
+  out.reserve(want);
   std::size_t i = 0;
-  while (i < n && static_cast<std::int32_t>(out.size()) < objlen) {
-    if (i + 9 > n) throw ParseError("truncated compression header");
+  while (i < n && out.size() < want) {
+    if (n - i < 9) throw ParseError("truncated compression header");
     char algo[3] = {static_cast<char>(data[i]), static_cast<char>(data[i + 1]), 0};
     std::uint32_t csz = static_cast<std::uint32_t>(data[i + 3]) |
                         (static_cast<std::uint32_t>(data[i + 4]) << 8) |
                         (static_cast<std::uint32_t>(data[i + 5]) << 16);
+    std::uint32_t usz = static_cast<std::uint32_t>(data[i + 6]) |
+                        (static_cast<std::uint32_t>(data[i + 7]) << 8) |
+                        (static_cast<std::uint32_t>(data[i + 8]) << 16);
     i += 9;
-    if (i + csz > n) throw ParseError("truncated compressed chunk");
+    if (csz > n - i) throw ParseError("truncated compressed chunk");
     if (std::strcmp(algo, "ZL") != 0) {
       throw ParseError(std::string("unsupported ROOT compression ") + algo);
     }
-    uLongf dest_len = static_cast<uLongf>(objlen) - out.size() + 64;
+    if (usz == 0 || usz > want - out.size()) throw ParseError("compressed chunk exceeds objlen");
+    uLongf dest_len = usz;
     std::size_t at = out.size();
-    out.resize(at + dest_len);
+    out.resize(at + usz);
     int rc = uncompress(out.data() + at, &dest_len, data + i, csz);
-    if (rc != Z_OK) throw ParseError("zlib decompress failed");
-    out.resize(at + dest_len);
+    if (rc != Z_OK || dest_len != usz) throw ParseError("zlib decompress failed");
     i += csz;
   }
+  if (out.size() != want) throw ParseError("decompressed size != objlen");
   return out;
 }
 
+constexpr int kMaxObjectDepth = 64;
+
 struct Ctx {
   std::size_t origin = 0;
+  int depth = 0;
   std::unordered_map<std::uint32_t, std::string> classes;
+};
+
+struct DepthGuard {
+  int& depth;
+  explicit DepthGuard(int& d) : depth(d) {
+    if (depth >= kMaxObjectDepth) throw ParseError("object nesting too deep");
+    ++depth;
+  }
+  ~DepthGuard() { --depth; }
+  DepthGuard(const DepthGuard&) = delete;
+  DepthGuard& operator=(const DepthGuard&) = delete;
 };
 
 struct Obj {
@@ -201,8 +238,12 @@ std::vector<Obj> tobjarray(Cursor& r, Ctx& ctx) {
   std::int32_t n = r.i32();
   r.i32();
   if (n < 0 || n > 1000000) throw ParseError("implausible TObjArray length");
+  // Every element costs at least a 4-byte tag word; do not pre-reserve on an
+  // attacker-supplied count.
+  if (static_cast<std::size_t>(n) > (r.n - std::min(r.i, r.n)) / 4) {
+    throw ParseError("TObjArray length exceeds buffer");
+  }
   std::vector<Obj> items;
-  items.reserve(static_cast<std::size_t>(n));
   for (std::int32_t k = 0; k < n; ++k) items.push_back(read_object_any(r, ctx));
   r.i = end;
   return items;
@@ -249,8 +290,9 @@ std::vector<std::uint8_t> read_tbasket_embedded(Cursor& r, std::size_t obj_end) 
   std::int32_t nevbuf = r.i32();
   std::int32_t flast = r.i32();
   r.u8();
+  if (nevbuf < 0 || nevbufsize < 0) throw ParseError("negative embedded TBasket count");
+  if (flast < static_cast<std::int32_t>(keylen)) throw ParseError("embedded TBasket fLast < keylen");
   std::int32_t border = flast - static_cast<std::int32_t>(keylen);
-  if (border < 0) border = 0;
   if (static_cast<std::int64_t>(nevbufsize) * nevbuf + keylen != flast) {
     std::size_t off_n = 8 + static_cast<std::size_t>(nevbuf) * 4;
     r.skip(off_n);
@@ -320,6 +362,7 @@ Obj read_tbranch(Cursor& r, Ctx& ctx) {
 }
 
 Obj read_object_any(Cursor& r, Ctx& ctx) {
+  DepthGuard depth(ctx.depth);
   std::uint32_t word = r.u32();
   if (word == 0) {
     Obj n;
@@ -481,10 +524,9 @@ std::int64_t dir_seek_keys(const std::vector<std::uint8_t>& b) {
     Cursor c{b.data(), b.size(), 8};
     begin = c.i32();
   }
-  Key k = parse_key(b.data(), b.size(), static_cast<std::size_t>(begin));
-  if (k.nbytes < k.keylen) throw ParseError("bad TFile key");
-  Cursor r{b.data() + static_cast<std::size_t>(begin) + k.keylen,
-           static_cast<std::size_t>(k.nbytes - k.keylen), 0};
+  if (begin < 0) throw ParseError("negative fBEGIN");
+  Key k = parse_record_key(b.data(), b.size(), static_cast<std::size_t>(begin));
+  Cursor r{b.data() + k.offset + k.keylen, payload_len(k), 0};
   r.pstr();
   r.pstr();
   std::int16_t dv = r.i16();
@@ -504,11 +546,9 @@ std::int64_t dir_seek_keys(const std::vector<std::uint8_t>& b) {
 
 std::vector<std::uint8_t> basket_at_seek(const std::vector<std::uint8_t>& file, std::int64_t seek) {
   if (seek <= 0) return {};
-  Key k = parse_key(file.data(), file.size(), static_cast<std::size_t>(seek));
-  if (k.nbytes < k.keylen) throw ParseError("bad TBasket key");
-  const std::uint8_t* payload = file.data() + static_cast<std::size_t>(seek) + k.keylen;
-  std::size_t plen = static_cast<std::size_t>(k.nbytes - k.keylen);
-  auto raw = decompress(payload, plen, k.objlen);
+  Key k = parse_record_key(file.data(), file.size(), static_cast<std::size_t>(seek));
+  const std::uint8_t* payload = file.data() + k.offset + k.keylen;
+  auto raw = decompress(payload, payload_len(k), k.objlen);
   Cursor extra{file.data(), file.size(), k.after_strings};
   extra.u16();
   extra.i32();
@@ -650,20 +690,25 @@ std::optional<LoadedFile> load_root(const std::string& path, const std::string& 
       return std::nullopt;
     }
     std::int64_t seek_keys = dir_seek_keys(lf.bytes);
-    Key kk = parse_key(lf.bytes.data(), lf.bytes.size(), static_cast<std::size_t>(seek_keys));
-    const std::uint8_t* kd = lf.bytes.data() + static_cast<std::size_t>(seek_keys) + kk.keylen;
-    std::size_t kd_n = static_cast<std::size_t>(kk.nbytes - kk.keylen);
+    if (seek_keys < 0) throw ParseError("negative fSeekKeys");
+    Key kk = parse_record_key(lf.bytes.data(), lf.bytes.size(), static_cast<std::size_t>(seek_keys));
+    const std::uint8_t* kd = lf.bytes.data() + kk.offset + kk.keylen;
+    std::size_t kd_n = payload_len(kk);
     Cursor kr{kd, kd_n, 0};
     std::int32_t nkeys = kr.i32();
-    if (nkeys < 0) nkeys = -nkeys;
+    if (nkeys < 0) throw ParseError("negative key count");
+    // A KeysList entry is at least the 18-byte fixed header plus 3 pstrings.
+    if (static_cast<std::size_t>(nkeys) > kd_n / 21) throw ParseError("key count exceeds KeysList");
     Key tree_key{};
     bool found = false;
     Key first_tree{};
     bool any_tree = false;
     for (std::int32_t i = 0; i < nkeys; ++i) {
       Key ck = parse_key(kd, kd_n, kr.i);
+      if (ck.offset + ck.keylen < ck.after_strings) throw ParseError("KeysList entry keylen too short");
       kr.i = ck.offset + ck.keylen;
-      Key rec = parse_key(lf.bytes.data(), lf.bytes.size(), static_cast<std::size_t>(ck.seekkey));
+      if (ck.seekkey < 0) throw ParseError("negative fSeekKey");
+      Key rec = parse_record_key(lf.bytes.data(), lf.bytes.size(), static_cast<std::size_t>(ck.seekkey));
       if (rec.cls == "TTree") {
         if (!any_tree) {
           first_tree = rec;
@@ -686,10 +731,10 @@ std::optional<LoadedFile> load_root(const std::string& path, const std::string& 
       err = {LoadError::Tree, "TTree `" + tree_name + "` not found"};
       return std::nullopt;
     }
-    const std::uint8_t* payload =
-        lf.bytes.data() + static_cast<std::size_t>(tree_key.seekkey) + tree_key.keylen;
-    std::size_t plen = static_cast<std::size_t>(tree_key.nbytes - tree_key.keylen);
-    auto raw = decompress(payload, plen, tree_key.objlen);
+    // tree_key came from parse_record_key at its own seekkey, so
+    // [offset, offset + nbytes) is inside the file.
+    const std::uint8_t* payload = lf.bytes.data() + tree_key.offset + tree_key.keylen;
+    auto raw = decompress(payload, payload_len(tree_key), tree_key.objlen);
     lf.tree = read_ttree(raw, tree_key.keylen);
     return lf;
   } catch (const ParseError& e) {

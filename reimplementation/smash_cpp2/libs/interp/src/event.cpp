@@ -2,9 +2,11 @@
 
 #include "adl2/sema/intern.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
@@ -35,182 +37,387 @@ struct Json {
   }
 };
 
+// A strict JSON document parser that mirrors serde_json's `from_str` into a
+// `Value` (the oracle's loader): the same grammar rejections, the same error
+// codes, and the same `<code> at line L column C` positions. Positions follow
+// serde_json's two conventions — `err` reports the cursor after the offending
+// byte was consumed, `peek_err` reports the byte the cursor is looking at
+// (1-based, capped at the input length). Objects are `BTreeMap`-like: a
+// repeated key keeps the LAST value, and entries iterate in byte order.
 class Parser {
  public:
-  explicit Parser(std::string t) : text(std::move(t)) {}
+  explicit Parser(const std::string& t) : text(t), n(t.size()) {}
 
-  Json parse_value() {
-    skip();
-    if (i >= text.size()) throw std::runtime_error("unexpected end of JSON");
-    char c = text[i];
-    if (c == 'n') return parse_lit("null", Json{});
-    if (c == 't') {
-      Json j;
-      j.kind = Json::Kind::Bool;
-      j.b = true;
-      return parse_lit("true", j);
-    }
-    if (c == 'f') {
-      Json j;
-      j.kind = Json::Kind::Bool;
-      j.b = false;
-      return parse_lit("false", j);
-    }
-    if (c == '"') return parse_string();
-    if (c == '[') return parse_array();
-    if (c == '{') return parse_object();
-    if (c == '-' || std::isdigit(static_cast<unsigned char>(c))) return parse_number();
-    throw std::runtime_error(std::string("unexpected JSON char: ") + c);
+  Json parse_document() {
+    Json v = parse_value();
+    skip_ws();
+    if (i < n) peek_err("trailing characters");
+    return v;
   }
 
  private:
-  std::string text;
+  static constexpr int kRecursionLimit = 128;
+
+  const std::string& text;
+  std::size_t n;
   std::size_t i{0};
+  int remaining_depth{kRecursionLimit};
 
-  void skip() {
-    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+  [[noreturn]] void fail(const char* code, std::size_t at) const {
+    std::size_t start_of_line = 0;
+    std::size_t line = 1;
+    for (std::size_t k = 0; k < at; ++k) {
+      if (text[k] == '\n') {
+        ++line;
+        start_of_line = k + 1;
+      }
+    }
+    throw std::runtime_error(std::string(code) + " at line " + std::to_string(line) + " column " +
+                             std::to_string(at - start_of_line));
+  }
+  [[noreturn]] void err(const char* code) const { fail(code, i); }
+  [[noreturn]] void peek_err(const char* code) const { fail(code, std::min(n, i + 1)); }
+
+  static bool is_digit(char c) { return c >= '0' && c <= '9'; }
+
+  void skip_ws() {
+    while (i < n && (text[i] == ' ' || text[i] == '\n' || text[i] == '\t' || text[i] == '\r')) ++i;
   }
 
-  Json parse_lit(const char* lit, Json j) {
-    std::size_t n = std::char_traits<char>::length(lit);
-    if (text.compare(i, n, lit) != 0) throw std::runtime_error(std::string("expected ") + lit);
-    i += n;
-    return j;
-  }
-
-  Json parse_string() {
-    if (text[i] != '"') throw std::runtime_error("expected string");
-    ++i;
-    std::string out;
-    while (i < text.size()) {
-      char c = text[i++];
-      if (c == '"') {
+  Json parse_value() {
+    skip_ws();
+    if (i >= n) peek_err("EOF while parsing a value");
+    switch (text[i]) {
+      case 'n':
+        ++i;
+        parse_ident("ull");
+        return Json{};
+      case 't': {
+        ++i;
+        parse_ident("rue");
         Json j;
-        j.kind = Json::Kind::Str;
-        j.s = std::move(out);
+        j.kind = Json::Kind::Bool;
+        j.b = true;
         return j;
       }
-      if (c == '\\' && i < text.size()) {
-        char e = text[i++];
-        switch (e) {
-          case '"':
-          case '\\':
-          case '/':
-            out.push_back(e);
-            break;
-          case 'b':
-            out.push_back('\b');
-            break;
-          case 'f':
-            out.push_back('\f');
-            break;
-          case 'n':
-            out.push_back('\n');
-            break;
-          case 'r':
-            out.push_back('\r');
-            break;
-          case 't':
-            out.push_back('\t');
-            break;
-          default:
-            out.push_back(e);
-            break;
-        }
-      } else {
-        out.push_back(c);
+      case 'f': {
+        ++i;
+        parse_ident("alse");
+        Json j;
+        j.kind = Json::Kind::Bool;
+        j.b = false;
+        return j;
       }
+      case '-':
+        ++i;
+        return parse_number(false);
+      case '"': {
+        ++i;
+        Json j;
+        j.kind = Json::Kind::Str;
+        j.s = parse_string_body();
+        return j;
+      }
+      case '[': {
+        enter();
+        ++i;
+        Json j = parse_array_body();
+        ++remaining_depth;
+        return j;
+      }
+      case '{': {
+        enter();
+        ++i;
+        Json j = parse_object_body();
+        ++remaining_depth;
+        return j;
+      }
+      default:
+        if (is_digit(text[i])) return parse_number(true);
+        peek_err("expected value");
     }
-    throw std::runtime_error("unterminated string");
   }
 
-  Json parse_number() {
-    std::size_t start = i;
-    if (i < text.size() && text[i] == '-') ++i;
-    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
-    if (i < text.size() && text[i] == '.') {
-      ++i;
-      while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+  // serde_json's check_recursion!: the 128th nested container is refused,
+  // reported at its opening bracket.
+  void enter() {
+    if (--remaining_depth == 0) peek_err("recursion limit exceeded");
+  }
+
+  void parse_ident(const char* rest) {
+    for (; *rest; ++rest) {
+      if (i >= n) err("EOF while parsing a value");
+      char c = text[i++];
+      if (c != *rest) err("expected ident");
     }
-    if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
-      ++i;
-      if (i < text.size() && (text[i] == '+' || text[i] == '-')) ++i;
-      while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+  }
+
+  Json parse_number(bool positive) {
+    const std::size_t start = positive ? i : i - 1;
+    if (i >= n) err("EOF while parsing a value");
+    char c = text[i++];
+    if (c == '0') {
+      if (i < n && is_digit(text[i])) peek_err("invalid number");
+    } else if (c >= '1' && c <= '9') {
+      while (i < n && is_digit(text[i])) ++i;
+    } else {
+      err("invalid number");
     }
-    Json j;
-    j.kind = Json::Kind::Num;
-    // strtod, not stod: libstdc++ stod throws out_of_range on ERANGE, and
-    // glibc sets ERANGE for subnormal underflow (e.g. 5e-324 = next_up(0)),
-    // which serde_json accepts. Underflow to 0/denormal is a valid JSON
-    // number; only overflow to ±inf is rejected.
+    if (i < n && text[i] == '.') {
+      ++i;
+      const std::size_t digits_at = i;
+      while (i < n && is_digit(text[i])) ++i;
+      if (i == digits_at) {
+        if (i < n) peek_err("invalid number");
+        peek_err("EOF while parsing a value");
+      }
+    }
+    if (i < n && (text[i] == 'e' || text[i] == 'E')) {
+      ++i;
+      if (i < n && (text[i] == '+' || text[i] == '-')) ++i;
+      if (i >= n) err("EOF while parsing a value");
+      char d = text[i++];
+      if (!is_digit(d)) err("invalid number");
+      while (i < n && is_digit(text[i])) ++i;
+    }
+    // strtod on exactly the scanned token (never the tail of the line, so
+    // hex/inf/nan spellings cannot leak in). strtod, not stod: libstdc++ stod
+    // throws out_of_range on ERANGE, and glibc sets ERANGE for subnormal
+    // underflow (e.g. 5e-324), which serde_json accepts. Only overflow to
+    // ±inf is rejected, as serde_json's `number out of range`.
+    std::string tok(text, start, i - start);
     errno = 0;
     char* end = nullptr;
-    j.n = std::strtod(text.c_str() + start, &end);
-    if (end != text.c_str() + i) {
-      throw std::runtime_error("invalid JSON number");
-    }
-    if (!std::isfinite(j.n)) {
-      throw std::runtime_error("non-finite JSON number");
-    }
+    double v = std::strtod(tok.c_str(), &end);
+    if (end != tok.c_str() + tok.size()) err("invalid number");
+    if (!std::isfinite(v)) err("number out of range");
+    Json j;
+    j.kind = Json::Kind::Num;
+    j.n = v;
     return j;
   }
 
-  Json parse_array() {
-    ++i;
-    Json j;
-    j.kind = Json::Kind::Arr;
-    skip();
-    if (i < text.size() && text[i] == ']') {
-      ++i;
-      return j;
+  static void push_utf8(std::string& out, std::uint32_t cp) {
+    if (cp < 0x80) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
     }
+  }
+
+  std::uint32_t hex4() {
+    if (n - i < 4) {
+      i = n;
+      err("EOF while parsing a string");
+    }
+    std::uint32_t v = 0;
+    bool ok = true;
+    for (int k = 0; k < 4; ++k) {
+      char c = text[i + static_cast<std::size_t>(k)];
+      std::uint32_t d;
+      if (c >= '0' && c <= '9') d = static_cast<std::uint32_t>(c - '0');
+      else if (c >= 'a' && c <= 'f') d = static_cast<std::uint32_t>(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F') d = static_cast<std::uint32_t>(c - 'A' + 10);
+      else {
+        d = 0;
+        ok = false;
+      }
+      v = (v << 4) | d;
+    }
+    i += 4;
+    if (!ok) err("invalid escape");
+    return v;
+  }
+
+  void parse_unicode_escape(std::string& out) {
+    std::uint32_t n1 = hex4();
+    if (n1 >= 0xDC00 && n1 <= 0xDFFF) err("lone leading surrogate in hex escape");
+    if (n1 < 0xD800 || n1 > 0xDBFF) {
+      push_utf8(out, n1);
+      return;
+    }
+    if (i >= n) err("EOF while parsing a string");
+    if (text[i] != '\\') {
+      ++i;
+      err("unexpected end of hex escape");
+    }
+    ++i;
+    if (i >= n) err("EOF while parsing a string");
+    if (text[i] != 'u') {
+      ++i;
+      err("unexpected end of hex escape");
+    }
+    ++i;
+    std::uint32_t n2 = hex4();
+    if (n2 < 0xDC00 || n2 > 0xDFFF) err("lone leading surrogate in hex escape");
+    push_utf8(out, (((n1 - 0xD800) << 10) | (n2 - 0xDC00)) + 0x10000);
+  }
+
+  void parse_escape(std::string& out) {
+    if (i >= n) err("EOF while parsing a string");
+    char e = text[i++];
+    switch (e) {
+      case '"': out.push_back('"'); break;
+      case '\\': out.push_back('\\'); break;
+      case '/': out.push_back('/'); break;
+      case 'b': out.push_back('\b'); break;
+      case 'f': out.push_back('\f'); break;
+      case 'n': out.push_back('\n'); break;
+      case 'r': out.push_back('\r'); break;
+      case 't': out.push_back('\t'); break;
+      case 'u': parse_unicode_escape(out); break;
+      default: err("invalid escape");
+    }
+  }
+
+  // Cursor sits just after the opening quote.
+  std::string parse_string_body() {
+    std::string out;
     while (true) {
-      j.arr.push_back(parse_value());
-      skip();
-      if (i >= text.size()) throw std::runtime_error("unterminated array");
-      if (text[i] == ',') {
+      if (i >= n) err("EOF while parsing a string");
+      unsigned char c = static_cast<unsigned char>(text[i]);
+      if (c == '"') {
         ++i;
+        return out;
+      }
+      if (c == '\\') {
+        ++i;
+        parse_escape(out);
         continue;
       }
+      if (c < 0x20) {
+        ++i;
+        err("control character (\\u0000-\\u001F) found while parsing a string");
+      }
+      out.push_back(static_cast<char>(c));
+      ++i;
+    }
+  }
+
+  // Cursor sits just after `[`.
+  Json parse_array_body() {
+    Json j;
+    j.kind = Json::Kind::Arr;
+    bool first = true;
+    while (true) {
+      skip_ws();
+      if (i >= n) peek_err("EOF while parsing a list");
       if (text[i] == ']') {
         ++i;
         return j;
       }
-      throw std::runtime_error("expected , or ]");
+      if (first) {
+        first = false;
+      } else if (text[i] == ',') {
+        ++i;
+        skip_ws();
+        if (i >= n) peek_err("EOF while parsing a value");
+        if (text[i] == ']') peek_err("trailing comma");
+      } else {
+        peek_err("expected `,` or `]`");
+      }
+      j.arr.push_back(parse_value());
     }
   }
 
-  Json parse_object() {
-    ++i;
+  // Cursor sits just after `{`.
+  Json parse_object_body() {
     Json j;
     j.kind = Json::Kind::Obj;
-    skip();
-    if (i < text.size() && text[i] == '}') {
-      ++i;
-      return j;
-    }
+    bool first = true;
     while (true) {
-      skip();
-      Json key = parse_string();
-      skip();
-      if (i >= text.size() || text[i] != ':') throw std::runtime_error("expected :");
-      ++i;
-      Json val = parse_value();
-      j.obj.emplace_back(std::move(key.s), std::move(val));
-      skip();
-      if (i >= text.size()) throw std::runtime_error("unterminated object");
-      if (text[i] == ',') {
-        ++i;
-        continue;
-      }
+      skip_ws();
+      if (i >= n) peek_err("EOF while parsing an object");
       if (text[i] == '}') {
         ++i;
-        return j;
+        break;
       }
-      throw std::runtime_error("expected , or }");
+      if (first) {
+        first = false;
+        if (text[i] != '"') peek_err("key must be a string");
+      } else if (text[i] == ',') {
+        ++i;
+        skip_ws();
+        if (i >= n) peek_err("EOF while parsing a value");
+        if (text[i] == '}') peek_err("trailing comma");
+        if (text[i] != '"') peek_err("key must be a string");
+      } else {
+        peek_err("expected `,` or `}`");
+      }
+      ++i;
+      std::string key = parse_string_body();
+      skip_ws();
+      if (i >= n) peek_err("EOF while parsing an object");
+      if (text[i] != ':') peek_err("expected `:`");
+      ++i;
+      Json val = parse_value();
+      bool replaced = false;
+      for (auto& kv : j.obj) {
+        if (kv.first == key) {
+          kv.second = std::move(val);
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) j.obj.emplace_back(std::move(key), std::move(val));
     }
+    std::sort(j.obj.begin(), j.obj.end(),
+              [](const std::pair<std::string, Json>& a, const std::pair<std::string, Json>& b) {
+                return a.first < b.first;
+              });
+    return j;
   }
 };
+
+// Rust's `BufRead::lines` refuses a line that is not valid UTF-8 before the
+// JSON parser ever sees it; mirror that (overlongs, surrogates, > U+10FFFF).
+bool valid_utf8(const std::string& s) {
+  std::size_t i = 0;
+  const std::size_t n = s.size();
+  while (i < n) {
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) {
+      ++i;
+      continue;
+    }
+    std::size_t len;
+    std::uint32_t cp;
+    if (c >= 0xC2 && c <= 0xDF) {
+      len = 2;
+      cp = c & 0x1F;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+      len = 3;
+      cp = c & 0x0F;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+      len = 4;
+      cp = c & 0x07;
+    } else {
+      return false;
+    }
+    if (n - i < len) return false;
+    for (std::size_t k = 1; k < len; ++k) {
+      unsigned char cc = static_cast<unsigned char>(s[i + k]);
+      if ((cc & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if ((len == 3 && cp < 0x800) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+        (cp >= 0xD800 && cp <= 0xDFFF)) {
+      return false;
+    }
+    i += len;
+  }
+  return true;
+}
 
 EventError json_err(std::size_t line, std::string message) {
   EventError e;
@@ -458,7 +665,7 @@ std::optional<Event> parse_event(const std::string& text, const ExtDecls& ext, E
   Json j;
   try {
     Parser p(text);
-    j = p.parse_value();
+    j = p.parse_document();
   } catch (const std::exception& ex) {
     err = json_err(line, ex.what());
     return std::nullopt;
@@ -476,11 +683,28 @@ bool read_jsonl(const std::string& text, const ExtDecls& ext, std::vector<Event>
   std::size_t line = 0;
   while (std::getline(in, row)) {
     ++line;
-    std::size_t a = 0;
-    while (a < row.size() && std::isspace(static_cast<unsigned char>(row[a]))) ++a;
-    if (a == row.size()) continue;
+    // Rust `BufRead::lines`: strip one trailing '\r', refuse invalid UTF-8,
+    // then `trim().is_empty()` skips blank lines.
+    if (!row.empty() && row.back() == '\r') row.pop_back();
+    if (!valid_utf8(row)) {
+      err = EventError{};
+      err.kind = EventError::Kind::Json;
+      err.line = line;
+      err.message = "read error: stream did not contain valid UTF-8";
+      return false;
+    }
+    bool blank = true;
+    for (unsigned char c : row) {
+      if (!std::isspace(c)) {
+        blank = false;
+        break;
+      }
+    }
+    if (blank) continue;
     EventError e;
-    auto ev = parse_event(row.substr(a), ext, e, line);
+    // The whole line goes to the parser so error columns count leading
+    // whitespace exactly as serde_json does.
+    auto ev = parse_event(row, ext, e, line);
     if (!ev) {
       err = std::move(e);
       return false;

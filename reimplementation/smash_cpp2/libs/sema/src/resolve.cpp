@@ -2,6 +2,7 @@
 
 #include "adl2/sema/intern.hpp"
 
+#include <cmath>
 #include <cstdlib>
 
 namespace adl2::sema {
@@ -128,7 +129,7 @@ Hir Resolver::finish(const std::string& unit_name) {
     HNode body;
     if (def_state[i].kind == State<std::pair<DefineKind, HNode>>::Done) {
       kind = def_state[i].value.first;
-      body = def_state[i].value.second;
+      body = std::move(def_state[i].value.second);
     } else {
       body = HNode::unsupported(conv_span(ast_defines[i]->span), "unresolved define");
     }
@@ -149,7 +150,10 @@ Hir Resolver::finish(const std::string& unit_name) {
 }
 
 void Resolver::warn_once(std::string key, Diagnostic d) {
-  if (warned_names.insert(std::move(key)).second) diags.push_back(std::move(d));
+  auto [it, inserted] = warned_names.insert(std::move(key));
+  if (!inserted) return;
+  warned_journal.push_back(*it);
+  diags.push_back(std::move(d));
 }
 
 CollectionId Resolver::intern_coll(Collection c) {
@@ -682,10 +686,16 @@ std::pair<DefineKind, HNode> Resolver::resolve_define(std::size_t idx) {
                      : resolve_expr(*def->body, ctx);
   DefineKind kind = is_boolean(body) ? DefineKind::Boolean : DefineKind::Numeric;
   st.kind = State<std::pair<DefineKind, HNode>>::Done;
-  st.value = {kind, body};
+  st.value = {kind, std::move(body)};
   return st.value;
 }
 
+// Mirrors smash3 `inline_define` exactly, including its blind spot: the body
+// is resolved quietly, so a cycle that is only detected *inside* the body
+// (`define a = b + 1` / `define b = a + 1` in an object block) is pushed and
+// then truncated by `resolve_expr_quiet` — the oracle is silent too and the
+// `check --json` / `--dump-hir` output is byte-identical. Only a reference
+// to a define that is already in flight at this site reports the cycle.
 std::pair<DefineKind, HNode> Resolver::inline_define(std::size_t idx, const Ctx& ctx) {
   if (!def_home[idx]) return resolve_define(idx);
   if (def_state[idx].kind == State<std::pair<DefineKind, HNode>>::InProgress) {
@@ -975,9 +985,17 @@ HistoSpec Resolver::resolve_histo_spec(const std::vector<syn::HistoArg>& args,
                     std::to_string(edges.size()) + ")";
       return spec;
     }
-    auto val = [](const syn::NumLit& n) {
+    // smash3 compares `NumLit.value`, the lexer's UNSIGNED magnitude: an
+    // integer literal parsed as u64 (saturating on overflow) then widened,
+    // a real literal parsed as f64 (a subnormal is a lexer error and
+    // recovers as 0.0). The grammar-level sign is not applied, so `-2 -1 0`
+    // is rejected by the oracle; mirror that rather than fix it here.
+    auto val = [](const syn::NumLit& n) -> double {
+      if (!n.is_real) {
+        return static_cast<double>(std::strtoull(n.raw.c_str(), nullptr, 10));
+      }
       double v = std::strtod(n.raw.c_str(), nullptr);
-      return n.neg ? -v : v;
+      return std::fpclassify(v) == FP_SUBNORMAL ? 0.0 : v;
     };
     for (std::size_t i = 0; i + 1 < edges.size(); ++i) {
       if (val(edges[i]) >= val(edges[i + 1])) {
@@ -1023,10 +1041,13 @@ HistoSpec Resolver::resolve_histo_spec(const std::vector<syn::HistoArg>& args,
 
 HNode Resolver::resolve_expr_quiet(const syn::Expr& e, const Ctx& ctx) {
   std::size_t n_diags = diags.size();
-  auto warned = warned_names;
+  std::size_t n_warned = warned_journal.size();
   HNode node = resolve_expr(e, ctx);
   diags.resize(n_diags);
-  warned_names = std::move(warned);
+  for (std::size_t i = n_warned; i < warned_journal.size(); ++i) {
+    warned_names.erase(warned_journal[i]);
+  }
+  warned_journal.resize(n_warned);
   return node;
 }
 

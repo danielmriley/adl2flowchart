@@ -106,18 +106,11 @@ void json_escape(std::string& out, const std::string& s) {
   out.push_back('"');
 }
 
+/// serde_json number text (`50.0`, `0.0`, shortest round-trip), as smash3's
+/// `num(v)` writes the diagnostic event. Non-finite → 0.0.
 void json_number(std::string& out, double v) {
   if (!std::isfinite(v)) v = 0.0;
-  double r = std::round(v);
-  if (r == v && r >= -9007199254740992.0 && r <= 9007199254740992.0) {
-    out += std::to_string(static_cast<long long>(r));
-    return;
-  }
-  std::ostringstream os;
-  os.imbue(std::locale::classic());
-  os.precision(17);
-  os << v;
-  out += os.str();
+  out += adl2::interp::json_f64(v);
 }
 
 std::string json_object(const std::map<std::string, std::string>& fields) {
@@ -759,10 +752,34 @@ void realize_angulars(const Hir& hir, const ExtDecls& ext, const Model& model,
   }
 }
 
-std::string failing_stmts(const Hir& hir, std::size_t idx) {
+/// Which statements of region `idx` the realized event fails (smash3
+/// `failing_stmts`): every membership statement is evaluated on its own,
+/// two-valued, so the reader sees each culprit rather than the first.
+std::string failing_stmts(const Hir& hir, const adl2::interp::Interp& interp, std::size_t idx,
+                          const Event& event) {
   if (idx >= hir.regions.size()) return "region not found";
-  (void)hir.regions[idx];
-  return "region3 False";
+  using SK = adl2::sema::HirRegionStmt::Kind;
+  std::vector<std::string> out;
+  const auto& stmts = hir.regions[idx].stmts;
+  for (std::size_t i = 0; i < stmts.size(); ++i) {
+    const auto& stmt = stmts[i];
+    if (stmt.kind != SK::Select && stmt.kind != SK::Trigger && stmt.kind != SK::Reject) continue;
+    EvalError err;
+    auto v = interp.eval_bool(stmt.node, event, err);
+    if (!v) {
+      out.push_back("stmt " + std::to_string(i) + " errors: " + err.reason);
+      continue;
+    }
+    bool pass = stmt.kind == SK::Reject ? !*v : *v;
+    if (!pass) out.push_back("stmt " + std::to_string(i) + " fails");
+  }
+  if (out.empty()) return "no single failing statement (inheritance?)";
+  std::string joined;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (i) joined += "; ";
+    joined += out[i];
+  }
+  return joined;
 }
 
 struct BuildOk {
@@ -1029,28 +1046,51 @@ std::optional<BuildOk> build_event(const Hir& hir, const ExtDecls& ext, const Mo
     }
   }
 
+  // Event (exact Rat) + diagnostic JSON keyed by the collection's display
+  // spelling (smash3 phase 3; `event_to_json` re-derives keys from the
+  // lowercase event map and is used only after a missing-data patch).
   Event event;
+  std::map<std::string, std::string> root;
   for (auto& kv : built) {
     const Collection& col = hir.table.collection(kv.first);
     if (col.kind != CollectionKind::Base) continue;
     std::string display = hir.symbols.display(col.base);
     std::string key = SymbolTable::ascii_lower(display);
     std::vector<EventObject> arr;
+    std::vector<std::string> arr_json;
     arr.reserve(kv.second.size());
+    arr_json.reserve(kv.second.size());
     for (auto& o : kv.second) {
+      std::map<std::string, std::string> m;
+      for (const auto& p : o) m[p.first] = num_json(p.second.to_f64());
+      arr_json.push_back(json_object(m));
       EventObject eo;
       eo.props = std::move(o);
       arr.push_back(std::move(eo));
     }
+    root[display] = json_array(arr_json);
     event.collections[key] = std::move(arr);
   }
-  if (!met_rats.empty()) event.met = std::move(met_rats);
-  for (auto& p : scalars) event.scalars.emplace(p.first, p.second);
-  if (!triggers_rats.empty()) event.triggers = std::move(triggers_rats);
+  if (!met_rats.empty()) {
+    std::map<std::string, std::string> met;
+    for (const auto& p : met_rats) met[p.first] = num_json(p.second.to_f64());
+    root["MET"] = json_object(met);
+    event.met = std::move(met_rats);
+  }
+  for (auto& p : scalars) {
+    if (root.find(p.first) == root.end()) root[p.first] = num_json(p.second.to_f64());
+    event.scalars.emplace(p.first, p.second);
+  }
+  if (!triggers_rats.empty()) {
+    std::map<std::string, std::string> trig;
+    for (const auto& p : triggers_rats) trig[p.first] = num_json(p.second.to_f64());
+    root["triggers"] = json_object(trig);
+    event.triggers = std::move(triggers_rats);
+  }
 
   BuildOk ok;
   ok.event = std::move(event);
-  ok.json = event_to_json(ok.event);
+  ok.json = json_object(root);
   return ok;
 }
 
@@ -1086,7 +1126,8 @@ Validation validate_witness(const adl2::sema::Hir& hir, const adl2::sema::ExtDec
       }
       if (mem && !*mem) {
         return Validation::rejected("interpreter rejects the witness event in region " + name +
-                                    " (" + failing_stmts(hir, idx) + "); event: " + json);
+                                    " (" + failing_stmts(hir, interp, idx, event) +
+                                    "); event: " + json);
       }
       if (err.reason.find("no reference interpretation") != std::string::npos) {
         opaque = "region " + name + " depends on an opaque quantity (" + err.reason + ")";

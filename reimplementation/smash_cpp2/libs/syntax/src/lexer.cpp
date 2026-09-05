@@ -2,8 +2,12 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace adl2::syntax {
 
@@ -108,6 +112,24 @@ const char* tok_kind_name(TokKind k) {
   return "?";
 }
 
+std::string describe_token(const Token& t) {
+  switch (t.kind) {
+    case TokKind::Ident: return "identifier `" + t.text + "`";
+    case TokKind::Int:
+    case TokKind::Real: return "number `" + t.text + "`";
+    case TokKind::String: return "string literal";
+    case TokKind::Newline: return "end of line";
+    case TokKind::Eof: return "end of file";
+    // The oracle's canonical spelling for `all` is upper-case.
+    case TokKind::KwAll: return "keyword `ALL`";
+    default: break;
+  }
+  if (is_keyword_kind(t.kind)) {
+    return std::string("keyword `") + tok_kind_name(t.kind) + "`";
+  }
+  return "`" + t.text + "`";
+}
+
 Lexer::Lexer(std::string_view source, DiagSink& diags)
     : src_(source), diags_(diags) {}
 
@@ -115,8 +137,9 @@ std::vector<Token> Lexer::tokenize() {
   std::vector<Token> out;
   for (;;) {
     Token t = next();
-    out.push_back(t);
-    if (t.kind == TokKind::Eof) break;
+    const bool eof = t.kind == TokKind::Eof;
+    out.push_back(std::move(t));
+    if (eof) break;
   }
   if (underscore_splits_ > 1) {
     const char* plural = (underscore_splits_ == 2) ? "" : "s";
@@ -186,9 +209,12 @@ TokKind Lexer::keyword_or_ident(const std::string& text) const {
 }
 
 void Lexer::skip_spaces() {
+  // `\r` is whitespace, never a line break (smash3 parity): only `\n` is
+  // NEWLINE, so CRLF and CR-only files produce the same tokens and spans as
+  // the oracle, and a lone CR mid-line does not split the line.
   while (i_ < src_.size()) {
     char c = src_[i_];
-    if (c == ' ' || c == '\t') {
+    if (c == ' ' || c == '\t' || c == '\r') {
       ++i_;
       ++col_;
     } else {
@@ -198,16 +224,43 @@ void Lexer::skip_spaces() {
 }
 
 void Lexer::skip_line_comment() {
-  while (i_ < src_.size() && src_[i_] != '\n' && src_[i_] != '\r') {
+  while (i_ < src_.size() && src_[i_] != '\n') {
     ++i_;
     ++col_;
   }
 }
 
+std::size_t Lexer::utf8_len_at(std::size_t k) const {
+  const auto lead = static_cast<unsigned char>(src_[k]);
+  std::size_t len = 1;
+  if (lead >= 0xC2 && lead <= 0xDF) len = 2;
+  else if (lead >= 0xE0 && lead <= 0xEF) len = 3;
+  else if (lead >= 0xF0 && lead <= 0xF4) len = 4;
+  if (k + len > src_.size()) return 1;
+  for (std::size_t j = 1; j < len; ++j) {
+    const auto u = static_cast<unsigned char>(src_[k + j]);
+    if (u < 0x80 || u > 0xBF) return 1;
+  }
+  return len;
+}
+
 Token Lexer::next() {
+  // A loop, not tail recursion: comments and rejected characters are skipped
+  // in place. Recursing once per bad byte made a 10k-byte run of `@`
+  // overflow the stack.
+  for (;;) {
+    if (std::optional<Token> t = lex_one()) return std::move(*t);
+  }
+}
+
+std::optional<Token> Lexer::lex_one() {
   skip_spaces();
   if (i_ >= src_.size()) {
-    return make(TokKind::Eof, i_, line_, col_, {});
+    // Empty span at the end of input (smash3 `Span::new(len, len)`), so a
+    // ``found end of file`` diagnostic reports the same `end` as the oracle.
+    Token eof = make(TokKind::Eof, i_, line_, col_, {});
+    eof.span.end = i_;
+    return eof;
   }
 
   const std::size_t begin = i_;
@@ -217,18 +270,11 @@ Token Lexer::next() {
 
   if (c == '#') {
     skip_line_comment();
-    return next();
+    return std::nullopt;
   }
 
   if (c == '\n') {
     ++i_;
-    ++line_;
-    col_ = 1;
-    return make(TokKind::Newline, begin, line, column, "\n");
-  }
-  if (c == '\r') {
-    ++i_;
-    if (i_ < src_.size() && src_[i_] == '\n') ++i_;
     ++line_;
     col_ = 1;
     return make(TokKind::Newline, begin, line, column, "\n");
@@ -241,14 +287,16 @@ Token Lexer::next() {
     ++col_;
     std::string body;
     while (i_ < src_.size() && src_[i_] != '"') {
-      if (src_[i_] == '\n' || src_[i_] == '\r') break;
+      if (src_[i_] == '\n') break;
       body.push_back(src_[i_]);
       ++i_;
       ++col_;
     }
     if (i_ >= src_.size() || src_[i_] != '"') {
-      diags_.error(Span::at(begin, line, column, 1), "unterminated string",
-                   "close with \"");
+      diags_.error(Span::at(begin, line, column, i_ - begin),
+                   "unterminated string literal",
+                   "add a closing `\"` before the end of the line",
+                   "string starts here and never closes");
     } else {
       ++i_;
       ++col_;
@@ -263,51 +311,109 @@ Token Lexer::next() {
     return t;
   }
 
-  // Numbers (unsigned only — negation is grammatical unary minus)
+  // Numbers (unsigned only — negation is grammatical unary minus).
+  // Mirrors smash3 `lex_number`: digit separators and scientific notation
+  // are lexical errors with a rewrite help; the token keeps the mantissa.
   if (std::isdigit(static_cast<unsigned char>(c))) {
+    auto is_digit_at = [&](std::size_t k) {
+      return k < src_.size() && std::isdigit(static_cast<unsigned char>(src_[k]));
+    };
+    auto eat_digits = [&](std::string& into) {
+      while (is_digit_at(i_)) {
+        into.push_back(src_[i_]);
+        ++i_;
+        ++col_;
+      }
+    };
     std::string text;
-    while (i_ < src_.size() &&
-           std::isdigit(static_cast<unsigned char>(src_[i_]))) {
-      text.push_back(src_[i_]);
-      ++i_;
-      ++col_;
-    }
-    if (i_ + 1 < src_.size() && src_[i_] == '.' &&
-        std::isdigit(static_cast<unsigned char>(src_[i_ + 1]))) {
+    eat_digits(text);
+    bool is_real = false;
+    if (i_ < src_.size() && src_[i_] == '.' && is_digit_at(i_ + 1)) {
+      is_real = true;
       text.push_back('.');
       ++i_;
       ++col_;
-      while (i_ < src_.size() &&
-             std::isdigit(static_cast<unsigned char>(src_[i_]))) {
-        text.push_back(src_[i_]);
-        ++i_;
+      eat_digits(text);
+    }
+    // `1_000`: ADL has no numeric separators, and `_<digit>` is the
+    // underscore-indexing operator — this used to lex as `1` `_` `000` and
+    // parse, silently, into `1[000]`-shaped nonsense. Reject it and recover
+    // with the separators removed.
+    if (i_ < src_.size() && src_[i_] == '_' && is_digit_at(i_ + 1)) {
+      std::string digits = text;
+      while (i_ < src_.size() && src_[i_] == '_' && is_digit_at(i_ + 1)) {
+        ++i_;  // `_`
         ++col_;
+        eat_digits(digits);
       }
-      // Smash2: a nonzero subnormal f64 is a lexical error. Analyzer atoms
-      // are exact rationals; the interpreter is f64; they diverge only here.
-      // C++ Real tokens carry text only, so recover by rewriting to "0"
-      // (smash2 recovers the token's f64 slot to 0.0 and keeps the spelling).
+      std::string raw(src_.substr(begin, i_ - begin));
+      diags_.error(Span::at(begin, line, column, i_ - begin),
+                   "`_` is not a digit separator in `" + elide(raw) + "`",
+                   "write `" + elide(digits) + "`",
+                   "`_<digit>` is the underscore-indexing operator");
+      text = std::move(digits);
+    }
+    // End of the literal proper; the exponent scan below moves the cursor
+    // past a rejected exponent, which must not widen the token's span.
+    const std::size_t num_end = i_;
+
+    if (i_ < src_.size() && (src_[i_] == 'e' || src_[i_] == 'E')) {
+      std::size_t off = 1;
+      if (i_ + 1 < src_.size() && (src_[i_ + 1] == '+' || src_[i_ + 1] == '-')) off = 2;
+      if (is_digit_at(i_ + off)) {
+        i_ += off;
+        col_ += static_cast<std::uint32_t>(off);
+        while (is_digit_at(i_)) {
+          ++i_;
+          ++col_;
+        }
+        std::string full(src_.substr(begin, i_ - begin));
+        double expanded = std::strtod(full.c_str(), nullptr);
+        char buf[64];
+        std::string shown;
+        if (std::isinf(expanded)) {
+          shown = expanded < 0 ? "-inf" : "inf";
+        } else if (std::isnan(expanded)) {
+          shown = "NaN";
+        } else if (std::fabs(expanded) < 1e18) {
+          std::snprintf(buf, sizeof buf, "%.1f", expanded);
+          shown = buf;
+        } else {
+          // Rust `{:.1}` prints the full integer part; do the same.
+          std::vector<char> big(400);
+          std::snprintf(big.data(), big.size(), "%.1f", expanded);
+          shown = big.data();
+        }
+        diags_.error(Span::at(begin, line, column, i_ - begin),
+                     "scientific notation `" + elide(full) + "` is not supported",
+                     "write the value out, e.g. `" + shown + "`",
+                     "exponent starts here");
+        // Recover with the mantissa value.
+      }
+    }
+
+    Token t;
+    t.kind = is_real ? TokKind::Real : TokKind::Int;
+    t.span.start = begin;
+    t.span.end = num_end;
+    t.span.line = line;
+    t.span.column = column;
+    if (is_real) {
+      // A nonzero subnormal f64 is a lexical error. Analyzer atoms are exact
+      // rationals; the interpreter is f64; they diverge only here. Real
+      // tokens carry text only, so recover by rewriting to "0" (smash3
+      // recovers the f64 slot to 0.0).
       double value = std::strtod(text.c_str(), nullptr);
       if (value != 0.0 && std::fpclassify(value) == FP_SUBNORMAL) {
-        diags_.error(Span::at(begin, line, column, text.size()),
+        diags_.error(Span::at(begin, line, column, num_end - begin),
                      "subnormal literal `" + elide(text) + "` is not supported",
-                     "magnitude is below the smallest normal f64; use a "
-                     "representable magnitude (>= 2.3e-308) or 0");
+                     "use a representable magnitude (≥ 2.3e-308) or 0",
+                     "magnitude is below the smallest normal f64");
         text = "0";
       }
-      return make(TokKind::Real, begin, line, column, text);
     }
-    // Reject scientific notation with a help message (SPEC_LANGUAGE §2).
-    if (i_ < src_.size() && (src_[i_] == 'e' || src_[i_] == 'E')) {
-      diags_.error(Span::at(i_, line_, col_, 1),
-                   "scientific notation is not accepted in v1",
-                   "write an explicit decimal (e.g. 1000000.0)");
-      while (i_ < src_.size() && !std::isspace(static_cast<unsigned char>(src_[i_]))) {
-        ++i_;
-        ++col_;
-      }
-    }
-    return make(TokKind::Int, begin, line, column, text);
+    t.text = std::move(text);
+    return t;
   }
 
   // Identifiers: [A-Za-z][A-Za-z0-9]* { "_" [A-Za-z][A-Za-z0-9]* }
@@ -421,8 +527,9 @@ Token Lexer::next() {
   }
 
   // Single-char
-  ++i_;
-  ++col_;
+  const std::size_t ch_len = utf8_len_at(i_);
+  i_ += ch_len;
+  col_ += static_cast<std::uint32_t>(ch_len);
   switch (c) {
     case '+': return make(TokKind::Plus, begin, line, column, "+");
     case '-': return make(TokKind::Minus, begin, line, column, "-");
@@ -446,10 +553,15 @@ Token Lexer::next() {
     case '>': return make(TokKind::Gt, begin, line, column, ">");
     case '<': return make(TokKind::Lt, begin, line, column, "<");
     default:
-      diags_.error(Span::at(begin, line, column, 1),
-                   std::string("unexpected character '") + c + "'",
-                   "skipped; lexer recovers and continues");
-      return next();
+      // One error per (possibly multi-byte) character, spanning all its
+      // bytes — text, label and help are smash3's `lex_operator` fallthrough.
+      diags_.error(Span::at(begin, line, column, ch_len),
+                   "unexpected character `" +
+                       std::string(src_.substr(begin, ch_len)) + "`",
+                   "remove this character; see SPEC_LANGUAGE §2 for the "
+                   "operator set",
+                   "not part of ADL syntax");
+      return std::nullopt;
   }
 }
 

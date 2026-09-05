@@ -1,10 +1,8 @@
 #include "adl2/certify/sha256.hpp"
 
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include <vector>
 
 namespace adl2::certify {
 namespace {
@@ -24,54 +22,67 @@ constexpr std::uint32_t K[64] = {
 
 std::uint32_t rotr(std::uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
 
+void compress(std::uint32_t h[8], const std::uint8_t* block) {
+  std::uint32_t w[64];
+  for (int i = 0; i < 16; ++i) {
+    const std::uint8_t* p = block + static_cast<std::size_t>(i) * 4;
+    w[i] = (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16) |
+           (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
+  }
+  for (int i = 16; i < 64; ++i) {
+    std::uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+    std::uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  std::uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+  for (int i = 0; i < 64; ++i) {
+    std::uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+    std::uint32_t ch = (e & f) ^ ((~e) & g);
+    std::uint32_t t1 = hh + s1 + ch + K[i] + w[i];
+    std::uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+    std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+    std::uint32_t t2 = s0 + maj;
+    hh = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = c;
+    c = b;
+    b = a;
+    a = t1 + t2;
+  }
+  h[0] += a;
+  h[1] += b;
+  h[2] += c;
+  h[3] += d;
+  h[4] += e;
+  h[5] += f;
+  h[6] += g;
+  h[7] += hh;
+}
+
 void digest(const std::uint8_t* bytes, std::size_t n, std::uint8_t out[32]) {
   std::uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
 
-  std::vector<std::uint8_t> msg(bytes, bytes + n);
-  const std::uint64_t bit_len = static_cast<std::uint64_t>(n) * 8u;
-  msg.push_back(0x80);
-  while (msg.size() % 64 != 56) msg.push_back(0);
-  for (int i = 7; i >= 0; --i) msg.push_back(static_cast<std::uint8_t>((bit_len >> (i * 8)) & 0xff));
+  // Whole blocks straight from the input; only the tail is copied for padding.
+  std::size_t off = 0;
+  for (; off + 64 <= n; off += 64) compress(h, bytes + off);
 
-  for (std::size_t off = 0; off < msg.size(); off += 64) {
-    std::uint32_t w[64];
-    for (int i = 0; i < 16; ++i) {
-      const std::uint8_t* p = &msg[off + static_cast<std::size_t>(i) * 4];
-      w[i] = (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16) |
-             (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
-    }
-    for (int i = 16; i < 64; ++i) {
-      std::uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-      std::uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-    std::uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
-    for (int i = 0; i < 64; ++i) {
-      std::uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-      std::uint32_t ch = (e & f) ^ ((~e) & g);
-      std::uint32_t t1 = hh + s1 + ch + K[i] + w[i];
-      std::uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-      std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-      std::uint32_t t2 = s0 + maj;
-      hh = g;
-      g = f;
-      f = e;
-      e = d + t1;
-      d = c;
-      c = b;
-      b = a;
-      a = t1 + t2;
-    }
-    h[0] += a;
-    h[1] += b;
-    h[2] += c;
-    h[3] += d;
-    h[4] += e;
-    h[5] += f;
-    h[6] += g;
-    h[7] += hh;
+  const std::size_t tail = n - off;  // 0..63
+  std::uint8_t pad[128];
+  if (tail) std::memcpy(pad, bytes + off, tail);
+  pad[tail] = 0x80;
+  const std::size_t pad_len = tail < 56 ? 64 : 128;
+  std::memset(pad + tail + 1, 0, pad_len - tail - 1);
+  const std::uint64_t bit_len = static_cast<std::uint64_t>(n) * 8u;
+  for (int i = 0; i < 8; ++i) {
+    pad[pad_len - 8 + static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((bit_len >> ((7 - i) * 8)) & 0xff);
   }
+  compress(h, pad);
+  if (pad_len == 128) compress(h, pad + 64);
+
   for (int i = 0; i < 8; ++i) {
     out[i * 4] = static_cast<std::uint8_t>((h[i] >> 24) & 0xff);
     out[i * 4 + 1] = static_cast<std::uint8_t>((h[i] >> 16) & 0xff);

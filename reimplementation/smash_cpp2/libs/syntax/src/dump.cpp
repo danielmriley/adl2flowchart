@@ -1,21 +1,49 @@
 #include "adl2/syntax/dump.hpp"
 
+#include <cstdio>
 #include <functional>
 #include <sstream>
 
 namespace adl2::syntax {
 
 std::string rust_debug_str(std::string_view s) {
+  // Rust `{:?}` for `str` (`char::escape_debug`): `\t \n \r \0 \\ \"` get a
+  // backslash form, `'` stays as-is, and other control characters (C0, DEL,
+  // C1 = U+0080..U+009F) print as `\u{x}` with unpadded lowercase hex. Other
+  // non-printable Unicode (soft hyphen, zero-width, combining marks) is
+  // passed through; the corpus has none and the tables are not worth it.
   std::string out;
   out.reserve(s.size() + 2);
   out.push_back('"');
-  for (unsigned char c : s) {
-    if (c == '\\' || c == '"') {
-      out.push_back('\\');
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back(static_cast<char>(c));
+  auto unicode_escape = [&](unsigned int cp) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "\\u{%x}", cp);
+    out += buf;
+  };
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const auto c = static_cast<unsigned char>(s[i]);
+    switch (c) {
+      case '\t': out += "\\t"; continue;
+      case '\n': out += "\\n"; continue;
+      case '\r': out += "\\r"; continue;
+      case '\0': out += "\\0"; continue;
+      case '\\': out += "\\\\"; continue;
+      case '"': out += "\\\""; continue;
+      default: break;
     }
+    if (c < 0x20 || c == 0x7F) {
+      unicode_escape(c);
+      continue;
+    }
+    if (c == 0xC2 && i + 1 < s.size()) {
+      const auto d = static_cast<unsigned char>(s[i + 1]);
+      if (d >= 0x80 && d <= 0x9F) {
+        unicode_escape(d);
+        ++i;
+        continue;
+      }
+    }
+    out.push_back(static_cast<char>(c));
   }
   out.push_back('"');
   return out;

@@ -2,6 +2,11 @@
 #include "adl2/interp/eval.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,6 +37,29 @@ std::string pad_left(const std::string& s, std::size_t w) {
   std::size_t n = utf8_chars(s);
   if (n >= w) return s;
   return std::string(w - n, ' ') + s;
+}
+
+/// A standalone `-0` token (an f64 negative zero rendered by a bound or
+/// witness value) reads as `0`. Embedded forms (`-0.5`, `10-0`, `1e-05`)
+/// are left alone (smash3 `fix_negative_zero`).
+std::string fix_negative_zero(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  const std::size_t n = s.size();
+  auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+  for (std::size_t i = 0; i < n;) {
+    bool standalone = s[i] == '-' && i + 1 < n && s[i + 1] == '0' &&
+                      !(i + 2 < n && (is_digit(s[i + 2]) || s[i + 2] == '.')) &&
+                      (i == 0 || !(is_digit(s[i - 1]) || s[i - 1] == '.'));
+    if (standalone) {
+      out.push_back('0');
+      i += 2;
+    } else {
+      out.push_back(s[i]);
+      ++i;
+    }
+  }
+  return out;
 }
 
 struct Style {
@@ -544,8 +572,290 @@ std::string subst_generic(const std::string& sig) {
                      "§B", "the second region");
 }
 
+// --- witness-event summary (smash3 `summarize_events`) ---------------------
+// The human report embeds `event: {…}` witness dumps; the full JSON is a
+// screenful, right for --explain and --json, wrong for a report whose own
+// footer says to use --explain for detail. Non-JSON text stays verbatim.
+
+struct EvJson {
+  enum class Kind { Null, Bool, Num, Str, Arr, Obj };
+  Kind kind = Kind::Null;
+  bool b = false;
+  double num = 0.0;
+  std::string str;
+  std::vector<EvJson> arr;
+  std::vector<std::pair<std::string, EvJson>> obj;
+};
+
+struct EvJsonParser {
+  const std::string& s;
+  std::size_t i;
+  bool ok = true;
+
+  void ws() {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
+  }
+  bool str(std::string& out) {
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i;
+    while (i < s.size() && s[i] != '"') {
+      if (s[i] == '\\' && i + 1 < s.size()) {
+        ++i;
+        switch (s[i]) {
+          case 'n': out.push_back('\n'); break;
+          case 't': out.push_back('\t'); break;
+          case 'r': out.push_back('\r'); break;
+          case 'b': out.push_back('\b'); break;
+          case 'f': out.push_back('\f'); break;
+          case 'u':
+            // Keep the escape verbatim; labels here are ASCII property names.
+            out += "\\u";
+            break;
+          default: out.push_back(s[i]); break;
+        }
+        ++i;
+        continue;
+      }
+      out.push_back(s[i]);
+      ++i;
+    }
+    if (i >= s.size()) return false;
+    ++i;
+    return true;
+  }
+  bool value(EvJson& out) {
+    ws();
+    if (i >= s.size()) return false;
+    char c = s[i];
+    if (c == '{') {
+      ++i;
+      out.kind = EvJson::Kind::Obj;
+      ws();
+      if (i < s.size() && s[i] == '}') {
+        ++i;
+        return true;
+      }
+      for (;;) {
+        ws();
+        std::string k;
+        if (!str(k)) return false;
+        ws();
+        if (i >= s.size() || s[i] != ':') return false;
+        ++i;
+        EvJson v;
+        if (!value(v)) return false;
+        out.obj.emplace_back(std::move(k), std::move(v));
+        ws();
+        if (i < s.size() && s[i] == ',') {
+          ++i;
+          continue;
+        }
+        if (i < s.size() && s[i] == '}') {
+          ++i;
+          return true;
+        }
+        return false;
+      }
+    }
+    if (c == '[') {
+      ++i;
+      out.kind = EvJson::Kind::Arr;
+      ws();
+      if (i < s.size() && s[i] == ']') {
+        ++i;
+        return true;
+      }
+      for (;;) {
+        EvJson v;
+        if (!value(v)) return false;
+        out.arr.push_back(std::move(v));
+        ws();
+        if (i < s.size() && s[i] == ',') {
+          ++i;
+          continue;
+        }
+        if (i < s.size() && s[i] == ']') {
+          ++i;
+          return true;
+        }
+        return false;
+      }
+    }
+    if (c == '"') {
+      out.kind = EvJson::Kind::Str;
+      return str(out.str);
+    }
+    if (s.compare(i, 4, "true") == 0) {
+      out.kind = EvJson::Kind::Bool;
+      out.b = true;
+      i += 4;
+      return true;
+    }
+    if (s.compare(i, 5, "false") == 0) {
+      out.kind = EvJson::Kind::Bool;
+      out.b = false;
+      i += 5;
+      return true;
+    }
+    if (s.compare(i, 4, "null") == 0) {
+      out.kind = EvJson::Kind::Null;
+      i += 4;
+      return true;
+    }
+    std::size_t start = i;
+    if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
+    while (i < s.size() && (std::isdigit(static_cast<unsigned char>(s[i])) || s[i] == '.' ||
+                            s[i] == 'e' || s[i] == 'E' || s[i] == '-' || s[i] == '+')) {
+      ++i;
+    }
+    if (i == start) return false;
+    out.kind = EvJson::Kind::Num;
+    out.num = std::strtod(s.substr(start, i - start).c_str(), nullptr);
+    return true;
+  }
+};
+
+/// Rust `f64::Display`: integers without a fraction, otherwise the shortest
+/// round-trip decimal, never in exponent form.
+std::string rust_f64_display(double v) {
+  if (!std::isfinite(v)) return std::isnan(v) ? "NaN" : (v < 0 ? "-inf" : "inf");
+  if (v == std::trunc(v) && std::fabs(v) < 9007199254740992.0) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.0f", v);
+    return buf;
+  }
+  char buf[64];
+  std::string s;
+  for (int prec = 1; prec <= 17; ++prec) {
+    std::snprintf(buf, sizeof buf, "%.*g", prec, v);
+    char* end = nullptr;
+    double back = std::strtod(buf, &end);
+    if (end && *end == '\0' && back == v) {
+      s = buf;
+      break;
+    }
+  }
+  if (s.empty()) {
+    std::snprintf(buf, sizeof buf, "%.17g", v);
+    s = buf;
+  }
+  auto e = s.find_first_of("eE");
+  if (e == std::string::npos) return s;
+  // Expand `d.ddde±x` into plain decimal digits.
+  int exp = std::atoi(s.c_str() + e + 1);
+  std::string mant = s.substr(0, e);
+  bool neg = !mant.empty() && mant[0] == '-';
+  if (neg) mant.erase(0, 1);
+  std::string digits;
+  int point = 0;
+  bool seen_dot = false;
+  for (char ch : mant) {
+    if (ch == '.') {
+      seen_dot = true;
+      continue;
+    }
+    digits.push_back(ch);
+    if (!seen_dot) ++point;
+  }
+  point += exp;
+  std::string out;
+  if (point <= 0) {
+    out = "0." + std::string(static_cast<std::size_t>(-point), '0') + digits;
+  } else if (static_cast<std::size_t>(point) >= digits.size()) {
+    out = digits + std::string(static_cast<std::size_t>(point) - digits.size(), '0');
+  } else {
+    out = digits.substr(0, static_cast<std::size_t>(point)) + "." +
+          digits.substr(static_cast<std::size_t>(point));
+  }
+  return neg ? "-" + out : out;
+}
+
+std::optional<std::string> ev_scalar(const EvJson& x) {
+  if (x.kind == EvJson::Kind::Num) return rust_f64_display(x.num);
+  if (x.kind == EvJson::Kind::Bool) return std::string(x.b ? "true" : "false");
+  return std::nullopt;
+}
+
+bool deciding_prop(const std::string& p) {
+  return p.size() >= 2 && std::tolower(static_cast<unsigned char>(p[0])) == 'p' &&
+         std::tolower(static_cast<unsigned char>(p[1])) == 't';
+}
+
+/// `5 JET, JET[0].ptof=31, MET.ptof=501 (summarized; --explain for the full event)`
+std::string summarize_event(const EvJson& v) {
+  if (v.kind != EvJson::Kind::Obj) return "{…}";
+  std::vector<std::string> counts;
+  // (rank, text): event-level scalars decide more often than the leading
+  // element's incidental properties, and a pT more often than a tag. Keep
+  // the top three; the sort is stable over the (sorted) key order.
+  std::vector<std::pair<int, std::string>> values;
+  for (const auto& kv : v.obj) {
+    const std::string& k = kv.first;
+    const EvJson& val = kv.second;
+    if (val.kind == EvJson::Kind::Arr) {
+      if (val.arr.empty()) continue;
+      counts.push_back(std::to_string(val.arr.size()) + " " + k);
+      const EvJson& first = val.arr.front();
+      if (first.kind == EvJson::Kind::Obj) {
+        for (const auto& pp : first.obj) {
+          if (auto t = ev_scalar(pp.second)) {
+            values.emplace_back(deciding_prop(pp.first) ? 2 : 3,
+                                k + "[0]." + pp.first + "=" + *t);
+          }
+        }
+      }
+    } else if (val.kind == EvJson::Kind::Obj) {
+      for (const auto& pp : val.obj) {
+        if (auto t = ev_scalar(pp.second)) {
+          values.emplace_back(deciding_prop(pp.first) ? 0 : 1, k + "." + pp.first + "=" + *t);
+        }
+      }
+    } else if (auto t = ev_scalar(val)) {
+      values.emplace_back(0, k + "=" + *t);
+    }
+  }
+  if (counts.empty()) counts.push_back("no objects");
+  std::stable_sort(values.begin(), values.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  if (values.size() > 3) values.resize(3);
+  std::string out;
+  for (const auto& c : counts) {
+    if (!out.empty()) out += ", ";
+    out += c;
+  }
+  for (const auto& vv : values) {
+    out += ", ";
+    out += vv.second;
+  }
+  return out + " (summarized; --explain for the full event)";
+}
+
+std::string summarize_events(const std::string& reason) {
+  static const std::string MARK = "event: {";
+  std::string out;
+  std::size_t pos = 0;
+  for (;;) {
+    auto at = reason.find(MARK, pos);
+    if (at == std::string::npos) break;
+    std::size_t brace = at + MARK.size() - 1;
+    out += reason.substr(pos, brace - pos);
+    EvJsonParser p{reason, brace};
+    EvJson v;
+    if (!p.value(v)) {
+      // Not JSON after all: keep the text verbatim rather than guess.
+      out += reason.substr(brace);
+      return out;
+    }
+    out += summarize_event(v);
+    pos = p.i;
+  }
+  out += reason.substr(pos);
+  return out;
+}
+
 std::string reason_signature(const PairReport& p) {
-  const std::string& r = p.reason;
+  const std::string summarized = summarize_events(p.reason);
+  const std::string& r = summarized;
   const std::string prefix = "intervals cannot intersect on ";
   if (r.compare(0, prefix.size(), prefix) == 0) {
     std::string rest = r.substr(prefix.size());
@@ -785,7 +1095,7 @@ void render_pairwise(const Report& report, const Style& st, bool short_human,
                          " — " + reason;
       if (note) {
         line += "; " + replace_all(replace_all(std::string(note), "§A", "first"), "§B", "second") +
-                " (in every pair)" + sub_tag;
+                sub_tag + " (in every pair)";
       }
       s << line << "\n";
       s << "    " << group_members(report, g.members) << "\n";
@@ -796,7 +1106,19 @@ void render_pairwise(const Report& report, const Style& st, bool short_human,
 void render_bins(const Report& report, const Style& st, std::ostringstream& s) {
   if (report.bin_checks.empty()) return;
   s << "\n" << st.head("== bins ==") << "\n";
+  // Aligned columns (smash3 `render_bins`): name and `[variable]` padded to
+  // the widest row, `disjoint n/m` right/left padded to two characters.
+  std::size_t name_w = 1;
+  std::vector<std::string> vars;
+  vars.reserve(report.bin_checks.size());
+  std::size_t var_w = 1;
   for (const auto& b : report.bin_checks) {
+    name_w = std::max(name_w, utf8_chars(b.region));
+    vars.push_back("[" + ellipsize(b.variable, 40) + "]");
+    var_w = std::max(var_w, utf8_chars(vars.back()));
+  }
+  for (std::size_t i = 0; i < report.bin_checks.size(); ++i) {
+    const auto& b = report.bin_checks[i];
     std::string coverage;
     switch (b.coverage) {
       case CoverageStatus::Proven:
@@ -809,8 +1131,9 @@ void render_bins(const Report& report, const Style& st, std::ostringstream& s) {
         coverage = "coverage unknown";
         break;
     }
-    s << "  " << b.region << "  [" << b.variable << "]  " << b.n_bins << " bins  disjoint "
-      << b.disjoint_pairs_proven << "/" << b.disjoint_pairs_total << "  " << coverage << "\n";
+    s << "  " << pad_right(b.region, name_w) << "  " << pad_right(vars[i], var_w) << "  "
+      << b.n_bins << " bins  disjoint " << pad_left(std::to_string(b.disjoint_pairs_proven), 2)
+      << "/" << pad_right(std::to_string(b.disjoint_pairs_total), 2) << "  " << coverage << "\n";
   }
 }
 
@@ -1001,67 +1324,200 @@ std::string Report::render_default(const RenderOptions& opts) const {
       << " pairs span two analyses (" << cd << " proven disjoint, " << co
       << " overlapping/candidate); the other " << intra << " are intra-analysis\n";
   }
-  return s.str();
+  return fix_negative_zero(s.str());
 }
 
+namespace {
+
+/// Rust `f64::Display` for witness values in the explain report.
+std::string explain_value(double v) { return rust_f64_display(v); }
+
+/// An unsat core with, for every axiom it names, the axiom's statement and
+/// the physical assumption behind it (smash3 `render_core`).
+void render_core(const Report& report, const std::vector<CoreItem>& core, const char* indent,
+                 std::ostringstream& s) {
+  if (core.empty()) return;
+  s << indent << "core (" << core.size() << " item(s)):\n";
+  for (const auto& item : core) {
+    if (item.origin == CoreItem::Origin::Cut) {
+      s << indent << "  cut  " << item.region << " line " << item.line << ": " << item.text
+        << "\n";
+    } else {
+      std::string assumption = "none";
+      for (const auto& a : report.axioms_used) {
+        if (a.id == item.id) {
+          assumption = a.assumption;
+          break;
+        }
+      }
+      s << indent << "  axiom " << item.id << ": " << item.statement << "\n";
+      s << indent << "        assumes: " << assumption << "\n";
+    }
+  }
+}
+
+/// The two diagnostic sections, kept apart on purpose: a fail-closed note is
+/// a normal conservative outcome and gets neutral wording; a contradiction
+/// is the engine refuting its own conclusion and keeps the loud one.
+void render_diagnostics(const Report& report, std::ostringstream& s) {
+  std::vector<const std::string*> notes, bugs;
+  for (const auto& d : report.diagnostics) {
+    if (d.class_ == DiagnosticClass::FailClosed) notes.push_back(&d.message);
+    else bugs.push_back(&d.message);
+  }
+  if (!notes.empty()) {
+    s << "\n== fail-closed notes ==\n(a claim was withheld or capped because its evidence did "
+         "not hold up — the conservative outcome, not a bug)\n";
+    for (const auto* d : notes) s << *d << "\n";
+  }
+  if (!bugs.empty()) {
+    s << "\n== INTERNAL CONTRADICTIONS (bugs, please report) ==\n(one part of the engine "
+         "refuted a conclusion another part had already reached)\n";
+    for (const auto* d : bugs) s << *d << "\n";
+  }
+}
+
+}  // namespace
+
+/// Full per-claim evidence (smash3 `render_explain`): proof route and
+/// certificate size, the complete unsat core with the statement and
+/// assumption of every axiom it uses, gate/probe coverage, witness
+/// provenance, subsets, the reconciliation ledger, and axiom statements.
 std::string Report::render_explain(const RenderOptions& opts) const {
-  std::ostringstream head;
+  Style st;
+  st.on = opts.color;
+  std::ostringstream s;
+  s << st.head("ADL2 analysis report") << " — " << unit << "\n";
+  s << "solver: " << solver << "\n";
   if (sampling) {
-    head << "sampling gate: " << sampling->events << " events, " << sampling->refutations
-         << " refutation(s)\n";
+    s << "sampling gate: " << sampling->events << " events, " << sampling->refutations
+      << " refutation(s)\n";
   }
   if (refute) {
-    head << "refute gate: " << refute->probes << " probes, " << refute->refutations
-         << " refutation(s)\n";
+    s << "refute gate: " << refute->probes << " probes, " << refute->refutations
+      << " refutation(s)\n";
   }
-  std::string out = head.str() + render_default(opts);
-  out += "\n== explain ==\n";
-  for (const auto& p : pairwise) {
-    out += "  " + p.a + " vs " + p.b + ": " + verdict_kind_human(p.kind) + "\n";
-    out += "    reason: " + p.reason + "\n";
-    if (p.proof_path) {
-      out += std::string("    proof: ") + proof_path_human(*p.proof_path) + "\n";
+  render_trust(*this, st, s);
+  s << "  claim tags    [certified] a replay-checked Farkas certificate backs the claim · "
+       "[gate e/e] the claim survived every event of the sampling battery · "
+       "[probes p] it survived p adversarial probes · "
+       "[assumes: …] soundness assumptions this claim's own core consumes\n";
+
+  s << "\n== regions ==\n";
+  for (const auto& r : regions) {
+    s << r.name << ": encoded leaves " << r.leaves_encoded << "/" << r.leaves_total;
+    if (r.exact) s << " (exact)";
+    if (r.or_clauses > 0) s << " (" << r.or_clauses << " OR)";
+    if (r.dual_hedges > 0) s << " (" << r.dual_hedges << " dual)";
+    s << "\n";
+    for (const auto& d : r.dropped) {
+      s << "  dropped (line " << d.line << "): " << d.reason << "\n";
     }
-    if (p.certified) {
-      out += std::string("    certified: ") + (*p.certified ? "true" : "false") + "\n";
+    std::optional<std::string> claim;
+    if (r.empty == EmptyStatus::Proven) {
+      claim = "region " + r.name + " provably selects no events";
+    } else if (r.empty == EmptyStatus::Candidate) {
+      claim = "region " + r.name + " may be empty (solver UNSAT, uncertified)";
     }
-    if (p.certificate_size) {
-      out += "    certificate_size: " + std::to_string(*p.certificate_size) + "\n";
-    }
-    if (!p.core.empty()) {
-      out += "    core:";
-      for (const auto& c : p.core) out += " " + c.id;
-      out += "\n";
-    }
-    if (!p.witness.empty()) {
-      out += "    witness:";
-      for (const auto& w : p.witness) {
-        out += " " + w.quantity + "=" + adl2::interp::json_f64(w.value);
-        if (w.derived) out += "*";
-      }
-      out += "\n";
+    if (claim) {
+      auto tag = empty_trust_tag(*this, r);
+      s << "  " << *claim << (tag ? " " + *tag : std::string()) << "\n";
+      s << "    proof: " << (r.empty_proof ? proof_path_human(*r.empty_proof) : "unrecorded")
+        << "\n";
+      render_core(*this, r.empty_core, "    ", s);
     }
   }
+
   if (!bin_checks.empty()) {
-    out += "\n== bins ==\n";
+    s << "\n== bins ==\n";
     for (const auto& b : bin_checks) {
-      std::string coverage = coverage_status_human(b.coverage);
-      if (b.coverage == CoverageStatus::NotProven && !b.gap_witness.empty()) {
-        coverage += " (gap witness:";
-        for (const auto& w : b.gap_witness) {
-          coverage += " " + w.quantity + " = " + adl2::interp::json_f64(w.value);
+      std::string coverage;
+      switch (b.coverage) {
+        case CoverageStatus::Proven:
+          coverage = "proven";
+          break;
+        case CoverageStatus::NotProven: {
+          coverage = "not proven";
+          if (!b.gap_witness.empty()) {
+            std::string vals;
+            for (std::size_t i = 0; i < b.gap_witness.size(); ++i) {
+              if (i) vals += ", ";
+              vals += b.gap_witness[i].quantity + " = " + explain_value(b.gap_witness[i].value);
+            }
+            coverage += " (gap witness: " + vals + ")";
+          }
+          break;
         }
-        coverage += ")";
+        case CoverageStatus::Unknown:
+          coverage = "unknown";
+          break;
       }
-      out += b.region + " [" + b.variable + "]: " + std::to_string(b.n_bins) +
-             " bins; disjoint " + std::to_string(b.disjoint_pairs_proven) + "/" +
-             std::to_string(b.disjoint_pairs_total) + " pairs; coverage: " + coverage + "\n";
+      s << b.region << " [" << b.variable << "]: " << b.n_bins << " bins; disjoint "
+        << b.disjoint_pairs_proven << "/" << b.disjoint_pairs_total
+        << " pairs; coverage: " << coverage << "\n";
     }
   }
-  for (const auto& d : diagnostics) {
-    out += std::string("  diagnostic: ") + d.message + "\n";
+
+  s << "\n== pairwise ==\n";
+  auto subset_tag_opt = subset_trust_tag(*this);
+  std::string subset_tag = subset_tag_opt ? " " + *subset_tag_opt : std::string();
+  for (const auto& p : pairwise) {
+    auto tag_opt = pair_trust_tag(*this, p);
+    std::string tag = tag_opt ? " " + *tag_opt : std::string();
+    s << p.a << " vs " << p.b << ": " << verdict_kind_human(p.kind) << tag << " — " << p.reason
+      << "\n";
+    if (p.proof_path) {
+      std::string size = p.certificate_size
+                             ? "; certificate: " + std::to_string(*p.certificate_size) +
+                                   " formula(s) replay-checked"
+                             : std::string("; no certificate");
+      s << "  proof: " << proof_path_human(*p.proof_path) << size << "\n";
+    }
+    render_core(*this, p.core, "  ", s);
+    if (!p.witness.empty()) {
+      std::string vals;
+      for (std::size_t i = 0; i < p.witness.size(); ++i) {
+        const auto& w = p.witness[i];
+        if (i) vals += ", ";
+        vals += w.quantity + " = " + explain_value(w.value);
+        if (w.derived) vals += " (axiom-derived)";
+      }
+      const char* validated = "";
+      if (p.witness_validated == true) validated = " [witness validated by interpreter]";
+      else if (p.witness_validated == false)
+        validated = " [witness is a candidate (not interpreter-checkable)]";
+      s << "  witness: " << vals << validated << "\n";
+      s << "  witness values: "
+        << (p.witness_validated == true
+                ? "read back from the event the interpreter accepted into both regions"
+                : "read from the solver model; the interpreter could not decide it")
+        << "\n";
+    }
+    if (p.subset_a_in_b) s << "  PROVEN SUBSET: " << p.a << " within " << p.b << subset_tag << "\n";
+    if (p.subset_b_in_a) s << "  PROVEN SUBSET: " << p.b << " within " << p.a << subset_tag << "\n";
   }
-  return out;
+
+  // The ledger and its advisories were default-report-only, which made
+  // --explain the one mode that could not explain a cross-file verdict.
+  render_reconciliation(*this, st, opts.recon, s);
+
+  s << "\n== axioms used ==\n";
+  for (const auto& a : axioms_used) {
+    s << a.id << " (" << a.instances << " instances; assumes: " << a.assumption << ")\n";
+    s << "  statement: " << a.statement << "\n";
+  }
+
+  render_diagnostics(*this, s);
+
+  TrustStats t = trust_stats(*this);
+  std::string cand_dis =
+      t.candidate_disjoint > 0 ? "; candidate disjoint: " + std::to_string(t.candidate_disjoint)
+                               : std::string();
+  s << "\n== summary ==\npairs: " << pairwise.size() << "; proven disjoint: " << t.proven_disjoint
+    << cand_dis << "; proven overlapping: " << t.proven_overlapping
+    << "; candidate overlapping: " << t.candidate_overlapping
+    << "; possibly overlapping: " << t.possibly << "; unknown: " << t.unknown << "\n";
+  return fix_negative_zero(s.str());
 }
 
 }  // namespace adl2::analysis

@@ -709,7 +709,8 @@ std::optional<Ingested> read_root(const std::string& path, const Profile& profil
                                                : IngestError::tree(profile.tree, le.message);
     return std::nullopt;
   }
-  const std::size_t entries = static_cast<std::size_t>(lf->tree.entries);
+  // Mirrors the oracle's `usize::try_from(tree.entries()).unwrap_or(0)`.
+  const std::size_t entries = lf->tree.entries < 0 ? 0 : static_cast<std::size_t>(lf->tree.entries);
   auto names = leaf_names_of(lf->tree);
   std::vector<IngestDiag> diags;
   std::vector<LoadedCollection> loaded;
@@ -817,6 +818,15 @@ std::optional<Ingested> read_root(const std::string& path, const Profile& profil
   diags.insert(diags.end(), rest.begin(), rest.end());
 
   if (!validate_pt(loaded, err)) return std::nullopt;
+
+  // Every loaded column was length-checked against `entries`; only a tree
+  // that contributes no mapped data at all leaves fEntries unconstrained,
+  // and then it must not drive the output size on its own.
+  if (loaded.empty() && !met_ptr && scalars.empty() && !wptr && entries > lf->bytes.size()) {
+    err = IngestError::tree(profile.tree, "fEntries (" + std::to_string(entries) +
+                                              ") exceeds the file size with no mapped branch present");
+    return std::nullopt;
+  }
 
   Ingested out;
   out.profile_id = profile.id();

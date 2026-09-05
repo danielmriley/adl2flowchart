@@ -112,6 +112,24 @@ const char* tok_kind_name(TokKind k) {
   return "?";
 }
 
+std::string describe_token(const Token& t) {
+  switch (t.kind) {
+    case TokKind::Ident: return "identifier `" + t.text + "`";
+    case TokKind::Int:
+    case TokKind::Real: return "number `" + t.text + "`";
+    case TokKind::String: return "string literal";
+    case TokKind::Newline: return "end of line";
+    case TokKind::Eof: return "end of file";
+    // The oracle's canonical spelling for `all` is upper-case.
+    case TokKind::KwAll: return "keyword `ALL`";
+    default: break;
+  }
+  if (is_keyword_kind(t.kind)) {
+    return std::string("keyword `") + tok_kind_name(t.kind) + "`";
+  }
+  return "`" + t.text + "`";
+}
+
 Lexer::Lexer(std::string_view source, DiagSink& diags)
     : src_(source), diags_(diags) {}
 
@@ -238,7 +256,11 @@ Token Lexer::next() {
 std::optional<Token> Lexer::lex_one() {
   skip_spaces();
   if (i_ >= src_.size()) {
-    return make(TokKind::Eof, i_, line_, col_, {});
+    // Empty span at the end of input (smash3 `Span::new(len, len)`), so a
+    // ``found end of file`` diagnostic reports the same `end` as the oracle.
+    Token eof = make(TokKind::Eof, i_, line_, col_, {});
+    eof.span.end = i_;
+    return eof;
   }
 
   const std::size_t begin = i_;
@@ -271,8 +293,10 @@ std::optional<Token> Lexer::lex_one() {
       ++col_;
     }
     if (i_ >= src_.size() || src_[i_] != '"') {
-      diags_.error(Span::at(begin, line, column, 1), "unterminated string",
-                   "close with \"");
+      diags_.error(Span::at(begin, line, column, i_ - begin),
+                   "unterminated string literal",
+                   "add a closing `\"` before the end of the line",
+                   "string starts here and never closes");
     } else {
       ++i_;
       ++col_;

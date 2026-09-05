@@ -24,6 +24,35 @@ bool iequals(const std::string& a, const char* b) {
   return i == a.size();
 }
 
+std::string ascii_lower(std::string s) {
+  for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+std::size_t levenshtein(const std::string& a, const std::string& b) {
+  std::vector<std::size_t> prev(b.size() + 1), cur(b.size() + 1);
+  for (std::size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    cur[0] = i + 1;
+    for (std::size_t j = 0; j < b.size(); ++j) {
+      const std::size_t cost = a[i] != b[j] ? 1 : 0;
+      cur[j + 1] = std::min({prev[j] + cost, prev[j + 1] + 1, cur[j] + 1});
+    }
+    std::swap(prev, cur);
+  }
+  return prev[b.size()];
+}
+
+/// smash3 `STMT_KEYWORDS` in its order and canonical spelling; the order
+/// decides ties in `suggest_keyword` (first minimum wins).
+constexpr const char* kStmtKeywords[] = {
+    "define", "def",     "object",    "obj",     "composite",    "take",
+    "using",  "select",  "cut",       "cmd",     "command",      "reject",
+    "region", "algo",    "bin",       "histo",   "histoList",    "weight",
+    "trigger", "info",   "table",     "countsformat", "process", "counts",
+    "print",  "save",    "sort",
+};
+
 }  // namespace
 
 Parser::Parser(std::string_view src, std::vector<Token> tokens, DiagSink& diags)
@@ -129,17 +158,43 @@ void Parser::abort_too_deep() {
   pos_ = tokens_.size() - 1;
 }
 
-bool Parser::expect(TokKind k, const char* what) {
-  if (match(k)) return true;
+Span Parser::error_here(std::string message) {
+  const Span span = peek().span;
   // Post-abort the cursor sits on EOF and every enclosing production is
   // unwinding; their `expected …` complaints are noise about a failure
   // already reported once.
-  if (aborted_) return false;
-  diags_.error(peek().span,
-               std::string("expected ") + what + " (got " +
-                   tok_kind_name(peek().kind) + ")",
-               std::string("in production matching grammar.ebnf; see parse path for ") +
-                   what);
+  if (aborted_) return span;
+  diags_.error(span, std::move(message), {}, "found " + describe_token(peek()));
+  return span;
+}
+
+const char* Parser::suggest_keyword(const std::string& word) const {
+  const std::string lower = ascii_lower(word);
+  const char* best = nullptr;
+  std::size_t best_d = 0;
+  for (const char* k : kStmtKeywords) {
+    const std::size_t d = levenshtein(lower, ascii_lower(k));
+    if (d > 2) continue;
+    if (!best || d < best_d) {
+      best = k;
+      best_d = d;
+    }
+  }
+  return best;
+}
+
+bool Parser::expect(TokKind k, const char* what) {
+  if (match(k)) return true;
+  error_here(std::string("expected ") + what);
+  return false;
+}
+
+bool Parser::expect_keyword_slot(const char* what) {
+  if (is_keyword_kind(peek().kind)) {
+    advance();
+    return true;
+  }
+  error_here(std::string("expected ") + what);
   return false;
 }
 
@@ -256,16 +311,37 @@ Ident Parser::make_ident(const Token& tok) {
   return id;
 }
 
+Ident Parser::parse_section_name(const char* context) {
+  Ident first = expect_ident(context);
+  std::size_t end = first.span.end;
+  for (;;) {
+    const Token& tok = tokens_[sig_index()];
+    if (tok.kind != TokKind::Underscore || tok.span.start != end) break;
+    end = tok.span.end;
+    pos_ = sig_index() + 1;
+    for (;;) {
+      const std::size_t j = sig_index();
+      const Token& seg = tokens_[j];
+      const bool adjacent = seg.span.start == end;
+      if (!adjacent || (seg.kind != TokKind::Int && seg.kind != TokKind::Ident)) break;
+      end = seg.span.end;
+      pos_ = j + 1;
+    }
+  }
+  // Like the oracle, the name is re-sliced from the source over the joined
+  // span — so after a failed `expect_ident` it is the offending token's text.
+  Ident id;
+  id.span = first.span;
+  id.span.end = end;
+  id.name = std::string(src_.substr(first.span.start, end - first.span.start));
+  last_span_ = id.span;
+  return id;
+}
+
 Ident Parser::expect_ident(const char* what) {
   if (check(TokKind::Ident)) return make_ident(advance());
-  // Some keywords are accepted as section/object names in Rust via
-  // parse_section_name; for ordinary expect_ident, error.
-  if (!aborted_) {
-    diags_.error(peek().span, std::string("expected ") + what,
-                 "ident production");
-  }
   Ident id;
-  id.span = peek().span;
+  id.span = error_here(std::string("expected ") + what);
   return id;
 }
 
@@ -277,9 +353,8 @@ StrLit Parser::expect_string(const char* what) {
     s.span = t.span;
     return s;
   }
-  diags_.error(peek().span, std::string("expected ") + what, "string literal");
   StrLit s;
-  s.span = peek().span;
+  s.span = error_here(std::string("expected ") + what);
   return s;
 }
 
@@ -311,11 +386,18 @@ FileAst Parser::parse_file() {
     Section sec;
     if (!parse_section(sec)) {
       if (check(TokKind::Eof)) break;
-      diags_.error(peek().span,
-                   std::string("expected section (got ") +
-                       tok_kind_name(peek().kind) + ")",
-                   "section = info-block | table-block | countsformat-block | "
-                   "define | object-block | region-block");
+      if (check(TokKind::Ident)) {
+        const std::string& name = peek().text;
+        std::string help;
+        if (const char* s = suggest_keyword(name)) {
+          help = std::string("did you mean `") + s + "`?";
+        }
+        diags_.error(peek().span, "`" + name + "` is not a section keyword",
+                     std::move(help),
+                     "expected `object`, `region`, `define`, `info`, ...");
+      } else {
+        error_here("expected a section keyword");
+      }
       advance();
       synchronize_statement();
       continue;
@@ -409,7 +491,7 @@ Section Parser::parse_define_section() {
   def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
   def.name = expect_ident("a name after `define`");
   if (!match_any({TokKind::Assign, TokKind::Colon})) {
-    diags_.error(peek().span, "expected `=` or `:` after the define name");
+    error_here("expected `=` or `:` after the define name");
   }
   def.body = extend_particle_list(parse_condition());
   def.span = kw_tok.span.to(last_span_);
@@ -423,25 +505,25 @@ Section Parser::parse_table_block() {
   const Token& start = advance();  // table
   TableBlock t;
   t.name = expect_ident("a table name after `table`");
-  if (expect(TokKind::KwTabletype, "`tabletype`")) {
+  if (expect_keyword_slot("`tabletype`")) {
     t.table_type = expect_ident("a table type");
   }
-  if (expect(TokKind::KwNvars, "`nvars`")) {
+  if (expect_keyword_slot("`nvars`")) {
     if (check(TokKind::Int)) {
       t.nvars = static_cast<std::uint64_t>(std::strtoull(peek().text.c_str(), nullptr, 10));
       advance();
     } else {
-      diags_.error(peek().span, "expected an integer after `nvars`");
+      error_here("expected an integer after `nvars`");
     }
   }
-  if (expect(TokKind::KwErrors, "`errors`")) {
+  if (expect_keyword_slot("`errors`")) {
     if (check(TokKind::KwTrue)) {
       t.errors = true;
       advance();
     } else if (check(TokKind::KwFalse)) {
       advance();
     } else {
-      diags_.error(peek().span, "expected `true` or `false` after `errors`");
+      error_here("expected `true` or `false` after `errors`");
     }
   }
   while (at_signed_num()) {
@@ -486,7 +568,8 @@ Section Parser::parse_object_block() {
     case TokKind::KwTrigger: keyword = ObjectKw::Trigger; break;
     default: break;
   }
-  Ident name = expect_ident("a name after object keyword");
+  Ident name = parse_section_name(
+      (std::string("a name after `") + object_kw_str(keyword) + "`").c_str());
   ObjectBlock block;
   block.keyword = keyword;
   block.name = std::move(name);
@@ -547,7 +630,7 @@ ObjectStmt Parser::parse_object_define() {
   def.keyword = (kw_tok.kind == TokKind::KwDef) ? "def" : "define";
   def.name = expect_ident("a name after `define`");
   if (!match_any({TokKind::Assign, TokKind::Colon})) {
-    diags_.error(peek().span, "expected `=` or `:` after the define name");
+    error_here("expected `=` or `:` after the define name");
   }
   def.body = extend_particle_list(parse_condition());
   def.span = kw_tok.span.to(last_span_);
@@ -565,7 +648,7 @@ ObjectStmt Parser::parse_derived_candidate() {
   else if (kw_tok.kind == TokKind::KwObject) keyword = "object";
   Ident name = expect_ident("a derived candidate name");
   if (!match(TokKind::Assign)) {
-    diags_.error(peek().span, "expected `=` after the candidate name");
+    error_here("expected `=` after the candidate name");
   }
   ObjectStmt st;
   st.kind = ObjectStmt::Kind::Derived;
@@ -654,7 +737,8 @@ Section Parser::parse_region_block() {
   RegionKw keyword = RegionKw::Region;
   if (kw_tok.kind == TokKind::KwAlgo) keyword = RegionKw::Algo;
   else if (kw_tok.kind == TokKind::KwHistoList) keyword = RegionKw::HistoList;
-  Ident name = expect_ident("a name after region keyword");
+  Ident name = parse_section_name(
+      (std::string("a name after `") + region_kw_str(keyword) + "`").c_str());
   RegionBlock block;
   block.keyword = keyword;
   block.name = std::move(name);
@@ -748,9 +832,14 @@ RegionStmt Parser::parse_region_ref() {
   }
   Ident id = expect_ident("a region reference");
   if (!nl_before()) {
+    std::string help =
+        "a bare name is only valid alone on its line, as a "
+        "region/histoList reference";
+    if (const char* s = suggest_keyword(id.name)) {
+      help = std::string("did you mean `") + s + "`?";
+    }
     diags_.error(id.span, "`" + id.name + "` is not a statement keyword",
-                 "a bare name is only valid alone on its line, as a "
-                 "region/histoList reference");
+                 std::move(help), "unknown statement");
     synchronize_statement();
   }
   RegionStmt st;
@@ -899,11 +988,11 @@ RegionStmt Parser::parse_weight_stmt() {
       st.weight_value.expr = std::move(e);
     }
   } else {
-    diags_.error(peek().span,
-                 "expected a weight value (number, name or function call)");
+    const Span span =
+        error_here("expected a weight value (number, name or function call)");
     synchronize_statement();
     st.weight_value.kind = WeightValueKind::Expr;
-    st.weight_value.expr = make_error(peek().span);
+    st.weight_value.expr = make_error(span);
   }
   st.span = start.span.to(last_span_);
   return st;
@@ -946,7 +1035,7 @@ RegionStmt Parser::parse_counts_stmt() {
         st.counts_items.push_back(advance().text);
         break;
       default:
-        diags_.error(peek().span, "unexpected token in counts statement");
+        error_here("unexpected token in counts statement");
         synchronize_statement();
         goto done;
     }
@@ -1307,8 +1396,8 @@ IndexVal Parser::parse_index_val() {
     v.value = static_cast<std::uint64_t>(
         std::strtoull(peek().text.c_str(), nullptr, 10));
     advance();
-  } else if (!aborted_) {
-    diags_.error(peek().span, "expected an integer index");
+  } else {
+    error_here("expected an integer index");
   }
   if (v.neg) {
     diags_.warning(
@@ -1447,14 +1536,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
     built(arg_depth);
     return e;
   }
-  Span sp = peek().span;
-  if (!aborted_) {
-    diags_.error(sp,
-                 std::string("expected an expression (got ") +
-                     tok_kind_name(peek().kind) + ")",
-                 "primary = number | ident | func-call | '(' condition ')' | "
-                 "'|' additive '|' | '{' arg-list '}' ident");
-  }
+  const Span sp = error_here("expected an expression");
   leaf();
   return make_error(sp);
 }
@@ -1595,9 +1677,8 @@ NumLit Parser::parse_signed_num() {
     n.span = (n.neg ? start.to(t.span) : t.span);
     return n;
   }
-  if (!aborted_) diags_.error(peek().span, "expected a number");
+  n.span = error_here("expected a number");
   n.raw = "0";
-  n.span = peek().span;
   return n;
 }
 

@@ -16,17 +16,20 @@ const char* CAVEAT =
     "names, producer and input identity are unauthenticated description and are NOT "
     "checked - see each bundle's `note`";
 
-std::string read_file(const std::string& path) {
+const char* USAGE = "usage: smash_cpp2-recheck BUNDLE.json... | DIR...";
+
+bool read_file(const std::string& path, std::string& text) {
   std::ifstream in(path);
-  if (!in) return {};
+  if (!in) return false;
   std::ostringstream ss;
   ss << in.rdbuf();
-  return ss.str();
+  text = ss.str();
+  return true;
 }
 
-std::string schema_of(const std::string& text) {
-  auto b = adl2::certify::CombineBundle::from_json(text);
-  if (b) return b->schema;
+// Best-effort `"schema"` value from a document `from_json` rejected, so the
+// FAIL line can say "unknown schema" instead of a bare parse error.
+std::string scan_schema(const std::string& text) {
   const std::string key = "\"schema\"";
   auto pos = text.find(key);
   if (pos == std::string::npos) return {};
@@ -40,25 +43,28 @@ std::string schema_of(const std::string& text) {
 int collect_inputs(const std::vector<std::string>& args, std::vector<std::string>& out,
                    std::string& err) {
   for (const auto& a : args) {
+    if (!a.empty() && a[0] == '-') {
+      err = "unknown option `" + a + "`\n" + USAGE;
+      return 2;
+    }
     std::error_code ec;
     std::filesystem::path p(a);
     if (std::filesystem::is_directory(p, ec)) {
       std::vector<std::string> found;
-      for (const auto& ent : std::filesystem::directory_iterator(p, ec)) {
-        if (ec) {
-          err = "cannot read directory " + a + ": " + ec.message();
-          return 2;
-        }
-        if (ent.path().extension() == ".json") found.push_back(ent.path().string());
+      std::size_t total = 0;
+      const std::filesystem::directory_iterator end;
+      std::filesystem::directory_iterator it(p, ec);
+      while (!ec && it != end) {
+        ++total;
+        if (it->path().extension() == ".json") found.push_back(it->path().string());
+        it.increment(ec);
+      }
+      if (ec) {
+        err = "cannot read directory " + a + ": " + ec.message();
+        return 2;
       }
       std::sort(found.begin(), found.end());
       if (found.empty()) {
-        std::size_t total = 0;
-        std::error_code ec2;
-        for (const auto& ent : std::filesystem::directory_iterator(p, ec2)) {
-          (void)ent;
-          ++total;
-        }
         err = "no *.json certificate bundles in directory " + a + " (" +
               (total == 0 ? std::string("the directory is empty")
                           : std::to_string(total) + " entries present, none ending in .json") +
@@ -72,23 +78,30 @@ int collect_inputs(const std::vector<std::string>& args, std::vector<std::string
       out.push_back(a);
     }
   }
+  // Fail closed before anything is checked: a path that cannot be opened is a
+  // usage error (exit 2), not a bundle that failed to replay (exit 1).
+  for (const auto& f : out) {
+    std::ifstream probe(f);
+    if (!probe) {
+      err = "unreadable path " + f;
+      return 2;
+    }
+  }
   return 0;
 }
 
 int check(const std::string& path, std::string& what, std::string& why) {
-  std::ifstream probe(path);
-  if (!probe) {
+  std::string text;
+  if (!read_file(path, text)) {
     why = "read error: cannot open " + path;
     return 1;
   }
-  probe.close();
-  std::string text = read_file(path);
-  std::string schema = schema_of(text);
+  auto bundle = adl2::certify::CombineBundle::from_json(text);
+  std::string schema = bundle ? bundle->schema : scan_schema(text);
   if (schema == adl2::certify::SUPERSEDED_SCHEMA_V1) {
     why = adl2::certify::supersession_note(schema);
     return 1;
   }
-  auto bundle = adl2::certify::CombineBundle::from_json(text);
   if (!bundle) {
     if (!schema.empty() && schema != adl2::certify::BUNDLE_SCHEMA) {
       std::string shown = schema.substr(0, 64);
@@ -126,7 +139,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
   if (args.empty() || std::find(args.begin(), args.end(), "--help") != args.end() ||
       std::find(args.begin(), args.end(), "-h") != args.end()) {
-    std::cerr << "usage: smash_cpp2-recheck BUNDLE.json... | DIR...\n";
+    std::cerr << USAGE << "\n";
     std::cerr << "re-checks smash_cpp2 `verify --combine` certificate bundles ("
               << adl2::certify::BUNDLE_SCHEMA << ")\n";
     std::cerr << "with the trusted exact-rational kernel; no solver required.\n\n";

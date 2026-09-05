@@ -308,7 +308,48 @@ void write_fact(Jw& j, const DerivedFact& f) {
 
 // ---------------------------------------------------------------------------
 // JSON parser (objects, arrays, strings, numbers, bool, null)
+//
+// The input is untrusted (a bundle handed to smash_cpp2-recheck). Nesting is
+// capped so a deep document fails closed instead of exhausting the stack, and
+// the acceptance edge follows serde_json (smash3-recheck): duplicate object
+// keys, raw control characters, unpaired UTF-16 surrogates, and non-JSON
+// whitespace are all rejected.
 // ---------------------------------------------------------------------------
+
+constexpr std::size_t MAX_JSON_DEPTH = 256;
+
+void put_utf8(std::string& s, std::uint32_t cp) {
+  if (cp < 0x80) {
+    s.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    s.push_back(static_cast<char>(0xc0 | (cp >> 6)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  } else if (cp < 0x10000) {
+    s.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  } else {
+    s.push_back(static_cast<char>(0xf0 | (cp >> 18)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3f)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  }
+}
+
+/// `0 | [1-9][0-9]*`, at most u32::MAX. No sign, no whitespace, no leading
+/// zeros, no fraction or exponent — what serde_json accepts for a `u32`
+/// (including as a numeric map key).
+std::optional<std::uint32_t> strict_u32(const std::string& s) {
+  if (s.empty()) return std::nullopt;
+  if (s.size() > 1 && s[0] == '0') return std::nullopt;
+  std::uint64_t x = 0;
+  for (char c : s) {
+    if (c < '0' || c > '9') return std::nullopt;
+    x = x * 10 + static_cast<std::uint64_t>(c - '0');
+    if (x > 0xFFFFFFFFull) return std::nullopt;
+  }
+  return static_cast<std::uint32_t>(x);
+}
 
 struct Json {
   enum class Kind { Null, Bool, Number, String, Array, Object };
@@ -341,7 +382,7 @@ struct Parser {
   explicit Parser(const std::string& text) : t(text) {}
 
   void skip() {
-    while (i < t.size() && std::isspace(static_cast<unsigned char>(t[i]))) ++i;
+    while (i < t.size() && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r')) ++i;
   }
   char peek() {
     skip();
@@ -370,17 +411,24 @@ struct Parser {
   }
 
   Json parse() {
-    Json v = value();
+    Json v = value(0);
     skip();
     if (i != t.size()) ok = false;
     if (!ok) return Json{};
     return v;
   }
 
-  Json value() {
+  // `depth` is the container nesting level of the value being parsed. Past
+  // the cap we fail without descending, and the container loops stop on
+  // `!ok`, so no partial tree is built for a hostile document.
+  Json value(std::size_t depth) {
+    if (depth > MAX_JSON_DEPTH) {
+      ok = false;
+      return Json{};
+    }
     char c = peek();
-    if (c == '{') return object();
-    if (c == '[') return array();
+    if (c == '{') return object(depth);
+    if (c == '[') return array(depth);
     if (c == '"') return string();
     if (c == 't' || c == 'f') return boolean();
     if (c == 'n') return nullv();
@@ -389,9 +437,13 @@ struct Parser {
     return Json{};
   }
 
-  Json object() {
+  Json object(std::size_t depth) {
     Json v;
     v.kind = Json::Kind::Object;
+    if (depth > MAX_JSON_DEPTH) {
+      ok = false;
+      return v;
+    }
     if (!eat('{')) return v;
     skip();
     if (peek() == '}') {
@@ -405,8 +457,12 @@ struct Parser {
         return v;
       }
       if (!eat(':')) return v;
-      Json val = value();
-      v.obj.emplace(std::move(k.s), std::move(val));
+      Json val = value(depth + 1);
+      if (!ok) return v;
+      if (!v.obj.emplace(std::move(k.s), std::move(val)).second) {
+        ok = false;  // duplicate key: serde_json rejects
+        return v;
+      }
       skip();
       if (peek() == ',') {
         ++i;
@@ -422,9 +478,13 @@ struct Parser {
     return v;
   }
 
-  Json array() {
+  Json array(std::size_t depth) {
     Json v;
     v.kind = Json::Kind::Array;
+    if (depth > MAX_JSON_DEPTH) {
+      ok = false;
+      return v;
+    }
     if (!eat('[')) return v;
     skip();
     if (peek() == ']') {
@@ -432,7 +492,9 @@ struct Parser {
       return v;
     }
     while (ok) {
-      v.arr.push_back(value());
+      Json item = value(depth + 1);
+      if (!ok) return v;
+      v.arr.push_back(std::move(item));
       skip();
       if (peek() == ',') {
         ++i;
@@ -448,6 +510,27 @@ struct Parser {
     return v;
   }
 
+  // Four hex digits at `i`, or nullopt (ok cleared) on a short/malformed run.
+  std::optional<std::uint32_t> hex4() {
+    if (i + 4 > t.size()) {
+      ok = false;
+      return std::nullopt;
+    }
+    std::uint32_t cp = 0;
+    for (int k = 0; k < 4; ++k) {
+      char h = t[i++];
+      cp <<= 4;
+      if (h >= '0' && h <= '9') cp |= static_cast<std::uint32_t>(h - '0');
+      else if (h >= 'a' && h <= 'f') cp |= static_cast<std::uint32_t>(h - 'a' + 10);
+      else if (h >= 'A' && h <= 'F') cp |= static_cast<std::uint32_t>(h - 'A' + 10);
+      else {
+        ok = false;
+        return std::nullopt;
+      }
+    }
+    return cp;
+  }
+
   Json string() {
     Json v;
     v.kind = Json::Kind::String;
@@ -455,6 +538,10 @@ struct Parser {
     while (i < t.size() && ok) {
       char c = t[i++];
       if (c == '"') return v;
+      if (static_cast<unsigned char>(c) < 0x20) {
+        ok = false;  // raw control character inside a string
+        return v;
+      }
       if (c == '\\') {
         if (i >= t.size()) {
           ok = false;
@@ -473,32 +560,28 @@ struct Parser {
           case 'r': v.s.push_back('\r'); break;
           case 't': v.s.push_back('\t'); break;
           case 'u': {
-            if (i + 4 > t.size()) {
-              ok = false;
+            auto cp = hex4();
+            if (!cp) return v;
+            if (*cp >= 0xDC00 && *cp <= 0xDFFF) {
+              ok = false;  // lone low surrogate
               return v;
             }
-            unsigned cp = 0;
-            for (int k = 0; k < 4; ++k) {
-              char h = t[i++];
-              cp <<= 4;
-              if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
-              else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
-              else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
-              else {
+            if (*cp >= 0xD800 && *cp <= 0xDBFF) {
+              // High surrogate: must be immediately followed by \uDC00-\uDFFF.
+              if (i + 2 > t.size() || t[i] != '\\' || t[i + 1] != 'u') {
                 ok = false;
                 return v;
               }
+              i += 2;
+              auto lo = hex4();
+              if (!lo) return v;
+              if (*lo < 0xDC00 || *lo > 0xDFFF) {
+                ok = false;
+                return v;
+              }
+              *cp = 0x10000 + ((*cp - 0xD800) << 10) + (*lo - 0xDC00);
             }
-            if (cp < 0x80) {
-              v.s.push_back(static_cast<char>(cp));
-            } else if (cp < 0x800) {
-              v.s.push_back(static_cast<char>(0xc0 | (cp >> 6)));
-              v.s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
-            } else {
-              v.s.push_back(static_cast<char>(0xe0 | (cp >> 12)));
-              v.s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
-              v.s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
-            }
+            put_utf8(v.s, *cp);
             break;
           }
           default:
@@ -588,17 +671,7 @@ std::optional<bool> as_bool(const Json* v) {
 }
 std::optional<std::uint32_t> as_u32(const Json* v) {
   if (!v || !v->is_num()) return std::nullopt;
-  if (v->num.find('.') != std::string::npos || v->num.find('e') != std::string::npos ||
-      v->num.find('E') != std::string::npos || v->num.find('-') != std::string::npos) {
-    return std::nullopt;
-  }
-  try {
-    unsigned long x = std::stoul(v->num);
-    if (x > 0xFFFFFFFFul) return std::nullopt;
-    return static_cast<std::uint32_t>(x);
-  } catch (...) {
-    return std::nullopt;
-  }
+  return strict_u32(v->num);
 }
 
 std::optional<QRat> as_qrat(const Json* v) {
@@ -619,11 +692,12 @@ std::optional<Rel> as_rel(const Json* v) {
   return std::nullopt;
 }
 
-std::optional<BundleFormula> parse_formula(const Json* v);
+std::optional<BundleFormula> parse_formula(const Json* v, std::size_t depth = 0);
 std::optional<BundleAssert> parse_assert(const Json* v);
 std::optional<Certificate> parse_certificate(const Json* v);
 
-std::optional<BundleFormula> parse_formula(const Json* v) {
+std::optional<BundleFormula> parse_formula(const Json* v, std::size_t depth) {
+  if (depth > MAX_JSON_DEPTH) return std::nullopt;
   if (!v || !v->is_obj()) return std::nullopt;
   auto op = as_str(v->get("op"));
   if (!op) return std::nullopt;
@@ -662,7 +736,7 @@ std::optional<BundleFormula> parse_formula(const Json* v) {
     const Json* args = v->get("args");
     if (!args || !args->is_arr()) return std::nullopt;
     for (const auto& a : args->arr) {
-      auto inner = parse_formula(&a);
+      auto inner = parse_formula(&a, depth + 1);
       if (!inner) return std::nullopt;
       f.args.push_back(std::move(*inner));
     }
@@ -717,7 +791,8 @@ std::optional<BundleAssert> parse_assert(const Json* v) {
   return a;
 }
 
-std::optional<CertNode> parse_cert_node(const Json* v) {
+std::optional<CertNode> parse_cert_node(const Json* v, std::size_t depth = 0) {
+  if (depth > MAX_DEPTH) return std::nullopt;  // replay refuses deeper trees anyway
   if (!v) return std::nullopt;
   if (v->is_str()) {
     if (v->s == "Contradiction") return CertNode::contradiction();
@@ -742,7 +817,7 @@ std::optional<CertNode> parse_cert_node(const Json* v) {
     if (!br || !br->is_arr()) return std::nullopt;
     std::vector<CertNode> branches;
     for (const auto& b : br->arr) {
-      auto n = parse_cert_node(&b);
+      auto n = parse_cert_node(&b, depth + 1);
       if (!n) return std::nullopt;
       branches.push_back(std::move(*n));
     }
@@ -982,7 +1057,7 @@ bool CombineBundle::replay() const {
   return certificate.replay(formulas());
 }
 
-std::string CombineBundle::to_json() const {
+std::string CombineBundle::to_json(const std::vector<BundleInput>& with_inputs) const {
   Jw j;
   j.begin_obj();
   j.key("schema");
@@ -1006,7 +1081,7 @@ std::string CombineBundle::to_json() const {
   }
   j.key("inputs");
   j.begin_arr();
-  for (const auto& in : inputs) {
+  for (const auto& in : with_inputs) {
     j.comma();
     j.pad();
     j.begin_obj();
@@ -1095,13 +1170,9 @@ std::optional<CombineBundle> CombineBundle::from_json(const std::string& text) {
   }
   for (const auto& kv : quantities->obj) {
     if (!kv.second.is_str()) return std::nullopt;
-    try {
-      unsigned long q = std::stoul(kv.first);
-      if (q > 0xFFFFFFFFul) return std::nullopt;
-      b.quantities[static_cast<std::uint32_t>(q)] = kv.second.s;
-    } catch (...) {
-      return std::nullopt;
-    }
+    auto q = strict_u32(kv.first);
+    if (!q) return std::nullopt;
+    b.quantities[*q] = kv.second.s;
   }
   for (const auto& a : asserts->arr) {
     auto ba = parse_assert(&a);

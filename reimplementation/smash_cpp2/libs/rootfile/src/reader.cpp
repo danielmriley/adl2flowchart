@@ -13,7 +13,7 @@ struct Cur {
   std::size_t pos = 0;
 
   bool take(std::size_t n, const std::uint8_t** out, std::string* err) {
-    if (pos + n > len) {
+    if (pos > len || n > len - pos) {
       if (err) *err = "read past end at " + std::to_string(pos);
       return false;
     }
@@ -63,6 +63,15 @@ struct Cur {
   bool skip(std::size_t n, std::string* err) {
     const std::uint8_t* p;
     return take(n, &p, err);
+  }
+  // Advance to a frame end recorded earlier; a frame whose end is behind the
+  // cursor is malformed, not a rewind.
+  bool skip_to(std::size_t end, const char* what, std::string* err) {
+    if (end < pos) {
+      if (err) *err = std::string(what) + ": frame ends before its own header";
+      return false;
+    }
+    return skip(end - pos, err);
   }
   bool pstring(std::string& s, std::string* err) {
     std::uint8_t n8;
@@ -115,6 +124,10 @@ struct Cur {
     if (!i32(n, err)) return false;
     if (n < 0) {
       if (err) *err = "TArrayD: negative fN";
+      return false;
+    }
+    if (pos > len || static_cast<std::size_t>(n) > (len - pos) / 8) {
+      if (err) *err = "TArrayD: fN exceeds buffer";
       return false;
     }
     vals.resize(static_cast<std::size_t>(n));
@@ -191,6 +204,10 @@ bool parse_flabels(Cur& cur, std::optional<std::vector<std::string>>& labels, st
     if (err) *err = "fLabels: negative fSize";
     return false;
   }
+  if (cur.pos > cur.len || static_cast<std::size_t>(n) > (cur.len - cur.pos) / 8) {
+    if (err) *err = "fLabels: fSize exceeds buffer";
+    return false;
+  }
   std::vector<std::string> out;
   out.reserve(static_cast<std::size_t>(n));
   for (std::int32_t i = 0; i < n; ++i) {
@@ -246,7 +263,7 @@ bool parse_taxis(Cur& cur, AxisData& ax, std::string* err) {
     if (err) *err = "TAttAxis version";
     return false;
   }
-  if (!cur.skip(aend - cur.pos, err)) return false;
+  if (!cur.skip_to(aend, "TAttAxis", err)) return false;
   if (!cur.i32(ax.nbins, err) || !cur.f64(ax.lo, err) || !cur.f64(ax.hi, err) ||
       !cur.tarrayd(ax.edges, err))
     return false;
@@ -294,7 +311,7 @@ bool parse_th1_body(Cur& cur, Th1Body& b, std::string* err) {
   for (const char* att : {"TAttLine", "TAttFill", "TAttMarker"}) {
     std::size_t aend;
     std::int16_t av;
-    if (!cur.frame(att, aend, av, err) || !cur.skip(aend - cur.pos, err)) return false;
+    if (!cur.frame(att, aend, av, err) || !cur.skip_to(aend, att, err)) return false;
   }
   AxisData z;
   if (!cur.i32(b.ncells, err) || !parse_taxis(cur, b.xaxis, err) || !parse_taxis(cur, b.yaxis, err) ||
@@ -476,12 +493,22 @@ struct Record {
   bool visited = false;
 };
 
+constexpr std::size_t kMaxDirDepth = 64;
+
 bool walk_dir(std::map<std::uint32_t, Record>& records, std::uint32_t dir_loc, std::uint32_t seek_keys,
               std::uint32_t nbytes_keys, const std::vector<std::string>& path, ParsedFile& out,
               std::vector<std::string>* root_names, std::string* err) {
+  if (path.size() > kMaxDirDepth) {
+    if (err) *err = "directory nesting too deep";
+    return false;
+  }
   auto it = records.find(seek_keys);
   if (it == records.end()) {
     if (err) *err = "fSeekKeys is not a record";
+    return false;
+  }
+  if (it->second.visited) {
+    if (err) *err = "directory cycle";
     return false;
   }
   it->second.visited = true;
@@ -500,6 +527,10 @@ bool walk_dir(std::map<std::uint32_t, Record>& records, std::uint32_t dir_loc, s
     auto rit = records.find(child.seek_key);
     if (rit == records.end()) {
       if (err) *err = "keys list points nowhere: " + child.name;
+      return false;
+    }
+    if (rit->second.visited) {
+      if (err) *err = "record listed twice: " + child.name;
       return false;
     }
     rit->second.visited = true;

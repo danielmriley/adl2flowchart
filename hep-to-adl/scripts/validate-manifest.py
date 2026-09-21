@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate hep-to-adl manifests against Agent Plugins 1.0.0 and the locked draft type."""
+"""Validate hep-to-adl Cursor/Claude manifests, mode skill, and the locked draft type."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = PLUGIN_ROOT / "plugin.json"
+ROOT_PLUGIN_JSON = PLUGIN_ROOT / "plugin.json"
+PORTABLE_MANIFEST = PLUGIN_ROOT / "agent-plugins" / "plugin.json"
 SCHEMA = PLUGIN_ROOT / "schema" / "plugin.schema.json"
 DRAFT_SCHEMA = PLUGIN_ROOT / "schema" / "heptoadl-draft.schema.json"
 CURSOR_MANIFEST = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
@@ -19,11 +20,12 @@ COMMANDS_DIR = PLUGIN_ROOT / "commands"
 RULES_DIR = PLUGIN_ROOT / "rules"
 AGENTS_DIR = PLUGIN_ROOT / "agents"
 FIXTURES_DIR = PLUGIN_ROOT / "fixtures"
-EXPECTED_VERSION = "0.1.2"
+EXPECTED_VERSION = "0.1.3"
 REQUIRED_SKILLS = ("hep-to-adl", "adl-authoring", "hep-code-read")
 REQUIRED_COMMANDS = ("hep-to-adl",)
 REQUIRED_RULES = ("hep-to-adl",)
 REQUIRED_AGENTS = ("hep-to-adl-agent",)
+MODE_SKILL = "hep-to-adl"
 REQUIRED_FIXTURES = (
     "ex01_selection.adl",
     "ex03_objreco.adl",
@@ -36,6 +38,7 @@ COMPONENT_PATH_KEYS = ("commands", "rules", "skills", "agents")
 CURSOR_DISPLAY_NAMES = ("HEP to ADL", "hep-to-adl")
 CURSOR_CATEGORIES = ("developer-tools", "utilities")
 CURSOR_TAGS = ("hep", "adl", "cms", "analysis")
+AGENT_PLUGINS_SCHEMA_PREFIX = "https://agent-plugins.org/"
 
 
 def fail(message: str) -> None:
@@ -75,13 +78,12 @@ def require_mapping(value: object, label: str) -> dict:
     return value
 
 
-def check_dual_manifest(portable: dict, host_path: Path) -> None:
-    host = require_mapping(load_json(host_path), str(host_path.relative_to(PLUGIN_ROOT)))
+def check_identity(host: dict, host_label: str, expected: dict) -> None:
     for key in ("name", "version", "description"):
-        if host.get(key) != portable.get(key):
+        if host.get(key) != expected.get(key):
             fail(
-                f"{host_path.relative_to(PLUGIN_ROOT)} {key}={host.get(key)!r} "
-                f"does not match plugin.json {key}={portable.get(key)!r}"
+                f"{host_label} {key}={host.get(key)!r} "
+                f"does not match {expected['name']!r} {key}={expected.get(key)!r}"
             )
 
 
@@ -105,10 +107,19 @@ def parse_frontmatter(path: Path, required: tuple[str, ...]) -> dict[str, str]:
     return fields
 
 
-def check_skill(name: str) -> None:
+def check_skill(name: str) -> dict[str, str]:
     fields = parse_frontmatter(SKILLS_DIR / name / "SKILL.md", ("name", "description"))
     if fields.get("name") != name:
         fail(f"skills/{name}/SKILL.md frontmatter name={fields.get('name')!r} expected {name!r}")
+    return fields
+
+
+def check_mode_skill(name: str) -> None:
+    fields = check_skill(name)
+    if fields.get("mode") != "true":
+        fail(f"skills/{name}/SKILL.md frontmatter mode={fields.get('mode')!r} expected 'true'")
+    if f"/{name}" not in fields.get("description", ""):
+        fail(f"skills/{name}/SKILL.md description must mention /{name}")
 
 
 def check_command(name: str) -> None:
@@ -129,6 +140,21 @@ def check_agent(name: str) -> None:
         fail(f"agents/{name}.md frontmatter is_background={fields.get('is_background')!r} expected 'true'")
 
 
+def check_root_not_agent_plugins() -> None:
+    """A root plugin.json with the Agent Plugins $schema makes Cursor load skills-only."""
+    if not ROOT_PLUGIN_JSON.is_file():
+        return
+    data = load_json(ROOT_PLUGIN_JSON)
+    if not isinstance(data, dict):
+        return
+    schema = data.get("$schema")
+    if isinstance(schema, str) and schema.startswith(AGENT_PLUGINS_SCHEMA_PREFIX):
+        fail(
+            "root plugin.json has Agent Plugins $schema; Cursor loads skills-only. "
+            "Move that file to agent-plugins/plugin.json"
+        )
+
+
 def check_cursor_chat_fields(host: dict) -> None:
     display = host.get("displayName")
     if display not in CURSOR_DISPLAY_NAMES:
@@ -145,10 +171,13 @@ def check_cursor_chat_fields(host: dict) -> None:
     tags = host.get("tags")
     if not isinstance(tags, list) or set(tags) != set(CURSOR_TAGS):
         fail(f".cursor-plugin/plugin.json tags={tags!r} expected {list(CURSOR_TAGS)}")
-    if host.get("skills") != "./skills/":
-        fail(f".cursor-plugin/plugin.json skills={host.get('skills')!r} expected './skills/'")
-    if host.get("agents") != "./agents/":
-        fail(f".cursor-plugin/plugin.json agents={host.get('agents')!r} expected './agents/'")
+    for key, expected in (
+        ("skills", "./skills/"),
+        ("agents", "./agents/"),
+        ("commands", "./commands/"),
+    ):
+        if host.get(key) != expected:
+            fail(f".cursor-plugin/plugin.json {key}={host.get(key)!r} expected {expected!r}")
     logo = host.get("logo")
     if logo is not None:
         if not isinstance(logo, str) or not logo:
@@ -182,23 +211,33 @@ def check_declared_component_paths(host: dict, host_label: str) -> None:
 
 
 def main() -> None:
-    portable = require_mapping(load_json(MANIFEST), "plugin.json")
-    schema = require_mapping(load_json(SCHEMA), "schema/plugin.schema.json")
-    validate_schema(portable, schema, "plugin.json")
+    check_root_not_agent_plugins()
 
-    if portable.get("name") != "hep-to-adl":
-        fail(f"plugin.json name={portable.get('name')!r} expected 'hep-to-adl'")
-    if portable.get("version") != EXPECTED_VERSION:
-        fail(f"plugin.json version={portable.get('version')!r} expected {EXPECTED_VERSION!r}")
-
-    check_dual_manifest(portable, CURSOR_MANIFEST)
-    check_dual_manifest(portable, CLAUDE_MANIFEST)
     cursor_host = require_mapping(load_json(CURSOR_MANIFEST), ".cursor-plugin/plugin.json")
+    if cursor_host.get("name") != "hep-to-adl":
+        fail(f".cursor-plugin/plugin.json name={cursor_host.get('name')!r} expected 'hep-to-adl'")
+    if cursor_host.get("version") != EXPECTED_VERSION:
+        fail(
+            f".cursor-plugin/plugin.json version={cursor_host.get('version')!r} "
+            f"expected {EXPECTED_VERSION!r}"
+        )
+    identity = {key: cursor_host.get(key) for key in ("name", "version", "description")}
+    claude_host = require_mapping(load_json(CLAUDE_MANIFEST), ".claude-plugin/plugin.json")
+    check_identity(claude_host, ".claude-plugin/plugin.json", identity)
     check_declared_component_paths(cursor_host, ".cursor-plugin/plugin.json")
     check_cursor_chat_fields(cursor_host)
 
+    if PORTABLE_MANIFEST.is_file():
+        portable = require_mapping(load_json(PORTABLE_MANIFEST), "agent-plugins/plugin.json")
+        schema = require_mapping(load_json(SCHEMA), "schema/plugin.schema.json")
+        validate_schema(portable, schema, "agent-plugins/plugin.json")
+        check_identity(portable, "agent-plugins/plugin.json", identity)
+
     for skill in REQUIRED_SKILLS:
-        check_skill(skill)
+        if skill == MODE_SKILL:
+            check_mode_skill(skill)
+        else:
+            check_skill(skill)
     for command in REQUIRED_COMMANDS:
         check_command(command)
     for rule in REQUIRED_RULES:
@@ -216,10 +255,10 @@ def main() -> None:
         draft = load_json(draft_path)
         validate_schema(draft, draft_schema, str(draft_path.relative_to(PLUGIN_ROOT)))
 
-    print("OK: plugin.json matches Agent Plugins 1.0.0")
-    print("OK: Cursor and Claude Code host manifests match name/version/description")
-    print("OK: Cursor displayName, skills, and agents are declared")
-    print("OK: required skills, commands, rules, agents, and fixtures are present")
+    print("OK: no Agent Plugins $schema at the Cursor plugin root")
+    print("OK: Cursor manifest declares displayName, skills, agents, and commands")
+    print("OK: Claude Code host manifest matches name/version/description")
+    print("OK: required mode skill, commands, rules, agents, and fixtures are present")
     print("OK: fixture drafts match HepToAdlDraft")
 
 

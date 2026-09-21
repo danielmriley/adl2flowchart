@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Stop Cursor treating hep-to-adl as an Agent Plugin (skills-only). The
+  Agent Plugins `$schema` manifest moved to `agent-plugins/plugin.json`.
+  Cursor now loads `.cursor-plugin/plugin.json` like pstack.
+- `skills/hep-to-adl/SKILL.md` is a mode skill (`mode: true`) so
+  `/hep-to-adl` appears in the Agent slash menu like `/poteto-mode`.
+
 ## 0.1.2
 
 - pstack-like `hep-to-adl-agent` plus Cursor `displayName` so Agent chat

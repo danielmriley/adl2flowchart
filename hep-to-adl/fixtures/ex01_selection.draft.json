@@ -1,0 +1,71 @@
+{
+  "source": {
+    "language": "ADL",
+    "paths": ["fixtures/ex01_selection.adl"],
+    "framework": "CutLang tutorial"
+  },
+  "info": {
+    "title": "ADL/CL ex1: Simple object and event selection"
+  },
+  "objects": [
+    {
+      "name": "goodJets",
+      "take": "Jet",
+      "selects": ["pT(Jet) > 50", "abs(eta(Jet)) < 2.4"],
+      "rejects": []
+    },
+    {
+      "name": "goodbJets",
+      "take": "goodJets",
+      "selects": ["BTag(goodJets) == 1"],
+      "rejects": []
+    },
+    {
+      "name": "goodEles",
+      "take": "Ele",
+      "selects": ["pT(Ele) > 20", "abs(eta(Ele)) < 2.1"],
+      "rejects": []
+    },
+    {
+      "name": "goodMuos",
+      "take": "Muo",
+      "selects": ["pT(Muo) > 20", "abs(eta(Muo)) < 2.1"],
+      "rejects": []
+    },
+    {
+      "name": "leptons",
+      "take": "Union(goodEles, goodMuos)",
+      "selects": [],
+      "rejects": [],
+      "notes": "tutorial form: object leptons : Union(goodEles, goodMuos)"
+    }
+  ],
+  "regions": [
+    {
+      "name": "baseline",
+      "parents": [],
+      "selects": [
+        "ALL",
+        "size(goodJets) >= 3",
+        "size(goodbJets) >= 1",
+        "pT(goodJets[0]) > 200",
+        "size(leptons) == 1"
+      ]
+    },
+    {
+      "name": "singleelectron",
+      "parents": ["baseline"],
+      "selects": ["size(goodEles) == 1"]
+    },
+    {
+      "name": "singlemuon",
+      "parents": ["baseline"],
+      "selects": ["size(goodMuos) == 1"]
+    }
+  ],
+  "defines": [],
+  "unresolved": [],
+  "assumptions": [
+    "Collections are ordered by decreasing pT, as in the tutorial comment."
+  ]
+}

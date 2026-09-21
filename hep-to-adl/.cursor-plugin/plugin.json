@@ -1,0 +1,12 @@
+{
+  "name": "hep-to-adl",
+  "version": "0.1.0",
+  "description": "Convert HEP analysis code (C++/Python/\u2026) into ADL for smash2 / CutLang workflows.",
+  "author": {
+    "name": "Daniel Riley"
+  },
+  "homepage": "https://github.com/danielmriley/adl2flowchart",
+  "repository": "https://github.com/danielmriley/adl2flowchart",
+  "keywords": ["adl", "hep", "cms", "atlas", "cutlang", "smash"],
+  "skills": "./skills/"
+}

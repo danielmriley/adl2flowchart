@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/danielmriley/adl2flowchart/hep-to-adl/schema/heptoadl-draft.schema.json",
+  "title": "HepToAdlDraft",
+  "description": "Locked intermediate model for HEP analysis code to ADL. Fill this before emitting ADL. Unresolved items stay unresolved; never invent physics cuts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source",
+    "info",
+    "objects",
+    "regions",
+    "defines",
+    "unresolved",
+    "assumptions"
+  ],
+  "properties": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "paths"],
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "Primary source language, e.g. C++, Python, mixed."
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files or paper notes that were inventoried."
+        },
+        "framework": {
+          "type": "string",
+          "description": "CMSSW, NanoAOD tools, Delphes, awkward/coffea, CutLang, other."
+        }
+      }
+    },
+    "info": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "experiment": { "type": "string" },
+        "id": { "type": "string" },
+        "sqrtS": { "type": ["number", "string"] },
+        "lumi": { "type": ["number", "string"] },
+        "datatier": { "type": "string" }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "take", "selects", "rejects"],
+        "properties": {
+          "name": { "type": "string" },
+          "take": {
+            "type": "string",
+            "description": "Input collection, e.g. Jet, goodJets, Union(goodEles, goodMuos)."
+          },
+          "selects": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "rejects": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "parents", "selects"],
+        "properties": {
+          "name": { "type": "string" },
+          "parents": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Region names inherited as bare statements."
+          },
+          "selects": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "defines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "expr"],
+        "properties": {
+          "name": { "type": "string" },
+          "expr": { "type": "string" }
+        }
+      }
+    },
+    "histos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "title": { "type": "string" },
+          "bins": { "type": "string" },
+          "expr": { "type": "string" },
+          "region": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "tabletype": { "type": "string" },
+          "nvars": { "type": "integer" },
+          "errors": { "type": "boolean" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "why"],
+        "properties": {
+          "what": { "type": "string" },
+          "why": { "type": "string" },
+          "suggested_question": { "type": "string" }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

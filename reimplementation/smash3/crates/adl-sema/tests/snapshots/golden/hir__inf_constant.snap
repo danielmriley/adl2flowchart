@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: inf_constant.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+object eles -> C1#eles  (pure rename of C1#eles)
+== defines ==
+== regions ==
+region SR_a
+  select ((MET.pt + C1#eles[0].pt) > (100 / 0))
+region SR_b
+  select (MET.pt > 50)
+== diagnostics ==

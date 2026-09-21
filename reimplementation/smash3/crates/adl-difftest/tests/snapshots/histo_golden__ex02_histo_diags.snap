@@ -1,0 +1,5 @@
+---
+source: crates/adl-difftest/tests/histo_golden.rs
+expression: "diags.join(\"\\n\")"
+---
+region `baseline`: histoList `jetHistos` referenced more than once; mid-selection fill points are not supported — its histograms fill once on full region acceptance

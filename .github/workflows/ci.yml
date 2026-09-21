@@ -34,6 +34,33 @@ jobs:
         # dump-formula regression. Do not skip the test or lower PROPTEST_CASES.
         run: cargo test --release --workspace
 
+  smash3:
+    name: smash3 (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: reimplementation/smash3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install z3 4.12.2
+        run: |
+          curl -sSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.12.2/z3-4.12.2-x64-glibc-2.35.zip
+          unzip -q /tmp/z3.zip -d /tmp/z3
+          sudo install /tmp/z3/z3-4.12.2-x64-glibc-2.35/bin/z3 /usr/local/bin/z3
+          z3 --version
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reimplementation/smash3
+      - name: Build
+        run: cargo build --release --workspace
+      - name: Test
+        run: cargo test --release --workspace --no-fail-fast
+      - name: Corpus parse+resolve
+        run: scripts/corpus_gate.sh
+      - name: Verify corpus ledger
+        run: scripts/verify_corpus_gate.sh
+
   legacy:
     name: legacy smash (C++)
     runs-on: ubuntu-latest

@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: tag_index.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+== defines ==
+== regions ==
+region SR_lead_btag
+  select (C0#jets[0].btag == 1)
+region SR_sub_nobtag
+  select (C0#jets[1].btag == 0)
+== diagnostics ==

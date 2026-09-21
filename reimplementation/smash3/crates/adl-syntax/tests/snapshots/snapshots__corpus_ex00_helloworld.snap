@@ -1,0 +1,65 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/tutorials/ex00_helloworld.adl\")"
+---
+File
+  Object kw=object name=goodjets @8:1
+    Take kw=take src=JET @9:3
+    Cut kw=select @10:3
+      Cmp op=>
+        Call name=pt
+          Ident JET
+        Num 30
+    Cut kw=select @11:3
+      Cmp op=<
+        Call name=abs
+          Call name=eta
+            Ident JET
+        Num 2.4
+  Region kw=region name=preselection @16:1
+    Cut kw=select @17:3
+      All
+    Cut kw=select @18:3
+      Cmp op=>
+        Call name=size
+          Ident goodjets
+        Num 3
+    Cut kw=select @19:3
+      Cmp op=>
+        Call name=pt
+          Index 0
+            Ident goodjets
+        Num 300
+    Cut kw=select @20:3
+      Cmp op=>
+        Call name=pt
+          Index 1
+            Ident goodjets
+        Num 200
+    Cut kw=select @21:3
+      Cmp op=>
+        Call name=pt
+          Index 2
+            Ident goodjets
+        Num 100
+    Histo name=hnjets title="number of goodjets" @22:3
+      Num 20
+      Num 0
+      Num 20
+      Call name=size
+        Ident goodjets
+    Histo name=hjet1pt title="goodjet 1 pT (GeV)" @23:3
+      Num 50
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 0
+          Ident goodjets
+    Histo name=hjet2pt title="goodjet 2 pT (GeV)" @24:3
+      Num 50
+      Num 0
+      Num 1000
+      Call name=pT
+        Index 1
+          Ident goodjets
+---- diagnostics ----

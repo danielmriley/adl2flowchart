@@ -1,0 +1,16 @@
+[package]
+name = "adl-axioms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+adl-formula.workspace = true
+adl-sema.workspace = true
+adl-syntax.workspace = true
+
+[dev-dependencies]
+adl-difftest.workspace = true
+adl-interp.workspace = true

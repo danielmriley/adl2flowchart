@@ -1,0 +1,16 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: btag_discriminant.adl
+== objects ==
+object jets -> C0#jets  (pure rename of C0#jets)
+== defines ==
+== regions ==
+region SR_a
+  select (C0#jets[0].btagDeepB > 0.2)
+  select (C0#jets[0].btagDeepB < 0.8)
+region SR_b
+  select (C0#jets[0].btagDeepB > 0.3)
+  select (C0#jets[0].btagDeepB < 0.7)
+== diagnostics ==

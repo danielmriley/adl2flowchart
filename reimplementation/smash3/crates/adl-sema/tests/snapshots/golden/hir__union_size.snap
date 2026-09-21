@@ -1,0 +1,20 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: union_size.adl
+== objects ==
+object eles -> C0#eles  (pure rename of C0#eles)
+object muons -> C1#muons  (pure rename of C1#muons)
+object leptons -> C2#leptons  (pure rename of C2#leptons)
+== defines ==
+== regions ==
+region SR_a
+  select (size(C2#leptons) >= 2)
+  select (size(C0#eles) == 1)
+  select (size(C1#muons) == 1)
+region SR_b
+  select (size(C0#eles) == 1)
+  select (size(C1#muons) == 1)
+  select (size(C2#leptons) >= 2)
+== diagnostics ==

@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: overlap_met.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+== regions ==
+region SR1
+  select (MET.pt > 200)
+region SR2
+  select (MET.pt > 150)
+  select (MET.pt < 400)
+== diagnostics ==

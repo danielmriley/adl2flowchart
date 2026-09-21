@@ -1,0 +1,50 @@
+---
+source: crates/adl-cli/tests/cli.rs
+expression: stdout(&out)
+---
+ADL2 analysis report — disjoint_pt.adl
+solver: none
+sampling gate: 151 events, 0 refutation(s)
+refute gate: 91 probes, 0 refutation(s)
+
+== trust ==
+  solver        none
+  nets          certification on · sampling gate 151 events · refute gate 91 probes
+  proven        1 disjoint (1/1 certified, 100%) · 0 overlapping
+  unproven      0 possibly · 0 unknown
+  refutations   0 sampling · 0 adversarial
+  assumes       take = filter (SUB, EPRED, EPRES); the loader rejects events outside this domain (adl-interp event::check_domain) (NNEG); ORD + SUB (IDOM)
+  claim tags    [certified] a replay-checked Farkas certificate backs the claim · [gate e/e] the claim survived every event of the sampling battery · [probes p] it survived p adversarial probes · [assumes: …] soundness assumptions this claim's own core consumes
+
+== regions ==
+SR_low: encoded leaves 4/4 (exact)
+SR_high: encoded leaves 2/2 (exact)
+
+== pairwise ==
+SR_low vs SR_high: PROVEN DISJOINT [certified · gate 151/151 · probes 91] — intervals cannot intersect on jets[0].pt: SR_low requires (100, 200), SR_high requires (300, inf]
+  proof: interval bounds; certificate: 2 formula(s) replay-checked
+
+== axioms used ==
+SZ0 (2 instances; assumes: none)
+  statement: size(C) >= 0
+SUB (1 instances; assumes: take = filter)
+  statement: size(F) <= size(P) for single-source filtered F of P
+NNEG (2 instances; assumes: the loader rejects events outside this domain (adl-interp event::check_domain))
+  statement: pt, e, ht-family scalars, MET.pt, dR >= 0; also opaque external calls named exactly pt/m/mass/e/energy/dr/sqrt (case-insensitive)
+EPRED (1 instances; assumes: take = filter)
+  statement: size(F) > i implies predF(F[i]) for filtered F (exactly-encodable conjuncts of predF)
+IDOM (1 instances; assumes: ORD + SUB)
+  statement: pt(F[i]) <= pt(P[i]) for filtered F of P
+PRES (2 instances; assumes: none)
+  statement: 0 <= defined(q) <= 1 for every presence indicator
+PDEF (2 instances; assumes: none)
+  statement: defined(C[i].x) >= 1 => size(C) > i (front index i; back index -k gives size(C) >= k)
+EPRES (1 instances; assumes: take = filter)
+  statement: size(F) > i => defined(F[i].x) >= 1, for a filtered F whose filter predicate is FALSE on every element lacking x
+
+== summary ==
+pairs: 1; proven disjoint: 1; proven overlapping: 0; candidate overlapping: 0; possibly overlapping: 0; unknown: 0
+
+== objects ==
+  jets  jets <- JET  pt > 30  exact
+          size(jets) ≤ size(JET)  (subset of parent)

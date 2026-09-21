@@ -1,0 +1,15 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: reject_or_band.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+== regions ==
+region SR_band
+  reject ((MET.pt < 100) or (MET.pt > 200))
+region SR_mid
+  select (MET.pt > 120)
+  select (MET.pt < 180)
+== diagnostics ==

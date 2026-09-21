@@ -1,0 +1,327 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/CMS/CMS-SUS-16-041_Delphes.adl\")"
+---
+File
+  Object kw=object name=muons @15:1
+    Take kw=take src=Muon @16:3
+    Cut kw=select @17:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @18:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.4
+    Cut kw=select @19:3
+      Cmp op=<
+        Ident DO
+        Num 0.5
+    Cut kw=select @20:3
+      Cmp op=<
+        Ident DZ
+        Num 1
+  Object kw=object name=electrons @26:1
+    Take kw=take src=Electron @27:3
+    Cut kw=select @28:3
+      Cmp op=>
+        Ident pT
+        Num 10
+    Cut kw=select @29:3
+      Cmp op=<
+        Call name=abs
+          Ident eta
+        Num 2.5
+    Cut kw=select @30:3
+      Cmp op=<
+        Ident DO
+        Num 0.5
+    Cut kw=select @31:3
+      Cmp op=<
+        Ident DZ
+        Num 1
+  Object kw=object name=leptons @37:1
+    Take kw=take src=electrons @38:3
+    Take kw=take src=muons @39:3
+  Object kw=object name=jets @41:1
+    Take kw=take src=Jet binders=[j] @42:3
+    Cut kw=select @43:3
+      Cmp op=>
+        Ident pT
+        Num 30
+    Cut kw=select @44:3
+      Cmp op=<
+        Call name=abs
+          Ident Eta
+        Num 2.4
+    Reject @45:3
+      Cmp op=<
+        Call name=dR
+          Ident j
+          Ident leptons
+        Num 0.4
+  Object kw=object name=bjets @48:1
+    Take kw=take src=Jet @49:3
+    Cut kw=select @50:3
+      Cmp op=>
+        Ident pT
+        Num 25
+    Cut kw=select @51:3
+      Cmp op=<
+        Call name=abs
+          Ident Eta
+        Num 2.4
+    Cut kw=select @52:3
+      Cmp op===
+        Ident BTag
+        Num 1
+  Object kw=object name=MET @54:1
+    Take kw=take src=MissingET @55:3
+  Object kw=composite name=OSdileptons @57:1
+    Take kw=take src=leptons binders=[l1,l2] @58:3
+    Cut kw=select @59:3
+      Cmp op===
+        Binary op=+
+          Dot field=pdgID
+            Ident l1
+          Dot field=pdgID
+            Ident l2
+        Num 0
+  Define kw=define name=HT @67:1
+    Call name=sum
+      Dot field=pT
+        Ident jets
+  Region kw=region name=baseline @69:1
+    Cut kw=select @70:3
+      Cmp op=>=
+        Call name=size
+          Ident leptons
+        Num 3
+    Cut kw=select @71:3
+      Cmp op=>=
+        Call name=size
+          Ident jets
+        Num 2
+    Cut kw=select @72:3
+      Cmp op=>
+        Dot field=pT
+          Ident MET
+        Num 50
+    Cut kw=select @73:3
+      Ternary has_else=false
+        Cmp op=>
+          Call name=size
+            Ident OSdileptons
+          Num 0
+        Cmp op=<
+          Call name=m
+            Binary op=+
+              Dot field=l1
+                Ident OSdileptons
+              Dot field=l2
+                Ident OSdileptons
+          Num 12
+  Region kw=region name=onZ @80:1
+    Cut kw=select @81:3
+      Ident preselection
+    Cut kw=select @82:3
+      Ternary has_else=false
+        Cmp op=>
+          Call name=size
+            Ident OSdileptons
+          Num 0
+        Band kind=in lo=76 hi=106
+          Call name=m
+            Binary op=+
+              Dot field=l1
+                Ident OSdileptons
+              Dot field=l2
+                Ident OSdileptons
+  Region kw=region name=offZ @85:1
+    Cut kw=select @86:3
+      Ident preselection
+    Reject @88:3
+      Ternary has_else=false
+        Cmp op=>
+          Call name=size
+            Ident OSdileptons
+          Num 0
+        Band kind=in lo=76 hi=106
+          Call name=m
+            Binary op=+
+              Dot field=l1
+                Ident OSdileptons
+              Dot field=l2
+                Ident OSdileptons
+  Region kw=region name=onZhighHT @93:1
+    Cut kw=select @94:3
+      Ident onZ
+    Cut kw=select @95:3
+      Cmp op=>
+        Ident HT
+        Num 400
+    Cut kw=select @96:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 0
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 25
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 20
+    Cut kw=select @97:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 1
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 10
+  Region kw=region name=onZlowHT @99:1
+    Cut kw=select @100:3
+      Ident onZ
+    Cut kw=select @101:3
+      Band kind=in lo=60 hi=400
+        Ident HT
+    Cut kw=select @102:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 0
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 10
+    Cut kw=select @103:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 1
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 10
+  Region kw=region name=offZhighHT @105:1
+    Cut kw=select @106:3
+      Ident onZ
+    Cut kw=select @107:3
+      Cmp op=>
+        Ident HT
+        Num 400
+    Cut kw=select @108:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 0
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 25
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 20
+    Cut kw=select @109:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 1
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 10
+  Region kw=region name=offZlowHT @111:1
+    Cut kw=select @112:3
+      Ident onZ
+    Cut kw=select @113:3
+      Band kind=in lo=60 hi=400
+        Ident HT
+    Cut kw=select @114:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 0
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 0
+              Ident leptons
+          Num 10
+    Cut kw=select @115:3
+      Ternary has_else=true
+        Cmp op===
+          Call name=abs
+            Dot field=pdgID
+              Index 1
+                Ident leptons
+          Num 11
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 15
+        Cmp op=>
+          Dot field=pT
+            Index 1
+              Ident leptons
+          Num 10
+---- diagnostics ----

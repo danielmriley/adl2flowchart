@@ -1,0 +1,1236 @@
+//! Encoder per-row tests against tiny HIR fixtures: one test (at least)
+//! per row of the SPEC_ANALYSIS §1 table.
+
+use adl_formula::{EncodedRegion, Formula, LinAtom, QFormula, Rel, encode_region, encode_regions};
+use adl_sema::{
+    ElemIndex, ExtDecls, Hir, HirRegion, HirRegionStmt, Quantity, QuantityId, QuantityTable, Rat,
+    ScalarSource, SymbolTable, analyze_str,
+};
+use adl_syntax::diag::Severity;
+use adl_syntax::span::Span;
+
+fn build_hir(src: &str) -> Hir {
+    let ext = ExtDecls::legacy();
+    let hir = analyze_str(src, "test.adl", &ext);
+    assert!(
+        !hir.diags.iter().any(|d| d.severity == Severity::Error),
+        "fixture has sema/parse errors: {:?}",
+        hir.diags
+    );
+    hir
+}
+
+/// Encode one region and return it with its **presence bookkeeping
+/// stripped** ([`Formula::without_presence`]).
+///
+/// Every test below pins the PHYSICS shape of one SPEC_ANALYSIS §1 row.
+/// Since the presence model, each of those shapes also carries
+/// `defined(q) >= 1` conjuncts; repeating them in thirty expectations would
+/// document nothing and would hide the row each test exists to pin. The
+/// presence shapes are pinned — far more thoroughly, and over the whole
+/// corpus rather than these fixtures — by `tests/presence_invariants.rs`,
+/// and one test HERE (`presence_literals_ride_along_unstripped`) asserts
+/// that the stripping is hiding something real.
+fn encode(src: &str, region: usize) -> (EncodedRegion, Hir) {
+    let mut hir = build_hir(src);
+    let mut enc = encode_region(&mut hir, region);
+    enc.formula = enc.formula.without_presence(&hir.table);
+    (enc, hir)
+}
+
+/// Encode every region, presence stripped (see [`encode`]).
+fn encode_all(hir: &mut Hir) -> Vec<EncodedRegion> {
+    let mut encs = encode_regions(hir);
+    for e in &mut encs {
+        e.formula = e.formula.without_presence(&hir.table);
+    }
+    encs
+}
+
+/// The stripping above must be hiding something REAL, or every expectation
+/// in this file would be vacuous. One raw encoding, asserted un-stripped.
+#[test]
+fn presence_literals_ride_along_unstripped() {
+    let mut hir = build_hir("object jets
+  take Jet
+  select pt > 30
+                             region R
+  select BTag(jets[0]) >= 1
+");
+    let raw = encode_region(&mut hir, 0).formula;
+    let stripped = raw.without_presence(&hir.table);
+    assert_ne!(raw, stripped, "the raw encoding must carry presence literals");
+    let has_presence = format!("{raw:?}") != format!("{stripped:?}");
+    assert!(has_presence);
+    // …and stripping is idempotent.
+    assert_eq!(stripped, stripped.without_presence(&hir.table));
+}
+
+/// Find the unique quantity matching `pred`.
+fn find_q(hir: &Hir, pred: impl Fn(&Quantity) -> bool) -> QuantityId {
+    let hits: Vec<usize> = hir
+        .table
+        .quantities()
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| pred(q))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "expected exactly one matching quantity");
+    QuantityId(u32::try_from(hits[0]).unwrap())
+}
+
+fn met_q(hir: &Hir) -> QuantityId {
+    find_q(hir, |q| {
+        matches!(q, Quantity::EventScalar(ScalarSource::MetProp(_)))
+    })
+}
+
+fn ht_q(hir: &Hir) -> QuantityId {
+    find_q(hir, |q| {
+        matches!(q, Quantity::EventScalar(ScalarSource::EventVar(_)))
+    })
+}
+
+fn size_q(hir: &Hir) -> QuantityId {
+    find_q(hir, |q| matches!(q, Quantity::Size(_)))
+}
+
+fn atom(terms: &[(f64, QuantityId)], rel: Rel, k: f64) -> Formula {
+    Formula::Atom(LinAtom::new(
+        terms
+            .iter()
+            .map(|&(c, q)| (Rat::from_decimal_f64(c).unwrap(), q)),
+        rel,
+        Rat::from_decimal_f64(k).unwrap(),
+    ))
+}
+
+fn atom1(q: QuantityId, rel: Rel, k: f64) -> Formula {
+    atom(&[(1.0, q)], rel, k)
+}
+
+// ---- row: `select c` over linear arithmetic -----------------------------
+
+#[test]
+fn select_linear_comparison_is_one_atom() {
+    let (enc, hir) = encode("region SR\n  select MET > 200\n", 0);
+    assert_eq!(enc.formula, atom1(met_q(&hir), Rel::Gt, 200.0));
+    assert!(enc.is_exact());
+    assert!(enc.diags.is_empty());
+}
+
+#[test]
+fn linear_sums_diffs_const_mults() {
+    // M4: MET and HT are exact rationals in the interpreter, so `2*MET - HT`
+    // is exact rational arithmetic end to end and the flattened atom IS the
+    // interpreter's boundary. (Under the pre-M3 stepwise-f64 interpreter this
+    // same expression had to intern opaque — the additive step rounded.)
+    let (enc, hir) = encode("region SR\n  select 2*MET - HT < 50\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(enc.formula, atom(&[(2.0, met), (-1.0, ht)], Rel::Lt, 50.0));
+    assert!(
+        !has_opaque(&hir),
+        "exact-valued linear arithmetic must not intern an opaque scalar"
+    );
+}
+
+#[test]
+fn pow2_scale_and_bare_diff_stay_exact() {
+    // Positive cases that remain exact under the exact-f64 criterion.
+    let (enc, hir) = encode("region SR\n  select 2*MET < 50\n", 0);
+    assert_eq!(enc.formula, atom(&[(2.0, met_q(&hir))], Rel::Lt, 50.0));
+    let (enc, hir) = encode("region SR\n  select MET > HT\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(enc.formula, atom(&[(1.0, met), (-1.0, ht)], Rel::Gt, 0.0));
+}
+
+#[test]
+fn constant_comparisons_fold() {
+    let (t, _) = encode("region SR\n  select 3 > 2\n", 0);
+    assert_eq!(t.formula, Formula::True);
+    let (f, _) = encode("region SR\n  select 2 > 3\n", 0);
+    assert_eq!(f.formula, Formula::False);
+}
+
+// ---- row: `reject c` = exact negation -----------------------------------
+
+#[test]
+fn reject_is_the_exact_negation_of_select() {
+    // Pre-Phase-B this pinned the `guarded_not` hedge: `HT` is an
+    // event-record lookup, so `reject (MET>100 or HT>200)` was encoded as a
+    // `Dual` whose OVER kept only the MET conjunct. That hedge existed
+    // because absence could not be SAID, and it cost every subset inner and
+    // every complement emptiness that ran through a `reject`.
+    //
+    // Under the presence model the negation is EXACT again. `HT` is
+    // HARD-absent (a missing event scalar is an evaluation error, so the
+    // event is `In` no region reading it in EITHER polarity), which is why
+    // `Encoder::negate` conjoins `defined(HT) >= 1` ON TOP of the negation
+    // rather than letting De Morgan turn it into a `defined(HT) < 1`
+    // disjunct — and then unit-propagates that disjunct away, so the
+    // `HT <= 200` bound stays on the And-spine where the interval layer
+    // reads it. Stripped of the bookkeeping (see `encode`), what is left is
+    // exactly De Morgan.
+    let (_sel, hir) = encode("region A\n  select MET > 100 or HT > 200\n", 0);
+    let (rej, _) = encode("region B\n  reject MET > 100 or HT > 200\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        rej.formula,
+        Formula::And(vec![atom1(met, Rel::Le, 100.0), atom1(ht, Rel::Le, 200.0)]),
+        "reject of an OR is De Morgan, exactly, on both projections"
+    );
+    assert!(rej.is_exact(), "the Dual hedge is gone from the negation path");
+}
+
+/// The presence literals the test above strips are really there, and they
+/// are CONJOINED (not flipped into a `p < 1` disjunct) because `HT`/`MET`
+/// are hard-absent. Getting this wrong is the K4/K6 false-subset class.
+#[test]
+fn a_hard_absent_negation_conjoins_presence_rather_than_flipping_it() {
+    let mut hir = build_hir("region B\n  reject MET > 100 or HT > 200\n");
+    let raw = encode_region(&mut hir, 0).formula;
+    let Formula::And(parts) = &raw else {
+        panic!("expected a conjunction, got {raw:?}");
+    };
+    let presence: Vec<&Formula> = parts
+        .iter()
+        .filter(|p| {
+            matches!(p, Formula::Atom(a)
+                if matches!(a.terms(), [(_, q)]
+                    if matches!(hir.table.quantity(*q), Quantity::Present(_))))
+        })
+        .collect();
+    assert_eq!(presence.len(), 2, "both MET and HT must be pinned present: {raw:?}");
+    for p in presence {
+        let Formula::Atom(a) = p else { unreachable!() };
+        assert_eq!(a.rel(), Rel::Ge, "hard presence is CONJOINED, never flipped");
+    }
+}
+
+// ---- row: region inheritance (inline; cycle => Unknown) ------------------
+
+#[test]
+fn inheritance_inlines_prior_region() {
+    let src = "region base\n  select MET > 100\nregion child\n  base\n  select HT > 50\n";
+    let (enc, hir) = encode(src, 1);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::And(vec![atom1(met, Rel::Gt, 100.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+}
+
+#[test]
+fn region_pred_inside_select_inlines() {
+    let src = "region presel\n  select MET > 100\nregion SR\n  select presel and HT > 50\n";
+    let (enc, hir) = encode(src, 1);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::And(vec![atom1(met, Rel::Gt, 100.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+}
+
+/// Region cycles are unrepresentable through `analyze_str` (prior-only
+/// references), so drive the encoder's cycle guard with a hand-built HIR.
+#[test]
+fn inheritance_cycle_is_unknown() {
+    let mut symbols = SymbolTable::default();
+    let a = symbols.intern("A");
+    let b = symbols.intern("B");
+    let region = |name, target| HirRegion {
+        name,
+        stmts: vec![HirRegionStmt::Inherit {
+            region: target,
+            span: Span::default(),
+        }],
+        span: Span::default(),
+    };
+    let mut hir = Hir {
+        unit: "synthetic".to_owned(),
+        symbols,
+        table: QuantityTable::default(),
+        coll_names: Vec::new(),
+        elem_preds: Vec::new(),
+        objects: Vec::new(),
+        defines: Vec::new(),
+        regions: vec![region(a, 1), region(b, 0)],
+        region_name_order: vec![a, b],
+        histolist_regions: vec![false, false],
+        histos: Vec::new(),
+        weights: Vec::new(),
+        diags: Vec::new(),
+    };
+    let enc = encode_region(&mut hir, 0);
+    let Formula::Unknown(id) = enc.formula else {
+        panic!("cycle must encode as Unknown, got {:?}", enc.formula);
+    };
+    assert!(enc.diags.get(id).unwrap().reason.contains("cycle"));
+    assert_eq!(enc.formula.over().into_qformula(), QFormula::True);
+    assert_eq!(enc.formula.under().into_qformula(), QFormula::False);
+}
+
+// ---- row: `trigger t` => atom trig(t) = 1 --------------------------------
+
+#[test]
+fn trigger_is_a_unit_atom() {
+    let (enc, hir) = encode("region SR\n  trigger HLT_mu50\n", 0);
+    let t = find_q(&hir, |q| {
+        matches!(q, Quantity::EventScalar(ScalarSource::Trigger(_)))
+    });
+    assert_eq!(enc.formula, atom1(t, Rel::Eq, 1.0));
+}
+
+#[test]
+fn trigger_conjunction_encodes_both_flags() {
+    let (enc, _) = encode("region SR\n  trigger HLT_e and HLT_mu\n", 0);
+    let Formula::And(parts) = &enc.formula else {
+        panic!("expected And, got {:?}", enc.formula);
+    };
+    assert_eq!(parts.len(), 2);
+    for p in parts {
+        let Formula::Atom(a) = p else {
+            panic!("expected trigger atom, got {p:?}")
+        };
+        assert_eq!(a.rel(), Rel::Eq);
+        assert_eq!(a.constant(), &Rat::from_i64(1));
+    }
+}
+
+// ---- row: define inlining (by sema, verified through the encoder) -------
+
+#[test]
+fn define_encodes_identically_to_textual_paste() {
+    let (via_def, hir) = encode(
+        "define myht = HT + 2*MET\nregion SR\n  select myht > 100\n",
+        0,
+    );
+    let (inline, _) = encode("region SR\n  select HT + 2*MET > 100\n", 0);
+    assert_eq!(via_def.formula, inline.formula);
+    // M4: the body is exact-valued linear arithmetic, so it flattens — the
+    // point of the test is that inlining a define changes nothing.
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        via_def.formula,
+        atom(&[(2.0, met), (1.0, ht)], Rel::Gt, 100.0)
+    );
+}
+
+// ---- row: Int-size coercion ----------------------------------------------
+
+#[test]
+fn fractional_bounds_on_sizes_coerce_exactly() {
+    let (gt, hir) = encode("region SR\n  select size(Jet) > 1.5\n", 0);
+    assert_eq!(gt.formula, atom1(size_q(&hir), Rel::Ge, 2.0));
+
+    let (le, hir) = encode("region SR\n  select size(Jet) <= 2.5\n", 0);
+    assert_eq!(le.formula, atom1(size_q(&hir), Rel::Le, 2.0));
+
+    let (eq, _) = encode("region SR\n  select size(Jet) == 2.5\n", 0);
+    assert_eq!(eq.formula, Formula::False);
+
+    let (ne, _) = encode("region SR\n  select size(Jet) != 2.5\n", 0);
+    assert_eq!(ne.formula, Formula::True);
+}
+
+#[test]
+fn integral_and_non_size_bounds_are_untouched() {
+    let (int_bound, hir) = encode("region SR\n  select size(Jet) >= 2\n", 0);
+    assert_eq!(int_bound.formula, atom1(size_q(&hir), Rel::Ge, 2.0));
+
+    // Non-integer coefficient: the sum is no longer integer-valued.
+    let (frac_coeff, hir) = encode("region SR\n  select 0.5*size(Jet) > 1.2\n", 0);
+    assert_eq!(
+        frac_coeff.formula,
+        atom(&[(0.5, size_q(&hir))], Rel::Gt, 1.2)
+    );
+
+    // Non-size quantity: no integrality assumption.
+    let (scalar, hir) = encode("region SR\n  select MET > 1.5\n", 0);
+    assert_eq!(scalar.formula, atom1(met_q(&hir), Rel::Gt, 1.5));
+}
+
+// ---- row: ratio L/D ⋈ c, D non-constant ----------------------------------
+
+#[test]
+fn ratio_encodes_exact_two_branches() {
+    let (enc, hir) = encode("region SR\n  select MET / HT > 0.5\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let e = &[(1.0, met), (-0.5, ht)];
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![
+            Formula::And(vec![atom1(ht, Rel::Gt, 0.0), atom(e, Rel::Gt, 0.0)]),
+            Formula::And(vec![atom1(ht, Rel::Lt, 0.0), atom(e, Rel::Lt, 0.0)]),
+        ])
+    );
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn ratio_inside_a_band_encodes_exactly() {
+    // `MET/HT [] 0.6 1.4` is `MET/HT >= 0.6 ∧ MET/HT <= 0.6` lowered through
+    // the exact two-branch ratio encoder per bound — not a dropped Unknown
+    // ("band expression is not linear").
+    let (enc, hir) = encode("region SR\n  select MET / HT [] 0.6 1.4\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let lo = Formula::Or(vec![
+        Formula::And(vec![atom1(ht, Rel::Gt, 0.0), atom(&[(1.0, met), (-0.6, ht)], Rel::Ge, 0.0)]),
+        Formula::And(vec![atom1(ht, Rel::Lt, 0.0), atom(&[(1.0, met), (-0.6, ht)], Rel::Le, 0.0)]),
+    ]);
+    let hi = Formula::Or(vec![
+        Formula::And(vec![atom1(ht, Rel::Gt, 0.0), atom(&[(1.0, met), (-1.4, ht)], Rel::Le, 0.0)]),
+        Formula::And(vec![atom1(ht, Rel::Lt, 0.0), atom(&[(1.0, met), (-1.4, ht)], Rel::Ge, 0.0)]),
+    ]);
+    assert_eq!(enc.formula, Formula::And(vec![lo, hi]));
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn scalar_min_desugars_monotone() {
+    // min(a,…) < c ⇔ ∃ aᵢ < c (Or); min(a,…) > c ⇔ ∀ aᵢ > c (And).
+    let (enc, hir) = encode("region SR\n  select min(MET, HT) < 50\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![atom1(met, Rel::Lt, 50.0), atom1(ht, Rel::Lt, 50.0)])
+    );
+    let (enc2, _) = encode("region SR\n  select min(MET, HT) > 50\n", 0);
+    assert_eq!(
+        enc2.formula,
+        Formula::And(vec![atom1(met, Rel::Gt, 50.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+    assert!(enc.is_exact() && enc2.is_exact());
+}
+
+#[test]
+fn scalar_max_desugars_dual() {
+    // max(a,…) > c ⇔ ∃ aᵢ > c (Or); max(a,…) < c ⇔ ∀ aᵢ < c (And).
+    let (enc, hir) = encode("region SR\n  select max(MET, HT) > 50\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![atom1(met, Rel::Gt, 50.0), atom1(ht, Rel::Gt, 50.0)])
+    );
+}
+
+#[test]
+fn nonlinear_ratio_denominator_interns_opaque() {
+    // `MET / (HT*HT) > 1`: the non-linear denominator is interned as one
+    // opaque free scalar D, so the cut becomes the exact two-branch ratio over
+    // D instead of dropping ("ratio denominator is not linear").
+    let (enc, hir) = encode("region SR\n  select MET / (HT * HT) > 1\n", 0);
+    assert!(!matches!(enc.formula, Formula::Unknown(_)), "got {:?}", enc.formula);
+    assert!(
+        hir.table.quantities().iter().any(|q| matches!(q,
+            Quantity::ExternalFn { name, .. } if hir.symbols.display(*name) == "opaque.scalar")),
+        "the HT*HT denominator must intern as an opaque scalar"
+    );
+}
+
+#[test]
+fn constant_denominator_clears_into_an_exact_atom() {
+    // Division inside the rational fragment is exact, so both a power-of-two
+    // and a non-dyadic divisor flatten to the scaled atom. CE-14 (`pT/0.3`
+    // clearing while the interpreter computed fl(pT)/fl(0.3)) is gone at the
+    // source: the interpreter no longer divides in f64 here.
+    let (enc, hir) = encode("region SR\n  select MET / 2 > 50\n", 0);
+    assert_eq!(enc.formula, atom(&[(0.5, met_q(&hir))], Rel::Gt, 50.0));
+
+    let (enc, hir) = encode("region SR\n  select MET / 3 > 50\n", 0);
+    let met = met_q(&hir);
+    let third = Rat::one().checked_div(&Rat::from_i64(3)).unwrap();
+    assert_eq!(
+        enc.formula,
+        Formula::Atom(LinAtom::new(
+            [(third, met)],
+            Rel::Gt,
+            Rat::from_i64(50)
+        ))
+    );
+    assert!(!has_opaque(&hir), "exact division must not go opaque");
+}
+
+#[test]
+fn approx_ratio_does_not_clear() {
+    // The CE-14 shape over an APPROXIMATE numerator: `dR/0.3` is an f64
+    // division in the interpreter, so multiplying through is not its
+    // boundary — the ratio must intern opaque.
+    let src = "object jets\n  take Jet\n\
+               region SR\n  select dR(jets[0], jets[1]) / 0.3 <= 0.1\n";
+    let (enc, hir) = encode(src, 0);
+    assert!(
+        has_opaque(&hir) || matches!(enc.formula, Formula::Unknown(_)),
+        "approximate ratio must not clear: {:?}",
+        enc.formula
+    );
+}
+
+#[test]
+fn constant_division_by_zero_fails_the_cut() {
+    // SPEC_LANGUAGE §4.4: the enclosing comparison is false.
+    let (sel, _) = encode("region SR\n  select MET / 0 > 1\n", 0);
+    assert_eq!(sel.formula, Formula::False);
+    // ... and reject of it is exactly true.
+    let (rej, _) = encode("region SR\n  reject MET / 0 > 1\n", 0);
+    assert_eq!(rej.formula, Formula::True);
+}
+
+// ---- row: deterministic non-linear scalar vs constant -> opaque atom ------
+
+fn opaque_q(hir: &Hir) -> QuantityId {
+    find_q(hir, |q| matches!(q, Quantity::ExternalFn { .. }))
+}
+
+/// Did the encoder fall back to a structure-keyed opaque scalar?
+fn has_opaque(hir: &Hir) -> bool {
+    hir.table
+        .quantities()
+        .iter()
+        .any(|q| matches!(q, Quantity::ExternalFn { .. }))
+}
+
+#[test]
+fn nonlinear_scalar_vs_constant_interns_as_opaque_atom() {
+    // `MET * MET` is a product of two event quantities — not linear — but it
+    // is a deterministic per-event scalar. Compared to a constant it interns
+    // as one opaque (axiom-free) `ExternalFn` quantity, so the comparison
+    // becomes a real atom `O > 4` instead of dropping to Unknown. The region
+    // is exact: the leaf is faithfully represented, just over a free var.
+    let (enc, hir) = encode("region SR\n  select MET * MET > 4\n", 0);
+    let q = opaque_q(&hir);
+    let Quantity::ExternalFn { name, .. } = hir.table.quantity(q) else {
+        unreachable!()
+    };
+    assert_eq!(hir.symbols.display(*name), "opaque.scalar");
+    assert_eq!(enc.formula, atom(&[(1.0, q)], Rel::Gt, 4.0));
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn identical_nonlinear_scalars_share_one_quantity_across_regions() {
+    // The whole point of interning: two regions that compare the SAME
+    // non-linear expression to different thresholds must reference the SAME
+    // opaque `QuantityId` so the solver can prove `MET*MET > 9` disjoint from
+    // `MET*MET < 1`. `find_q`'s uniqueness assertion IS the proof of sharing:
+    // a collision-free second interning would make it find two.
+    let mut hir =
+        build_hir("region HI\n  select MET * MET > 9\nregion LO\n  select MET * MET < 1\n");
+    let encs = encode_all(&mut hir);
+    let q = opaque_q(&hir); // panics if the two regions did not share one id
+    assert_eq!(encs[0].formula, atom(&[(1.0, q)], Rel::Gt, 9.0));
+    assert_eq!(encs[1].formula, atom(&[(1.0, q)], Rel::Lt, 1.0));
+}
+
+// ---- row: ternary g ? a : b ----------------------------------------------
+
+#[test]
+fn ternary_expands_to_guarded_disjunction() {
+    let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100 : MET > 200\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let g = atom1(ht, Rel::Gt, 500.0);
+    // `(g ∧ a) ∨ (¬g ∧ b)`, with `¬g` now a plain atom: the presence model
+    // made the negation exact, so the else-branch guard no longer hedges.
+    // The ternary is deliberately NOT presence-hoisted — a missing else is
+    // TRUE, so the guard's own absence genuinely selects the else arm.
+    let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
+    assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
+    assert_eq!(
+        v[1],
+        Formula::And(vec![atom1(ht, Rel::Le, 500.0), atom1(met, Rel::Gt, 200.0)])
+    );
+    assert!(enc.is_exact());
+}
+
+#[test]
+fn ternary_missing_else_is_true() {
+    let (enc, hir) = encode("region SR\n  select HT > 500 ? MET > 100\n", 0);
+    let (met, ht) = (met_q(&hir), ht_q(&hir));
+    let g = atom1(ht, Rel::Gt, 500.0);
+    // Missing-else ⇒ the `true` branch, guarded by `¬g` — a plain atom now.
+    let Formula::Or(v) = &enc.formula else { panic!("{:?}", enc.formula) };
+    assert_eq!(v[0], Formula::And(vec![g.clone(), atom1(met, Rel::Gt, 100.0)]));
+    assert_eq!(v[1], atom1(ht, Rel::Le, 500.0));
+    assert!(enc.is_exact());
+}
+
+// ---- row: [] / ][ bands ----------------------------------------------------
+
+#[test]
+fn inclusive_band_is_conjunction_of_bounds() {
+    let (enc, hir) = encode("region SR\n  select MET [] 100 200\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(
+        enc.formula,
+        Formula::And(vec![atom1(met, Rel::Ge, 100.0), atom1(met, Rel::Le, 200.0)])
+    );
+}
+
+#[test]
+fn excluded_band_is_disjunction_of_bounds() {
+    let (enc, hir) = encode("region SR\n  select MET ][ 100 200\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(
+        enc.formula,
+        Formula::Or(vec![atom1(met, Rel::Le, 100.0), atom1(met, Rel::Ge, 200.0)])
+    );
+}
+
+// ---- row: unindexed collection cut (OPEN-1 Dual, k = 3) -------------------
+
+#[test]
+fn open1_dual_bounded_expansion_with_empty_case_in_plus() {
+    let (enc, hir) = encode("region SR\n  select Jet.pt > 30\n", 0);
+    let sz = size_q(&hir);
+    let elem = |i: u32| {
+        find_q(&hir, |q| {
+            matches!(
+                q,
+                Quantity::ElemProp {
+                    index: ElemIndex::FromFront(n),
+                    ..
+                } if *n == i
+            )
+        })
+    };
+    let (p0, p1, p2) = (elem(0), elem(1), elem(2));
+
+    let Formula::Dual { plus, minus, why } = &enc.formula else {
+        panic!("expected Dual, got {:?}", enc.formula);
+    };
+    assert!(enc.diags.get(*why).unwrap().reason.contains("OPEN-1"));
+
+    // plus = size=0 ∨ P'(0) ∨ P'(1) ∨ P'(2) ∨ size>3, where P'(i) is the
+    // instance under its element-existence guard `size > i` (guards make
+    // every comparison leaf exact under the missing-element rule; see
+    // COUNTEREXAMPLES.md). The empty-collection disjunct is audit Bug 1's
+    // fix and MUST be present.
+    let guarded = |i: u32, p: QuantityId| {
+        Formula::And(vec![
+            atom1(sz, Rel::Gt, f64::from(i)),
+            atom1(p, Rel::Gt, 30.0),
+        ])
+    };
+    let expected_plus = Formula::Or(vec![
+        atom1(sz, Rel::Eq, 0.0),
+        guarded(0, p0),
+        guarded(1, p1),
+        guarded(2, p2),
+        atom1(sz, Rel::Gt, 3.0),
+    ]);
+    assert_eq!(**plus, expected_plus);
+    let Formula::Or(plus_parts) = &**plus else {
+        unreachable!()
+    };
+    assert!(
+        plus_parts.contains(&atom1(sz, Rel::Eq, 0.0)),
+        "empty-collection case missing from the plus branch (audit Bug 1)"
+    );
+
+    // minus = 1≤size≤3 ∧ ⋀ᵢ (size≤i ∨ P'(i)).
+    let expected_minus = Formula::And(vec![
+        atom1(sz, Rel::Ge, 1.0),
+        atom1(sz, Rel::Le, 3.0),
+        Formula::Or(vec![atom1(sz, Rel::Le, 0.0), guarded(0, p0)]),
+        Formula::Or(vec![atom1(sz, Rel::Le, 1.0), guarded(1, p1)]),
+        Formula::Or(vec![atom1(sz, Rel::Le, 2.0), guarded(2, p2)]),
+    ]);
+    assert_eq!(**minus, expected_minus);
+
+    // Projections select the matching branch.
+    assert_eq!(
+        enc.formula.over().into_qformula(),
+        expected_plus.over().into_qformula()
+    );
+    assert_eq!(
+        enc.formula.under().into_qformula(),
+        expected_minus.under().into_qformula()
+    );
+    assert!(!enc.is_exact());
+}
+
+#[test]
+fn two_unindexed_collections_in_one_comparison_are_unknown() {
+    let (enc, _) = encode("region SR\n  select Jet.pt > Muon.pt\n", 0);
+    let Formula::Unknown(id) = enc.formula else {
+        panic!("expected Unknown, got {:?}", enc.formula);
+    };
+    assert!(
+        enc.diags
+            .get(id)
+            .unwrap()
+            .reason
+            .contains("more than one unindexed collection")
+    );
+}
+
+// ---- row: anything Unsupported => Unknown(diag) ---------------------------
+
+#[test]
+fn undeclared_function_encodes_as_unknown() {
+    let (enc, _) = encode("region SR\n  select foo(MET) > 1\n", 0);
+    let Formula::Unknown(id) = enc.formula else {
+        panic!("expected Unknown, got {:?}", enc.formula);
+    };
+    assert!(enc.diags.get(id).unwrap().reason.contains("foo"));
+    assert_eq!(enc.formula.over().into_qformula(), QFormula::True);
+    assert_eq!(enc.formula.under().into_qformula(), QFormula::False);
+}
+
+#[test]
+fn unsupported_statement_contributes_unknown_conjunct() {
+    // An UNRECOGNIZED sort shape stays outside the lowered fragment (v2
+    // Phase 5 lowers only the recognized prop(coll)/coll.prop forms).
+    let (enc, hir) = encode("region SR\n  select MET > 100\n  sort mystery stuff\n", 0);
+    let met = met_q(&hir);
+    let Formula::And(parts) = &enc.formula else {
+        panic!("expected And, got {:?}", enc.formula);
+    };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0], atom1(met, Rel::Gt, 100.0));
+    assert!(matches!(parts[1], Formula::Unknown(_)));
+    assert!(!enc.is_exact());
+}
+
+#[test]
+fn recognized_sort_lowers_without_unknown() {
+    // v2 Phase 5: `sort Jet.pt` (descending default) of the pT-ordered
+    // input is the identity permutation — the region encodes exactly, with
+    // no Unknown hedge and no re-bound quantities.
+    let (enc, hir) = encode("region SR\n  select MET > 100\n  sort Jet.pt\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(enc.formula, atom1(met, Rel::Gt, 100.0));
+    assert!(enc.is_exact());
+}
+
+// ---- non-finite constants --------------------------------------------------
+
+#[test]
+fn non_finite_literal_is_unknown_not_an_atom() {
+    // A 350-digit literal parses to +inf: it cannot construct an atom
+    // (audit Bug 5) and must surface as explicit ignorance.
+    let big = "9".repeat(350);
+    let (enc, _) = encode(&format!("region SR\n  select MET > {big}\n"), 0);
+    let Formula::Unknown(id) = enc.formula else {
+        panic!("expected Unknown, got {:?}", enc.formula);
+    };
+    assert!(enc.diags.get(id).unwrap().reason.contains("non-finite"));
+}
+
+#[test]
+fn constant_arithmetic_matches_the_interpreter_at_the_extremes() {
+    // Exact rational constant arithmetic does not overflow, and neither does
+    // the interpreter's — `f64::MAX * 10` is a perfectly good rational on
+    // both sides, so the encoder keeps the exact atom instead of folding to
+    // False. (It folded to False while both emulated stepwise f64.)
+    let max = format!("17976931348623157{}", "0".repeat(292));
+    let (enc, _) = encode(&format!("region SR\n  select MET > {max} * 10\n"), 0);
+    assert!(
+        matches!(&enc.formula, Formula::Atom(a) if a.constant() > &Rat::from_decimal_f64(f64::MAX).unwrap()),
+        "got {:?}",
+        enc.formula
+    );
+
+    // `^` is still on the f64 path in both, so it still overflows to the
+    // §4.4 non-value and the comparison is false.
+    let (enc, _) = encode(&format!("region SR\n  select MET > {max} ^ 2\n"), 0);
+    assert_eq!(enc.formula, Formula::False, "got {:?}", enc.formula);
+}
+
+// ---- exact |E| ⋈ const expansion (extension of the linear row) ------------
+
+#[test]
+fn abs_versus_constant_expands_exactly() {
+    // Bare `abs(q)` is exact-f64 (IEEE abs); expand against a constant.
+    let (lt, hir) = encode("region SR\n  select abs(MET) < 50\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(
+        lt.formula,
+        Formula::And(vec![atom1(met, Rel::Lt, 50.0), atom1(met, Rel::Gt, -50.0)])
+    );
+
+    let (gt, hir) = encode("region SR\n  select abs(MET) > 50\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(
+        gt.formula,
+        Formula::Or(vec![atom1(met, Rel::Gt, 50.0), atom1(met, Rel::Lt, -50.0)])
+    );
+}
+
+#[test]
+fn abs_of_exact_additive_inner_expands() {
+    // Audit C3 was `abs(MET - 200)` flattening while the interpreter rounded
+    // the subtraction. M4: the subtraction is exact rational arithmetic, so
+    // the exact expansion `-50 < MET-200 < 50` is the interpreter's own
+    // predicate. (An APPROXIMATE inner still goes opaque — see
+    // `abs_of_approx_additive_inner_is_opaque`.)
+    let (enc, hir) = encode("region SR\n  select abs(MET - 200) < 50\n", 0);
+    let met = met_q(&hir);
+    assert_eq!(
+        enc.formula,
+        Formula::And(vec![
+            atom1(met, Rel::Lt, 250.0),
+            atom1(met, Rel::Gt, 150.0)
+        ])
+    );
+    assert!(!has_opaque(&hir));
+}
+
+#[test]
+fn abs_of_approx_additive_inner_is_opaque() {
+    // `dR` is f64 in the interpreter, so `dR - 0.1` rounds and an exact
+    // expansion would sit off its boundary: intern opaque instead.
+    let src = "object jets\n  take Jet\n\
+               region SR\n  select abs(dR(jets[0], jets[1]) - 0.1) < 0.05\n";
+    let (enc, hir) = encode(src, 0);
+    assert!(
+        has_opaque(&hir) || matches!(enc.formula, Formula::Unknown(_)),
+        "approximate additive inner must not flatten: {:?}",
+        enc.formula
+    );
+}
+
+// `|E| >= 0`, so comparing `|E|` to a NEGATIVE constant is itself constant.
+// Regression for the abs_cmp soundness bug: `|E| == c` (c<0) was encoded as
+// a satisfiable two-point disjunction and `|E| != c` (c<0) as a two-point
+// exclusion — both wrong, letting through false PROVEN verdicts. The exact,
+// relation-uniform answer is True/False with no atoms over MET at all.
+#[test]
+fn abs_versus_negative_constant_is_the_definedness_of_the_inner() {
+    // `|E| < -5` is FALSE for every E, and that is still exactly False.
+    //
+    // `|E| > -5` is NOT `true` over a PARTIAL valuation, and pretending it
+    // was is how `select abs(dxy(eles[0])) >= -5` became a region that
+    // `size(eles) >= 1` was "proven" inside — while the interpreter rejects
+    // a dxy-less electron from it (SPEC_PRESENCE_MODEL §3.5's `P(q̄)` rule;
+    // kill case K2). The honest fold is the DEFINEDNESS of the inner
+    // expression: `|E| > -5` holds exactly when E has a value.
+    //
+    // `MET` is hard-absent, so the fold yields `defined(MET) >= 1`; stripped
+    // of the bookkeeping it is the old `True`, which is what the loop below
+    // asserts, and the un-stripped assertion after it is the actual fix.
+    for (op, expect) in [
+        ("<", Formula::False),
+        ("<=", Formula::False),
+        ("==", Formula::False),
+        (">", Formula::True),
+        (">=", Formula::True),
+        ("!=", Formula::True),
+    ] {
+        let (enc, _hir) = encode(&format!("region SR\n  select abs(MET) {op} -5\n"), 0);
+        assert_eq!(
+            enc.formula, expect,
+            "abs(...) {op} -5 must fold to {expect:?} once definedness is stripped"
+        );
+    }
+    // The fix itself: the positive arms are NOT vacuous.
+    for op in [">", ">=", "!="] {
+        let mut hir = build_hir(&format!("region SR\n  select abs(MET) {op} -5\n"));
+        let raw = encode_region(&mut hir, 0).formula;
+        let Formula::Atom(a) = &raw else {
+            panic!("expected a presence literal, got {raw:?}");
+        };
+        let [(_, q)] = a.terms() else {
+            panic!("expected one term, got {raw:?}")
+        };
+        assert!(
+            matches!(hir.table.quantity(*q), Quantity::Present(_)),
+            "abs(...) {op} -5 must fold to the DEFINEDNESS of its inner, got {raw:?}"
+        );
+        assert_eq!(a.rel(), Rel::Ge);
+    }
+    // …and the negative arms stay constant-false, with no presence attached:
+    // `|E| < -5` is false whether or not E has a value.
+    for op in ["<", "<=", "=="] {
+        let mut hir = build_hir(&format!("region SR\n  select abs(MET) {op} -5\n"));
+        assert_eq!(encode_region(&mut hir, 0).formula, Formula::False);
+    }
+}
+
+// Boundary guard: `c == 0` must NOT be swallowed by the `c < 0` short-circuit
+// (0.0 < 0.0 is false), so it still takes the exact general expansion and
+// stays a genuine constraint on MET — `|MET| == 0` is satisfiable (only at
+// MET==0) and `|MET| != 0` is not a tautology. A regression that widened
+// the guard to `c <= 0` would fold these to False/True respectively.
+#[test]
+fn abs_versus_zero_keeps_the_exact_constraint() {
+    let (eq, _hir) = encode("region SR\n  select abs(MET) == 0\n", 0);
+    assert_ne!(eq.formula, Formula::False, "|MET| == 0 is satisfiable at MET==0");
+    assert_ne!(eq.formula, Formula::True);
+
+    let (ne, _hir) = encode("region SR\n  select abs(MET) != 0\n", 0);
+    assert_ne!(ne.formula, Formula::True, "|MET| != 0 is not a tautology");
+    assert_ne!(ne.formula, Formula::False);
+}
+
+// ---- whole-file smoke -------------------------------------------------------
+
+#[test]
+fn encode_regions_covers_every_region_in_order() {
+    let src = "region A\n  select MET > 100\nregion B\n  select HT > 50\n";
+    let mut hir = build_hir(src);
+    let all = encode_regions(&mut hir);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].name, "A");
+    assert_eq!(all[1].name, "B");
+    assert!(all.iter().all(EncodedRegion::is_exact));
+}
+
+#[test]
+fn region_with_no_membership_statements_is_true() {
+    let (enc, _) = encode("region SR\n  bin MET 100 200 300\n", 0);
+    assert_eq!(enc.formula, Formula::True);
+}
+
+// ---- polarity safety through reject (Dual branch swap) ---------------------
+
+#[test]
+fn reject_of_unindexed_cut_swaps_the_dual_and_stays_faithful() {
+    // Pre-guard this asserted the pure `Dual` branch swap
+    // (¬plus ⊆ ¬R ⊆ ¬minus); Phase A then wrapped the swap in a hedge whose
+    // OVER side widened every element-property atom to `true`, because a
+    // swapped OVER that constrains `pt(Jet[0])` would fabricate a DISJOINT
+    // between two complementary unindexed rejects over an absence event.
+    //
+    // The presence model makes the swap faithful WITHOUT widening: the
+    // OVER side may now constrain element properties, because every such
+    // atom rides with `defined(q) >= 1` and the complementary reject rides
+    // with `defined(q) < 1` — the shared model that keeps the two
+    // satisfiable together is expressible, so it is found instead of being
+    // encoded away.
+    let (sel, _) = encode("region A\n  select Jet.pt > 30\n", 0);
+    let (rej, hir) = encode("region B\n  reject Jet.pt > 30\n", 0);
+    let exact = sel.formula.clone().not();
+    assert_eq!(
+        rej.formula, exact,
+        "reject of an unindexed cut is the exact Dual swap on BOTH sides"
+    );
+    assert!(matches!(rej.formula, Formula::Dual { .. }), "OPEN-1 keeps its Dual");
+    // The over side DOES constrain the element property now — the change
+    // this test exists to record — and the property is presence-guarded.
+    let mut raw_hir = build_hir("region B\n  reject Jet.pt > 30\n");
+    let raw = encode_region(&mut raw_hir, 0).formula;
+    fn quantities(f: &QFormula, out: &mut Vec<adl_sema::QuantityId>) {
+        match f {
+            QFormula::Atom(a) => out.extend(a.terms().iter().map(|(_, q)| *q)),
+            QFormula::And(v) | QFormula::Or(v) => v.iter().for_each(|p| quantities(p, out)),
+            QFormula::True | QFormula::False => {}
+        }
+    }
+    let mut qs = Vec::new();
+    quantities(raw.over().qformula(), &mut qs);
+    assert!(
+        qs.iter()
+            .any(|q| matches!(raw_hir.table.quantity(*q), Quantity::ElemProp { .. })),
+        "the over side must keep the element constraint (it is faithful now)"
+    );
+    assert!(
+        qs.iter()
+            .any(|q| matches!(raw_hir.table.quantity(*q), Quantity::Present(_))),
+        "…and it must ride with a presence literal"
+    );
+    let _ = hir;
+}
+
+#[test]
+fn band_over_unindexed_collection_is_dual() {
+    let (enc, _) = encode("region SR\n  select Jet.pt [] 20 50\n", 0);
+    let Formula::Dual { plus, .. } = &enc.formula else {
+        panic!("expected Dual, got {:?}", enc.formula);
+    };
+    // Each expanded instance is the two-bound conjunction for one element.
+    let Formula::Or(parts) = &**plus else {
+        panic!("expected Or plus branch, got {plus:?}");
+    };
+    assert_eq!(parts.len(), 5); // size=0, three instances, size>3
+    assert!(matches!(parts[1], Formula::And(_)));
+}
+
+// ---- row: composite per-candidate cut existence (2D dual, P3) ------------
+
+/// Collect every linear atom in a formula (projection-agnostic).
+fn atoms(f: &Formula, out: &mut Vec<LinAtom>) {
+    match f {
+        Formula::Atom(a) => out.push(a.clone()),
+        Formula::And(v) | Formula::Or(v) => v.iter().for_each(|p| atoms(p, out)),
+        Formula::Dual { plus, minus, .. } => {
+            atoms(plus, out);
+            atoms(minus, out);
+        }
+        Formula::True | Formula::False | Formula::Unknown(_) => {}
+    }
+}
+
+/// An OPAQUE per-tuple cut (`mass(jj)` is irrational ⇒ Unknown leaf) must
+/// NOT tighten the over-side: the existence disjunction folds to `true`, so
+/// the over-projection equals the plain `size(K) >= 1` atom. This is the
+/// load-bearing no-op-on-opacity guarantee — the corpus reality.
+#[test]
+fn comb_existence_opaque_cut_is_a_noop_over() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select mass(jj) > 20
+
+region SR
+  select size(dijet->jj) >= 1
+";
+    let (enc, hir) = encode(src, 0);
+    // A Dual is built; its OVER projection is satisfiability-equivalent to
+    // the plain `size(K) >= 1` atom because every per-tuple disjunct over the
+    // opaque candidate mass folds to `true`.
+    let Formula::Dual { plus, minus, .. } = &enc.formula else {
+        panic!("expected a 2D Dual, got {:?}", enc.formula);
+    };
+    // plus = And([size>=1, Or([Unknown(=mass opaque), escape…])]); over →
+    // the existence Or carries a `true` disjunct (Unknown→true), so it folds
+    // away under the solver, leaving only the size constraint.
+    let over = enc.formula.over().into_qformula();
+    let QFormula::And(parts) = &over else {
+        panic!("expected And over, got {over:?}");
+    };
+    let size_ge1 = QFormula::Atom(LinAtom::new(
+        [(Rat::from_decimal_f64(1.0).unwrap(), {
+            // the projected size(K) atom is the first And conjunct
+            let QFormula::Atom(a) = &parts[0] else {
+                panic!("first conjunct must be the size atom");
+            };
+            a.terms()[0].1
+        })],
+        Rel::Ge,
+        Rat::from_decimal_f64(1.0).unwrap(),
+    ));
+    assert_eq!(parts[0], size_ge1, "first conjunct is size(K) >= 1");
+    // The existence conjunct over-projects to a disjunction whose tuple
+    // disjunct is just existence guards (the opaque `mass(jj)` cut folded to
+    // `true`): NO atom anywhere references the candidate-mass quantity.
+    let QFormula::Or(ex) = &parts[1] else {
+        panic!("second conjunct must be the existence Or, got {:?}", parts[1]);
+    };
+    fn qatoms(f: &QFormula, out: &mut Vec<LinAtom>) {
+        match f {
+            QFormula::Atom(a) => out.push(a.clone()),
+            QFormula::And(v) | QFormula::Or(v) => v.iter().for_each(|p| qatoms(p, out)),
+            QFormula::True | QFormula::False => {}
+        }
+    }
+    let mut over_atoms = Vec::new();
+    qatoms(&over, &mut over_atoms);
+    // The candidate mass is an opaque ExternalFn quantity; it must NOT survive
+    // into the over-projection (it folded to `true`).
+    let mass_q = (0..hir.table.quantities().len())
+        .map(|i| QuantityId(u32::try_from(i).unwrap()))
+        .find(|&q| matches!(hir.table.quantity(q), Quantity::ExternalFn { .. }));
+    if let Some(mq) = mass_q {
+        assert!(
+            over_atoms.iter().all(|a| a.terms().iter().all(|(_, q)| *q != mq)),
+            "opaque candidate mass must NOT reach the over-projection"
+        );
+    }
+    // The tuple's existence disjunct carries only source-size guards.
+    assert!(
+        ex.iter().any(|d| matches!(d, QFormula::And(_))),
+        "the (0,1) tuple disjunct (existence guards) must be present, got {ex:?}"
+    );
+    // Under side is the plain atom (no strengthening — USER ANSWER 4).
+    let under = enc.formula.under().into_qformula();
+    assert_eq!(under, size_ge1, "under == plain size atom, no per-tuple atom");
+    let _ = (plus, minus);
+}
+
+/// An ANALYZABLE per-tuple cut (`dphi(j1,j2)` is a linear angular sep) DOES
+/// reach the over-side: the substituted atom `dphi(jets[0], jets[1]) > 0.5`
+/// appears, so the over-projection is no longer the bare size atom. The
+/// existence structure is present and references the bound source elements.
+#[test]
+fn comb_existence_analyzable_cut_reaches_over_side() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select dphi(j1, j2) > 0.5
+
+region SR
+  select size(dijet->jj) >= 1
+";
+    let (enc, hir) = encode(src, 0);
+    let Formula::Dual { plus, minus, why } = &enc.formula else {
+        panic!("expected a 2D Dual, got {:?}", enc.formula);
+    };
+    assert!(
+        enc.diags.get(*why).unwrap().reason.contains("2D"),
+        "diag must name the 2D expansion"
+    );
+    // The SUBSTITUTED angular sep dphi(jets[0], jets[1]) — a DIFFERENT
+    // interned quantity than the original binder-arg dphi(j1, j2) — appears in
+    // the over (plus) side. We find it by its `Elem` arguments.
+    use adl_sema::{ElemIndex as EI, ParticleRef};
+    let subst_dphi = hir.table.quantities().iter().position(|q| {
+        matches!(q, Quantity::AngularSep { a, b, .. }
+            if matches!(a, ParticleRef::Elem { index: EI::FromFront(_), .. })
+            && matches!(b, ParticleRef::Elem { index: EI::FromFront(_), .. }))
+    });
+    assert!(
+        subst_dphi.is_some(),
+        "binder dphi must substitute to an Elem-arg AngularSep"
+    );
+    let aq = QuantityId(u32::try_from(subst_dphi.unwrap()).unwrap());
+    let mut plus_atoms = Vec::new();
+    atoms(plus, &mut plus_atoms);
+    assert!(
+        plus_atoms.iter().any(|a| a.terms().iter().any(|(_, q)| *q == aq)),
+        "the analyzable per-tuple cut must reach the over (plus) side"
+    );
+    // The UNDER side carries NO per-tuple atom — it is exactly the plain size
+    // atom (no existence strengthening; USER ANSWER 4 keeps the disjoint
+    // lower bound opaque).
+    let mut minus_atoms = Vec::new();
+    atoms(minus, &mut minus_atoms);
+    assert!(
+        minus_atoms.iter().all(|a| a.terms().iter().all(|(_, q)| *q != aq)),
+        "under side must NOT strengthen with the per-tuple cut (USER ANSWER 4)"
+    );
+}
+
+/// The 2D Dual negates soundly: `reject size(K) >= 1` swaps branches so the
+/// over-side becomes `size(K) <= 0` (a superset of the true "no surviving
+/// tuple" set) — never a false claim about the per-tuple cut.
+#[test]
+fn comb_existence_dual_negates_soundly() {
+    let src = "\
+object jets
+  take Jet
+  select pt > 30
+
+composite dijet
+  take disjoint(jets j1, jets j2)
+  candidate jj = j1 + j2
+  select dphi(j1, j2) > 0.5
+
+region SR
+  reject size(dijet->jj) >= 1
+";
+    let (enc, _) = encode(src, 0);
+    let Formula::Dual { plus, minus, .. } = &enc.formula else {
+        panic!("expected a 2D Dual under reject, got {:?}", enc.formula);
+    };
+    // Over (plus) of the negated form is the under(atom).not() = (size>=1).not()
+    // = size < 1: a sound superset of "no tuple survives" (integers: < 1 ⇔ = 0).
+    let over = enc.formula.over().into_qformula();
+    let QFormula::Atom(a) = &over else {
+        panic!("negated over must be the single size<1 atom, got {over:?}");
+    };
+    assert_eq!(a.rel(), Rel::Lt);
+    assert_eq!(a.constant(), &Rat::from_decimal_f64(1.0).unwrap());
+    let _ = (plus, minus);
+}
+
+// ---- value-position numeric reducer interning (`sum`/`min`/`max`) --------
+
+/// Every interned reducer quantity (an `ExternalFn` whose synthesized name
+/// is `reduce.<kind>`), in id order.
+fn reduce_qids(hir: &Hir) -> Vec<QuantityId> {
+    hir.table
+        .quantities()
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| {
+            matches!(q, Quantity::ExternalFn { name, .. }
+                if hir.symbols.key(*name).starts_with("reduce."))
+        })
+        .map(|(i, _)| QuantityId(u32::try_from(i).unwrap()))
+        .collect()
+}
+
+/// SOUNDNESS-CRITICAL false-unification regression: six *structurally
+/// different* value-position numeric reducers must intern to six DISTINCT
+/// free quantities. If any two collapsed, a pair of regions guarded by them
+/// (`sum(jets.pT)>400` vs `sum(eles.pT)<=400`) would be falsely PROVEN
+/// DISJOINT even though an event can satisfy both.
+#[test]
+fn distinct_reducers_get_distinct_quantities() {
+    // Each reducer differs from the others in exactly one structural axis:
+    //   kind (sum/min/max), iteration collection (jets/eles/filtered jets),
+    //   or body property (pT/eta). min/max are wrapped in arithmetic so the
+    //   resolver's `min/max ⋈ c → any/all` desugar does not fire (it only
+    //   matches a *bare* reducer on a comparison side).
+    let src = "\
+object jets
+  take Jet
+object eles
+  take Ele
+object goodjets
+  take Jet
+  select pT > 30
+
+region SR
+  select sum(jets.pT) > 400
+  select sum(eles.pT) > 400
+  select sum(jets.eta) > 1
+  select 2 * min(jets.pT) > 60
+  select 2 * max(jets.pT) > 60
+  select sum(goodjets.pT) > 400
+";
+    let (_, hir) = encode(src, 0);
+    let qids = reduce_qids(&hir);
+    let distinct: std::collections::BTreeSet<_> = qids.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        6,
+        "expected 6 DISTINCT interned reducers, got {} (ids {:?}); a collision \
+         would fabricate a false PROVEN DISJOINT",
+        distinct.len(),
+        qids
+    );
+}
+
+/// Two *structurally identical* `sum(jets.pT)` occurrences (one direct, one
+/// via a `define`) must share ONE quantity id — this is the cancellation the
+/// fix restores.
+#[test]
+fn identical_reducers_share_one_quantity() {
+    let src = "\
+object jets
+  take Jet
+define HT = sum(jets.pT)
+
+region SR
+  select HT > 400
+  select sum(jets.pT) < 1000
+";
+    let (_, hir) = encode(src, 0);
+    let qids = reduce_qids(&hir);
+    assert_eq!(
+        qids.len(),
+        1,
+        "structurally identical sums must intern to ONE quantity, got {qids:?}"
+    );
+}
+
+/// A bare value-position `sum(jets.pT) > 400` encodes to exactly ONE exact
+/// atom over the interned free reducer quantity (the leaf the interval engine
+/// cancels across regions).
+#[test]
+fn value_position_sum_is_one_exact_atom() {
+    let src = "\
+object jets
+  take Jet
+region SR
+  select sum(jets.pT) > 400
+";
+    let (enc, hir) = encode(src, 0);
+    let q = reduce_qids(&hir);
+    assert_eq!(q.len(), 1, "one interned reducer expected");
+    assert_eq!(enc.formula, atom1(q[0], Rel::Gt, 400.0));
+    assert!(enc.is_exact(), "a free-quantity atom is exact");
+}

@@ -1,0 +1,16 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: bins_partition.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+== regions ==
+region SR_binned
+  select (MET.pt > 250)
+  bin MET.pt edges=[250, 300, 500]
+region SR_gap
+  select (MET.pt > 250)
+  bin MET.pt edges=[300, 500]
+== diagnostics ==

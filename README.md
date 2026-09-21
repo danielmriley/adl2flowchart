@@ -10,8 +10,9 @@ analyses**, with independently certified proofs.
 
 | Directory | Contents | Canonical doc |
 |---|---|---|
-| [`reimplementation/`](reimplementation/) | **ADL2 / `smash2`** — the from-scratch Rust toolchain: interpreter, certified prover, cross-analysis engine, ROOT-file pipeline, visualizer. This is the active tool **and the forever CI oracle**. | [`reimplementation/README.md`](reimplementation/README.md) |
-| [`cpp/`](cpp/) | **ADL2 C++ port** — modular libs mirroring smash2 (P1–P4: syntax through solver/viz/analysis; certify still stub); not a rewrite of `legacy_parser/` | [`cpp/README.md`](cpp/README.md) |
+| [`reimplementation/smash3/`](reimplementation/smash3/) | **`smash3`** — production toolchain. Run-first CLI, closed language decisions, `grammar.ebnf`. Same certified cores as smash2. | [`reimplementation/smash3/README.md`](reimplementation/smash3/README.md) |
+| [`reimplementation/`](reimplementation/) | **ADL2 / `smash2`** — the from-scratch Rust toolchain and forever CI oracle. | [`reimplementation/README.md`](reimplementation/README.md) |
+| [`cpp/`](cpp/) | **ADL2 C++ port** (`smash2_cpp`). Modular libs mirroring smash2. | [`cpp/README.md`](cpp/README.md) |
 | [`legacy_parser/`](legacy_parser/) | the original flex/bison C++ tool (`smash`), retained as a transitional secondary oracle | [`legacy_parser/README.md`](legacy_parser/README.md) |
 | [`examples/`](examples/) | the shared ADL corpus (tutorials, real CMS/ATLAS analyses, pinned-verdict golden files) | — |
 | [`docs/archive/`](docs/archive/) | design specs, plans, audits, and reports (historical record; the READMEs above are the entry points) | — |

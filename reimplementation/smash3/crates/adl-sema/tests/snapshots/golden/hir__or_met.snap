@@ -1,0 +1,14 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: or_met.adl
+== objects ==
+object MET -> C0#MET  (pure rename of C0#MET)
+== defines ==
+== regions ==
+region SR_lo
+  select (MET.pt < 100)
+region SR_hi_or_lo
+  select ((MET.pt > 200) or (MET.pt < 50))
+== diagnostics ==

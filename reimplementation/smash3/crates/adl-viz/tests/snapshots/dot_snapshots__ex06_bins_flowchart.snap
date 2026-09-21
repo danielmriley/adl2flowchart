@@ -1,0 +1,32 @@
+---
+source: crates/adl-viz/tests/dot_snapshots.rs
+expression: fc
+---
+digraph flowchart {
+  rankdir=LR;
+  node [shape=box, fontname="monospace"];
+  label="ex06_bins.adl";
+  labelloc=t;
+  subgraph cluster_objects {
+    label="objects";
+    color=gray70;
+    coll0 [label="JET\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll1 [label="jets\n[filtered]", style=filled, fillcolor="#e0f0ff"];
+    coll2 [label="ELECTRON\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll3 [label="MUON\n[base]", style=filled, fillcolor="#e0f0ff"];
+    coll4 [label="leptons\n[union]", style=filled, fillcolor="#e0f0ff"];
+  }
+  coll0 -> coll1 [label="take"];
+  coll2 -> coll4 [label="union"];
+  coll3 -> coll4 [label="union"];
+  subgraph cluster_regions {
+    label="regions";
+    color=gray70;
+    region0 [label="hadronic\lselect (size(jets) >= 4)\lselect (size(leptons) == 0)\lselect (fHT(jets) > 300)\lselect (dphi(jets[0], MET) > 0.5)\lselect (dphi(jets[1], MET) > 0.5)\lselect (dphi(jets[2], MET) > 0.5)\lselect (dR(jets[0], jets[1]) > 1.0)\lselect (fMT2(jets[0], jets[1], MET) > 300)\lbin ((size(jets) [] 4 5) and (fMT2(jets[0], jets[1], MET) [] 300 500))\lbin ((size(jets) [] 4 5) and (fMT2(jets[0], jets[1], MET) [] 500 800))\lbin ((size(jets) [] 4 5) and (fMT2(jets[0], jets[1], MET) [] 800 1000))\lbin ((size(jets) [] 4 5) and (fMT2(jets[0], jets[1], MET) > 1000))\lbin ((size(jets) >= 6) and (fMT2(jets[0], jets[1], MET) [] 300 500))\lbin ((size(jets) >= 6) and (fMT2(jets[0], jets[1], MET) [] 500 800))\lbin ((size(jets) >= 6) and (fMT2(jets[0], jets[1], MET) > 800))\l", style=filled, fillcolor="#f0fff0"];
+    region1 [label="leptonic\lselect (size(jets) >= 3)\lselect (size(leptons) == 1)\lselect ((fHT(jets) + leptons[0].pt) > 300)\lselect (MET.pt > 150)\lbin sqrt((((2 * leptons[0].pt) * MET.pt) * (1 - cos((MET.phi - leptons[0].phi))))) 250 350 500 800\l", style=filled, fillcolor="#f0fff0"];
+  }
+  coll1 -> region0 [style=dotted, color=gray60];
+  coll4 -> region0 [style=dotted, color=gray60];
+  coll1 -> region1 [style=dotted, color=gray60];
+  coll4 -> region1 [style=dotted, color=gray60];
+}

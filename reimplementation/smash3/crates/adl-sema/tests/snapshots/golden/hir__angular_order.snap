@@ -1,0 +1,19 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: hir_dump(&hir)
+---
+unit: angular_order.adl
+== objects ==
+object eles -> C0#eles  (pure rename of C0#eles)
+object muons -> C1#muons  (pure rename of C1#muons)
+== defines ==
+== regions ==
+region SR_a
+  select (size(C0#eles) >= 1)
+  select (size(C1#muons) >= 1)
+  select (deta(C0#eles[0], C1#muons[0]) > 1)
+region SR_b
+  select (size(C0#eles) >= 1)
+  select (size(C1#muons) >= 1)
+  select (deta(C1#muons[0], C0#eles[0]) > 1)
+== diagnostics ==

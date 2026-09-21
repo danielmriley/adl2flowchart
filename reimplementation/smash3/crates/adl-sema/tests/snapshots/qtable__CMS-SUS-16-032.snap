@@ -1,0 +1,51 @@
+---
+source: crates/adl-sema/tests/snapshots.rs
+expression: quantity_table_dump(&hir)
+---
+unit: CMS-SUS-16-032.adl
+== collections ==
+C0 = Base(JET)
+C1 = Filtered(parent=C0#JET, pred=P0)  names=[jets]
+C2 = Filtered(parent=C1#jets, pred=P1)  names=[bjets]
+C3 = Filtered(parent=C1#jets, pred=P2)  names=[cjets]
+C4 = Base(MUON)
+C5 = Filtered(parent=C4#MUON, pred=P3)  names=[muons]
+C6 = Base(ELECTRON)
+C7 = Filtered(parent=C6#ELECTRON, pred=P4)  names=[electrons]
+C8 = Union(C7#electrons, C5#muons)  names=[leptons]
+== element predicates ==
+P0 = ((this.pt > 25) and (abs(this.eta) < 2.4))
+P1 = (this.btag == 1)
+P2 = (this.ctag == 1)
+P3 = ((this.pt > 10) and (abs(this.eta) < 2.4) and (D0(C4#MUON) < 2))
+P4 = ((this.pt > 10) and (abs(this.eta) < 2.4) and (D0(C6#ELECTRON) < 2))
+== quantities ==
+ang(or) dphi(C1#jets[0], C1#jets[1])
+elem    C1#jets[0].btag
+elem    C1#jets[0].ctag
+elem    C1#jets[0].phi
+elem    C1#jets[0].pt
+elem    C1#jets[1].btag
+elem    C1#jets[1].ctag
+elem    C1#jets[1].phi
+elem    C1#jets[1].pt
+elem    C1#jets[2].pt
+elem    C1#jets[3].pt
+extfn   D0(C4#MUON)
+extfn   D0(C6#ELECTRON)
+extfn   HT(C2#bjets)
+extfn   HT(C3#cjets)
+extfn   cos((MET.phi - C1#jets[0].phi))
+extfn   cos((MET.phi - C1#jets[1].phi))
+extfn   cos(dphi(C1#jets[0], C1#jets[1]))
+extfn   pT(C1#jets[0], C1#jets[1])
+extfn   sqrt((((2 * C1#jets[0].pt) * MET.pt) * (1 - cos((MET.phi - C1#jets[0].phi)))))
+extfn   sqrt((((2 * C1#jets[1].pt) * MET.pt) * (1 - cos((MET.phi - C1#jets[1].phi)))))
+scalar  MET.phi
+scalar  MET.pt
+size    size(C1#jets)
+size    size(C2#bjets)
+size    size(C3#cjets)
+size    size(C5#muons)
+size    size(C7#electrons)
+size    size(C8#leptons)

@@ -1,0 +1,44 @@
+[package]
+name = "adl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "smash3"
+path = "src/main.rs"
+
+[features]
+# Forwarded solver-backend features. The default CLI build uses the
+# SMT-LIB subprocess backend — no libz3 link, runs against a `z3` binary
+# on PATH. `--features native` (system libz3) or `--features bundled`
+# (libz3 built from vendored source) opt into the in-process backend.
+default = []
+native = ["adl-analysis/native"]
+bundled = ["adl-analysis/bundled"]
+
+[dependencies]
+adl-syntax.workspace = true
+adl-sema.workspace = true
+adl-formula.workspace = true
+adl-axioms.workspace = true
+adl-certify.workspace = true
+adl-interp.workspace = true
+adl-ingest.workspace = true
+adl-viz.workspace = true
+rootfile.workspace = true
+# Direct path dep (not workspace-inherited): inheritance cannot override
+# default-features, and the CLI must forward the `native` backend feature.
+adl-analysis = { path = "../adl-analysis", default-features = false }
+clap.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+
+[dev-dependencies]
+insta.workspace = true
+# The CLI tests re-parse the native `out.root` with the writer's own strict
+# reader to assert content + framing.
+rootfile.workspace = true

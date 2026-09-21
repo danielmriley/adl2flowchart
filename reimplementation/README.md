@@ -7,6 +7,9 @@ the parity gate; the legacy `adl/` tool is retained as the reference
 oracle. The documents here are the design contract the implementation was
 written against.
 
+The production CLI that follows the run-first plan is [`smash3/`](smash3/).
+It uses the same certified cores. smash2 remains the CI oracle.
+
 This single README is the canonical document for the reimplementation:
 the *why* and principles first, then the complete build/run/feature
 reference for the `smash2` binary (the Rust workspace lives in

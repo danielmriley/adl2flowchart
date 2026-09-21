@@ -1,0 +1,219 @@
+---
+source: crates/adl-syntax/tests/snapshots.rs
+expression: "snapshot_for(\"examples/Examples/ATLAS-EXOT-1704-0384.adl\")"
+---
+File
+  Object kw=object name=photons @16:1
+    Take kw=take src=PHO @16:16
+    Cut kw=select @17:3
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident PHO
+        Num 10
+    Cut kw=select @18:3
+      Cmp op=<
+        Call name=Abs
+          Braced prop=Eta
+            UAll
+              Ident PHO
+        Num 2.37
+  Object kw=object name=tightphotons @20:1
+    Take kw=take src=photons @20:21
+    Cut kw=select @21:3
+      Binary op=or
+        Cmp op=<
+          Braced prop=AbsEta
+            UAll
+              Ident photons
+          Num 1.37
+        Band kind=in lo=1.52 hi=2.37
+          Braced prop=AbsEta
+            UAll
+              Ident photons
+  Object kw=object name=electrons @23:1
+    Take kw=take src=ELE @23:18
+    Cut kw=select @24:3
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident ELE
+        Num 7
+    Cut kw=select @25:3
+      Cmp op=<
+        Call name=Abs
+          Braced prop=Eta
+            UAll
+              Ident ELE
+        Num 2.47
+  Object kw=object name=muons @27:1
+    Take kw=take src=MUO @27:14
+    Cut kw=select @28:3
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident MUO
+        Num 6
+    Cut kw=select @29:3
+      Cmp op=<
+        Call name=Abs
+          Braced prop=Eta
+            UAll
+              Ident MUO
+        Num 2.7
+  Object kw=object name=jets @31:1
+    Take kw=take src=JET @31:13
+    Cut kw=select @32:3
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident JET
+        Num 20
+    Cut kw=select @33:3
+      Cmp op=<
+        Braced prop=AbsEta
+          UAll
+            Ident JET
+        Num 4.5
+  Object kw=object name=cleanjets @35:1
+    Take kw=take src=jets @35:18
+    Reject @36:3
+      Cmp op=<
+        Braced prop=dR
+          UAll
+            Ident jets
+          UAll
+            Ident electrons
+        Num 0.2
+  Object kw=object name=cleanelectrons @38:1
+    Take kw=take src=electrons @38:23
+    Reject @39:3
+      Cmp op=<
+        Call name=dR
+          UAll
+            Ident electrons
+          UAll
+            Ident cleanjets
+        Num 0.4
+  Object kw=object name=cleanmuons @41:1
+    Take kw=take src=muons @41:19
+    Reject @42:3
+      Cmp op=<
+        Call name=dR
+          UAll
+            Ident muons
+          UAll
+            Ident cleanjets
+        Num 0.4
+  Object kw=object name=jetsSR @44:1
+    Take kw=take src=cleanjets @44:15
+    Cut kw=select @45:3
+      Cmp op=>
+        Braced prop=Pt
+          UAll
+            Ident cleanjets
+        Num 30
+    Reject @46:3
+      Cmp op=<
+        Call name=dR
+          UAll
+            Ident cleanjets
+          UAll
+            Ident photons
+        Num 0.4
+    Reject @47:3
+      Cmp op=<
+        Call name=dPhi
+          UAll
+            Ident cleanjets
+          Index 0
+            Ident METLV
+        Num 0.4
+  Region kw=region name=preselection @64:1
+    Cut kw=select @66:3
+      All
+    Cut kw=select @67:3
+      Cmp op=>=
+        Call name=Size
+          Ident tightphotons
+        Num 1
+    Cut kw=select @68:3
+      Cmp op=>
+        Braced prop=Pt
+          Index 0
+            Ident tightphotons
+        Num 150
+    Cut kw=select @69:3
+      Cmp op=>
+        Call name=dPhi
+          Index 0
+            Ident tightphotons
+          Index 0
+            Ident METLV
+        Num 0.4
+    Cut kw=select @70:3
+      Cmp op=>
+        Binary op=/
+          Ident MET
+          Call name=Sqrt
+            Ident HT
+        Num 8.5
+    Cut kw=select @71:3
+      Cmp op=>=
+        Call name=Size
+          Ident electrons
+        Num 0
+    Reject @72:3
+      Cmp op=>
+        Call name=Size
+          Ident jetsSR
+        Num 1
+    Cut kw=select @73:3
+      Cmp op===
+        Call name=Size
+          Ident cleanmuons
+        Num 0
+    Cut kw=select @74:3
+      Cmp op===
+        Call name=Size
+          Ident cleanelectrons
+        Num 0
+  Region kw=region name=SRI1 @76:1
+    RegionRef name=preselection @77:3
+    Cut kw=select @78:3
+      Cmp op=>
+        Ident MET
+        Num 150
+  Region kw=region name=SRI2 @80:1
+    RegionRef name=preselection @81:3
+    Cut kw=select @82:3
+      Cmp op=>
+        Ident MET
+        Num 225
+  Region kw=region name=SRI3 @84:1
+    RegionRef name=preselection @85:3
+    Cut kw=select @86:3
+      Cmp op=>
+        Ident MET
+        Num 300
+  Region kw=region name=SRE1 @88:1
+    RegionRef name=preselection @89:3
+    Cut kw=select @90:3
+      Binary op=and
+        Cmp op=>
+          Ident MET
+          Num 150
+        Cmp op=<
+          Ident MET
+          Num 225
+  Region kw=region name=SRE2 @92:1
+    RegionRef name=preselection @93:3
+    Cut kw=select @94:3
+      Binary op=and
+        Cmp op=>
+          Ident MET
+          Num 225
+        Cmp op=<
+          Ident MET
+          Num 300
+---- diagnostics ----

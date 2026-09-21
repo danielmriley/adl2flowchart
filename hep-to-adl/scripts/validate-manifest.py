@@ -17,11 +17,13 @@ CLAUDE_MANIFEST = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 SKILLS_DIR = PLUGIN_ROOT / "skills"
 COMMANDS_DIR = PLUGIN_ROOT / "commands"
 RULES_DIR = PLUGIN_ROOT / "rules"
+AGENTS_DIR = PLUGIN_ROOT / "agents"
 FIXTURES_DIR = PLUGIN_ROOT / "fixtures"
-EXPECTED_VERSION = "0.1.1"
+EXPECTED_VERSION = "0.1.2"
 REQUIRED_SKILLS = ("hep-to-adl", "adl-authoring", "hep-code-read")
 REQUIRED_COMMANDS = ("hep-to-adl",)
 REQUIRED_RULES = ("hep-to-adl",)
+REQUIRED_AGENTS = ("hep-to-adl-agent",)
 REQUIRED_FIXTURES = (
     "ex01_selection.adl",
     "ex03_objreco.adl",
@@ -30,7 +32,10 @@ REQUIRED_FIXTURES = (
     "ex01_selection.draft.json",
 )
 FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
-COMPONENT_PATH_KEYS = ("commands", "rules", "skills")
+COMPONENT_PATH_KEYS = ("commands", "rules", "skills", "agents")
+CURSOR_DISPLAY_NAMES = ("HEP to ADL", "hep-to-adl")
+CURSOR_CATEGORIES = ("developer-tools", "utilities")
+CURSOR_TAGS = ("hep", "adl", "cms", "analysis")
 
 
 def fail(message: str) -> None:
@@ -116,8 +121,49 @@ def check_rule(name: str) -> None:
     parse_frontmatter(RULES_DIR / f"{name}.mdc", ("description",))
 
 
+def check_agent(name: str) -> None:
+    fields = parse_frontmatter(AGENTS_DIR / f"{name}.md", ("name", "description"))
+    if fields.get("name") != name:
+        fail(f"agents/{name}.md frontmatter name={fields.get('name')!r} expected {name!r}")
+    if fields.get("is_background") != "true":
+        fail(f"agents/{name}.md frontmatter is_background={fields.get('is_background')!r} expected 'true'")
+
+
+def check_cursor_chat_fields(host: dict) -> None:
+    display = host.get("displayName")
+    if display not in CURSOR_DISPLAY_NAMES:
+        fail(
+            f".cursor-plugin/plugin.json displayName={display!r} "
+            f"expected one of {CURSOR_DISPLAY_NAMES}"
+        )
+    category = host.get("category")
+    if category not in CURSOR_CATEGORIES:
+        fail(
+            f".cursor-plugin/plugin.json category={category!r} "
+            f"expected one of {CURSOR_CATEGORIES}"
+        )
+    tags = host.get("tags")
+    if not isinstance(tags, list) or set(tags) != set(CURSOR_TAGS):
+        fail(f".cursor-plugin/plugin.json tags={tags!r} expected {list(CURSOR_TAGS)}")
+    if host.get("skills") != "./skills/":
+        fail(f".cursor-plugin/plugin.json skills={host.get('skills')!r} expected './skills/'")
+    if host.get("agents") != "./agents/":
+        fail(f".cursor-plugin/plugin.json agents={host.get('agents')!r} expected './agents/'")
+    logo = host.get("logo")
+    if logo is not None:
+        if not isinstance(logo, str) or not logo:
+            fail(".cursor-plugin/plugin.json logo must be a relative path string")
+        logo_path = (PLUGIN_ROOT / logo).resolve()
+        try:
+            logo_path.relative_to(PLUGIN_ROOT.resolve())
+        except ValueError:
+            fail(f".cursor-plugin/plugin.json logo={logo!r} escapes the plugin root")
+        if not logo_path.is_file():
+            fail(f".cursor-plugin/plugin.json logo={logo!r} does not exist")
+
+
 def check_declared_component_paths(host: dict, host_label: str) -> None:
-    """If a host manifest lists commands/rules/skills, those paths must exist."""
+    """If a host manifest lists commands/rules/skills/agents, those paths must exist."""
     for key in COMPONENT_PATH_KEYS:
         if key not in host:
             continue
@@ -149,6 +195,7 @@ def main() -> None:
     check_dual_manifest(portable, CLAUDE_MANIFEST)
     cursor_host = require_mapping(load_json(CURSOR_MANIFEST), ".cursor-plugin/plugin.json")
     check_declared_component_paths(cursor_host, ".cursor-plugin/plugin.json")
+    check_cursor_chat_fields(cursor_host)
 
     for skill in REQUIRED_SKILLS:
         check_skill(skill)
@@ -156,6 +203,8 @@ def main() -> None:
         check_command(command)
     for rule in REQUIRED_RULES:
         check_rule(rule)
+    for agent in REQUIRED_AGENTS:
+        check_agent(agent)
 
     for fixture in REQUIRED_FIXTURES:
         path = FIXTURES_DIR / fixture
@@ -169,7 +218,8 @@ def main() -> None:
 
     print("OK: plugin.json matches Agent Plugins 1.0.0")
     print("OK: Cursor and Claude Code host manifests match name/version/description")
-    print("OK: required skills, commands, rules, and fixtures are present")
+    print("OK: Cursor displayName, skills, and agents are declared")
+    print("OK: required skills, commands, rules, agents, and fixtures are present")
     print("OK: fixture drafts match HepToAdlDraft")
 
 

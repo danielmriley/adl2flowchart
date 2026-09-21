@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hep-to-adl",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Convert HEP analysis code (C++/Python/\u2026) into ADL for smash2 / CutLang workflows.",
   "author": {
     "name": "Daniel Riley",

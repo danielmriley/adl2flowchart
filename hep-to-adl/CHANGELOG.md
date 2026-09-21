@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- pstack-like `hep-to-adl-agent` plus Cursor `displayName` so Agent chat
+  can route `/hep-to-adl` the same way `/poteto-mode` routes.
+
 ## 0.1.1
 
 - Cursor-visible `/hep-to-adl` command and a glob-scoped `.adl` rule.

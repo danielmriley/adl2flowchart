@@ -15,7 +15,7 @@ analyses**, with independently certified proofs.
 | [`legacy_parser/`](legacy_parser/) | the original flex/bison C++ tool (`smash`), retained as a transitional secondary oracle | [`legacy_parser/README.md`](legacy_parser/README.md) |
 | [`examples/`](examples/) | the shared ADL corpus (tutorials, real CMS/ATLAS analyses, pinned-verdict golden files) | — |
 | [`docs/archive/`](docs/archive/) | design specs, plans, audits, and reports (historical record; the READMEs above are the entry points) | — |
-| [`hep-to-adl/`](hep-to-adl/) | **Agent Plugin** — convert HEP analysis code (C++/Python/…) into ADL for smash2 / CutLang. Skills, `/hep-to-adl`, and a glob-scoped `.adl` rule; not a smash2 change. | [`hep-to-adl/README.md`](hep-to-adl/README.md) |
+| [`hep-to-adl/`](hep-to-adl/) | **Agent Plugin** — convert HEP analysis code (C++/Python/…) into ADL for smash2 / CutLang. Skills, `/hep-to-adl`, a pstack-like agent, and a glob-scoped `.adl` rule; not a smash2 change. | [`hep-to-adl/README.md`](hep-to-adl/README.md) |
 
 Agents that need to turn CMSSW, NanoAOD, coffea, or Delphes selection code into ADL should load [`hep-to-adl/`](hep-to-adl/) (Cursor `/hep-to-adl`, Claude Code / Codex skills). The plugin fills a `HepToAdlDraft` and emits tutorial-style ADL. It does not change smash2. Install and validate notes live in [`hep-to-adl/README.md`](hep-to-adl/README.md).
 

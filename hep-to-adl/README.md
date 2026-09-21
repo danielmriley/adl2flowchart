@@ -1,19 +1,29 @@
 # hep-to-adl
 
-Agent Plugin that teaches agents to convert HEP analysis code (C++/Python/other) into [ADL](https://cern.ch/adl) for smash2 / CutLang. Skills plus a Cursor `/hep-to-adl` command and a glob-scoped `.adl` rule so Customize can list the plugin. No Marketplace listing. smash2 stays the product.
+Agent Plugin that teaches agents to convert HEP analysis code (C++/Python/other) into [ADL](https://cern.ch/adl) for smash2 / CutLang. Skills, a pstack-like `hep-to-adl-agent`, a Cursor `/hep-to-adl` command, and a glob-scoped `.adl` rule so Customize can list the plugin. No Marketplace listing. smash2 stays the product.
 
 The locked intermediate type is `HepToAdlDraft` (`schema/heptoadl-draft.schema.json`). Emit ADL only from a filled draft. Missing cuts stay as `# TODO:` comments or a sibling `*.unresolved.md`.
+
+## Usage
+
+```
+/hep-to-adl convert this CMSSW analyzer…
+```
+
+The slash command and the `hep-to-adl` skill both route to `hep-to-adl-agent`, which reads the skill, fills `HepToAdlDraft`, and emits ADL. The other skills are steps, not extra `/` entries.
 
 ## Layout
 
 ```
 hep-to-adl/
   plugin.json                 # Agent Plugins 1.0.0 source of truth
-  .cursor-plugin/plugin.json  # Cursor local-load mirror
+  .cursor-plugin/plugin.json  # Cursor local-load mirror (displayName, skills, agents)
   .claude-plugin/plugin.json  # Claude Code plugin-dir mirror
+  agents/hep-to-adl-agent.md  # routing target for /hep-to-adl
   commands/hep-to-adl.md      # slash command /hep-to-adl
   rules/hep-to-adl.mdc        # glob-scoped .adl rule
   skills/{hep-to-adl,adl-authoring,hep-code-read}/
+  assets/logo.svg             # geometric mark (not a CERN logo)
   fixtures/                   # short goldens (ex01, ex03, ex04, slim CMS SUS)
   references/
   schema/
@@ -33,7 +43,7 @@ Copy to a real directory. Do not symlink the checkout out.
 # dest: ~/.cursor/plugins/local/hep-to-adl
 ```
 
-Override with `--dest DIR` or `HEPTADL_INSTALL_DIR`. Then enable the local plugin in Cursor and reload. Customize should list hep-to-adl (commands and rules). Type `/hep-to-adl` in an Agent chat. Root `plugin.json` is the portable manifest. `.cursor-plugin/plugin.json` mirrors name, version, and description. Cursor discovers `commands/`, `rules/`, and `skills/` from those folders (Course Kit style; no explicit paths).
+Override with `--dest DIR` or `HEPTADL_INSTALL_DIR`. Then enable the local plugin in Cursor and reload. Customize should list **HEP to ADL**. Type `/hep-to-adl` in an Agent chat. Root `plugin.json` is the portable manifest. `.cursor-plugin/plugin.json` mirrors name, version, and description, and declares `displayName`, `skills`, `agents`, and `rules` the same way pstack / Course Kit do. `commands/` stays on disk for a reliable local slash entry.
 
 Do not submit this folder to cursor.directory or the Cursor Marketplace.
 
@@ -70,13 +80,13 @@ pip install jsonschema
 python3 scripts/validate-manifest.py
 ```
 
-That check loads the vendored Agent Plugins schema in `schema/plugin.schema.json`, matches Cursor/Claude host manifests, requires the `/hep-to-adl` command and `.adl` rule, and validates `fixtures/*.draft.json` against `HepToAdlDraft`.
+That check loads the vendored Agent Plugins schema in `schema/plugin.schema.json`, matches Cursor/Claude host manifests, requires the `/hep-to-adl` command, the `.adl` rule, and `agents/hep-to-adl-agent.md`, and validates `fixtures/*.draft.json` against `HepToAdlDraft`.
 
 ## Commands
 
 | Command | Opens |
 |---|---|
-| `/hep-to-adl` | **hep-to-adl** (draft → ADL → unresolved; delegates to **hep-code-read** and **adl-authoring**) |
+| `/hep-to-adl` | **hep-to-adl-agent** → **hep-to-adl** skill (draft → ADL → unresolved; delegates to **hep-code-read** and **adl-authoring**) |
 
 One slash command. The other skills are steps, not extra `/` entries.
 

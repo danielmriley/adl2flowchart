@@ -15,8 +15,13 @@ DRAFT_SCHEMA = PLUGIN_ROOT / "schema" / "heptoadl-draft.schema.json"
 CURSOR_MANIFEST = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
 CLAUDE_MANIFEST = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 SKILLS_DIR = PLUGIN_ROOT / "skills"
+COMMANDS_DIR = PLUGIN_ROOT / "commands"
+RULES_DIR = PLUGIN_ROOT / "rules"
 FIXTURES_DIR = PLUGIN_ROOT / "fixtures"
+EXPECTED_VERSION = "0.1.1"
 REQUIRED_SKILLS = ("hep-to-adl", "adl-authoring", "hep-code-read")
+REQUIRED_COMMANDS = ("hep-to-adl",)
+REQUIRED_RULES = ("hep-to-adl",)
 REQUIRED_FIXTURES = (
     "ex01_selection.adl",
     "ex03_objreco.adl",
@@ -25,6 +30,7 @@ REQUIRED_FIXTURES = (
     "ex01_selection.draft.json",
 )
 FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+COMPONENT_PATH_KEYS = ("commands", "rules", "skills")
 
 
 def fail(message: str) -> None:
@@ -74,24 +80,59 @@ def check_dual_manifest(portable: dict, host_path: Path) -> None:
             )
 
 
-def check_skill(name: str) -> None:
-    skill_md = SKILLS_DIR / name / "SKILL.md"
-    if not skill_md.is_file():
-        fail(f"missing skills/{name}/SKILL.md")
-    text = skill_md.read_text(encoding="utf-8")
+def parse_frontmatter(path: Path, required: tuple[str, ...]) -> dict[str, str]:
+    rel = path.relative_to(PLUGIN_ROOT)
+    if not path.is_file():
+        fail(f"missing {rel}")
+    text = path.read_text(encoding="utf-8")
     match = FRONTMATTER.match(text)
     if not match:
-        fail(f"skills/{name}/SKILL.md needs YAML frontmatter with name and description")
-    fields = {}
+        fail(f"{rel} needs YAML frontmatter with {', '.join(required)}")
+    fields: dict[str, str] = {}
     for line in match.group(1).splitlines():
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
-        fields[key.strip()] = value.strip()
+        fields[key.strip()] = value.strip().strip("\"'")
+    for key in required:
+        if not fields.get(key):
+            fail(f"{rel} frontmatter is missing {key}")
+    return fields
+
+
+def check_skill(name: str) -> None:
+    fields = parse_frontmatter(SKILLS_DIR / name / "SKILL.md", ("name", "description"))
     if fields.get("name") != name:
         fail(f"skills/{name}/SKILL.md frontmatter name={fields.get('name')!r} expected {name!r}")
-    if not fields.get("description"):
-        fail(f"skills/{name}/SKILL.md frontmatter is missing description")
+
+
+def check_command(name: str) -> None:
+    fields = parse_frontmatter(COMMANDS_DIR / f"{name}.md", ("name", "description"))
+    if fields.get("name") != name:
+        fail(f"commands/{name}.md frontmatter name={fields.get('name')!r} expected {name!r}")
+
+
+def check_rule(name: str) -> None:
+    parse_frontmatter(RULES_DIR / f"{name}.mdc", ("description",))
+
+
+def check_declared_component_paths(host: dict, host_label: str) -> None:
+    """If a host manifest lists commands/rules/skills, those paths must exist."""
+    for key in COMPONENT_PATH_KEYS:
+        if key not in host:
+            continue
+        raw = host[key]
+        paths = raw if isinstance(raw, list) else [raw]
+        for item in paths:
+            if not isinstance(item, str) or not item:
+                fail(f"{host_label} {key} entries must be relative path strings")
+            target = (PLUGIN_ROOT / item).resolve()
+            try:
+                target.relative_to(PLUGIN_ROOT.resolve())
+            except ValueError:
+                fail(f"{host_label} {key}={item!r} escapes the plugin root")
+            if not target.exists():
+                fail(f"{host_label} {key}={item!r} does not exist")
 
 
 def main() -> None:
@@ -101,14 +142,20 @@ def main() -> None:
 
     if portable.get("name") != "hep-to-adl":
         fail(f"plugin.json name={portable.get('name')!r} expected 'hep-to-adl'")
-    if portable.get("version") != "0.1.0":
-        fail(f"plugin.json version={portable.get('version')!r} expected '0.1.0'")
+    if portable.get("version") != EXPECTED_VERSION:
+        fail(f"plugin.json version={portable.get('version')!r} expected {EXPECTED_VERSION!r}")
 
     check_dual_manifest(portable, CURSOR_MANIFEST)
     check_dual_manifest(portable, CLAUDE_MANIFEST)
+    cursor_host = require_mapping(load_json(CURSOR_MANIFEST), ".cursor-plugin/plugin.json")
+    check_declared_component_paths(cursor_host, ".cursor-plugin/plugin.json")
 
     for skill in REQUIRED_SKILLS:
         check_skill(skill)
+    for command in REQUIRED_COMMANDS:
+        check_command(command)
+    for rule in REQUIRED_RULES:
+        check_rule(rule)
 
     for fixture in REQUIRED_FIXTURES:
         path = FIXTURES_DIR / fixture
@@ -122,7 +169,7 @@ def main() -> None:
 
     print("OK: plugin.json matches Agent Plugins 1.0.0")
     print("OK: Cursor and Claude Code host manifests match name/version/description")
-    print("OK: required skills and fixtures are present")
+    print("OK: required skills, commands, rules, and fixtures are present")
     print("OK: fixture drafts match HepToAdlDraft")
 
 

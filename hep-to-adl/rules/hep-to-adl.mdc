@@ -1,0 +1,13 @@
+---
+description: When converting HEP analysis ↔ ADL or editing .adl files, use HepToAdlDraft and the hep-to-adl skills.
+globs:
+  - "**/*.adl"
+alwaysApply: false
+---
+
+When converting HEP analysis code or notes to ADL, or when editing `.adl`
+in this repo, read the **hep-to-adl** skill first. Fill `HepToAdlDraft`
+before emitting cuts. Do not invent pT, eta, isolation, ID, trigger, or
+overlap selections. Missing cuts stay `# TODO:` or `*.unresolved.md`.
+Delegate inventory to **hep-code-read** and writing to **adl-authoring**.
+Do not touch smash2 / `reimplementation/` / `legacy_parser/` sources.

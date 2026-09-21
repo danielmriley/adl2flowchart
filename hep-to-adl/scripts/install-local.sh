@@ -43,8 +43,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -f "$SRC/plugin.json" ]]; then
-  echo "missing $SRC/plugin.json" >&2
+if [[ ! -f "$SRC/.cursor-plugin/plugin.json" ]]; then
+  echo "missing $SRC/.cursor-plugin/plugin.json" >&2
   exit 1
 fi
 
@@ -57,11 +57,19 @@ echo "source: $SRC"
 echo "dest:   $DEST"
 echo "mode:   $([[ $DRY_RUN -eq 1 ]] && echo dry-run || echo copy)"
 
+AFTER_HINT=$(cat <<'EOF'
+Then in Cursor: Reload Window, enable the local plugin if needed, and invoke
+  /hep-to-adl convert this CMSSW analyzer…
+the same way /poteto-mode is invoked.
+EOF
+)
+
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "would mkdir -p $(dirname "$DEST")"
   echo "would rm -rf $DEST"
   echo "would cp -R $SRC $DEST"
   echo "would chmod 755 $DEST/scripts/*.sh $DEST/scripts/*.py"
+  echo "$AFTER_HINT"
   exit 0
 fi
 
@@ -70,3 +78,4 @@ rm -rf "$DEST"
 cp -R "$SRC" "$DEST"
 chmod 755 "$DEST/scripts/"*.sh "$DEST/scripts/"*.py
 echo "installed $DEST"
+echo "$AFTER_HINT"

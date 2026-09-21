@@ -1,6 +1,8 @@
 ---
 name: hep-to-adl
-description: Convert HEP analysis code or notes into ADL. Use when asked to convert this analysis to ADL, write ADL for a CMSSW/NanoAOD/coffea/Delphes selection, or translate C++/Python HEP cuts into object/region blocks.
+description: Convert HEP analysis code or notes into ADL. Use for /hep-to-adl, converting this analysis to ADL, writing ADL for a CMSSW/NanoAOD/coffea/Delphes selection, or translating C++/Python HEP cuts into object/region blocks.
+disable-model-invocation: true
+mode: true
 ---
 
 # HEP → ADL

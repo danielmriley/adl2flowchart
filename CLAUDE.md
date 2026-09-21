@@ -13,6 +13,9 @@ ADL2Flowchart is a compiler that parses Analysis Description Language (ADL) file
   (canonical doc: reimplementation/README.md)
 - `examples/` — shared ADL corpus; `docs/archive/` — specs, plans,
   audits, and reports (historical record)
+- `hep-to-adl/` — pointer only. The Cursor plugin lives in
+  https://github.com/danielmriley/skills/tree/main/hep-to-adl.
+  Do not edit a plugin copy in this repo.
 
 ## Build & Run (legacy tool)
 
